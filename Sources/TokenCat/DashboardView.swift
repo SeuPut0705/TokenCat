@@ -6,28 +6,67 @@ import SwiftUI
 
 private struct HighContrastKey: EnvironmentKey { static let defaultValue = false }
 
+private struct SnapshotKey: EnvironmentKey { static let defaultValue = false }
+
 extension EnvironmentValues {
     /// Increase Contrast, or forced by fixture snapshots because `colorSchemeContrast` cannot be injected.
     var tokenCatHighContrast: Bool {
         get { self[HighContrastKey.self] }
         set { self[HighContrastKey.self] = newValue }
     }
-}
-
-private struct CardBackground: ViewModifier {
-    @Environment(\.tokenCatHighContrast) private var high
-    func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: 8, style: .continuous)
-        return content
-            .background(Color.primary.opacity(0.035), in: shape)
-            .overlay(shape.strokeBorder(Color.primary.opacity(high ? 0.18 : 0.07), lineWidth: 1))
+    /// ImageRenderer snapshots: AppKit-backed controls (menus, bordered buttons) are drawn as static look-alikes.
+    var tokenCatSnapshot: Bool {
+        get { self[SnapshotKey.self] }
+        set { self[SnapshotKey.self] = newValue }
     }
 }
 
-/// `.tertiary` text, raised to `.secondary` under Increase Contrast.
-private struct FaintText: ViewModifier {
+/// The 4 pt grid (A0-5). Popover 420 wide, gutters 16, content 388; x values inside a container are container coordinates.
+enum DashboardLayout {
+    static let width: CGFloat = 420
+    static let gutter: CGFloat = 16
+    /// Between top-level blocks.
+    static let block: CGFloat = 12
+    /// Section title to its content.
+    static let titleGap: CGFloat = 8
+    /// Container inner padding: 12 horizontal, 10 vertical; inner width 364.
+    static let inset: CGFloat = 12
+    static let insetVertical: CGFloat = 10
+    /// Glyph column x = 12–22 (centre 17), text column x = 28, trailing edge x = 376.
+    static let glyphX: CGFloat = 12
+    static let textX: CGFloat = 28
+    /// Child rows: tree guide x = 17, glyph x = 28–38, text x = 44.
+    static let guideX: CGFloat = 17
+    static let childTextX: CGFloat = 44
+    /// Hover and selection fill x = 4–384, radius 6.
+    static let rowInset: CGFloat = 4
+}
+
+/// The two containers (A0-4): radius 10; dark white 0.05, light white 0.72 + 0.5 pt black 0.06 rule,
+/// Increase Contrast 1 pt primary 0.25 in both. `tint` is the first-run card: accent 0.08, no rule.
+private struct ContainerBackground: ViewModifier {
+    var tint = false
     @Environment(\.tokenCatHighContrast) private var high
-    func body(content: Content) -> some View { content.foregroundStyle(high ? HierarchicalShapeStyle.secondary : .tertiary) }
+    @Environment(\.colorScheme) private var scheme
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
+        let fill = tint ? Color.accentColor.opacity(0.08) : Color.white.opacity(scheme == .dark ? 0.05 : 0.72)
+        return content
+            .background(fill, in: shape)
+            .overlay {
+                if high { shape.strokeBorder(TCColor.primary(0.25), lineWidth: 1) }
+                else if !tint && scheme == .light { shape.strokeBorder(Color.black.opacity(0.06), lineWidth: 0.5) }
+            }
+    }
+}
+
+/// Informational secondary text and decoration-only tertiary text, raised under Increase Contrast.
+private struct TextTone: ViewModifier {
+    var tertiary = false
+    @Environment(\.tokenCatHighContrast) private var high
+    func body(content: Content) -> some View {
+        content.foregroundStyle(tertiary ? TCColor.textTertiary(contrast: high) : TCColor.textSecondary(contrast: high))
+    }
 }
 
 /// Copy and reveal only, mirrored as VoiceOver actions; file contents are never opened.
@@ -35,323 +74,374 @@ private struct RowActions: ViewModifier {
     var reading: TokenReading
     func body(content: Content) -> some View {
         let actions = SessionPresentation.rowActions(reading)
+        let copies = actions.filter { !$0.isReveal }, reveals = actions.filter(\.isReveal)
         return content
-            .contextMenu { ForEach(actions) { action in Button(action.title) { Self.perform(action) } } }
+            .contextMenu {
+                ForEach(copies) { action in Button { Self.perform(action) } label: { Label(action.title, systemImage: action.symbol) } }
+                if !copies.isEmpty && !reveals.isEmpty { Divider() }
+                ForEach(reveals) { action in Button { Self.perform(action) } label: { Label(action.title, systemImage: action.symbol) } }
+            }
             .accessibilityActions { ForEach(actions) { action in Button(action.title) { Self.perform(action) } } }
     }
     static func perform(_ action: SessionPresentation.RowAction) {
         switch action.kind {
-        case .copy(let text):
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
-        case .reveal(let url):
-            NSWorkspace.shared.activateFileViewerSelecting([url])
+        case .copy(let text): copyToPasteboard(text)
+        case .reveal(let url): NSWorkspace.shared.activateFileViewerSelecting([url])
         }
     }
 }
 
-extension View {
-    fileprivate func card() -> some View { modifier(CardBackground()) }
-    fileprivate func faint() -> some View { modifier(FaintText()) }
-    fileprivate func rowActions(_ reading: TokenReading) -> some View { modifier(RowActions(reading: reading)) }
+private func copyToPasteboard(_ text: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text, forType: .string)
 }
 
+/// Hover and keyboard selection for one row: x = 4–384, radius 6, no animation.
+private struct RowChrome: ViewModifier {
+    var selected: Bool
+    @State private var hovering = false
+    @Environment(\.tokenCatHighContrast) private var high
+    @Environment(\.controlActiveState) private var active
+    func body(content: Content) -> some View {
+        let fill = selected ? TCColor.selection(keyWindow: active == .key) : (hovering ? TCColor.hover(contrast: high) : Color.clear)
+        return content
+            .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(fill).padding(.horizontal, DashboardLayout.rowInset))
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+    }
+}
+
+/// The system draws its own ring on a focused list on macOS 14; the selection fill is the indicator here.
+private struct NoFocusEffect: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(macOS 14.0, *) { content.focusEffectDisabled() } else { content }
+    }
+}
+
+extension View {
+    /// Internal so fixtures can frame component previews the same way.
+    func container(tint: Bool = false) -> some View { modifier(ContainerBackground(tint: tint)) }
+    fileprivate func toneSecondary() -> some View { modifier(TextTone()) }
+    fileprivate func toneTertiary() -> some View { modifier(TextTone(tertiary: true)) }
+    fileprivate func rowActions(_ reading: TokenReading) -> some View { modifier(RowActions(reading: reading)) }
+    fileprivate func rowChrome(selected: Bool) -> some View { modifier(RowChrome(selected: selected)) }
+}
+
+/// Secondary-tone text: hover makes it primary. Icon buttons hover inside a circle; text buttons inside a 5 pt rounded
+/// rectangle. Keyboard focus draws a 2 pt focus-indicator ring in the same shape; `ring: false` inside the focusable
+/// session list, where `isFocused` reports the list's focus rather than the button's.
 struct HoverButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View { HoverLabel(configuration: configuration) }
+    var circle = false
+    var ring = true
+    func makeBody(configuration: Configuration) -> some View { HoverLabel(configuration: configuration, circle: circle, ring: ring) }
     private struct HoverLabel: View {
         var configuration: Configuration
+        var circle: Bool
+        var ring: Bool
         @State private var hovering = false
+        @Environment(\.isFocused) private var focused
+        @Environment(\.tokenCatHighContrast) private var high
         var body: some View {
-            configuration.label
-                .foregroundStyle(hovering ? HierarchicalShapeStyle.primary : .secondary)
-                .background(hovering ? Color.primary.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 5))
-                .contentShape(Rectangle())
-                .opacity(configuration.isPressed ? 0.6 : 1)
+            let shape = circle ? AnyShape(Circle()) : AnyShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+            let fill = configuration.isPressed ? TCColor.pressed(contrast: high) : (hovering ? TCColor.hover(contrast: high) : Color.clear)
+            return configuration.label
+                .foregroundStyle(hovering || configuration.isPressed ? AnyShapeStyle(HierarchicalShapeStyle.primary)
+                                 : AnyShapeStyle(TCColor.textSecondary(contrast: high)))
+                .background(fill, in: shape)
+                .overlay { if focused && ring { shape.stroke(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2) } }
+                .contentShape(shape)
                 .onHover { hovering = $0 }
         }
     }
 }
 
-struct Sparkline: View {
-    var values: [Double]
+/// `.bordered` `.small` in the app. ImageRenderer cannot draw AppKit buttons, so snapshots get a look-alike.
+struct SmallBorderedButton: View {
+    var title: String
+    var action: () -> Void
+    @Environment(\.tokenCatSnapshot) private var snapshot
+    var body: some View {
+        if snapshot {
+            Text(title).font(.system(size: 11)).padding(.horizontal, 8).frame(height: 20)
+                .background(TCColor.primary(0.1), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .fixedSize()
+        } else {
+            Button(title, action: action).buttonStyle(.bordered).controlSize(.small).fixedSize()
+        }
+    }
+}
+
+/// A 4 pt meter: `track` behind, the fill in `color`.
+struct Meter: View {
+    var fraction: Double
+    var color: Color
     var body: some View {
         GeometryReader { geometry in
-            Path { path in
-                guard values.count > 1 else { return }
-                for (index, value) in values.enumerated() {
-                    let point = CGPoint(x: geometry.size.width * Double(index) / Double(values.count - 1),
-                                        y: (geometry.size.height - 2) * (1 - min(100, max(0, value)) / 100) + 1)
-                    if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
-                }
-            }.stroke(Color.primary.opacity(0.5), style: StrokeStyle(lineWidth: 1.25, lineCap: .round, lineJoin: .round))
+            ZStack(alignment: .leading) {
+                Capsule().fill(TCColor.track)
+                if fraction > 0 { Capsule().fill(color).frame(width: max(geometry.size.height, geometry.size.width * min(1, fraction))) }
+            }
         }
         .accessibilityHidden(true)
     }
-}
 
-/// State colour plus shape: input is a yellow "?" disc, an API retry is an arrow, the rest are dots.
-struct StateMark: View {
-    var state: SessionDisplayState
-    @Environment(\.tokenCatHighContrast) private var high
-    var body: some View {
-        switch state {
-        case .input:
-            ZStack {
-                Circle().fill(state.color)
-                Circle().strokeBorder(Color.primary.opacity(high ? 0.5 : 0.25), lineWidth: 0.5)
-                Text("?").font(.system(size: 8, weight: .heavy)).foregroundStyle(Color.black.opacity(0.8))
-            }.frame(width: 10, height: 10)
-        case .retrying:
-            Image(systemName: "arrow.clockwise").font(.system(size: 8, weight: .bold)).foregroundStyle(state.color)
-                .frame(width: 10, height: 10)
-        case .interrupted:
-            Circle().strokeBorder(high ? HierarchicalShapeStyle.secondary : .tertiary, lineWidth: 1.5).frame(width: 6, height: 6)
-        case .unfinished:
-            // Under Increase Contrast the dashed ring turns solid; the row text already says "종료 기록 없음".
-            Circle().strokeBorder(high ? HierarchicalShapeStyle.secondary : .tertiary,
-                                  style: StrokeStyle(lineWidth: 1.5, dash: high ? [] : [1.4, 1.4])).frame(width: 6, height: 6)
-        default:
-            Circle().fill(state.color).frame(width: 6, height: 6)
-        }
+    /// Neutral below 85 %, warning from 85 %, critical from 95 %.
+    static func color(_ percent: Double?) -> Color {
+        guard let percent else { return TCColor.neutral }
+        return percent >= 95 ? TCColor.critical : (percent >= 85 ? TCColor.warning : TCColor.neutral)
     }
 }
 
-struct StateChip: View {
-    var state: SessionDisplayState
-    var text: String
-    @Environment(\.tokenCatHighContrast) private var high
-    var body: some View {
-        HStack(spacing: 4) {
-            StateMark(state: state)
-            Text(text).font(.system(size: 10.5, weight: .semibold).monospacedDigit()).foregroundStyle(.primary).lineLimit(1)
-        }
-        .padding(.horizontal, 6).padding(.vertical, 2).frame(height: 17)
-        .background(state.color.opacity(high ? 0.28 : 0.16), in: Capsule())
-        .overlay { if high { Capsule().strokeBorder(state.color.opacity(0.6), lineWidth: 1) } }
-        .fixedSize()
-    }
+/// Where the dashboard is shown. The panel lets the session list fill its height and hides "패널로 분리".
+enum DashboardPresentation {
+    case popover, panel
 }
 
-private struct ListDivider: View {
-    @Environment(\.tokenCatHighContrast) private var high
-    var body: some View {
-        Group {
-            if high { Rectangle().fill(Color.primary.opacity(0.2)).frame(height: 1) } else { Divider() }
-        }.padding(.horizontal, 10)
-    }
-}
+/// Everything the dashboard asks of the app shell; views never reach windows or apps themselves.
+struct DashboardActions {
+    var settings: () -> Void
+    var quit: () -> Void
+    var about: () -> Void
+    var activityMonitor: () -> Void
+    /// Move the popover's content into the detached panel.
+    var detach: () -> Void
+    /// Settings, opened at the telemetry section.
+    var openTelemetrySettings: () -> Void
 
-/// Recorded volume bars: the base layer plus the buckets holding a record from the last 5 s in green.
-struct RecordBars: View {
-    var row: FlowSeries.Row?
-    var count: Int
-    var scale: Double
-    var minHeight: CGFloat = 2
-    var minWidth: CGFloat = 1
-    @Environment(\.tokenCatHighContrast) private var high
-    var body: some View {
-        let values = row?.buckets ?? Array(repeating: 0, count: count)
-        ZStack {
-            FlowBars(values: values, scale: scale, minHeight: minHeight, minWidth: minWidth).fill(Color.primary.opacity(high ? 0.6 : 0.4))
-            FlowBars(values: values, scale: scale, mask: row?.fresh ?? [], minHeight: minHeight, minWidth: minWidth).fill(Color.green)
-        }.accessibilityHidden(true)
-    }
-}
-
-struct SpeedLabel: View {
-    var slot: SpeedSlot
-    var numberSize: CGFloat = 11.5
-    /// Idle rows show only "—" when nothing was measured.
-    var compactUnknown = false
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 0) {
-            if slot.known {
-                if let prefix = slot.prefix { Text(prefix + " ").font(.system(size: 10)).faint() }
-                Text(slot.value).font(.system(size: numberSize, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(slot.prefix == nil && slot.recent ? HierarchicalShapeStyle.primary : .secondary)
-                Text(" " + (slot.kind ?? "tok/s")).font(.system(size: 10)).foregroundStyle(.secondary)
-            } else {
-                Text(compactUnknown ? "—" : "— tok/s").font(.system(size: 10.5).monospacedDigit()).faint()
-            }
-        }
-        .lineLimit(1).fixedSize().help(slot.help)
-    }
-}
-
-struct ContextLabel: View {
-    var slot: ContextSlot
-    var body: some View {
-        HStack(spacing: 4) {
-            if let fraction = slot.fraction {
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.1))
-                    Capsule().fill(slot.warning ? Color.orange : Color.primary.opacity(0.45)).frame(width: max(1.5, 28 * fraction))
-                }.frame(width: 28, height: 3)
-            }
-            Text(slot.text).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(.secondary)
-        }
-        .lineLimit(1).fixedSize().help(slot.help)
-    }
+    /// For snapshots and fixtures: every action does nothing.
+    static let none = DashboardActions(settings: {}, quit: {}, about: {}, activityMonitor: {}, detach: {}, openTelemetrySettings: {})
 }
 
 struct DashboardView: View {
     @ObservedObject var model: DashboardModel
-    var settings: () -> Void
-    var quit: () -> Void
-    /// False for ImageRenderer snapshots: no scroll surface and no first-run card.
+    var presentation: DashboardPresentation = .popover
+    var actions: DashboardActions
+    /// False for ImageRenderer snapshots: no scroll surface, no menu, no first-run card, no timers.
     var scrollsSessions = true
-    /// Fixtures pin this; nil checks the two log folders when the list is empty.
-    var logFoldersFound: Bool? = nil
+    /// Fixture snapshots only: a keyboard-selected row and an open detail, by row id.
+    var selection: String? = nil
+    var detail: String? = nil
     @AppStorage("onboardingSeen") private var onboardingSeen = false
+    /// The flow card had records during this showing; it collapses again only at the next showing (F-5).
+    @State private var flowOpened = false
     @Environment(\.colorSchemeContrast) private var contrast
     @Environment(\.tokenCatHighContrast) private var forcedContrast
 
+    private var loading: Bool { model.tokensSampledAt == nil }
+    private var flowEmpty: Bool { !loading && model.flow.total == 0 && model.sessions.counts.liveGroups == 0 }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
+            DashboardHeader(model: model, presentation: presentation, actions: actions, interactive: scrollsSessions)
             if scrollsSessions && !onboardingSeen {
-                OnboardingCard(notice: telemetryNotice, note: setupNote, failure: model.telemetrySetupFailure, ready: model.telemetryReady,
-                               settings: { onboardingSeen = true; model.showSettings(.telemetry) }, dismiss: { onboardingSeen = true }).padding(.top, 10)
+                OnboardingCard(outcome: OnboardingCard.outcome(notice: telemetryNotice, note: model.telemetrySetupNote,
+                                                               failure: model.telemetrySetupFailure, state: model.telemetryState),
+                               settings: actions.openTelemetrySettings, dismiss: { onboardingSeen = true })
+                    .padding(.top, DashboardLayout.block)
             }
-            FlowCard(flow: model.flow, counts: model.sessions.counts, now: model.now, tokensSampledAt: model.tokensSampledAt)
-                .padding(.top, 10)
-            if let limit = model.sessions.usageLimit, limit.isShown(now: model.now) {
-                UsageLimitCard(limit: limit, now: model.now).padding(.top, 8)
+            VStack(spacing: 0) {
+                FlowCard(flow: model.flow, counts: model.sessions.counts, now: model.now, loading: loading,
+                         newestOutputAt: model.newestOutputAt, collapsed: flowEmpty && !flowOpened)
+                if let limit = model.sessions.usageLimit, limit.isShown(now: model.now) {
+                    UsageLimitRow(limit: limit, now: model.now)
+                }
             }
-            SessionsHeader(model: model).padding(.top, 12)
-            SessionList(model: model, scrolls: scrollsSessions, logFoldersFound: logFoldersFound).padding(.top, 6)
-            SystemStrip(system: model.system, cpuHistory: model.cpuHistory, hasSample: model.hasSample).padding(.top, 10)
-            footer.padding(.top, 8)
+            .container()
+            .padding(.top, DashboardLayout.block)
+            SessionsHeader(model: model).padding(.top, DashboardLayout.block)
+            SessionList(model: model, scrolls: scrollsSessions, presentation: presentation, selection: selection, detail: detail)
+                .padding(.top, DashboardLayout.titleGap)
+            SystemArea(system: model.system, cpuHistory: model.cpuHistory, hasSample: model.hasSample, open: actions.activityMonitor)
+                .padding(.top, DashboardLayout.block)
+            DashboardFooter(status: footerStatus, notice: telemetryNotice, help: footerHelp, open: actions.openTelemetrySettings)
+                .padding(.top, DashboardLayout.block)
         }
-        .padding(.top, 12).padding(.horizontal, 14).padding(.bottom, 12)
-        .frame(width: 420)
+        .padding(.top, 12).padding(.horizontal, DashboardLayout.gutter).padding(.bottom, 12)
+        .frame(width: DashboardLayout.width)
+        // A panel shorter than the content clips the list's end, never the header (no centring).
+        .frame(maxHeight: presentation == .panel ? .infinity : nil, alignment: .top)
         .buttonStyle(HoverButtonStyle())
         .environment(\.tokenCatHighContrast, forcedContrast || contrast == .increased)
+        .environment(\.tokenCatSnapshot, !scrollsSessions)
+        .onAppear { flowOpened = !flowEmpty }
+        .onChange(of: flowEmpty) { empty in if !empty { flowOpened = true } }
+        .onChange(of: model.popoverShownAt) { _ in flowOpened = !flowEmpty }
     }
 
-    private var header: some View {
-        HStack(spacing: 8) {
-            Image(nsImage: Runner.brandImage()).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
-                .frame(width: 22, height: 22).accessibilityHidden(true)
-            Text("TokenCat").font(.system(size: 13, weight: .semibold))
-            Spacer()
-            HStack(spacing: 8) {
-                Button(action: settings) { Image(systemName: "gearshape").font(.system(size: 13)).frame(width: 24, height: 24) }
-                    .help("설정 (⌘,)").accessibilityLabel("설정").keyboardShortcut(",")
-                Button(action: quit) { Image(systemName: "power").font(.system(size: 13)).frame(width: 24, height: 24) }
-                    .help("TokenCat 종료 (⌘Q) · 실측 수집도 멈춥니다").accessibilityLabel("종료").keyboardShortcut("q")
-            }
-        }.frame(height: 24)
-    }
-
-    private var freshness: (text: String, color: Color) {
-        guard model.hasSample, let tokens = model.tokensSampledAt else { return ("수집 준비 중", Color.primary.opacity(0.3)) }
-        let tokenDelay = Int(model.now.timeIntervalSince(tokens))
-        let systemDelay = Int(model.now.timeIntervalSince(model.system.sampledAt))
-        if tokenDelay > 3 { return ("AI 수집 지연 \(tokenDelay)초", .orange) }
-        if systemDelay > 3 { return ("시스템 수집 지연 \(systemDelay)초", .orange) }
-        return ("실시간", .green)
-    }
-
-    private var telemetryStatus: String { model.telemetryStatus }
-    private var setupNote: String? { model.telemetrySetupNote }
-    /// Per-client receipt and the clients still silent a day after their config changed.
-    private var telemetryLastReceived: [TokenSource: Date] { model.telemetryLastReceived }
-    private var telemetryRestartExpired: Set<TokenSource> { model.telemetryRestartExpired }
     private var telemetryNotice: TelemetryNotice? {
-        SessionPresentation.telemetryNotice(ready: model.telemetryReady, status: telemetryStatus, note: setupNote, failure: model.telemetrySetupFailure,
-                                            restart: model.telemetryRestartNeeded, expired: telemetryRestartExpired)
+        SessionPresentation.telemetryNotice(state: model.telemetryState, status: model.telemetryStatus, note: model.telemetrySetupNote,
+                                            failure: model.telemetrySetupFailure, restart: model.telemetryRestartNeeded,
+                                            expired: model.telemetryRestartExpired)
     }
 
-    private var footer: some View {
-        let notice = telemetryNotice
-        let fresh = freshness
-        return HStack(spacing: 0) {
-            Button { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) } label: {
-                Label("활성 상태 보기", systemImage: "arrow.up.forward.app").font(.system(size: 11))
-                    .padding(.horizontal, 5).frame(height: 18)
-            }.padding(.leading, -5)
+    private var footerStatus: FooterStatus {
+        let tokenDelay = model.tokensSampledAt.map { Int(model.now.timeIntervalSince($0)) } ?? 0
+        return SessionPresentation.footerStatus(loading: !model.hasSample || loading, tokenDelay: tokenDelay,
+                                                systemDelay: Int(model.now.timeIntervalSince(model.system.sampledAt)), notice: telemetryNotice)
+    }
+
+    private var footerHelp: String {
+        "시스템과 AI 기록을 1초마다, 로그 변경 시 즉시 확인합니다\n\(SessionPresentation.telemetryReceipt(model.telemetryLastReceived, now: model.now))\n\(model.telemetryStatus)"
+    }
+}
+
+// MARK: - Header
+
+/// Pixel head, state glyph and the one status sentence (H-1–H-3); settings and the ⋯ menu on the right.
+struct DashboardHeader: View {
+    @ObservedObject var model: DashboardModel
+    var presentation: DashboardPresentation
+    var actions: DashboardActions
+    var interactive: Bool
+    @State private var blinking = false
+    @State private var blink: Task<Void, Never>?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.tokenCatHighContrast) private var high
+
+    var body: some View {
+        let status = SessionPresentation.headerStatus(counts: model.sessions.counts, loading: model.tokensSampledAt == nil, now: model.now,
+                                                      quietSince: model.runnerQuietSince)
+        HStack(spacing: 0) {
+            Image(nsImage: Runner.headImage(blinking ? .blink : status.head))
+                .resizable().interpolation(.none).aspectRatio(contentMode: .fit)
+                .frame(width: 24, height: 22).accessibilityHidden(true)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                if let glyph = status.glyph { StateGlyphView(kind: glyph, side: 8, contrast: high).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 } }
+                sentence(status).lineLimit(1).truncationMode(.tail)
+            }
+            .padding(.leading, 8)
+            .help(status.help)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("세션 상태")
+            .accessibilityValue(status.spoken)
+            .accessibilityAddTraits(.updatesFrequently)
             Spacer(minLength: 8)
-            if let notice {
-                Button { model.showSettings(.telemetry) } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: notice.isProblem ? "exclamationmark.circle" : "arrow.clockwise.circle")
-                            .font(.system(size: 10))
-                            .foregroundStyle(notice.isProblem ? AnyShapeStyle(Color.orange) : AnyShapeStyle(HierarchicalShapeStyle.secondary))
-                        Text(notice.text).font(.system(size: 11)).lineLimit(1)
-                    }
-                    .padding(.horizontal, 5).frame(height: 18)
-                }
-                .fixedSize()
-                .help(notice.help)
-                .accessibilityLabel(notice.text)
-                .accessibilityHint("설정을 엽니다")
-                .padding(.trailing, 5)
-            }
-            HStack(spacing: 4) {
-                Circle().fill(fresh.color).frame(width: 6, height: 6)
-                Text(fresh.text).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
-            }
-            .fixedSize()
-            .help("시스템과 AI 기록을 1초마다, 로그 변경 시 즉시 확인합니다\n\(SessionPresentation.telemetryReceipt(telemetryLastReceived, now: model.now))\n\(telemetryStatus)")
-            .accessibilityElement(children: .combine)
-        }.frame(height: 18)
+            Button(action: actions.settings) { Image(systemName: "gearshape").font(.system(size: 14)).frame(width: 24, height: 24) }
+                .buttonStyle(HoverButtonStyle(circle: true))
+                .help("설정 (⌘,)").accessibilityLabel("설정")
+            menu.padding(.leading, 4)
+        }
+        .frame(height: 28)
+        .onAppear(perform: scheduleBlink)
+        .onChange(of: model.popoverShownAt) { _ in scheduleBlink() }
+        .onDisappear { blink?.cancel(); blinking = false }
+    }
+
+    private func sentence(_ status: HeaderStatus) -> Text {
+        let secondary = TCColor.textSecondary(contrast: high)
+        return Text(status.sentence).font(TCFont.title).foregroundColor(status.muted ? secondary : nil)
+            + Text(status.suffix).font(TCFont.meta).foregroundColor(secondary)
+    }
+
+    @ViewBuilder private var menu: some View {
+        let icon = Image(systemName: "ellipsis.circle").font(.system(size: 14))
+        if interactive {
+            Menu {
+                if presentation == .popover { Button("패널로 분리", action: actions.detach) }
+                Button("설정…", action: actions.settings).keyboardShortcut(",")
+                Button("활성 상태 보기", action: actions.activityMonitor)
+                Button("TokenCat 정보", action: actions.about)
+                Divider()
+                Button("TokenCat 종료", action: actions.quit).keyboardShortcut("q")
+            } label: { icon }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .frame(width: 24, height: 24)
+            .help("더 보기").accessibilityLabel("더 보기")
+        } else {
+            // ImageRenderer cannot draw an AppKit menu button.
+            icon.frame(width: 24, height: 24).toneSecondary()
+        }
+    }
+
+    /// One 0.12 s blink 0.35 s after the dashboard shows; never in snapshots or with Reduce Motion.
+    private func scheduleBlink() {
+        blink?.cancel()
+        blinking = false
+        guard interactive, !reduceMotion else { return }
+        blink = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            blinking = true
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            blinking = false
+        }
     }
 }
 
 // MARK: - First run
 
-/// Shown once in the interactive popover, never in snapshots; dismissal is remembered.
-/// The telemetry line says only what actually happened: collector down, setup skipped, still starting or added.
+/// Shown once in the interactive popover, never in snapshots; only ✕ dismisses it.
+/// The telemetry line says only what actually happened: collector down, setup skipped or failed, still starting, or added.
 struct OnboardingCard: View {
-    var notice: TelemetryNotice?
-    var note: String?
-    var failure: TelemetrySetupFailure?
-    var ready = true
+    enum Outcome: Equatable { case added, skipped(String), failed(String), collectorDown(String), preparing }
+    var outcome: Outcome
     var settings: () -> Void
     var dismiss: () -> Void
     static let backupPath = "~/Library/Application Support/TokenCat/telemetry-backups"
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(spacing: 6) {
-                Text("TokenCat이 하는 일").font(.system(size: 12, weight: .semibold)).accessibilityAddTraits(.isHeader)
-                Spacer()
-                Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .semibold)).frame(width: 18, height: 18) }
-                    .help("안내 닫기").accessibilityLabel("안내 닫기")
-            }
-            bullet("Codex·Claude Code 로컬 기록에서 모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 사용하고 대화 본문은 저장하지 않습니다")
-            if let notice, notice.collectorDown {
-                bullet("실측 연결을 하지 않았습니다 · \(notice.text)")
-            } else if let note {
-                let reason = note.replacingOccurrences(of: "실측 연결: ", with: "")
-                bullet((failure == .conflict || failure == .invalid ? "실측 연결을 건너뛰었습니다: " : "실측 연결을 완료하지 못했습니다: ") + reason)
-            } else if !ready {
-                bullet("실측 수집기를 준비하고 있습니다. 준비되면 Codex·Claude Code 설정에 로컬 전송을 추가합니다")
-            } else {
-                bullet("실측을 받으려고 Codex·Claude Code 설정에 로컬 전송을 추가했습니다", detail: "원본 백업 \(Self.backupPath)")
-                bullet("다음에 새로 실행한 Codex·Claude Code부터 적용됩니다")
-            }
-            bullet("모델 호출·계정 로그인을 하지 않습니다. 로그인 시 열기와 알림은 직접 켠 경우에만 동작합니다")
-            HStack(spacing: 6) {
-                Spacer()
-                Button(action: settings) { Text("설정 열기").font(.system(size: 11)).padding(.horizontal, 6).frame(height: 20) }
-                Button(action: dismiss) { Text("확인").font(.system(size: 11, weight: .semibold)).padding(.horizontal, 8).frame(height: 20) }
-                    .keyboardShortcut(.defaultAction)
-            }.padding(.top, 1)
+    static func outcome(notice: TelemetryNotice?, note: String?, failure: TelemetrySetupFailure?, state: TelemetryCollectorState) -> Outcome {
+        if let notice, notice.collectorDown { return .collectorDown(notice.text) }
+        if let note {
+            let reason = note.replacingOccurrences(of: "실측 연결: ", with: "")
+            return failure == .conflict || failure == .invalid ? .skipped(reason) : .failed(reason)
         }
-        .padding(.horizontal, 10).padding(.vertical, 8)
-        .card()
+        return state == .starting ? .preparing : .added
     }
 
-    private func bullet(_ text: String, detail: String? = nil) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 5) {
-            Text("•").font(.system(size: 11)).faint()
-            VStack(alignment: .leading, spacing: 1) {
-                Text(text).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if let detail { Text(detail).font(.system(size: 10.5)).faint().lineLimit(1).truncationMode(.middle) }
+    private var telemetry: (title: String, detail: String) {
+        switch outcome {
+        case .added: return ("실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했습니다", "다음에 새로 실행할 때부터 적용됩니다")
+        case .skipped(let reason): return ("실측 연결을 건너뛰었습니다", reason)
+        case .failed(let reason): return ("실측 연결을 완료하지 못했습니다", reason)
+        case .collectorDown(let text): return ("실측 연결을 하지 않았습니다", text)
+        case .preparing: return ("실측 수집기를 준비하고 있습니다", "준비되면 Codex·Claude Code 설정에 로컬 전송을 추가합니다")
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(nsImage: Runner.headImage(.normal)).resizable().interpolation(.none).aspectRatio(contentMode: .fit)
+                    .frame(width: 12, height: 11).accessibilityHidden(true)
+                Text("TokenCat이 하는 일").font(TCFont.title).accessibilityAddTraits(.isHeader)
+                Spacer(minLength: 6)
+                Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).frame(width: 18, height: 18) }
+                    .buttonStyle(HoverButtonStyle(circle: true))
+                    .help("안내 닫기").accessibilityLabel("안내 닫기")
+            }
+            .frame(height: 18)
+            row("lock.shield", "대화 본문은 저장하지 않습니다", "모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 읽습니다")
+            row("slider.horizontal.3", telemetry.title, telemetry.detail, backups: outcome == .added)
+            HStack(alignment: .bottom, spacing: 8) {
+                row("hand.raised", "모델 호출·계정 로그인을 하지 않습니다", "로그인 시 열기와 알림은 직접 켠 경우에만 동작합니다")
+                Spacer(minLength: 0)
+                SmallBorderedButton(title: "실측 설정 열기", action: settings)
             }
         }
+        .padding(12)
+        .buttonStyle(.automatic)
+        .container(tint: true)
+    }
+
+    private func row(_ symbol: String, _ title: String, _ detail: String, backups: Bool = false) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Image(systemName: symbol).font(TCFont.body).foregroundStyle(Color.accentColor).frame(width: 20, alignment: .leading)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(TCFont.metaMedium).fixedSize(horizontal: false, vertical: true)
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(detail).font(TCFont.meta).toneSecondary().fixedSize(horizontal: false, vertical: true)
+                    if backups {
+                        Button {
+                            let url = URL(fileURLWithPath: (Self.backupPath as NSString).expandingTildeInPath, isDirectory: true)
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        } label: { Text("백업 보기").font(TCFont.metaMedium).underline() }
+                        .buttonStyle(.plain).fixedSize()
+                        .help("원본 백업 \(Self.backupPath) · Finder에서 보여 주기만 합니다")
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -381,48 +471,42 @@ struct FlowCard: View {
     var flow: FlowSeries
     var counts: SessionCounts
     var now: Date
-    var tokensSampledAt: Date?
+    var loading: Bool
+    var newestOutputAt: Date?
+    var collapsed: Bool
+    @State private var showsHelp = false
     @Environment(\.tokenCatHighContrast) private var high
     static let help = "막대 하나는 5초 동안 로그에 기록된 출력 토큰 수입니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다. 속도로 환산하지 않습니다."
 
-    private var loading: Bool { tokensSampledAt == nil }
     private var total: Int { flow.total }
-    private var scale: Double { niceMax(Double(max(flow.peak, 200))) }
-    private var collectionDelay: Int? {
-        guard let tokensSampledAt else { return nil }
-        let delay = Int(now.timeIntervalSince(tokensSampledAt))
-        return delay > 3 ? delay : nil
-    }
-    private var lastIsFresh: Bool {
-        guard let last = flow.last else { return false }
-        return now.timeIntervalSince(last.at) <= FlowSeries.freshSeconds
-    }
-    private var overlay: String? {
-        if loading { return "세션 기록 확인 중" }
-        if total == 0 && counts.liveGroups == 0 { return "최근 5분 동안 출력 기록 없음" }
-        return nil
-    }
-    private var notice: String? { loading ? nil : SessionPresentation.flowNotice(counts: counts, last: flow.last?.at, now: now) }
-    private var providerSplit: String? {
-        guard !loading, total > 0 else { return nil }
-        let parts = TokenSource.allCases.compactMap { source -> String? in
-            guard let value = flow.byProvider[source], value > 0 else { return nil }
-            return "\(source.title) \(Format.compactTokens(value))"
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
+    private var caption: FlowCaption { SessionPresentation.flowCaption(counts: counts, last: flow.last?.at, now: now) }
 
     var body: some View {
+        Group {
+            if collapsed { collapsedRow } else { card }
+        }
+        .padding(.horizontal, DashboardLayout.inset).padding(.vertical, DashboardLayout.insetVertical)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var collapsedRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("출력 토큰").font(TCFont.title).fixedSize().accessibilityAddTraits(.isHeader)
+            Text("최근 5분 기록 없음").font(TCFont.meta).toneSecondary().lineLimit(1)
+            Spacer(minLength: 8)
+            Text(newestOutputAt.map { "마지막 출력 " + SessionPresentation.helpAge($0, now: now) } ?? "출력 기록 없음")
+                .font(TCFont.metaMono).toneSecondary().lineLimit(1).fixedSize()
+        }
+        .frame(height: 20)
+    }
+
+    private var card: some View {
         VStack(alignment: .leading, spacing: 0) {
             titleRow.frame(height: 16)
             VStack(alignment: .leading, spacing: 0) {
-                numberRow.frame(height: 26).padding(.top, 4)
-                strip.frame(height: 34).padding(.top, 6)
-                HStack {
-                    Text("5분 전")
-                    Spacer()
-                    Text("지금")
-                }.font(.system(size: 10)).faint().frame(height: 11).padding(.top, 3)
+                numberRow.frame(height: 32).padding(.top, 6)
+                if !loading && total > 0 { providerRow.frame(height: 14).padding(.top, 2) }
+                FlowChart(values: flow.hero, fresh: flow.fresh, loading: loading).frame(height: 61).padding(.top, 8)
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("최근 5분 출력 토큰 기록")
@@ -430,133 +514,198 @@ struct FlowCard: View {
             .accessibilityHint(Self.help)
             .accessibilityChartDescriptor(FlowChartDescriptor(values: flow.hero))
         }
-        .padding(.horizontal, 10).padding(.vertical, 9)
-        .frame(height: 118)
-        .card()
-        .accessibilityElement(children: .contain)
     }
 
     private var titleRow: some View {
-        HStack(spacing: 6) {
-            Text("출력 토큰").font(.system(size: 12, weight: .semibold)).fixedSize().accessibilityAddTraits(.isHeader)
-            Text("최근 5분 · 로그 기록 기준").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text("출력 토큰").font(TCFont.title).fixedSize().accessibilityAddTraits(.isHeader)
+            Text("최근 5분 · 로그 기록 기준").font(TCFont.meta).toneSecondary().lineLimit(1)
             Spacer(minLength: 4)
-            if let providerSplit {
-                Text(providerSplit).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(.secondary).lineLimit(1).fixedSize()
-            }
-            Image(systemName: "info.circle").font(.system(size: 11)).faint()
-                .help(Self.help).accessibilityLabel("출력 토큰 설명")
+            Button { showsHelp.toggle() } label: { Image(systemName: "info.circle").font(TCFont.meta).frame(width: 20, height: 20) }
+                .buttonStyle(HoverButtonStyle(circle: true))
+                .popover(isPresented: $showsHelp, arrowEdge: .bottom) { FlowHelp() }
+                .help("출력 토큰 설명").accessibilityLabel("출력 토큰 설명")
+                .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
         }
     }
 
     private var numberRow: some View {
-        HStack(alignment: .lastTextBaseline, spacing: 0) {
-            HStack(alignment: .lastTextBaseline, spacing: 3) {
-                Text(loading ? "—" : Format.tokens(total))
-                    .font(.system(size: 22, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(loading ? (high ? HierarchicalShapeStyle.secondary : .tertiary) : (total == 0 ? .secondary : .primary))
-                if !loading { Text("tok").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary) }
-            }
+        let secondary = TCColor.textSecondary(contrast: high)
+        return HStack(alignment: .lastTextBaseline, spacing: 0) {
+            (Text(loading ? "0,000" : Format.tokens(total)).font(TCFont.hero).foregroundColor(total == 0 && !loading ? secondary : nil)
+                + Text(" tok").font(TCFont.body).foregroundColor(secondary))
+                .lineLimit(1).fixedSize()
+                .redacted(reason: loading ? .placeholder : [])
             Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 0) {
-                Text("마지막 기록").font(.system(size: 10)).foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 1) {
                 HStack(spacing: 4) {
-                    if let collectionDelay {
-                        Circle().fill(Color.orange).frame(width: 6, height: 6)
-                        Text("AI 수집 지연 \(collectionDelay)초").foregroundStyle(.primary)
-                    } else if loading {
-                        Text("—").faint()
-                    } else if let last = flow.last {
-                        Circle().fill(Color.green).frame(width: 6, height: 6).opacity(lastIsFresh ? 1 : 0)
-                        Text("+\(Format.tokens(last.tokens)) tok · \(Format.age(last.at, now: now))").foregroundStyle(.primary)
-                    } else {
-                        Text("기록 없음").faint()
-                    }
-                }.font(.system(size: 12, weight: .semibold).monospacedDigit()).lineLimit(1)
+                    if let glyph = caption.glyph, !loading { StateGlyphView(kind: glyph, side: 8, contrast: high) }
+                    Text(loading ? "마지막 기록" : caption.text).font(TCFont.meta).lineLimit(1).truncationMode(.tail)
+                        .foregroundColor(caption.emphasized && !loading ? nil : secondary)
+                }
+                .frame(maxWidth: 220, alignment: .trailing)
+                .help(caption.help)
+                lastValue
             }
         }
     }
 
-    /// The scale label sits in its own band above the top gridline so tall bars never cover it.
-    private var strip: some View {
-        ZStack(alignment: .topLeading) {
-            VStack(alignment: .leading, spacing: 0) {
-                Text(!loading && total > 0 ? Format.compactTokens(Int(scale)) : " ")
-                    .font(.system(size: 10).monospacedDigit()).faint().frame(height: 11)
-                ZStack(alignment: .top) {
-                    if !loading && total > 0 {
-                        FlowBars(values: flow.hero, scale: scale).fill(Color.primary.opacity(high ? 0.6 : 0.4))
-                        FlowBars(values: flow.hero, scale: scale, mask: flow.fresh).fill(Color.green)
-                        Rectangle().fill(Color.primary.opacity(0.08)).frame(height: 0.5)
-                    }
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        Rectangle().fill(Color.primary.opacity(high ? 0.25 : 0.12)).frame(height: 1)
-                    }
-                }
+    @ViewBuilder private var lastValue: some View {
+        if loading {
+            Text("+0,000 tok · 방금").font(TCFont.bodyMediumMono).redacted(reason: .placeholder)
+        } else if let last = flow.last {
+            HStack(spacing: 4) {
+                if SessionPresentation.isFresh(last.at, now: now) { Circle().fill(TCColor.activity).frame(width: 6, height: 6) }
+                Text("+\(Format.tokens(last.tokens)) tok · \(SessionPresentation.recordAge(last.at, now: now))")
+                    .font(TCFont.bodyMediumMono).lineLimit(1).fixedSize()
             }
-            if let overlay {
-                Text(overlay).font(.system(size: 11)).faint()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if let notice {
-                Text(notice).font(.system(size: 10.5)).foregroundStyle(.secondary).lineLimit(1)
-                    .padding(.horizontal, 8).padding(.vertical, 3)
-                    .background(Capsule().fill(.background))
-                    .overlay(Capsule().strokeBorder(Color.primary.opacity(high ? 0.25 : 0.08), lineWidth: 1))
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
+        } else {
+            // The caption already says "기록 없음" when it matters; the value stays an unknown.
+            Text("—").font(TCFont.bodyMediumMono).toneTertiary()
         }
+    }
+
+    /// Both clients: "Codex 1.2k · Claude Code 6.6k"; one client: its name only, never the hero number again.
+    private var providerRow: some View {
+        let parts = TokenSource.allCases.compactMap { source -> (TokenSource, Int)? in
+            guard let value = flow.byProvider[source], value > 0 else { return nil }
+            return (source, value)
+        }
+        let text = parts.count > 1 ? parts.map { "\($0.0.title) \(Format.compactTokens($0.1))" }.joined(separator: " · ")
+            : (parts.first?.0.title ?? "")
+        return Text(text).font(TCFont.metaMono).toneSecondary().lineLimit(1)
     }
 
     private var accessibilityValue: String {
-        if loading { return "세션 기록 확인 중" }
+        if loading { return "기록 확인 중" }
         var parts = ["\(total.formatted()) 토큰"]
-        if let last = flow.last { parts.append("마지막 기록 \(last.tokens.formatted()) 토큰, \(Format.age(last.at, now: now))") }
+        if let last = flow.last { parts.append("마지막 기록 \(last.tokens.formatted()) 토큰, \(SessionPresentation.recordAge(last.at, now: now))") }
         else { parts.append("최근 5분 동안 출력 기록 없음") }
-        if counts.input > 0 { parts.append("입력 필요 \(counts.input)개") }
-        if counts.retrying > 0 { parts.append("API 재시도 \(counts.retrying)개") }
-        parts.append("진행 중 세션 \(counts.runningGroups)개, 도구 실행 \(counts.tool)개")
-        if counts.waiting > 0 { parts.append("로그 대기 \(counts.waiting)개") }
-        if let notice { parts.append(notice) }
+        if caption.glyph != nil || caption.text != "마지막 기록" { parts.append(caption.text) }
         parts.append("로그 기록 시점 기준이며 속도가 아닙니다")
         return parts.joined(separator: ". ")
     }
 }
 
+/// ⓘ: the full explanation and the two-line legend, also reachable by keyboard (F-6).
+private struct FlowHelp: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(FlowCard.help).font(TCFont.meta).fixedSize(horizontal: false, vertical: true)
+            legend(TCColor.neutral, "막대 하나 = 5초 동안 기록된 출력")
+            legend(TCColor.activity, "초록 = 최근 5초 안 기록")
+        }
+        .padding(12)
+        .frame(width: 280, alignment: .leading)
+    }
+    private func legend(_ color: Color, _ text: String) -> some View {
+        HStack(spacing: 6) {
+            // One 10 pt slot draws a 6 × 10 pt bar, shaped like the chart's.
+            FlowBars(values: [1], scale: 1).fill(color).frame(width: 10, height: 10)
+            Text(text).font(TCFont.meta)
+        }
+    }
+}
+
+/// Label band 10 + plot 36 + gap 3 + axis 12 (F-3). Loading draws only the baseline and the axis.
+struct FlowChart: View {
+    var values: [Int]
+    var fresh: [Bool]
+    var loading: Bool
+    @Environment(\.tokenCatHighContrast) private var high
+
+    var body: some View {
+        let peak = loading ? 0 : (values.max() ?? 0)
+        let scale = niceMax(Double(peak))
+        VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                Spacer(minLength: 0)
+                Text(peak > 0 ? Format.compactTokens(Int(scale)) : " ").font(TCFont.micro.monospacedDigit()).toneSecondary()
+            }
+            .frame(height: 10)
+            ZStack(alignment: .top) {
+                if peak > 0 {
+                    Rectangle().fill(TCColor.primary(0.08)).frame(height: 0.5)
+                    VStack(spacing: 0) {
+                        ZStack {
+                            FlowBars(values: values, scale: scale).fill(high ? TCColor.primary(0.6) : TCColor.neutral)
+                            FlowBars(values: values, scale: scale, mask: fresh).fill(TCColor.activity)
+                        }
+                        Color.clear.frame(height: 1)
+                    }
+                }
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    Rectangle().fill(TCColor.primary(high ? 0.25 : 0.12)).frame(height: 1)
+                }
+            }
+            .frame(height: 36)
+            ticks.frame(height: 3)
+            HStack(spacing: 0) {
+                Text("5분 전")
+                Spacer(minLength: 0)
+                Text("지금")
+            }
+            .font(TCFont.micro).toneSecondary().frame(height: 12)
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// Minute marks below the baseline at −4, −3, −2 and −1 min.
+    private var ticks: some View {
+        Canvas { context, size in
+            var path = Path()
+            for minute in 1...4 {
+                let x = (size.width * (1 - CGFloat(minute) / 5) * 2).rounded() / 2
+                path.addRect(CGRect(x: x - 0.5, y: 0, width: 1, height: 3))
+            }
+            context.fill(path, with: .color(TCColor.primary(high ? 0.35 : 0.18)))
+        }
+    }
+}
+
 // MARK: - Codex usage limit
 
-/// The last logged Codex limit window, always with its record age; no forecast.
-struct UsageLimitCard: View {
+/// The AI container's bottom row: the last logged Codex limit window, always with its record age; no forecast.
+struct UsageLimitRow: View {
     var limit: UsageLimitSummary
     var now: Date
     @Environment(\.tokenCatHighContrast) private var high
+
     var body: some View {
         let expired = limit.expired(now: now)
-        let percent = limit.usedPercent
-        let color: Color = percent >= 95 ? .red : (percent >= 85 ? .orange : Color.primary.opacity(0.45))
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(limit.title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize()
-                Text(limit.value(now: now)).font(.system(size: 13, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(expired ? (high ? HierarchicalShapeStyle.secondary : .tertiary) : (limit.isOld(now: now) ? .secondary : .primary))
-                    .fixedSize()
-                Spacer(minLength: 6)
-                Text(limit.detail(now: now)).font(.system(size: 10.5).monospacedDigit()).foregroundStyle(.secondary)
-                    .lineLimit(1).truncationMode(.head)
-            }
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.08))
-                    if !expired { Capsule().fill(color).frame(width: geometry.size.width * min(1, max(0, percent / 100))) }
+        let details = limit.details(now: now)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(limit.title).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize()
+                value(expired: expired).padding(.leading, 6).fixedSize()
+                Spacer(minLength: 8)
+                // The reset countdown is never truncated; the record age drops first.
+                ViewThatFits(in: .horizontal) {
+                    ForEach(details, id: \.self) { Text($0).font(TCFont.metaMono).toneSecondary().lineLimit(1).fixedSize() }
                 }
-            }.frame(height: 3)
+            }
+            .frame(height: 16)
+            if !expired {
+                Meter(fraction: limit.usedPercent / 100, color: Meter.color(limit.usedPercent)).frame(height: 4).padding(.top, 5)
+            }
         }
-        .padding(.horizontal, 10).padding(.vertical, 7)
-        .card()
+        .padding(.horizontal, DashboardLayout.inset).padding(.vertical, 8)
+        .overlay(alignment: .top) {
+            Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5).padding(.horizontal, DashboardLayout.inset)
+        }
         .help(UsageLimitSummary.help)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(limit.title)
         .accessibilityValue(limit.spoken(now: now))
+    }
+
+    private func value(expired: Bool) -> Text {
+        let secondary = TCColor.textSecondary(contrast: high)
+        if expired { return Text("—").font(TCFont.value).foregroundColor(TCColor.textTertiary(contrast: high)) }
+        return Text(limit.percentText).font(TCFont.value).foregroundColor(limit.isOld(now: now) ? secondary : nil)
+            + Text("%").font(TCFont.micro).foregroundColor(secondary)
+            + Text(" 사용").font(TCFont.meta).foregroundColor(secondary)
     }
 }
 
@@ -564,281 +713,602 @@ struct UsageLimitCard: View {
 
 struct SessionsHeader: View {
     @ObservedObject var model: DashboardModel
-    /// Four or more chips beside the toggle would overflow 392pt; they keep only mark and number.
-    static func compactChips(_ count: Int) -> Bool { count >= 4 }
 
     var body: some View {
         let list = model.sessions
-        let counts = list.counts
-        let chips = SessionDisplayState.liveOrder.filter { counts.count($0) > 0 }
-        let compact = Self.compactChips(chips.count)
+        let expanded = model.sessionsExpanded
         HStack(spacing: 6) {
-            Text("세션").font(.system(size: 12, weight: .semibold)).accessibilityAddTraits(.isHeader)
-            if model.tokensSampledAt == nil {
-                EmptyView()
-            } else if chips.isEmpty {
-                Text("진행 중인 세션 없음").font(.system(size: 11)).foregroundStyle(.secondary)
-            } else {
-                ForEach(chips, id: \.self) { state in
-                    StateChip(state: state, text: compact ? "\(counts.count(state))" : "\(state.chipTitle) \(counts.count(state))")
-                        .help(chipHelp(state, counts))
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(state.title) 세션 \(counts.count(state))개")
-                }
-            }
+            Text("세션").font(TCFont.title).accessibilityAddTraits(.isHeader)
+                .help("↑↓ 이동 · Return 상세 · ⌘C ID 복사" + (list.showsSpeedColumn ? "" : "\n속도 실측 없음 · 로그 시각으로 추정하지 않습니다"))
             Spacer(minLength: 6)
-            if list.hiddenGroups + list.hiddenChildren > 0 || model.sessionsExpanded {
-                let expanded = model.sessionsExpanded
+            if list.hiddenGroups + list.hiddenChildren > 0 || expanded {
                 Button { model.sessionsExpanded.toggle() } label: {
                     HStack(spacing: 3) {
-                        Text(expanded ? "접기" : (list.hiddenGroups > 0 ? "\(counts.groups)개 모두 보기" : "하위 \(list.hiddenChildren)개 더 보기"))
-                        Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.system(size: 9, weight: .semibold))
+                        Text(expanded ? "접기" : (list.hiddenGroups > 0 ? "\(list.counts.groups)개 모두 보기" : "하위 \(list.hiddenChildren)개 더 보기"))
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down").imageScale(.small)
                     }
-                    .font(.system(size: 11, weight: .medium)).padding(.horizontal, 5).frame(height: 18)
+                    .font(TCFont.metaMedium).padding(.horizontal, 6).frame(height: 20)
                 }
                 .fixedSize()
-                .padding(.trailing, -5)
-                .help("하위 에이전트 포함 \(counts.readings)개 기록" + (expanded || list.hiddenGroups == 0 ? "" : " · 접힌 세션 \(list.hiddenGroups)개"))
+                .padding(.trailing, -6)
+                .help("하위 에이전트 포함 \(list.counts.readings)개 기록" + (expanded || list.hiddenGroups == 0 ? "" : " · 접힌 세션 \(list.hiddenGroups)개"))
                 .accessibilityLabel(expanded ? "세션 목록 접기" : (list.hiddenGroups > 0 ? "세션 목록 모두 보기" : "하위 에이전트 더 보기"))
-                .accessibilityValue(expanded ? "" : "\(list.hiddenGroups > 0 ? counts.groups : list.hiddenChildren)개")
+                .accessibilityValue(expanded ? "" : "\(list.hiddenGroups > 0 ? list.counts.groups : list.hiddenChildren)개")
             }
-        }.frame(height: 18)
-    }
-
-    private func chipHelp(_ state: SessionDisplayState, _ counts: SessionCounts) -> String {
-        var text = "\(state.title) 세션 \(counts.count(state))개"
-        if state == .tool {
-            let parts = [ToolCategory.command, .file, .web, .agent, .mcp, .question, .other].compactMap { category -> String? in
-                guard let n = counts.toolCategories[category], n > 0 else { return nil }
-                return "\(SessionPresentation.toolTitle(category)) \(n)"
-            }
-            if !parts.isEmpty { text += "\n하위 에이전트 포함 " + parts.joined(separator: " · ") }
         }
-        if state == .input { text += "\n질문이나 계획 승인을 기다립니다. 권한 확인 요청은 로그에 남지 않아 표시하지 않습니다" }
-        return text
+        .frame(height: 18)
     }
+}
+
+/// What every row needs from the list: the clock, the shared column rules and the list's selection state.
+struct RowContext {
+    var now: Date
+    var restart: Set<TokenSource>
+    var showsSpeed: Bool
+    var sharedProjects: Set<String>
+    var selectedID: String?
+    var detailID: String?
+    var rotor: Namespace.ID
+    var tap: (String) -> Void
+
+    func detailHeight(_ item: SessionRowItem) -> CGFloat {
+        detailID == item.id ? SessionPresentation.detailHeight(item.reading, state: item.state) : 0
+    }
+    /// The speed cell for a row's third line: hidden without a column or while the client waits for a restart.
+    func speed(_ reading: TokenReading) -> SpeedSlot? {
+        guard showsSpeed, !restart.contains(reading.source) else { return nil }
+        return SessionPresentation.speed(reading, now: now)
+    }
+    func showsID(_ reading: TokenReading) -> Bool { reading.project.map(sharedProjects.contains) ?? false }
 }
 
 struct SessionList: View {
     @ObservedObject var model: DashboardModel
     var scrolls: Bool
-    var logFoldersFound: Bool?
+    var presentation: DashboardPresentation
     /// Grow-only while the popover stays open so rows changing type do not resize it.
     @State private var viewportFloor: CGFloat = 0
     /// The group whose "+N 하위" row expanded the list; the header toggle scrolls to the top instead.
     @State private var focus: String?
     @State private var showOlder = false
+    @State private var selectedID: String?
+    @State private var selectedIndex = 0
+    @State private var detailID: String?
+    @State private var pointerInside = false
+    @State private var menuTracking = false
+    /// While the pointer is over the list or a row menu is open, blocks keep this order (S-8).
+    @State private var frozenOrder: [String]?
+    @FocusState private var keyboardFocus: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.tokenCatHighContrast) private var high
+    @Namespace private var rotor
 
-    private var list: SessionListModel { model.sessions }
-    private var target: CGFloat { list.viewport(showOlder: showOlder) }
-    private var height: CGFloat { min(SessionListModel.maxViewport, max(target, viewportFloor)) }
-    private var overflows: Bool { list.height(showOlder: showOlder) > height + 0.5 }
-
-    static func logFoldersExist(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Bool {
-        [".codex/sessions", ".claude/projects"].contains { FileManager.default.fileExists(atPath: home.appendingPathComponent($0).path) }
+    init(model: DashboardModel, scrolls: Bool, presentation: DashboardPresentation = .popover, selection: String? = nil, detail: String? = nil) {
+        _model = ObservedObject(wrappedValue: model)
+        self.scrolls = scrolls
+        self.presentation = presentation
+        _selectedID = State(initialValue: selection)
+        _detailID = State(initialValue: detail)
     }
 
     var body: some View {
-        if model.tokensSampledAt == nil {
-            Text("세션 기록을 읽는 중").font(.system(size: 11)).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, minHeight: 44).card()
-        } else if list.blocks.isEmpty {
-            emptyState(foldersFound: logFoldersFound ?? Self.logFoldersExist())
-        } else {
-            Group {
-                if scrolls {
-                    ScrollViewReader { proxy in
-                        ScrollView { rows }
-                            .onChange(of: model.sessionsExpanded) { _ in
-                                viewportFloor = 0
-                                showOlder = false
-                                let target = focus ?? "session-list-top"
-                                focus = nil
-                                // Wait for the expanded rows to lay out before scrolling to the focused group.
-                                DispatchQueue.main.async { proxy.scrollTo(target, anchor: .top) }
-                            }
-                    }
-                } else {
-                    // ImageRenderer cannot rasterize AppKit's scroll surface; export the same viewport.
-                    rows.fixedSize(horizontal: false, vertical: true).frame(height: height, alignment: .top).clipped()
-                }
+        let list = frozenOrder.map { model.sessions.reordered($0) } ?? model.sessions
+        Group {
+            if model.tokensSampledAt == nil {
+                SkeletonRows()
+            } else if list.blocks.isEmpty {
+                EmptySessions(foldersFound: model.logFoldersFound, recheck: model.recheckLogFolders)
+            } else {
+                rows(list)
             }
-            .frame(height: height)
-            // A short fade at the cut says the list continues; overlay scrollers are hidden at rest.
-            .mask {
-                VStack(spacing: 0) {
-                    Color.black
-                    LinearGradient(colors: [.black, .black.opacity(0.15)], startPoint: .top, endPoint: .bottom)
-                        .frame(height: overflows ? 14 : 0)
+        }
+        .container()
+    }
+
+    private func detailExtra(_ list: SessionListModel) -> CGFloat {
+        guard let id = detailID, let item = list.item(id) else { return 0 }
+        return SessionPresentation.detailHeight(item.reading, state: item.state)
+    }
+
+    private func target(_ list: SessionListModel) -> CGFloat {
+        min(SessionListModel.maxViewport, list.viewport(showOlder: showOlder) + detailExtra(list))
+    }
+
+    private func rows(_ list: SessionListModel) -> some View {
+        let goal = target(list)
+        let height = min(SessionListModel.maxViewport, max(goal, viewportFloor))
+        let overflows = list.height(showOlder: showOlder) + detailExtra(list) > height + 0.5
+        let surface = Group {
+            if scrolls {
+                ScrollViewReader { proxy in
+                    ScrollView { content(list, overflows: overflows) }
+                        .onChange(of: model.sessionsExpanded) { _ in
+                            viewportFloor = 0
+                            // A focused group folded into "이전" opens that section so the scroll can reach it.
+                            showOlder = focus.flatMap { id in model.sessions.blocks.first { $0.id == id }?.older } ?? false
+                            if frozenOrder != nil { frozenOrder = model.sessions.blocks.map(\.id) }
+                            let anchor = focus ?? "session-list-top"
+                            focus = nil
+                            // Wait for the expanded rows to lay out before scrolling to the focused group.
+                            DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
+                        }
+                        .onChange(of: selectedID) { id in
+                            guard let id else { return }
+                            DispatchQueue.main.async { proxy.scrollTo(id) }
+                        }
+                        .onChange(of: detailID) { id in
+                            guard let id else { return }
+                            DispatchQueue.main.async { proxy.scrollTo("detail:" + id) }
+                        }
                 }
+            } else {
+                // ImageRenderer cannot rasterize AppKit's scroll surface; export the same viewport.
+                content(list, overflows: false).fixedSize(horizontal: false, vertical: true).frame(height: height, alignment: .top).clipped()
             }
-            .card()
-            .transaction { $0.animation = nil }
-            .onAppear { viewportFloor = target }
-            .onChange(of: target) { viewportFloor = max(viewportFloor, $0) }
-            .onChange(of: model.popoverShownAt) { _ in showOlder = false; viewportFloor = list.viewport(showOlder: false) }
+        }
+        // In the panel the list absorbs the window height and scrolls, down to one live row.
+        .frame(minHeight: presentation == .panel ? min(height, SessionRowItem.liveDetailHeight) : height,
+               maxHeight: presentation == .panel ? .infinity : height)
+        // A short fade at the cut says the list continues; overlay scrollers are hidden at rest.
+        .mask {
+            VStack(spacing: 0) {
+                Color.black
+                LinearGradient(colors: [.black, .black.opacity(0.15)], startPoint: .top, endPoint: .bottom)
+                    .frame(height: overflows ? 14 : 0)
+            }
+        }
+        return accessible(tracking(keyboard(surface, list), list, goal: goal), list)
+    }
+
+    private func keyboard<V: View>(_ view: V, _ list: SessionListModel) -> some View {
+        view
+            .background { if scrolls { keyboardShortcuts } }
+            .focusable(scrolls)
+            .focused($keyboardFocus)
+            .modifier(NoFocusEffect())
+            .onMoveCommand { move($0, in: list) }
+            .onCopyCommand { copyItems(list) }
+    }
+
+    private func tracking<V: View>(_ view: V, _ list: SessionListModel, goal: CGFloat) -> some View {
+        view
+        .onHover { pointerInside = $0; updateFreeze() }
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification)) { _ in menuTracking = true; updateFreeze() }
+        .onReceive(NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification)) { _ in menuTracking = false; updateFreeze() }
+        .onChange(of: list.navigation(showOlder: showOlder)) { keepSelection($0) }
+        .onAppear {
+            viewportFloor = goal
+            takeFocusRequest()
+            autoFocus()
+        }
+        // A popover closed by Esc or another app never sends onHover(false); a stale freeze must not outlive it.
+        .onDisappear { detailID = nil; selectedID = nil; unfreeze() }
+        .onChange(of: goal) { viewportFloor = max(viewportFloor, $0) }
+        .onChange(of: model.popoverShownAt) { _ in
+            unfreeze()
+            showOlder = false
+            detailID = nil
+            selectedID = nil
+            viewportFloor = model.sessions.viewport(showOlder: false)
+            autoFocus()
+        }
+        .onChange(of: model.focusRequest) { _ in takeFocusRequest() }
+    }
+
+    private func accessible<V: View>(_ view: V, _ list: SessionListModel) -> some View {
+        view
+        .help("↑↓ 이동 · Return 상세 · ⌘C ID 복사")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("세션 목록")
+        .accessibilityHint("↑↓ 이동 · Return 상세 · ⌘C ID 복사")
+        .accessibilityRotor(Text("입력 필요 세션")) { rotorEntries(list.blocks.filter { $0.state == .input }) }
+        .accessibilityRotor(Text("진행 중 세션")) { rotorEntries(list.blocks.filter { $0.state.isRunning }) }
+    }
+
+    private func rotorEntries(_ blocks: [SessionBlock]) -> some AccessibilityRotorContent {
+        ForEach(blocks) { block in
+            AccessibilityRotorEntry(Text(SessionPresentation.spokenLabel(block.lead.reading, state: block.state)), id: block.id, in: rotor)
         }
     }
 
-    private func emptyState(foldersFound: Bool) -> some View {
-        VStack(spacing: 3) {
-            Text(foldersFound ? "아직 Codex·Claude Code 세션 기록이 없습니다" : "Codex·Claude Code 기록 폴더를 찾지 못했습니다")
-                .font(.system(size: 12)).foregroundStyle(.secondary)
-            Text(foldersFound ? "새 세션을 시작하면 여기에 표시됩니다" : "~/.codex/sessions · ~/.claude/projects를 확인합니다")
-                .font(.system(size: 10.5)).faint()
-            Text("Claude 웹·데스크톱 채팅은 수집하지 않습니다").font(.system(size: 10.5)).faint()
-        }
-        .frame(maxWidth: .infinity, minHeight: 66).card()
-        .accessibilityElement(children: .combine)
-    }
-
-    private var rows: some View {
-        VStack(spacing: 0) {
+    private func content(_ list: SessionListModel, overflows: Bool) -> some View {
+        let context = RowContext(now: model.now, restart: model.telemetryRestartNeeded, showsSpeed: list.showsSpeedColumn,
+                                 sharedProjects: list.sharedProjects(showOlder: showOlder), selectedID: selectedID, detailID: detailID, rotor: rotor,
+                                 tap: { toggleDetail($0) })
+        return VStack(spacing: 0) {
             Color.clear.frame(height: 0).id("session-list-top")
             ForEach(list.entries(showOlder: showOlder)) { entry in
                 switch entry {
-                case .divider: ListDivider()
-                case .caption(let title):
-                    Text(title).font(.system(size: 10, weight: .medium)).faint()
-                        .padding(.horizontal, 10).frame(maxWidth: .infinity, alignment: .leading)
-                        .frame(height: SessionListModel.captionHeight, alignment: .bottom)
-                        .accessibilityAddTraits(.isHeader)
+                case .divider:
+                    Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5)
+                        .padding(.leading, DashboardLayout.textX).padding(.trailing, DashboardLayout.inset)
+                        .frame(height: SessionListModel.dividerHeight)
+                case .caption(let title, let rule, _):
+                    DateCaption(title: title, rule: rule)
                 case .older(let count):
-                    Button { showOlder = true } label: {
-                        HStack(spacing: 3) {
-                            Text("이전 기록 \(count)개 더 보기").font(.system(size: 11).monospacedDigit())
-                            Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 10).frame(height: SessionListModel.moreHeight)
-                    }
-                    .accessibilityLabel("이전 기록 더 보기").accessibilityValue("\(count)개")
+                    OlderRow(count: count, selected: selectedID == SessionListModel.olderID) { showOlder = true }
+                        .id(SessionListModel.olderID)
                 case .block(let block):
-                    SessionBlockView(block: block, flow: model.flow, scale: list.rowScale, now: model.now,
-                                     restart: model.telemetryRestartNeeded) {
+                    SessionBlockView(block: block, context: context) {
                         focus = block.id
                         model.sessionsExpanded = true
-                    }.id(block.id)
+                    }
                 }
             }
             // Lets the last row scroll clear of the fade.
             if scrolls && overflows { Color.clear.frame(height: 10) }
         }
     }
+
+    /// Return and Space while the list has keyboard focus; disabled otherwise so focused buttons keep their keys.
+    private var keyboardShortcuts: some View {
+        ZStack {
+            Button("상세") { activate() }.keyboardShortcut(.return, modifiers: [])
+            Button("상세") { activate() }.keyboardShortcut(.space, modifiers: [])
+        }
+        .disabled(!keyboardFocus || selectedID == nil)
+        .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
+    }
+
+    private func toggleDetail(_ id: String) {
+        detailID = detailID == id ? nil : id
+        if selectedID != nil { selectedID = id }
+        if scrolls { keyboardFocus = true }
+    }
+
+    /// macOS 13 cannot hide the ring on a focusable list, so there the list takes focus from a click only.
+    private func autoFocus() {
+        guard scrolls else { return }
+        if #available(macOS 14.0, *) { DispatchQueue.main.async { keyboardFocus = true } }
+    }
+
+    private func unfreeze() {
+        frozenOrder = nil
+        pointerInside = false
+        menuTracking = false
+    }
+
+    private func activate() {
+        guard let id = selectedID else { return }
+        if id == SessionListModel.olderID { showOlder = true }
+        else if id.hasPrefix("more:") {
+            focus = String(id.dropFirst(5))
+            model.sessionsExpanded = true
+        } else { toggleDetail(id) }
+    }
+
+    private func move(_ direction: MoveCommandDirection, in list: SessionListModel) {
+        let rows = list.navigation(showOlder: showOlder)
+        guard !rows.isEmpty else { return }
+        guard let current = selectedID, let index = rows.firstIndex(of: current) else {
+            select(list.startRow(showOlder: showOlder) ?? rows[0], in: rows)
+            return
+        }
+        switch direction {
+        case .up: select(rows[max(0, index - 1)], in: rows)
+        case .down: select(rows[min(rows.count - 1, index + 1)], in: rows)
+        default: break
+        }
+    }
+
+    private func select(_ id: String, in rows: [String]) {
+        selectedID = id
+        selectedIndex = rows.firstIndex(of: id) ?? 0
+    }
+
+    /// Keeps the selection by id through reorders; a vanished row hands it to the nearest position.
+    private func keepSelection(_ rows: [String]) {
+        if let id = detailID, !rows.contains(id) { detailID = nil }
+        guard let id = selectedID else { return }
+        if let index = rows.firstIndex(of: id) { selectedIndex = index; return }
+        selectedID = rows.isEmpty ? nil : rows[min(selectedIndex, rows.count - 1)]
+    }
+
+    private func copyItems(_ list: SessionListModel) -> [NSItemProvider] {
+        guard let id = selectedID, let reading = list.item(id)?.reading else { return [] }
+        let text = reading.isSubagent ? (reading.agentID ?? reading.sessionID) : reading.sessionID
+        return text.map { [NSItemProvider(object: $0 as NSString)] } ?? []
+    }
+
+    private func updateFreeze() {
+        let freeze = scrolls && (pointerInside || menuTracking)
+        if freeze, frozenOrder == nil {
+            frozenOrder = model.sessions.blocks.map(\.id)
+        } else if !freeze, frozenOrder != nil {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { frozenOrder = nil }
+        }
+    }
+
+    /// A notification or quick-menu request: select that group and scroll to it, once.
+    private func takeFocusRequest() {
+        guard scrolls, model.focusRequest != nil else { return }
+        DispatchQueue.main.async {
+            guard let id = model.consumeFocusRequest() else { return }
+            frozenOrder = nil
+            if !model.sessions.blocks.contains(where: { $0.id == id }) {
+                // The expand handler scrolls to `focus` and opens "이전" when the group sits there.
+                focus = id
+                model.sessionsExpanded = true
+            }
+            guard let block = model.sessions.blocks.first(where: { $0.id == id }) else { return }
+            let older = showOlder || block.older
+            showOlder = older
+            select(id, in: model.sessions.navigation(showOlder: older))
+            if #available(macOS 14.0, *) { keyboardFocus = true }
+        }
+    }
 }
 
-struct SessionBlockView: View {
-    var block: SessionBlock
-    var flow: FlowSeries
-    var scale: Double
-    var now: Date
-    var restart: Set<TokenSource>
-    var expand: () -> Void
+private struct DateCaption: View {
+    var title: String
+    var rule: Bool
+    @Environment(\.tokenCatHighContrast) private var high
+    var body: some View {
+        Text(title).font(TCFont.caption).toneSecondary()
+            .padding(.leading, DashboardLayout.glyphX).padding(.bottom, 4)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            .frame(height: SessionListModel.captionHeight)
+            .overlay(alignment: .top) { if rule { Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5) } }
+            .accessibilityAddTraits(.isHeader)
+    }
+}
+
+private struct OlderRow: View {
+    var count: Int
+    var selected: Bool
+    var action: () -> Void
+    @State private var hovering = false
+    @Environment(\.tokenCatHighContrast) private var high
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Text("이전 기록 \(count)개 더 보기")
+                Image(systemName: "chevron.down").imageScale(.small)
+            }
+            .font(TCFont.metaMedium).toneSecondary()
+            .frame(maxWidth: .infinity).frame(height: SessionListModel.olderHeight)
+            .background(selected ? TCColor.selection(keyWindow: true) : (hovering ? TCColor.hover(contrast: high) : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .accessibilityLabel("이전 기록 더 보기").accessibilityValue("\(count)개")
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+/// Three 28 pt placeholder rows while the first sample is read (O-2); no spinner, no shimmer.
+private struct SkeletonRows: View {
     var body: some View {
         VStack(spacing: 0) {
-            let lead = block.lead.reading
-            switch block.lead.kind {
-            case .live:
-                LiveSessionRow(item: block.lead, childCount: block.childCount, row: flow.rows[block.lead.id], scale: scale, now: now,
-                               restartNeeded: restart.contains(lead.source))
-            case .measurement: MeasurementRow(reading: lead, now: now)
-            default:
-                // Input and retry children are running, so every one of them is in `children`.
-                let urgent = block.state == .input || block.state == .retrying
-                IdleSessionRow(item: block.lead, childCount: block.childCount, groupState: block.state,
-                               liveChildren: urgent ? block.children.filter { $0.state == block.state }.count
-                                   : (block.state.isRunning ? block.runningChildren : block.waitingChildren), now: now,
-                               restartNeeded: restart.contains(lead.source))
+            ForEach(0..<3, id: \.self) { _ in
+                HStack(spacing: 0) {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous).fill(TCColor.primary(0.05)).frame(width: 140, height: 10)
+                    Spacer(minLength: 0)
+                    RoundedRectangle(cornerRadius: 3, style: .continuous).fill(TCColor.primary(0.05)).frame(width: 64, height: 10)
+                }
+                .padding(.leading, DashboardLayout.textX).padding(.trailing, DashboardLayout.inset)
+                .frame(height: 28)
             }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("세션 목록")
+        .accessibilityValue("기록 확인 중")
+    }
+}
+
+/// No sessions yet, or no log folders (O-3). Folder existence comes from the model, never from the view body.
+private struct EmptySessions: View {
+    static let webNote = "Claude 웹·데스크톱 채팅은 수집하지 않습니다"
+    var foldersFound: Bool
+    var recheck: () -> Void
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Image(nsImage: Runner.image(pose: foldersFound ? .sleep : .sit, frame: 0)).resizable().interpolation(.none)
+                if foldersFound, let z = Runner.fxMask(pose: .sleep, step: RunnerAnimator.largeZ) {
+                    Image(nsImage: z).resizable().interpolation(.none).renderingMode(.template).foregroundColor(Color(nsColor: .tertiaryLabelColor))
+                }
+            }
+            .frame(width: Runner.size.width * 2, height: Runner.size.height * 2)
+            .accessibilityHidden(true)
+            Text(foldersFound ? "아직 Codex·Claude Code 세션 기록이 없습니다" : "Codex·Claude Code 기록 폴더를 찾지 못했습니다")
+                .font(TCFont.bodyMedium).multilineTextAlignment(.center).padding(.top, 8)
+            VStack(spacing: 2) {
+                if foldersFound {
+                    Text("새 세션을 시작하면 여기에 표시됩니다")
+                    Text(Self.webNote)
+                } else {
+                    Text("~/.codex/sessions · ~/.claude/projects").font(TCFont.meta.monospaced())
+                }
+            }
+            .font(TCFont.meta).toneSecondary().padding(.top, 4)
+            if !foldersFound {
+                SmallBorderedButton(title: "다시 확인", action: recheck).padding(.top, 8)
+                Text(Self.webNote).font(TCFont.meta).toneSecondary().padding(.top, 8)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 120)
+        .padding(.vertical, DashboardLayout.insetVertical)
+        .accessibilityElement(children: .combine)
+    }
+}
+
+/// A lead row, its children, the inline details and the tree guide that joins them (S-5).
+struct SessionBlockView: View {
+    var block: SessionBlock
+    var context: RowContext
+    var expand: () -> Void
+    @Environment(\.tokenCatHighContrast) private var high
+
+    var body: some View {
+        VStack(spacing: 0) {
+            lead
+            detail(block.lead)
             ForEach(block.children) { child in
-                ChildSessionRow(item: child, parent: lead, row: flow.rows[child.id], scale: scale, now: now,
-                                restartNeeded: restart.contains(child.reading.source))
+                ChildSessionRow(item: child, parent: block.lead.reading, context: context)
+                detail(child)
             }
             if block.moreCount > 0 {
                 Button(action: expand) {
-                    HStack(spacing: 0) {
-                        Text(block.moreText).font(.system(size: 11).monospacedDigit()).lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    // Aligned with the child agent labels.
-                    .padding(.leading, 52).padding(.trailing, 10)
-                    .frame(height: SessionListModel.moreHeight)
+                    Text(block.moreText).font(TCFont.meta.monospacedDigit()).toneSecondary().lineLimit(1)
+                        .padding(.leading, DashboardLayout.childTextX).padding(.trailing, DashboardLayout.inset)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(height: SessionListModel.moreHeight)
+                        .rowChrome(selected: context.selectedID == block.moreID)
                 }
+                .buttonStyle(.plain)
+                .id(block.moreID)
                 .help("실행 중인 하위 에이전트는 모두 보여주고, 로그 대기 하위는 실행 중인 하위가 없을 때만 \(SessionListModel.collapsedChildren)개까지 보여줍니다")
+                .accessibilityAddTraits(context.selectedID == block.moreID ? .isSelected : [])
                 .accessibilityLabel("하위 에이전트 \(block.moreCount)개 더 보기")
                 .accessibilityValue(block.moreText)
             }
         }
+        // Behind the rows, so a fresh-record dot in the glyph column draws over the line.
+        .background(alignment: .topLeading) { guide }
+        .accessibilityRotorEntry(id: block.id, in: context.rotor)
+    }
+
+    @ViewBuilder private var lead: some View {
+        let item = block.lead
+        switch item.kind {
+        case .live:
+            LiveSessionRow(item: item, childCount: block.childCount, context: context)
+        case .measurement:
+            MeasurementRow(reading: item.reading, now: context.now, selected: context.selectedID == item.id).onTapGesture { context.tap(item.id) }
+        default:
+            // Input and retry children are running, so every one of them is in `children`.
+            let urgent = block.state == .input || block.state == .retrying
+            IdleSessionRow(item: item, childCount: block.childCount, groupState: block.state,
+                           liveChildren: urgent ? block.children.filter { $0.state == block.state }.count
+                               : (block.state.isRunning ? block.runningChildren : block.waitingChildren),
+                           context: context)
+        }
+    }
+
+    @ViewBuilder private func detail(_ item: SessionRowItem) -> some View {
+        if context.detailID == item.id {
+            SessionDetail(item: item, indent: item.kind == .child ? DashboardLayout.childTextX : DashboardLayout.textX).id("detail:" + item.id)
+        }
+    }
+
+    /// 1 pt primary 0.15 from below the lead glyph (x = 17) to the last child or "+N 하위" row, with a 6 pt tail to each.
+    @ViewBuilder private var guide: some View {
+        if !block.children.isEmpty || block.moreCount > 0 {
+            let x = DashboardLayout.guideX
+            let start: CGFloat = block.lead.kind == .live ? 23 : 19
+            let tails = guideTails
+            Path { path in
+                path.move(to: CGPoint(x: x, y: start))
+                path.addLine(to: CGPoint(x: x, y: tails.last ?? start))
+                for y in tails {
+                    path.move(to: CGPoint(x: x, y: y))
+                    path.addLine(to: CGPoint(x: x + 6, y: y))
+                }
+            }
+            .stroke(TCColor.primary(high ? 0.3 : 0.15), lineWidth: 1)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+    }
+
+    private var guideTails: [CGFloat] {
+        var y = block.lead.height + context.detailHeight(block.lead)
+        var tails: [CGFloat] = []
+        for child in block.children {
+            tails.append(y + child.height / 2)
+            y += child.height + context.detailHeight(child)
+        }
+        if block.moreCount > 0 { tails.append(y + SessionListModel.moreHeight / 2) }
+        return tails
+    }
+}
+
+/// State glyph plus tool category, input kind or state on a tinted capsule; its glyph sits on the glyph column (x = 12).
+struct StateChip: View {
+    var kind: StateGlyph.Kind
+    var text: String
+    @Environment(\.tokenCatHighContrast) private var high
+    var body: some View {
+        let color = StateGlyph.color(kind)
+        HStack(spacing: 4) {
+            StateGlyphView(kind: kind, side: 8, contrast: high).frame(width: 10, height: 10)
+            Text(text).font(TCFont.metaMedium).lineLimit(1)
+        }
+        .padding(.leading, 4).padding(.trailing, 6).frame(height: 18)
+        .background(color.opacity(high ? 0.28 : 0.16), in: Capsule())
+        .overlay { if high { Capsule().strokeBorder(color, lineWidth: 1) } }
+        .fixedSize()
+    }
+}
+
+struct SpeedLabel: View {
+    var slot: SpeedSlot
+    /// Narrow third line: the rate kind moves to help.
+    var short = false
+    var body: some View {
+        Group {
+            if slot.known {
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    if let prefix = slot.prefix { Text(prefix + " ").font(TCFont.micro) }
+                    Text(slot.value).font(TCFont.metaMedium.monospacedDigit())
+                    Text(" " + (short ? "tok/s" : (slot.kind ?? "tok/s"))).font(TCFont.micro)
+                }
+                .toneSecondary()
+            } else {
+                Text("—").font(TCFont.meta).toneTertiary()
+            }
+        }
+        .lineLimit(1).fixedSize().help(slot.help)
+    }
+}
+
+struct ContextLabel: View {
+    var slot: ContextSlot
+    var short = false
+    @Environment(\.tokenCatHighContrast) private var high
+    var body: some View {
+        Group {
+            if let compacted = slot.compacted {
+                Text(compacted).font(TCFont.meta).toneSecondary()
+                    .padding(.horizontal, 4).background(TCColor.primary(0.08), in: Capsule())
+            } else {
+                HStack(spacing: 4) {
+                    if let fraction = slot.fraction {
+                        Meter(fraction: fraction, color: slot.warning ? TCColor.warning : TCColor.neutral).frame(width: 32, height: 4)
+                    }
+                    Text(short ? slot.short : slot.text).font(TCFont.meta.monospacedDigit()).toneSecondary()
+                }
+            }
+        }
+        .lineLimit(1).fixedSize().help(slot.help)
     }
 }
 
 private enum RowText {
-    static let recordingNote = "Claude Code는 메시지 완료 시, Codex는 응답 완료 시 기록합니다"
-    static let actionsNote = "우클릭: ID 복사 · Finder에서 보기"
-
-    /// Help text: no per-second values, so the tooltip does not reset every tick.
-    static func details(_ reading: TokenReading, state: SessionDisplayState, speed: SpeedSlot, now: Date) -> String {
-        var lines: [String?] = [reading.project, SessionPresentation.roleLabel(reading.agentRole).map { "역할 \($0)" },
-                                reading.agentID.map { "에이전트 \($0)" },
-                                reading.sessionID.map { "세션 \($0)" },
-                                reading.model.map { "모델 \($0)" + (SessionPresentation.effortLabel(reading).map { " · \($0)" } ?? "") }]
-        if SessionPresentation.isTelemetry(reading) { lines.append(reading.status) }
-        switch state {
-        case .tool:
-            lines.append("도구: \(SessionPresentation.toolTitle(reading.toolCategory))" + (reading.toolName.map { " · \($0)" } ?? ""))
-        case .input:
-            lines.append("\(SessionPresentation.inputTitle(reading)) · 질문 내용은 표시하지 않습니다")
-            lines.append("권한 확인 요청은 로그에 기록되지 않아 표시하지 않습니다")
-        case .retrying:
-            lines.append("API 재시도 기록 · 오류 내용은 저장하지 않습니다")
-        default: break
-        }
-        lines.append(speed.help)
-        lines.append(SessionPresentation.lastTurnSummary(reading))
-        lines.append(reading.currentTurnOutputTokens.map { "현재 턴에서 확인된 출력 \(Format.tokens($0)) tok" })
-        lines.append(recordingNote)
-        if !SessionPresentation.rowActions(reading).isEmpty { lines.append(actionsNote) }
-        return lines.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n")
+    /// One line of help; a client waiting for a restart adds why its speed is missing.
+    static func help(_ reading: TokenReading, _ context: RowContext) -> String {
+        "클릭: 상세 · 우클릭: 메뉴" + (context.restart.contains(reading.source) ? "\n\(reading.source.title)를 새로 실행하면 속도가 표시됩니다" : "")
     }
 
-    static func label(_ reading: TokenReading, children: Int) -> String {
-        var parts = ["\(reading.project ?? "프로젝트 미확인") 세션", "\(reading.source.title) \(reading.model ?? "모델 미확인")"]
-        if children > 0 { parts.append("하위 에이전트 \(children)개") }
-        if reading.isSubagent { parts.append("하위 에이전트 \(SessionPresentation.agentLabel(reading))") }
-        return parts.joined(separator: ", ")
-    }
+    /// The fold-in count stays in VoiceOver after "하위 N" left the second line.
+    static func children(_ count: Int) -> String? { count > 0 ? "하위 에이전트 \(count)개 기록" : nil }
 
     static func output(_ reading: TokenReading) -> String {
         guard let output = reading.currentTurnOutputTokens else { return "이번 턴 누적 미확인" }
         return "이번 턴 출력 \(output.formatted()) 토큰"
     }
-
-    /// The live-row state word: tool category, input kind or retry progress.
-    static func spokenState(_ reading: TokenReading, _ state: SessionDisplayState, now: Date) -> String {
-        switch state {
-        case .input: return "입력 필요, \(SessionPresentation.inputTitle(reading))"
-        case .retrying: return reading.retry.map { "API " + SessionPresentation.retryText($0, now: now) } ?? state.title
-        default: return SessionPresentation.stateTitle(state, reading)
-        }
-    }
 }
 
 struct LiveSessionRow: View {
     var item: SessionRowItem
-    var childCount: Int
-    var row: FlowSeries.Row?
-    var scale: Double
-    var now: Date
-    var restartNeeded = false
+    var childCount = 0
+    var context: RowContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.tokenCatHighContrast) private var high
     private var reading: TokenReading { item.reading }
-
-    private var pillOpacity: Double? {
-        guard item.state == .output, let at = reading.lastOutputAt, let delta = reading.lastOutputDelta, delta > 0 else { return nil }
-        let age = now.timeIntervalSince(at)
-        if age <= 2 { return 1 }
-        return age <= 5 ? 0.6 : nil
-    }
+    private var now: Date { context.now }
 
     private var trailing: String {
         switch item.state {
@@ -850,233 +1320,336 @@ struct LiveSessionRow: View {
     }
 
     var body: some View {
-        let speed = SessionPresentation.speed(reading, now: now, restartNeeded: restartNeeded)
-        let context = SessionPresentation.context(reading, now: now)
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
-                StateChip(state: item.state, text: SessionPresentation.stateTitle(item.state, reading))
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    if let model = reading.model {
-                        Text(model).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.tail)
-                    } else {
-                        Text("모델 기록 대기").font(.system(size: 12.5, weight: .medium)).faint().lineLimit(1)
-                    }
-                    if let effort = SessionPresentation.effortLabel(reading) {
-                        Text(" · \(effort)").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).fixedSize()
-                    }
+        let speed = context.speed(reading)
+        let contextSlot = SessionPresentation.context(reading, now: now)
+        let record = SessionPresentation.lastRecord(reading)
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                StateChip(kind: StateGlyph.Kind(item.state) ?? .working, text: SessionPresentation.chipText(item.state, reading))
+                    .padding(.leading, DashboardLayout.glyphX - 4)
+                Text(reading.project ?? "프로젝트 미확인").font(TCFont.title).lineLimit(1).truncationMode(.tail).layoutPriority(2)
+                    .padding(.leading, 8)
+                if context.showsID(reading) {
+                    Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize().padding(.leading, 6)
                 }
-                Spacer(minLength: 6)
-                if let opacity = pillOpacity, let delta = reading.lastOutputDelta {
-                    Text("+\(Format.tokens(delta))").font(.system(size: 10.5, weight: .semibold).monospacedDigit())
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(Color.green.opacity(0.18), in: Capsule())
-                        .opacity(opacity).fixedSize()
-                }
+                Spacer(minLength: 8)
                 primaryNumber.frame(minWidth: 86, alignment: .trailing)
-            }.frame(height: 18)
-            HStack(spacing: 4) {
-                Text(reading.source.title).font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize()
-                Text("·").font(.system(size: 11)).faint()
-                Text(SessionPresentation.identity(reading, children: childCount)).font(.system(size: 11))
-                    .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 4)
-                Text(trailing).font(.system(size: 11).monospacedDigit())
-                    .foregroundStyle(item.state == .input || item.state == .retrying ? HierarchicalShapeStyle.primary : .secondary)
-                    .fixedSize()
-            }.frame(height: 15).padding(.top, 3)
+            }
+            .frame(height: 18)
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text(SessionPresentation.clientLine(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text(trailing).font(TCFont.metaMono).lineLimit(1).fixedSize()
+                    .foregroundStyle(item.state == .input || item.state == .retrying ? AnyShapeStyle(HierarchicalShapeStyle.primary)
+                                     : AnyShapeStyle(TCColor.textSecondary(contrast: high)))
+            }
+            .frame(height: 14)
+            .padding(.leading, DashboardLayout.textX)
             if item.showsDetail {
-                HStack(spacing: 10) {
-                    RecordBars(row: row, count: FlowSeries.rowCount, scale: scale).frame(height: 10).frame(maxWidth: .infinity)
-                    if let context { ContextLabel(slot: context) }
-                    SpeedLabel(slot: speed)
-                }.frame(height: 12).padding(.top, 4)
+                ViewThatFits(in: .horizontal) {
+                    line3(record, contextSlot, speed, short: false, age: true)
+                    line3(record, contextSlot, speed, short: true, age: true)
+                    line3(record, contextSlot, speed, short: true, age: false)
+                }
+                .frame(height: 12)
+                .padding(.leading, DashboardLayout.glyphX)
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, item.showsDetail ? 5 : 4)
-        .frame(height: item.height)
-        .contentShape(Rectangle())
-        .help(RowText.details(reading, state: item.state, speed: speed, now: now))
+        .padding(.trailing, DashboardLayout.inset).padding(.vertical, 5)
+        .frame(height: item.height, alignment: .top)
+        .rowChrome(selected: context.selectedID == item.id)
+        .id(item.id)
+        .onTapGesture { context.tap(item.id) }
+        .help(RowText.help(reading, context))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(RowText.label(reading, children: childCount))
-        .accessibilityValue([RowText.spokenState(reading, item.state, now: now),
-                             SessionPresentation.effortLabel(reading).map { "추론 \($0)" },
-                             SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { "턴 경과 \($0)" },
-                             RowText.output(reading), context?.spoken, speed.spoken].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
+        .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: item.state))
+        .accessibilityValue(spokenValue(contextSlot, SessionPresentation.speed(reading, now: now)))
+        .accessibilityAction { context.tap(item.id) }
         .rowActions(reading)
     }
 
-    @ViewBuilder private var primaryNumber: some View {
-        if let output = reading.currentTurnOutputTokens {
-            HStack(alignment: .lastTextBaseline, spacing: 2) {
-                Text(Format.tokens(output)).font(.system(size: 15, weight: .semibold).monospacedDigit())
-                    .foregroundStyle(output == 0 ? HierarchicalShapeStyle.tertiary : (item.state == .waiting ? .secondary : .primary))
-                    .contentTransition(.numericText())
-                    .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: output)
-                Text("tok").font(.system(size: 10)).foregroundStyle(.secondary)
-            }
-            .lineLimit(1).fixedSize()
-            .help(output == 0 ? "현재 턴에서 아직 기록된 출력이 없습니다" : "현재 턴에서 기록된 출력 토큰")
-        } else {
-            Text("—").font(.system(size: 15, weight: .semibold)).faint()
-                .help("현재 턴 시작 부분을 읽지 못해 이번 턴 누적량을 알 수 없습니다. 최근 증가량은 막대에 표시됩니다")
+    private func spokenValue(_ contextSlot: ContextSlot?, _ speed: SpeedSlot) -> String {
+        var state: String?
+        if item.state == .input { state = SessionPresentation.inputTitle(reading) }
+        if item.state == .retrying { state = reading.retry.map { "API " + SessionPresentation.retryText($0, now: now) } }
+        return [state, SessionPresentation.effortLabel(reading).map { "추론 \($0)" },
+                SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { "턴 경과 \($0)" },
+                RowText.output(reading), RowText.children(childCount), contextSlot?.spoken, speed.spoken].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    /// Starts at the glyph column: the last-record dot hangs there, its text sits on the text column.
+    private func line3(_ record: TokenOutputEvent?, _ contextSlot: ContextSlot?, _ speed: SpeedSlot?, short: Bool, age: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            if let record { LastRecordLabel(record: record, now: now, age: age) }
+            Spacer(minLength: 8)
+            if let contextSlot { ContextLabel(slot: contextSlot, short: short) }
+            if let speed { SpeedLabel(slot: speed, short: short).padding(.leading, contextSlot == nil ? 0 : 10) }
         }
+    }
+
+    @ViewBuilder private var primaryNumber: some View {
+        let secondary = TCColor.textSecondary(contrast: high)
+        if let output = reading.currentTurnOutputTokens {
+            let quiet = output == 0 || item.state == .waiting
+            (Text(Format.tokens(output)).font(TCFont.metric).foregroundColor(quiet ? secondary : nil)
+                + Text(" tok").font(TCFont.micro).foregroundColor(secondary))
+                .lineLimit(1).fixedSize()
+                .contentTransition(.numericText())
+                .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: output)
+                .help(output == 0 ? "현재 턴에서 아직 기록된 출력이 없습니다" : "현재 턴에서 기록된 출력 토큰")
+        } else {
+            Text("—").font(TCFont.metric).toneTertiary()
+                .help("현재 턴 시작 부분을 읽지 못해 이번 턴 누적량을 알 수 없습니다")
+        }
+    }
+}
+
+/// "+1,356 tok · 방금" with a reserved 6 pt dot: green and primary semibold for 5 s, then secondary.
+private struct LastRecordLabel: View {
+    var record: TokenOutputEvent
+    var now: Date
+    var age = true
+    @Environment(\.tokenCatHighContrast) private var high
+    var body: some View {
+        let fresh = SessionPresentation.isFresh(record.at, now: now)
+        let secondary = TCColor.textSecondary(contrast: high)
+        // The dot hangs in the glyph column (x = 12–22) so the text stays on the text column (x = 28).
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Circle().fill(TCColor.activity).frame(width: 6, height: 6).frame(width: 10).opacity(fresh ? 1 : 0)
+            (Text("+\(Format.tokens(record.tokens)) tok").font(fresh ? TCFont.metaMonoSemibold : TCFont.metaMono).foregroundColor(fresh ? nil : secondary)
+                + Text(age ? " · " + SessionPresentation.recordAge(record.at, now: now) : "").font(TCFont.metaMono).foregroundColor(secondary))
+                .lineLimit(1).fixedSize()
+        }
+        .help("이번 턴의 마지막 출력 기록 · 로그 기록 시점 기준")
     }
 }
 
 struct IdleSessionRow: View {
     var item: SessionRowItem
-    var childCount: Int
+    var childCount = 0
     var groupState: SessionDisplayState
     var liveChildren: Int
-    var now: Date
-    var restartNeeded = false
+    var context: RowContext
+    @Environment(\.tokenCatHighContrast) private var high
     private var reading: TokenReading { item.reading }
+    private var now: Date { context.now }
     private var age: String { Format.age(reading.lastActivity, now: now) }
     /// An idle lead whose subagents are live shows the group's state instead of its own age.
     private var followsGroup: Bool { !item.state.isLive && groupState.isLive && liveChildren > 0 }
-    private var groupText: String { SessionPresentation.childGroupText(groupState, count: liveChildren) }
     private var stateAge: String {
-        if followsGroup { return groupText }
+        if followsGroup { return SessionPresentation.childGroupText(groupState, count: liveChildren) }
         switch item.state {
-        case .interrupted: return "중단 \(age)"
+        case .interrupted: return "중단 · \(age)"
         case .unfinished: return "종료 기록 없음 · \(age)"
         default: return age
         }
     }
-    private var ageHelp: String {
-        let minutes = SessionPresentation.helpAge(reading.lastActivity, now: now)
-        if followsGroup { return "\(item.state.title) · 마지막 활동 \(minutes)" }
-        return item.state == .unfinished ? "턴 종료 기록 없음 · 마지막 활동 \(minutes)" : "\(item.state.title) · 마지막 활동 \(minutes)"
-    }
+
     var body: some View {
-        let speed = SessionPresentation.speed(reading, now: now, restartNeeded: restartNeeded)
-        HStack(spacing: 6) {
-            StateMark(state: followsGroup ? groupState : item.state).frame(width: 10)
-            Text(reading.project ?? "프로젝트 미확인").font(.system(size: 12.5)).lineLimit(1).truncationMode(.tail).layoutPriority(2)
-            Text(SessionPresentation.shortID(reading)).font(.system(size: 11)).faint().lineLimit(1)
-            if reading.isSubagent { Text("하위").font(.system(size: 10.5)).faint().fixedSize() }
-            if childCount > 0 { Text("하위 \(childCount)").font(.system(size: 10.5).monospacedDigit()).faint().fixedSize() }
-            Spacer(minLength: 6)
-            SpeedLabel(slot: speed, compactUnknown: true)
-            Text(stateAge).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+        let state = followsGroup ? groupState : item.state
+        HStack(alignment: .center, spacing: 0) {
+            StateGlyphView(kind: StateGlyph.Kind(state) ?? .idle, side: 8, contrast: high).frame(width: 10)
+                .padding(.leading, DashboardLayout.glyphX)
+            ViewThatFits(in: .horizontal) {
+                names(client: true, id: context.showsID(reading))
+                names(client: true, id: false)
+                names(client: false, id: false)
+            }
+            .padding(.leading, 6)
+            .layoutPriority(1)
+            Spacer(minLength: 8)
+            if !followsGroup, let last = reading.lastOutputTokens {
+                (Text("마지막 턴 ").font(TCFont.micro) + Text(Format.compactTokens(last)).font(TCFont.metaMono))
+                    .toneSecondary().lineLimit(1).fixedSize().padding(.trailing, 10)
+                    .help(SessionPresentation.lastTurnSummary(reading) ?? "")
+            }
+            Text(stateAge).font(TCFont.metaMono).toneSecondary().lineLimit(1)
                 .frame(minWidth: 64, alignment: .trailing).fixedSize()
-                .help(ageHelp)
+                .help("\(state.title) · 마지막 활동 \(SessionPresentation.helpAge(reading.lastActivity, now: now))")
         }
-        .padding(.leading, 8).padding(.trailing, 10)
+        .padding(.trailing, DashboardLayout.inset)
         .frame(height: item.height)
-        .contentShape(Rectangle())
-        .help(RowText.details(reading, state: item.state, speed: speed, now: now))
+        .rowChrome(selected: context.selectedID == item.id)
+        .id(item.id)
+        .onTapGesture { context.tap(item.id) }
+        .help(RowText.help(reading, context))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(RowText.label(reading, children: childCount))
-        .accessibilityValue([item.state.title, "마지막 활동 \(age)", followsGroup ? groupText : nil,
-                             SessionPresentation.lastTurnSummary(reading), speed.spoken]
-                                .compactMap { $0 }.joined(separator: ", "))
+        .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
+        .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: state))
+        .accessibilityValue(["마지막 활동 \(age)", followsGroup ? stateAge : nil, RowText.children(childCount), SessionPresentation.lastTurnSummary(reading),
+                             SessionPresentation.speed(reading, now: now).spoken].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityAction { context.tap(item.id) }
         .rowActions(reading)
+    }
+
+    private func names(client: Bool, id: Bool) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(reading.project ?? "프로젝트 미확인").font(TCFont.body).lineLimit(1).truncationMode(.tail).layoutPriority(2)
+            if client { Text(reading.source.title).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
+            if id { Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
+        }
     }
 }
 
 struct ChildSessionRow: View {
     var item: SessionRowItem
     var parent: TokenReading
-    var row: FlowSeries.Row?
-    var scale: Double
-    var now: Date
-    var restartNeeded = false
+    var context: RowContext
+    @Environment(\.tokenCatHighContrast) private var high
     private var reading: TokenReading { item.reading }
-    private var stateWord: String {
-        if item.state == .retrying, let retry = reading.retry { return SessionPresentation.retryText(retry, now: now) }
-        return SessionPresentation.stateTitle(item.state, reading)
+    private var now: Date { context.now }
+
+    /// Tool category, input, retry and log wait only; a running child says nothing extra.
+    private var stateWord: String? {
+        switch item.state {
+        case .tool: return SessionPresentation.toolTitle(reading.toolCategory)
+        case .input: return SessionPresentation.inputTitle(reading)
+        case .retrying: return reading.retry.map { SessionPresentation.retryText($0, now: now) } ?? item.state.title
+        case .waiting: return item.state.title
+        default: return nil
+        }
     }
+
     var body: some View {
-        let speed = SessionPresentation.speed(reading, now: now, restartNeeded: restartNeeded)
         let live = item.state.isLive
         let title = SessionPresentation.childTitle(reading)
         let project = SessionPresentation.childProjectSuffix(reading, parent: parent)
-        HStack(spacing: 6) {
-            Image(systemName: "arrow.turn.down.right").font(.system(size: 9)).faint().frame(width: 12)
-            StateMark(state: item.state).frame(width: 10)
-            // Each part shows whole or not at all (the project drops first, then the detail); never a cut "a7b…".
+        HStack(alignment: .center, spacing: 0) {
+            StateGlyphView(kind: StateGlyph.Kind(item.state) ?? .idle, side: 8, contrast: high).frame(width: 10)
+                .padding(.leading, DashboardLayout.textX)
+            // Each part shows whole or not at all (the project drops first, then the role); never a cut "a7b…".
             ViewThatFits(in: .horizontal) {
                 nameLine(title.title, [title.detail, project])
                 nameLine(title.title, [title.detail])
-                Text(title.title).lineLimit(1).truncationMode(.middle).fixedSize(horizontal: title.title.count <= 8, vertical: false)
+                Text(title.title).lineLimit(1).truncationMode(.middle)
             }
-            .font(.system(size: 11.5)).layoutPriority(1)
-            if item.state != .idle {
-                Text(stateWord).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary).fixedSize()
-            }
-            Spacer(minLength: 6)
+            .font(TCFont.meta).padding(.leading, 6).layoutPriority(1)
+            if let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).fixedSize().padding(.leading, 6) }
+            Spacer(minLength: 8)
             if live {
-                // Bars only for a record in the 2-minute window; otherwise the slot stays empty.
-                Group {
-                    if row != nil { RecordBars(row: row, count: FlowSeries.rowCount, scale: scale, minHeight: 3, minWidth: 1.5) }
-                    else { Color.clear }
-                }.frame(width: 48, height: 8)
-                HStack(alignment: .lastTextBaseline, spacing: 2) {
-                    if let output = reading.currentTurnOutputTokens {
-                        // A child waiting for a log is not producing; its total stays quiet.
-                        Text(Format.tokens(output))
-                            .font(.system(size: 12, weight: item.state == .waiting ? .regular : .semibold).monospacedDigit())
-                            .foregroundStyle(output == 0 ? HierarchicalShapeStyle.tertiary : (item.state == .waiting ? .secondary : .primary))
-                        Text("tok").font(.system(size: 10)).foregroundStyle(.secondary)
-                    } else {
-                        Text("—").font(.system(size: 12, weight: .semibold)).faint()
-                    }
-                }.lineLimit(1).fixedSize().frame(minWidth: 56, alignment: .trailing)
+                recordAge.frame(minWidth: 44, alignment: .trailing)
+                number.frame(minWidth: 56, alignment: .trailing).padding(.leading, 8)
             } else {
-                Text(Format.age(reading.lastActivity, now: now)).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                Text(Format.age(reading.lastActivity, now: now)).font(TCFont.metaMono).toneSecondary()
                     .frame(minWidth: 64, alignment: .trailing).fixedSize()
             }
         }
-        .padding(.leading, 18).padding(.trailing, 10)
+        .padding(.trailing, DashboardLayout.inset)
         .frame(height: item.height)
-        .contentShape(Rectangle())
-        .help(RowText.details(reading, state: item.state, speed: speed, now: now))
+        .rowChrome(selected: context.selectedID == item.id)
+        .id(item.id)
+        .onTapGesture { context.tap(item.id) }
+        .help(RowText.help(reading, context))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("하위 에이전트, \(reading.model ?? "모델 미확인")")
-        .accessibilityValue([RowText.spokenState(reading, item.state, now: now),
+        .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
+        .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: item.state))
+        .accessibilityValue([SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { "턴 경과 \($0)" },
                              live ? RowText.output(reading) : "마지막 활동 \(Format.age(reading.lastActivity, now: now))",
-                             speed.spoken, SessionPresentation.roleLabel(reading.agentRole).map { "역할 \($0)" },
-                             "ID \(SessionPresentation.agentLabel(reading))"].compactMap { $0 }.joined(separator: ", "))
+                             SessionPresentation.context(reading, now: now)?.spoken, SessionPresentation.speed(reading, now: now).spoken,
+                             SessionPresentation.roleLabel(reading.agentRole).map { "역할 \($0)" }, "ID \(SessionPresentation.agentLabel(reading))"]
+                                .compactMap { $0 }.joined(separator: ", "))
+        .accessibilityAction { context.tap(item.id) }
         .rowActions(reading)
     }
 
+    @ViewBuilder private var recordAge: some View {
+        if let record = SessionPresentation.lastRecord(reading) {
+            let age = SessionPresentation.recordAge(record.at, now: now)
+            HStack(spacing: 3) {
+                if age == "방금" { Circle().fill(TCColor.activity).frame(width: 5, height: 5) }
+                Text(age).font(TCFont.metaMono).toneSecondary().lineLimit(1).fixedSize()
+            }
+        }
+    }
+
+    @ViewBuilder private var number: some View {
+        let secondary = TCColor.textSecondary(contrast: high)
+        if let output = reading.currentTurnOutputTokens {
+            // A child waiting for a log is not producing; its total stays quiet.
+            let quiet = item.state == .waiting || output == 0
+            (Text(Format.tokens(output)).font(quiet ? TCFont.metaMono : TCFont.metaMonoSemibold).foregroundColor(quiet ? secondary : nil)
+                + Text(" tok").font(TCFont.micro).foregroundColor(secondary))
+                .lineLimit(1).fixedSize()
+        } else {
+            Text("—").font(TCFont.meta).toneTertiary()
+        }
+    }
+
     private func nameLine(_ name: String, _ parts: [String?]) -> some View {
-        HStack(spacing: 0) {
-            Text(name).foregroundStyle(.primary)
-            ForEach(Array(parts.compactMap { $0 }.enumerated()), id: \.offset) { Text(" · \($0.element)").faint() }
-        }.lineLimit(1).fixedSize()
+        let secondary = TCColor.textSecondary(contrast: high)
+        return parts.compactMap { $0 }.reduce(Text(name)) { $0 + Text(" · \($1)").foregroundColor(secondary) }
+            .lineLimit(1).fixedSize()
     }
 }
 
 struct MeasurementRow: View {
     var reading: TokenReading
     var now: Date
+    var selected = false
     var body: some View {
         let speed = SessionPresentation.speed(reading, now: now)
         let age = Format.age(reading.speedMeasurement?.at ?? reading.lastActivity, now: now)
-        HStack(spacing: 6) {
-            Image(systemName: "speedometer").font(.system(size: 10)).foregroundStyle(.secondary).frame(width: 12)
-            Text(reading.project ?? "모델 실측").font(.system(size: 12.5)).lineLimit(1).fixedSize()
-            Text(reading.model ?? "모델 미확인").font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 6)
-            SpeedLabel(slot: speed, numberSize: 12)
-            Text("측정 \(age)").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary).fixedSize()
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            Image(systemName: "speedometer").font(TCFont.meta).toneSecondary().frame(width: 10)
+                .padding(.leading, DashboardLayout.glyphX)
+            Text(reading.project ?? "모델 실측").font(TCFont.body).lineLimit(1).fixedSize().padding(.leading, 6)
+            Text(reading.model ?? "모델 미확인").font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.middle).padding(.leading, 6)
+            Spacer(minLength: 8)
+            SpeedLabel(slot: speed)
+            Text("측정 \(age)").font(TCFont.metaMono).toneSecondary().fixedSize().padding(.leading, 10)
         }
-        .padding(.horizontal, 10)
+        .padding(.trailing, DashboardLayout.inset)
         .frame(height: 28)
-        .contentShape(Rectangle())
-        .help(RowText.details(reading, state: .measurement, speed: speed, now: now))
+        .rowChrome(selected: selected)
+        .id(reading.id)
+        .help("클릭: 상세 · 우클릭: 메뉴")
         .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityLabel("\(reading.project ?? "모델 실측"), \(reading.source.title) \(reading.model ?? "모델 미확인")")
         .accessibilityValue("\(speed.spoken), 측정 \(age)")
         .rowActions(reading)
     }
 }
 
-// MARK: - System strip
+/// The inline detail under a row (S-6): a two-column grid, 15 pt lines, 8 pt above and below, a rule on top.
+struct SessionDetail: View {
+    var item: SessionRowItem
+    var indent: CGFloat
+    @Environment(\.tokenCatHighContrast) private var high
+    var body: some View {
+        let items = SessionPresentation.detailItems(item.reading, state: item.state)
+        VStack(alignment: .leading, spacing: 0) {
+            Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5)
+                .padding(.leading, indent).padding(.trailing, DashboardLayout.inset)
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(items) { detail in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(detail.label).font(TCFont.meta).toneSecondary().lineLimit(1).frame(width: 76, alignment: .leading)
+                        // A full UUID needs ~266 pt; it shrinks slightly (Latin only, never Korean) before it truncates.
+                        Text(detail.value).font(TCFont.metaMono).lineLimit(1).minimumScaleFactor(detail.copy == nil ? 1 : 0.9)
+                            .truncationMode(.middle).textSelection(.enabled)
+                        if let copy = detail.copy {
+                            Button { copyToPasteboard(copy) } label: { Image(systemName: "doc.on.doc").font(TCFont.meta).frame(width: 18, height: 15) }
+                                .buttonStyle(HoverButtonStyle(ring: false))
+                                .help("복사").accessibilityLabel("\(detail.label) 복사")
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .frame(height: 15)
+                }
+            }
+            .padding(.vertical, 8).padding(.leading, indent).padding(.trailing, DashboardLayout.inset)
+        }
+        .frame(height: SessionPresentation.detailHeight(item.reading, state: item.state), alignment: .top)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("세션 상세")
+    }
+}
 
-/// `kern.memorystatus_vm_pressure_level`: the memory bar colour follows pressure, not the used %.
+// MARK: - System
+
+/// `kern.memorystatus_vm_pressure_level`: the memory meter colour follows pressure, not the used %.
 enum MemoryPressure: Equatable {
     case normal, warning, critical, unknown
     init(_ level: Int?) {
@@ -1097,115 +1670,197 @@ enum MemoryPressure: Equatable {
     }
     var color: Color {
         switch self {
-        case .warning: return .orange
-        case .critical: return .red
-        default: return Color.primary.opacity(0.45)
+        case .warning: return TCColor.warning
+        case .critical: return TCColor.critical
+        default: return TCColor.neutral
         }
     }
 }
 
-struct SystemStrip: View {
+/// The borderless bottom area (8): label 12, value 16, aux 11; the whole area opens Activity Monitor.
+struct SystemArea: View {
     var system: SystemSnapshot
     var cpuHistory: [Double]
     var hasSample: Bool
+    var open: () -> Void
+    @State private var hovering = false
+    @Environment(\.tokenCatHighContrast) private var high
 
     private func ratio(_ used: UInt64?, _ total: UInt64?) -> Double? { hasSample ? Format.ratio(used, total) : nil }
 
     var body: some View {
-        let memory = ratio(system.memoryUsedBytes, system.memoryTotalBytes)
-        let disk = ratio(system.diskUsedBytes, system.diskTotalBytes)
-        let pressure = MemoryPressure(hasSample ? system.memoryPressure : nil)
-        let upload = StatusBarContent.networkRate(hasSample ? system.uploadBytesPerSecond : nil)
-        let download = StatusBarContent.networkRate(hasSample ? system.downloadBytesPerSecond : nil)
-        let cpu = hasSample ? system.cpuPercent : nil
-        HStack(spacing: 0) {
-            cell("CPU", help: "CPU 전체 코어 사용률 · 최근 30초 추이", value: "\(Format.percent(cpu)), 최근 30초") {
-                HStack(spacing: 5) {
-                    self.value(cpu)
-                    Sparkline(values: Array(cpuHistory.suffix(30))).frame(width: 40, height: 12)
-                }
-            }.frame(width: 88, height: Self.cellHeight, alignment: .topLeading)
-            separator
-            cell("메모리", help: "메모리: 앱·유선·압축 사용량 / 실제 메모리\n막대 색은 메모리 압력 기준 · 현재 \(pressure.title)",
-                 value: "\(Format.percent(memory)), \(Format.capacity(system.memoryUsedBytes, system.memoryTotalBytes)), 메모리 압력 \(pressure.title)") {
-                self.value(memory)
-                bar(memory, color: pressure.color)
-            }.frame(width: 56, height: Self.cellHeight, alignment: .topLeading)
-            separator
-            cell("저장 공간", help: "저장 공간: 홈 폴더가 있는 볼륨의 사용량 / 전체 용량",
-                 value: "\(Format.percent(disk)), \(Format.capacity(system.diskUsedBytes, system.diskTotalBytes))") {
-                self.value(disk)
-                bar(disk, color: meterColor(disk))
-            }.frame(width: 56, height: Self.cellHeight, alignment: .topLeading)
-            if system.batteryPresent {
-                separator
-                battery.frame(width: 52, height: Self.cellHeight, alignment: .topLeading)
+        let battery = system.batteryPresent
+        let widths: [CGFloat] = battery ? [56, 72, 56, 56, 76] : [64, 80, 64, 120]
+        VStack(spacing: 0) {
+            Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5).padding(.horizontal, -DashboardLayout.gutter)
+            HStack(alignment: .top, spacing: 12) {
+                cpu.frame(width: widths[0], alignment: .leading)
+                memory.frame(width: widths[1], alignment: .leading)
+                disk.frame(width: widths[2], alignment: .leading)
+                if battery { batteryCell.frame(width: widths[3], alignment: .leading) }
+                network.frame(width: widths[widths.count - 1], alignment: .leading)
             }
-            separator
-            VStack(alignment: .leading, spacing: 1) {
-                Text("↑\(upload)")
-                Text("↓\(download)")
+            .frame(height: 44, alignment: .top)
+            .padding(.horizontal, DashboardLayout.inset).padding(.vertical, 6)
+            .background(hovering ? TCColor.hover(contrast: high) : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(alignment: .topTrailing) {
+                if hovering { Image(systemName: "arrow.up.forward").font(TCFont.micro).toneSecondary().padding(6) }
             }
-            .font(.system(size: 10.5, weight: .medium).monospacedDigit()).lineLimit(1)
-            .foregroundStyle(hasSample ? HierarchicalShapeStyle.primary : .tertiary)
-            .frame(minWidth: 64, maxWidth: .infinity, alignment: .leading)
-            .help("네트워크: Wi-Fi·Ethernet 합산, VPN·루프백 제외\n\(system.localIPs.isEmpty ? "IPv4 주소 미확인" : "IPv4 " + system.localIPs.joined(separator: " · "))")
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("네트워크")
-            .accessibilityValue("업로드 \(upload), 다운로드 \(download)")
+            .contentShape(Rectangle())
+            .onTapGesture(perform: open)
+            .onHover { hovering = $0 }
+            .padding(.top, 4)
         }
-        .frame(height: Self.cellHeight)
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .card()
+        .help("활성 상태 보기에서 자세히 보기")
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("시스템")
+        .accessibilityAction(named: "활성 상태 보기", open)
     }
 
-    private static let cellHeight: CGFloat = 34
-    private var separator: some View { Divider().frame(height: 26).padding(.horizontal, 6) }
-
-    private func value(_ percent: Double?) -> some View {
-        Text(Format.percent(percent)).font(.system(size: 13, weight: .semibold).monospacedDigit())
-            .foregroundStyle(percent == nil ? HierarchicalShapeStyle.tertiary : .primary).lineLimit(1).fixedSize()
+    private func percentText(_ value: Double?) -> Text {
+        guard let value, value.isFinite else { return Text("—").font(TCFont.value).foregroundColor(TCColor.textTertiary(contrast: high)) }
+        return Text(String(format: "%.0f", value)).font(TCFont.value) + Text("%").font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
     }
 
-    /// Help is static so the tooltip does not reset every second; live values go to VoiceOver only.
-    private func cell<Content: View>(_ title: String, help: String, value: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title).font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
-            content()
+    /// Label 12, 2, value 16, 3, aux 11. Help is static so the tooltip does not reset every second; live values go to VoiceOver.
+    private func cell<Value: View, Aux: View>(_ title: String, help: String, spoken: String, @ViewBuilder value: () -> Value,
+                                              @ViewBuilder aux: () -> Aux) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(title).font(TCFont.micro).toneSecondary().lineLimit(1).frame(height: 12)
+            value().lineLimit(1).frame(height: 16).padding(.top, 2).redacted(reason: hasSample ? [] : .placeholder)
+            aux().frame(height: 11, alignment: .top).padding(.top, 3).redacted(reason: hasSample ? [] : .placeholder)
         }
         .help(help)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
-        .accessibilityValue(value)
+        .accessibilityValue(spoken)
     }
 
-    private func bar(_ percent: Double?, color: Color) -> some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.primary.opacity(0.08))
-                Capsule().fill(color).frame(width: geometry.size.width * min(1, max(0, (percent ?? 0) / 100)))
+    private var cpu: some View {
+        let value = hasSample ? system.cpuPercent : nil
+        let peak = hasSample ? cpuHistory.suffix(30).max() : nil
+        return cell("CPU", help: "CPU 전체 코어 사용률" + (peak.map { String(format: "\n최근 30초 최고 %.0f%%", $0) } ?? ""),
+                    spoken: Format.percent(value) + (peak.map { String(format: ", 최근 30초 최고 %.0f퍼센트", $0) } ?? "")) {
+            percentText(value)
+        } aux: {
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Meter(fraction: (value ?? 0) / 100, color: Meter.color(value)).frame(height: 4).padding(.top, 1)
+                    if let peak {
+                        Rectangle().fill(TCColor.primary(0.5)).frame(width: 1, height: 6)
+                            .offset(x: (geometry.size.width * min(1, max(0, peak / 100)) - 0.5).rounded())
+                    }
+                }
             }
-        }.frame(height: 2)
+        }
     }
 
-    private func meterColor(_ percent: Double?) -> Color {
-        guard let percent else { return Color.primary.opacity(0.45) }
-        return percent >= 95 ? .red : (percent >= 85 ? .orange : Color.primary.opacity(0.45))
+    private var memory: some View {
+        let value = ratio(system.memoryUsedBytes, system.memoryTotalBytes)
+        let pressure = MemoryPressure(hasSample ? system.memoryPressure : nil)
+        return cell("메모리", help: "메모리: 앱·유선·압축 사용량 / 실제 메모리\n막대 색은 메모리 압력 기준",
+                    spoken: "\(Format.percent(value)), \(Format.capacity(system.memoryUsedBytes, system.memoryTotalBytes)), 메모리 압력 \(pressure.title)") {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                percentText(value).fixedSize()
+                if pressure == .warning || pressure == .critical {
+                    Text(pressure.title).font(TCFont.micro).padding(.horizontal, 3)
+                        .background(pressure.color.opacity(0.15), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+                        .fixedSize()
+                }
+            }
+        } aux: {
+            Meter(fraction: (value ?? 0) / 100, color: pressure.color).frame(height: 4)
+        }
     }
 
-    private var battery: some View {
-        let percent = hasSample ? system.batteryPercent : nil
+    private var disk: some View {
+        let value = ratio(system.diskUsedBytes, system.diskTotalBytes)
+        return cell("저장 공간", help: "저장 공간: 홈 폴더가 있는 볼륨의 사용량 / 전체 용량",
+                    spoken: "\(Format.percent(value)), \(Format.capacity(system.diskUsedBytes, system.diskTotalBytes))") {
+            percentText(value)
+        } aux: {
+            Meter(fraction: (value ?? 0) / 100, color: Meter.color(value)).frame(height: 4)
+        }
+    }
+
+    private var batteryCell: some View {
+        let value = hasSample ? system.batteryPercent : nil
         let charging = system.isCharging == true
         let color: Color = {
-            guard let percent, !charging else { return Color.primary.opacity(0.45) }
-            return percent <= 10 ? .red : (percent <= 20 ? .orange : Color.primary.opacity(0.45))
+            guard let value, !charging else { return TCColor.neutral }
+            return value <= 10 ? TCColor.critical : (value <= 20 ? TCColor.warning : TCColor.neutral)
         }()
-        return cell("배터리", help: "배터리 잔량 · \(Format.power(system))", value: "\(Format.percent(percent)), \(Format.power(system))") {
-            HStack(spacing: 2) {
-                value(percent)
-                if charging { Image(systemName: "bolt.fill").font(.system(size: 8)).foregroundStyle(.secondary) }
+        return cell("배터리", help: "배터리 잔량 · \(Format.power(system))", spoken: "\(Format.percent(value)), \(Format.power(system))") {
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                percentText(value).fixedSize()
+                if charging { Image(systemName: "bolt.fill").font(TCFont.value).imageScale(.small).toneSecondary() }
             }
-            bar(percent, color: color)
+        } aux: {
+            Meter(fraction: (value ?? 0) / 100, color: color).frame(height: 4)
         }
+    }
+
+    private var network: some View {
+        let download = StatusBarContent.splitRate(StatusBarContent.networkRate(hasSample ? system.downloadBytesPerSecond : nil))
+        let upload = StatusBarContent.networkRate(hasSample ? system.uploadBytesPerSecond : nil)
+        let up = StatusBarContent.splitRate(upload)
+        return cell("네트워크", help: "네트워크: Wi-Fi·Ethernet 합산, VPN·루프백 제외\n\(system.localIPs.isEmpty ? "IPv4 주소 미확인" : "IPv4 " + system.localIPs.joined(separator: " · "))",
+                    spoken: "다운로드 \(download.number)\(download.unit), 업로드 \(upload)") {
+            Text("↓ " + download.number).font(TCFont.value)
+                + Text(download.unit.isEmpty ? "" : " " + download.unit).font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
+        } aux: {
+            Text("↑ " + up.number + (up.unit.isEmpty ? "" : " " + up.unit)).font(TCFont.micro.monospacedDigit()).toneSecondary().lineLimit(1)
+        }
+    }
+}
+
+// MARK: - Footer
+
+/// One leading status item (9): collection delay, telemetry notice, or "실시간"; the latter two open telemetry settings.
+struct DashboardFooter: View {
+    var status: FooterStatus
+    var notice: TelemetryNotice?
+    var help: String
+    var open: () -> Void
+    @Environment(\.tokenCatHighContrast) private var high
+
+    var body: some View {
+        HStack(spacing: 0) {
+            switch status.kind {
+            case .loading:
+                Circle().fill(TCColor.idle).frame(width: 6, height: 6)
+                    .help("수집 준비 중").accessibilityElement().accessibilityLabel("수집 준비 중")
+            case .aiDelay, .systemDelay:
+                item(Circle().fill(TCColor.warning).frame(width: 6, height: 6), primary: true).help(help)
+            case .notice:
+                let problem = notice?.isProblem ?? true
+                Button(action: open) {
+                    item(Image(systemName: problem ? "exclamationmark.triangle.fill" : "info.circle").font(TCFont.meta)
+                        .foregroundStyle(problem ? AnyShapeStyle(TCColor.warning) : AnyShapeStyle(TCColor.textSecondary(contrast: high))),
+                         primary: problem)
+                        .padding(.horizontal, 5)
+                }
+                .padding(.leading, -5)
+                .help(notice?.help ?? help)
+                .accessibilityHint("설정을 엽니다")
+            case .live:
+                Button(action: open) { item(Circle().fill(TCColor.activity).frame(width: 6, height: 6), primary: false).padding(.horizontal, 5) }
+                    .padding(.leading, -5)
+                    .help(help)
+                    .accessibilityHint("설정을 엽니다")
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(height: 18)
+    }
+
+    private func item<Mark: View>(_ mark: Mark, primary: Bool) -> some View {
+        HStack(spacing: 5) {
+            mark
+            Text(status.text).font(TCFont.meta.monospacedDigit()).lineLimit(1)
+                .foregroundStyle(primary ? AnyShapeStyle(HierarchicalShapeStyle.primary) : AnyShapeStyle(TCColor.textSecondary(contrast: high)))
+        }
+        .frame(height: 18)
+        .accessibilityElement(children: .combine)
     }
 }

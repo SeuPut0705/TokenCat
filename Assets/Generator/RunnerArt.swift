@@ -3,18 +3,9 @@ import Foundation
 /// Runner sprite v2. Every frame is composed from character grids on a 30 × 18 pixel cell:
 /// fill-only parts are stacked back to front and each part gets a 1 px charcoal outline,
 /// so far legs are cut by the body's outline while near legs and the tail merge into it.
+/// Colours come from `Palette` only.
 enum RunnerArt {
     static let cell = (width: 30, height: 18)
-
-    /// Character palette tokens (sRGB). Documented in Assets/runner-v2.md.
-    static let palette: [Character: RGBA] = [
-        "K": RGBA(hex: 0x24262D), // outline, eyes
-        "W": RGBA(hex: 0xF8F9FB), // fur
-        "S": RGBA(hex: 0xC4C9D3), // shade: inner ear, belly
-        "G": RGBA(hex: 0xA3A9B6), // far legs
-        "C": RGBA(hex: 0x3A4FE0), // collar (indigo cobalt, not systemBlue)
-        "T": RGBA(hex: 0x9DABFF), // collar tag
-    ]
 
     /// Paint groups, back to front. A merging part does not outline over fills of `mergeInto` groups.
     enum Group { case far, body, near, head }
@@ -53,17 +44,10 @@ enum RunnerArt {
         "..CCCTCC..",
     ]
 
-    static let headSleep = [
-        ".W......W.",
-        ".WW....WW.",
-        ".WSWWWWSW.",
-        "WWWWWWWWWW",
-        "WWWWWWWWWW",
-        "WKKWWWWKKW",
-        "WWWWWWWWWW",
-        ".WWWWWWWW.",
-    ]
+    /// Resting on the body, so no collar row.
+    static let headSleep = Array(headBlink.dropLast())
 
+    /// Ears up and eyes wide (the front-facing input sit).
     static let headAlert = [
         ".W......W.",
         ".WW....WW.",
@@ -77,6 +61,19 @@ enum RunnerArt {
         "..CCCTCC..",
     ]
 
+    /// Wake-up yawn: eyes shut, mouth open.
+    static let headYawn = [
+        ".W......W.",
+        ".WW....WW.",
+        ".WSWWWWSW.",
+        "WWWWWWWWWW",
+        "WWWWWWWWWW",
+        "WKKWWWWKKW",
+        "WWWWKKWWWW",
+        ".WWWKKWWW.",
+        "..CCCTCC..",
+    ]
+
     static let body = [
         "..WWWWWWWW...",
         ".WWWWWWWWWWW.",
@@ -84,6 +81,26 @@ enum RunnerArt {
         "WWWWWWWWWWWWW",
         ".WWWWWWWWWWWW",
         "..SSSSSSSSSS.",
+    ]
+
+    /// Run extension (frame 1): one pixel longer at the back.
+    static let bodyLong = [
+        "..WWWWWWWWW...",
+        ".WWWWWWWWWWWW.",
+        "WWWWWWWWWWWWWW",
+        "WWWWWWWWWWWWWW",
+        ".WWWWWWWWWWWWW",
+        "..SSSSSSSSSSS.",
+    ]
+
+    /// Run gather (frame 4): one pixel shorter with the back peaked.
+    static let bodyArch = [
+        "....WWWW....",
+        "..WWWWWWWW..",
+        "WWWWWWWWWWWW",
+        "WWWWWWWWWWWW",
+        ".WWWWWWWWWWW",
+        "..SSSSSSSSS.",
     ]
 
     static let tailUp = [
@@ -96,7 +113,18 @@ enum RunnerArt {
         "...W",
     ]
 
-    /// Streaming tails for the run, alternating so the tip waves. Anchored like `tailUp`.
+    /// Walk frames 2–3: the tip leans back once per cycle.
+    static let tailSway = [
+        ".WW.",
+        ".W..",
+        ".W..",
+        ".W..",
+        "..W.",
+        "...W",
+        "...W",
+    ]
+
+    /// Streaming tails for the run, three frames each so the tip waves at 2.33 Hz. Anchored like `tailUp`.
     static let tailStream = [
         "....",
         "....",
@@ -122,7 +150,11 @@ enum RunnerArt {
     /// Two-pixel leg from the body's last row to the foot; `dx` moves the foot, `lift` raises it.
     struct Leg { var dx: Int; var lift = 0 }
     struct Pair { var near: Leg; var far: Leg }
-    struct Stride { var dy = 0; var front: Pair; var hind: Pair; var tail = tailUp; var tailX = 5; var head = RunnerArt.head; var headY = 2 }
+    /// `tailX` is relative to `bodyX`, so a longer or shorter body carries its tail along.
+    struct Stride {
+        var dy = 0; var front: Pair; var hind: Pair; var tail = tailUp; var tailX = -2
+        var body = RunnerArt.body; var bodyX = 7; var headY = 2
+    }
 
     static func line(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int) -> [(Int, Int)] {
         var points: [(Int, Int)] = []
@@ -155,11 +187,11 @@ enum RunnerArt {
         return [
             leg(hindX + 1, top, s.hind.far, near: false),
             leg(frontX - 1, top, s.front.far, near: false),
-            Part(rows: body, x: 7, y: 7 + s.dy),
-            Part(rows: s.tail, x: s.tailX, y: 2 + s.dy, mergeInto: [.body]),
+            Part(rows: s.body, x: s.bodyX, y: 7 + s.dy),
+            Part(rows: s.tail, x: s.bodyX + s.tailX, y: 2 + s.dy, mergeInto: [.body]),
             leg(hindX, top, s.hind.near, near: true),
             leg(frontX, top, s.front.near, near: true),
-            Part(rows: s.head, x: 18, y: s.headY + s.dy, group: .head, mergeInto: [.body]),
+            Part(rows: head, x: 18, y: s.headY + s.dy, group: .head, mergeInto: [.body]),
         ]
     }
 
@@ -171,50 +203,24 @@ enum RunnerArt {
     static let walk: [Stride] = [
         Stride(front: pair(2, 0, -1, 0), hind: pair(-2, 0, 1, 0)),
         Stride(dy: -1, front: pair(0, 0, 0, 1), hind: pair(0, 1, 0, 0)),
-        Stride(front: pair(-2, 0, 1, 0), hind: pair(2, 0, -1, 0)),
-        Stride(dy: -1, front: pair(0, 1, 0, 0), hind: pair(0, 0, 0, 1)),
+        Stride(front: pair(-2, 0, 1, 0), hind: pair(2, 0, -1, 0), tail: tailSway),
+        Stride(dy: -1, front: pair(0, 1, 0, 0), hind: pair(0, 0, 0, 1), tail: tailSway),
     ]
 
-    static let tailTall = [
-        ".W..",
-        ".W..",
-        ".W..",
-        ".W..",
-        "..W.",
-        "...W",
-        "...W",
-    ]
-
-    static let tailFlick = [
-        "WW..",
-        ".W..",
-        ".W..",
-        ".W..",
-        "..W.",
-        "...W",
-        "...W",
-    ]
-
-    /// Ears up and eyes wide; the tail tip flicks and the near front paw taps.
-    static let alert: [Stride] = [
-        Stride(front: pair(0, 0, 1, 0), hind: pair(0, 0, 1, 0), tail: tailTall, head: headAlert, headY: 1),
-        Stride(front: pair(1, 1, 1, 0), hind: pair(0, 0, 1, 0), tail: tailFlick, head: headAlert, headY: 1),
-    ]
-
-    /// Push-off, extension, front touchdown, front stance, gathered (raised, not crouched), hind touchdown.
+    /// Push-off, extension (long body), front touchdown, front stance, gathered (arched, raised), hind touchdown.
     static let run: [Stride] = [
-        Stride(front: pair(2, 2, 1, 2), hind: pair(-3, 0, -2, 1), tail: tailStream, tailX: 4),
-        Stride(dy: -1, front: pair(4, 2, 3, 2), hind: pair(-4, 2, -3, 2), tail: tailWave, tailX: 4),
-        Stride(front: pair(2, 0, 3, 1), hind: pair(-3, 2, -2, 2), tail: tailStream, tailX: 4),
-        Stride(front: pair(0, 0, 1, 0), hind: pair(-1, 2, 0, 2), tail: tailWave, tailX: 4),
-        Stride(dy: -1, front: pair(-2, 1, -1, 1), hind: pair(2, 1, 1, 2), tail: tailStream, tailX: 4),
-        Stride(front: pair(-1, 2, 0, 2), hind: pair(1, 0, 2, 0), tail: tailWave, tailX: 4),
+        Stride(front: pair(2, 2, 1, 2), hind: pair(-3, 0, -2, 1), tail: tailStream, tailX: -3),
+        Stride(dy: -1, front: pair(4, 2, 3, 2), hind: pair(-4, 2, -3, 2), tail: tailStream, tailX: -3, body: bodyLong, bodyX: 6),
+        Stride(front: pair(2, 0, 3, 1), hind: pair(-3, 2, -2, 2), tail: tailStream, tailX: -3),
+        Stride(front: pair(0, 0, 1, 0), hind: pair(-1, 2, 0, 2), tail: tailWave, tailX: -3),
+        Stride(dy: -1, front: pair(-2, 1, -1, 1), hind: pair(2, 1, 1, 2), tail: tailWave, tailX: -3, body: bodyArch, bodyX: 8),
+        Stride(front: pair(-1, 2, 0, 2), hind: pair(1, 0, 2, 0), tail: tailWave, tailX: -3),
     ]
 
     // MARK: Still poses, drawn whole. W/S body, t tail and n near limb (merge into the body),
-    // f far limb, z sleep mark (outlined like the cat). The head is placed on top.
+    // f far limb. The head is placed on top. The sleep z is not art: it is the fx mask below.
 
-    struct Still { var rows: [String]; var head: [String]; var headX: Int; var headY: Int }
+    struct Still { var rows: [String]; var head: [String]; var headX = 18; var headY = 3 }
 
     static func parts(_ still: Still) -> [Part] {
         func pick(_ keep: Set<Character>, as paint: Character? = nil) -> [String] {
@@ -226,22 +232,14 @@ enum RunnerArt {
             Part(rows: pick(["t"], as: "W"), mergeInto: [.body]),
             Part(rows: pick(["n"], as: "W"), group: .near, mergeInto: [.body]),
             Part(rows: still.head, x: still.headX, y: still.headY, group: .head, mergeInto: [.body]),
-            Part(rows: pick(["z"], as: "W"), group: .head),
         ]
     }
 
+    static let empty = Array(repeating: String(repeating: ".", count: 30), count: 10)
+
     //                     0         1         2
     //                     012345678901234567890123456789
-    static let sitRows = [
-        "..............................", // 0
-        "..............................",
-        "..............................",
-        "..............................",
-        "..............................",
-        "..............................", // 5
-        "..............................",
-        "..............................",
-        "..............................",
+    static let sitRows = Array(empty[0..<9]) + [
         "..............WWWW............",
         "............WWWWWWW...........", // 10
         "...........WWWWWWWWW..........",
@@ -253,17 +251,24 @@ enum RunnerArt {
         "..............................",
     ]
 
-    static let sleepRows = [
-        "..............................", // 0
+    /// Turn-complete sit: the tail stands up behind the back instead of lying on the ground.
+    static let contentRows = Array(empty[0..<5]) + [
+        ".........t....................", // 5
+        "........t.....................",
+        "........t.....................",
+        "........t.....................",
+        "........t.....WWWW............",
+        "........t...WWWWWWW...........", // 10
+        "........t..WWWWWWWWW..........",
+        "........t.WWWWWWWWWWWW........",
+        "........t.WWWWWWWWWWfnn.......",
+        ".........tWWWWWWWWWWfnn.......",
+        "..........WWWWWWWWWWfnn.......", // 15
+        "...........SSSSSnnn.fnnn......",
         "..............................",
-        "..............................",
-        "..............................",
-        "..............................",
-        "..............................", // 5
-        "..............................",
-        "..............................",
-        "..............................",
-        "..............................",
+    ]
+
+    static let sleepRows = empty + [
         "...........WWWWW..............", // 10
         ".........WWWWWWWWW............",
         "........WWWWWWWWWWW...........",
@@ -274,38 +279,92 @@ enum RunnerArt {
         "..............................",
     ]
 
-    static func breathe(_ rows: [String], inhale: Bool, z: (x: Int, y: Int)) -> [String] {
+    /// Front-facing sit for input: ears up, both eyes on the viewer, tail curled at the side. The paw split is a
+    /// 1 px shade in the bottom two rows only (a 2 px band down the chest read as a necktie under the collar),
+    /// in column 23 right under the collar tag so tag and split line up.
+    static let alertRows = empty + [
+        "...................WWWWWWWW...", // 10
+        "..................WWWWWWWWWW..",
+        ".................WWWWWWWWWWWW.",
+        "...............t.WWWWWWWWWWWW.",
+        "..............t..WWWWWWWWWWWW.",
+        "..............t..WWWWnnSnWWWW.", // 15
+        "...............ttWWWWnnSnWWWW.",
+        "..............................",
+    ]
+
+    /// Frame 1 of the input sit: the tail tip rises one row.
+    static let alertFlick = Array(alertRows[0..<12]) + [
+        "..............t..WWWWWWWWWWWW.",
+        "..............t..WWWWWWWWWWWW.",
+        "..............t..WWWWWWWWWWWW.",
+    ] + alertRows[15...]
+
+    /// Inhale raises the back one row.
+    static func breathe(_ rows: [String]) -> [String] {
         var grid = rows.map(Array.init)
-        if inhale { for x in 0..<cell.width where grid[10][x] == "W" { grid[9][x] = "W" } }
-        for (r, line) in ["zzzz", "..z.", ".z..", "zzzz"].enumerated() {
-            for (c, ch) in line.enumerated() where ch == "z" { grid[z.y + r][z.x + c] = "z" }
-        }
+        for x in 0..<cell.width where grid[10][x] == "W" { grid[9][x] = "W" }
         return grid.map { String($0) }
     }
 
-    static let sit = [
-        Still(rows: sitRows, head: head, headX: 18, headY: 3),
-        Still(rows: sitRows, head: headBlink, headX: 18, headY: 3),
+    static let sit = [Still(rows: sitRows, head: head), Still(rows: sitRows, head: headBlink)]
+    static let sleep = [Still(rows: sleepRows, head: headSleep, headX: 17, headY: 9),
+                        Still(rows: breathe(sleepRows), head: headSleep, headX: 17, headY: 9)]
+    static let alert = [Still(rows: alertRows, head: headAlert, headY: 1), Still(rows: alertFlick, head: headAlert, headY: 1)]
+    static let yawn = [Still(rows: sitRows, head: headYawn)]
+    static let content = [Still(rows: contentRows, head: head), Still(rows: contentRows, head: headBlink)]
+
+    // MARK: Timing (manifest v3, the animator's only source). Seconds; motion shows state, never speed.
+
+    /// `doubleEvery` and `doubleGap` come together: every Nth blink closes, opens for `doubleGap` and closes again.
+    struct Timing { var durations: [Double]; var holdSequence: [Double] = []; var doubleEvery: Int? = nil; var doubleGap: Double? = nil }
+
+    static let timing: [String: Timing] = [
+        // Irregular blink: holds cycle through the sequence, every 4th blink is double (closed 0.12 · open 0.15 · closed 0.12).
+        "sit": Timing(durations: [6.0, 0.12], holdSequence: [6.0, 9.5, 4.5, 11.0, 7.5], doubleEvery: 4, doubleGap: 0.15),
+        // Breathing steps A (frame 0, no z) · B (frame 1 + zS) · C (frame 0 + zL), 1.6 s each.
+        "sleep": Timing(durations: [1.6, 1.6]),
+        "walk": Timing(durations: Array(repeating: 0.15, count: 4)),
+        "run": Timing(durations: Array(repeating: 1.0 / 14, count: 6)),
+        "alert": Timing(durations: [2.4, 0.3]),
+        "yawn": Timing(durations: [0.6]),
+        // One-shot: frame 0 0.5 s → frame 1 0.45 s → frame 0 0.55 s (the second hold).
+        "content": Timing(durations: [0.5, 0.45], holdSequence: [0.5, 0.55]),
     ]
 
-    static let sleep = [
-        Still(rows: breathe(sleepRows, inhale: false, z: (24, 3)), head: headSleep, headX: 17, headY: 9),
-        Still(rows: breathe(sleepRows, inhale: true, z: (25, 1)), head: headSleep, headX: 17, headY: 9),
+    // MARK: Effects: label-coloured template glyphs, alpha only (K-2)
+
+    static let glyphs: [(name: String, rows: [String])] = [
+        ("zS", ["###", ".#.", "#..", "###"]),
+        ("zL", ["####", "..#.", ".#..", "####"]),
     ]
 
-    /// Suggested seconds per frame (manifest). Frame 0 of every pose is its still frame.
-    static let durations: [String: [Double]] = [
-        "sit": [3.2, 0.16],
-        "sleep": [1.6, 1.6],
-        "walk": [0.125, 0.125, 0.125, 0.125],
-        "run": Array(repeating: 1.0 / 14, count: 6),
-        "alert": [0.6, 0.3],
+    /// Cell coordinates. Step 0 of the sleep cycle draws no z; the still and deep-sleep frame uses the last step.
+    /// zS sits one row above the spec's y 4 so it keeps a 1 px gap (8-neighbour) from the right ear's outline.
+    static let fx: [(pose: String, step: Int, glyph: String, x: Int, y: Int)] = [
+        ("sleep", 1, "zS", 22, 3),
+        ("sleep", 2, "zL", 25, 0),
     ]
+
+    // MARK: Pixel heads (B-3, B-2): 10 × 9 head + 1 px outline = 12 × 11
+
+    /// Input head for the 9-row slot: `headAlert` without the row under the eyes, so the raised ears and the wide eyes
+    /// both stay. Dropping the forehead row instead would put the inner-ear shade on the eyes like brows.
+    static let headAlertShort = headAlert.enumerated().filter { $0.offset != 7 }.map(\.element)
+
+    static let heads: [(name: String, rows: [String])] = [
+        ("normal", head), ("blink", headBlink), ("alert", headAlertShort), ("sleep", headSleep + [head.last!]),
+    ]
+
+    static let headSize = (width: 12, height: 11)
+
+    static func headGrid(_ rows: [String]) -> [[Character]] {
+        compose([Part(rows: rows, x: 1, y: 1, group: .head)], width: headSize.width, height: headSize.height)
+    }
 
     // MARK: Composition
 
-    static func compose(_ parts: [Part]) -> [[Character]] {
-        let w = cell.width, h = cell.height
+    static func compose(_ parts: [Part], width w: Int = cell.width, height h: Int = cell.height) -> [[Character]] {
         var color = Array(repeating: Array(repeating: Character("."), count: w), count: h)
         var owner = Array(repeating: Array(repeating: Group?.none, count: w), count: h) // nil = empty or outline
         for part in parts {
@@ -338,16 +397,26 @@ enum RunnerArt {
     }
 
     static func bitmap(_ grid: [[Character]]) -> Bitmap {
-        var out = Bitmap(width: cell.width, height: cell.height)
-        for (y, row) in grid.enumerated() { for (x, ch) in row.enumerated() where ch != "." { out[x, y] = palette[ch]! } }
+        var out = Bitmap(width: grid[0].count, height: grid.count)
+        for (y, row) in grid.enumerated() { for (x, ch) in row.enumerated() where ch != "." { out[x, y] = Palette.tokens[ch]! } }
         return out
     }
 
+    /// Opaque 1-bit mask (black, alpha 255) of `#` cells.
+    static func mask(_ rows: [String]) -> Bitmap {
+        var out = Bitmap(width: rows.map(\.count).max()!, height: rows.count)
+        for (y, row) in rows.enumerated() { for (x, ch) in row.enumerated() where ch == "#" { out[x, y] = RGBA(r: 0, g: 0, b: 0) } }
+        return out
+    }
+
+    /// Sheet rows in manifest order. Frame 0 of every pose is its still frame.
     static let poses: [(name: String, frames: [[Part]])] = [
         ("sit", sit.map(parts)),
         ("sleep", sleep.map(parts)),
         ("walk", walk.map(parts)),
         ("run", run.map(parts)),
         ("alert", alert.map(parts)),
+        ("yawn", yawn.map(parts)),
+        ("content", content.map(parts)),
     ]
 }

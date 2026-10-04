@@ -27,6 +27,8 @@ final class Preferences: ObservableObject {
     /// Opt-in notifications; both default off.
     @Published var notifyTurnComplete: Bool { didSet { persist() } }
     @Published var notifyInput: Bool { didSet { persist() } }
+    /// "입력 필요 알림에 소리": off by default; `.sound` permission is asked only when it is turned on (P-5).
+    @Published var notifyInputSound: Bool { didSet { persist() } }
     /// Runtime only, from the system sampler; a battery item without a battery shows nothing.
     @Published var hasBattery = true { didSet { if hasBattery != oldValue { keepSomethingVisible() } } }
     init(defaults: UserDefaults = .standard) {
@@ -48,6 +50,7 @@ final class Preferences: ObservableObject {
         statusBarLayout = StatusBarLayout(rawValue: defaults.string(forKey: "statusBarLayout") ?? "") ?? .compact
         notifyTurnComplete = defaults.bool(forKey: "notifyTurnComplete")
         notifyInput = defaults.bool(forKey: "notifyInput")
+        notifyInputSound = defaults.bool(forKey: "notifyInputSound")
         // An older build could hide every item and the cat, leaving only a "TC" placeholder.
         if statusBarLayout != .minimal && !showRunner && shownItems.isEmpty { showRunner = true }
     }
@@ -60,6 +63,7 @@ final class Preferences: ObservableObject {
         defaults.set(statusBarLayout.rawValue, forKey: "statusBarLayout")
         defaults.set(notifyTurnComplete, forKey: "notifyTurnComplete")
         defaults.set(notifyInput, forKey: "notifyInput")
+        defaults.set(notifyInputSound, forKey: "notifyInputSound")
     }
     /// Items the compact and inline layouts actually draw.
     var shownItems: [MetricID] { order.filter { visible.contains($0) && ($0 != .battery || hasBattery) } }
@@ -82,16 +86,34 @@ final class Preferences: ObservableObject {
         guard id != target, let from = order.firstIndex(of: id), let to = order.firstIndex(of: target) else { return }
         order.move(fromOffsets: [from], toOffset: to > from ? to + 1 : to)
     }
-    /// Display, cat and notification choices only; login item and notification permission are untouched.
-    func reset() {
-        order = MetricID.allCases
-        visible = Set(MetricID.allCases)
-        animationSource = .activity
-        showRunner = true
-        statusBarLayout = .compact
-        notifyTurnComplete = false
-        notifyInput = false
+    /// The display, cat and notification choices that "기본값으로 되돌리기" covers; login item and permission are not here.
+    struct Snapshot: Equatable {
+        var order: [MetricID], visible: Set<MetricID>, animationSource: RunnerMotion, showRunner: Bool
+        var statusBarLayout: StatusBarLayout, notifyTurnComplete: Bool, notifyInput: Bool, notifyInputSound: Bool
     }
+    static let defaultSnapshot = Snapshot(order: MetricID.allCases, visible: Set(MetricID.allCases), animationSource: .activity,
+                                          showRunner: true, statusBarLayout: .compact, notifyTurnComplete: false, notifyInput: false,
+                                          notifyInputSound: false)
+    var snapshot: Snapshot {
+        Snapshot(order: order, visible: visible, animationSource: animationSource, showRunner: showRunner, statusBarLayout: statusBarLayout,
+                 notifyTurnComplete: notifyTurnComplete, notifyInput: notifyInput, notifyInputSound: notifyInputSound)
+    }
+    /// Applies `snapshot` and registers the previous values with `undoManager`, so ⌘Z (and ⇧⌘Z) step back and forth (T-6).
+    func restore(_ snapshot: Snapshot, undoManager: UndoManager? = nil) {
+        let previous = self.snapshot
+        statusBarLayout = snapshot.statusBarLayout
+        order = snapshot.order
+        visible = snapshot.visible
+        showRunner = snapshot.showRunner
+        animationSource = snapshot.animationSource
+        notifyTurnComplete = snapshot.notifyTurnComplete
+        notifyInput = snapshot.notifyInput
+        notifyInputSound = snapshot.notifyInputSound
+        undoManager?.registerUndo(withTarget: self) { $0.restore(previous, undoManager: undoManager) }
+        undoManager?.setActionName("기본값으로 되돌리기")
+    }
+    /// Display, cat and notification choices only; login item and notification permission are untouched.
+    func reset(undoManager: UndoManager? = nil) { restore(Self.defaultSnapshot, undoManager: undoManager) }
 }
 
 /// Clients whose config TokenCat changed and that have not sent a reading since.
@@ -124,6 +146,11 @@ final class DashboardModel: ObservableObject {
     @Published var hasSample = false
     @Published var tokensSampledAt: Date?
     @Published var telemetryStatus = "실측 수신 대기"
+    /// Collector lifecycle from the in-process collector, or from the probe on the verification path
+    /// (`.stopped` when no running TokenCat answers). Fixtures may pin it.
+    @Published var telemetryState = TelemetryCollectorState.waiting
+    /// When the collector's next automatic start runs; nil when none is scheduled and always on the probe path.
+    @Published var telemetryNextRetryAt: Date?
     @Published var telemetrySetupNote: String?
     @Published var telemetrySetupFailure: TelemetrySetupFailure?
     /// Clients whose config changed and that have not sent a reading since; they need a new launch.
@@ -132,7 +159,17 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var telemetryRestartExpired: Set<TokenSource> = []
     /// Newest telemetry reading time per client seen by this process.
     @Published private(set) var telemetryLastReceived: [TokenSource: Date] = [:]
-    private var telemetryBatches: [TokenSource: Date] = [:]
+    /// Newest batch per client seen by this process, decoded or not ("기록 수신 중 · 속도 형식 없음").
+    @Published private(set) var telemetryBatches: [TokenSource: Date] = [:]
+    /// Whether ~/.codex/sessions or ~/.claude/projects exists. Checked every 5 s on the token queue, never in a
+    /// view body; a folder that appears later restarts the log watcher. Fixtures pin it.
+    @Published var logFoldersFound = true
+    /// A top-level group (`SessionGroup.id`) the dashboard should select and scroll to, from a notification or the quick menu.
+    @Published var focusRequest: String?
+    /// Newest `lastOutputAt` across all readings, recomputed on every publish.
+    @Published private(set) var newestOutputAt: Date?
+    /// The menu-bar cat's quiet reference, shared with the popover header so both fall asleep together.
+    @Published var runnerQuietSince: Date?
     @Published private(set) var telemetryReady = false
     /// The single clock for every age and elapsed value shown; views never read `Date()`.
     @Published private(set) var now = Date()
@@ -162,7 +199,12 @@ final class DashboardModel: ObservableObject {
     private var changedPaths: [String] = []
     private var running = false
     private var generation: UInt64 = 0
+    private var lastFolderCheck: Date?
+    private var folderCheckInFlight = false
+    /// Log folders that existed at the previous check; nil until the first check after start.
+    private var foldersSeen: Set<String>?
     static let samplingInterval: TimeInterval = 1
+    static let folderCheckInterval: TimeInterval = 5
     /// File events can arrive many times per second while a client streams tool output.
     static let minimumTokenInterval: TimeInterval = 0.25
     private(set) var logEventCount = 0
@@ -209,13 +251,23 @@ final class DashboardModel: ObservableObject {
         UserDefaults.standard.set(Dictionary(uniqueKeysWithValues: pendingRestart.map { ($0.key.rawValue, $0.value.timeIntervalSince1970) }),
                                   forKey: Self.pendingRestartKey)
     }
-    func telemetryClientStatus(_ source: TokenSource) -> String {
-        if telemetryRestartNeeded.contains(source) { return "\(source.title)를 새로 실행하면 실측이 표시됩니다" }
-        if telemetryRestartExpired.contains(source) { return "이 버전에서 실측을 받지 못했습니다" }
-        if let at = telemetryLastReceived[source] {
-            return "최근 실측 " + (now.timeIntervalSince(at) < 60 ? "1분 이내" : Format.age(at, now: now))
-        }
-        return "이번 실행에서 받은 실측 없음"
+    /// Returns the pending focus request once and clears it.
+    @discardableResult
+    func consumeFocusRequest() -> String? {
+        guard let id = focusRequest else { return nil }
+        focusRequest = nil
+        return id
+    }
+    /// "지금 다시 시도" (T-3): the collector's scheduled retry runs now; the new state shows on the next publish.
+    func retryTelemetryNow() {
+        guard telemetryProvider == nil else { return }
+        telemetry.retryNow()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.refresh() }
+    }
+    /// "다시 확인": checks the log folders now instead of at the next 5 s tick.
+    func recheckLogFolders() {
+        guard running else { return }
+        checkLogFolders()
     }
     func start() {
         guard !running else { return }
@@ -242,6 +294,29 @@ final class DashboardModel: ObservableObject {
         watcher = nil
         changedPaths.removeAll()
         tokenRefreshPending = false
+        lastFolderCheck = nil
+        foldersSeen = nil
+    }
+    private func checkLogFolders() {
+        guard running, !folderCheckInFlight else { return }
+        folderCheckInFlight = true
+        lastFolderCheck = Date()
+        let currentGeneration = generation
+        tokenQueue.async { [weak self] in
+            guard let self else { return }
+            let existing = Set(self.tracker.watchedDirectories.map(\.path).filter { FileManager.default.fileExists(atPath: $0) })
+            DispatchQueue.main.async {
+                self.folderCheckInFlight = false
+                guard self.running, self.generation == currentGeneration else { return }
+                if self.logFoldersFound != !existing.isEmpty { self.logFoldersFound = !existing.isEmpty }
+                let seen = self.foldersSeen
+                self.foldersSeen = existing
+                // A folder created after the watcher started (first Codex or Claude Code run): watch it and read it now.
+                guard let seen, !existing.isSubset(of: seen) else { return }
+                self.watcher?.start(directories: self.tracker.watchedDirectories)
+                self.refreshTokens()
+            }
+        }
     }
     private func logsChanged(_ paths: [String]) {
         guard running else { return }
@@ -254,6 +329,7 @@ final class DashboardModel: ObservableObject {
         guard running else { return }
         refreshSystem()
         refreshTokens()
+        if lastFolderCheck.map({ Date().timeIntervalSince($0) >= Self.folderCheckInterval }) ?? true { checkLogFolders() }
     }
     private func refreshTokens() {
         guard running else { return }
@@ -287,9 +363,9 @@ final class DashboardModel: ObservableObject {
             let batches = self.telemetryProvider == nil ? self.telemetry.lastBatchAt : [:]
             // Verification commands read the running app's collector, never this unstarted one.
             let probed = self.telemetryProbe?()
-            let telemetryStatus = probed.map { $0 ? (measurements.isEmpty ? TelemetryCollectorState.waiting.status
-                                                                          : TelemetryCollectorState.receiving.status)
-                                               : "실측 꺼짐 · 실행 중인 TokenCat 수집기 없음" } ?? self.telemetry.status
+            let telemetryState = probed.map { $0 ? (measurements.isEmpty ? .waiting : .receiving) : .stopped } ?? self.telemetry.state
+            let telemetryStatus = probed == false ? "실측 꺼짐 · 실행 중인 TokenCat 수집기 없음" : telemetryState.status
+            let nextRetryAt = probed == nil ? self.telemetry.nextRetryAt : nil
             let telemetryReady = probed ?? (self.telemetryProvider != nil || self.telemetry.isRunning)
             let measuredAt = Date()
             DispatchQueue.main.async {
@@ -298,10 +374,13 @@ final class DashboardModel: ObservableObject {
                 self.tokens = tokens
                 self.tokensSampledAt = measuredAt
                 self.telemetryStatus = telemetryStatus
+                if self.telemetryState != telemetryState { self.telemetryState = telemetryState }
+                if self.telemetryNextRetryAt != nextRetryAt { self.telemetryNextRetryAt = nextRetryAt }
                 if self.telemetryReady != telemetryReady { self.telemetryReady = telemetryReady }
                 let lastReceived = self.telemetryLastReceived.merging(received) { max($0, $1) }
                 if lastReceived != self.telemetryLastReceived { self.telemetryLastReceived = lastReceived }
-                self.telemetryBatches = self.telemetryBatches.merging(batches) { max($0, $1) }
+                let mergedBatches = self.telemetryBatches.merging(batches) { max($0, $1) }
+                if mergedBatches != self.telemetryBatches { self.telemetryBatches = mergedBatches }
                 self.updateRestartState(now: measuredAt)
                 self.rebuildPresentation()
                 self.onUpdate?()
@@ -342,6 +421,8 @@ final class DashboardModel: ObservableObject {
         if flow != self.flow { self.flow = flow }
         groups = SessionPresentation.groups(tokens, now: now)
         sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow)
+        let newest = tokens.filter { !SessionPresentation.isTelemetry($0) }.compactMap(\.lastOutputAt).max()
+        if newest != newestOutputAt { newestOutputAt = newest }
     }
 }
 
@@ -404,21 +485,58 @@ enum Format {
 }
 
 
+/// VoiceOver announcements while the dashboard is visible (P-3): at most one per 5 s; a burst keeps its most urgent text.
+struct AnnouncementGate {
+    static let interval: TimeInterval = 5
+    private(set) var lastAt: Date?
+    private(set) var pending: (text: String, priority: Int)?
+
+    /// Returns the text to post now, or how long until `flush` should post the merged one (only for the first held text).
+    mutating func offer(_ text: String, priority: Int, now: Date) -> (post: String?, flushAfter: TimeInterval?) {
+        if pending == nil, lastAt.map({ now.timeIntervalSince($0) >= Self.interval }) ?? true {
+            lastAt = now
+            return (text, nil)
+        }
+        if let held = pending {
+            if priority > held.priority { pending = (text, priority) }
+            return (nil, nil)
+        }
+        pending = (text, priority)
+        return (nil, max(0, (lastAt ?? now).addingTimeInterval(Self.interval).timeIntervalSince(now)))
+    }
+
+    mutating func flush(now: Date) -> (text: String, priority: Int)? {
+        guard let held = pending else { return nil }
+        pending = nil
+        lastAt = now
+        return held
+    }
+}
+
 final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
     /// Payload-free hand-off from a second launch; the running instance opens its dashboard and acknowledges.
     static let openRequest = Notification.Name("dev.seuput.TokenCat.openPopover")
     static let openAcknowledged = Notification.Name("dev.seuput.TokenCat.openPopover.ack")
+    /// Set while the panel is open; a panel open at quit comes back at launch without taking focus (P-1).
+    static let panelWasOpenKey = "panelWasOpen"
+    /// The minimum covers the fixed chrome (header, flow card with limit row, titles, system, footer ≈ 405 pt) plus one row.
+    static let panelWidth: CGFloat = 420, panelMinimumHeight: CGFloat = 470
     let model = DashboardModel()
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
     private var statusView: StatusBarContentView?
     private var settingsWindow: NSWindow?
+    private var settingsTabs: SettingsTabsController?
     private var panel: NSPanel?
-    private var panelSize: NSKeyValueObservation?
+    private var panelEffect: NSVisualEffectView?
     private let notifier = Notifier()
     private lazy var settingsState = SettingsState(notifier: notifier)
     private var attention = AttentionTracker()
     private var latestSignals: [String: AttentionSignal] = [:]
+    private var clearedStaleInput = false
+    /// Turn ends that already played the cat's `content` (signal id and event time), newest last.
+    private var playedContent: [String] = []
+    private var announcements = AnnouncementGate()
     private var director = RunnerDirector()
     private let animator = RunnerAnimator()
     private var activity = RunnerActivity()
@@ -431,6 +549,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var sessionActive = true
     private var statusWindowVisible = true
     private var popoverClosedAt: Date?
+    /// The app in front when the popover opened; it gets focus back when the popover closes on its own (M-6).
+    private var previousApp: NSRunningApplication?
+    private var terminating = false
     private var telemetrySetupInFlight = false
     private var telemetryConfigured = false
 
@@ -463,10 +584,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentViewController = dashboardController()
-        animator.render = { [weak self] pose, frame in self?.statusView?.updateRunner(pose: pose, frame: frame) }
+        animator.render = { [weak self] pose, frame, fx in self?.statusView?.updateRunner(pose: pose, frame: frame, fx: fx) }
         animator.replan = { [weak self] in self?.planRunner() }
-        notifier.onOpen = { [weak self] in self?.openDashboard() }
+        notifier.onOpen = { [weak self] group in self?.openDashboard(focus: group) }
         notifier.activate()
         model.onUpdate = { [weak self] in self?.publish() }
         model.settingsRequest = { [weak self] in self?.openSettings(focus: $0) }
@@ -479,6 +599,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
         model.start()
         publish()
+        if UserDefaults.standard.bool(forKey: Self.panelWasOpenKey) {
+            // Restored behind the current app: ordered front, never activated or made key.
+            model.popoverShownAt = Date()
+            makePanel().orderFront(nil)
+        }
         if CommandLine.arguments.contains("--open-popover") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.togglePopover() }
         }
@@ -494,6 +619,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // The panel's open state stays as it was at quit (windowWillClose must not clear it now).
+        terminating = true
         animator.stop()
         observers.forEach { $0.0.removeObserver($0.1) }
         observers.removeAll()
@@ -508,11 +635,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         return false
     }
 
-    private func dashboardController() -> NSHostingController<DashboardView> {
-        let controller = NSHostingController(rootView: DashboardView(model: model, settings: { [weak self] in self?.openSettings() },
-                                                                     quit: { NSApp.terminate(nil) }))
+    private func dashboardController(_ presentation: DashboardPresentation) -> NSHostingController<DashboardView> {
+        let controller = NSHostingController(rootView: DashboardView(model: model, presentation: presentation, actions: dashboardActions))
         controller.sizingOptions = [.preferredContentSize]
         return controller
+    }
+
+    private var dashboardActions: DashboardActions {
+        DashboardActions(settings: { [weak self] in self?.openSettings() },
+                         quit: { NSApp.terminate(nil) },
+                         about: { [weak self] in self?.showAbout() },
+                         activityMonitor: { [weak self] in self?.openActivityMonitor() },
+                         detach: { [weak self] in self?.openPanel() },
+                         openTelemetrySettings: { [weak self] in self?.openSettings(focus: .telemetry) })
+    }
+
+    /// macOS 14 cooperative activation, the older call on 13.
+    private func activateSelf() {
+        if #available(macOS 14, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
     }
 
     private func observeSystem() {
@@ -530,6 +670,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         on(workspace, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification) {
             $0.statusView?.displayOptionsChanged()
             $0.settingsState.refresh()
+            $0.updatePanelMaterial()
             $0.planRunner()
         }
         if let window = statusItem.button?.window {
@@ -548,7 +689,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         updateStatus()
         let now = Date()
         activity = RunnerActivity(groups: groups, cpu: model.hasSample ? model.system.cpuPercent : nil, now: now)
-        director.observe(activity, now: now)
+        activity.known = model.tokensSampledAt != nil
+        if activity.known { director.observe(activity, now: now) }
+        let quiet = director.quietSince(activity)
+        if model.runnerQuietSince != quiet { model.runnerQuietSince = quiet }
         planRunner()
         // The baseline is the first real token sample, so sessions already waiting at launch are not announced.
         if model.tokensSampledAt != nil { handleAttention(groups) }
@@ -560,6 +704,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard preferences.showRunner else { return }
         animator.apply(director.plan(preferences.animationSource, activity: activity, now: Date(),
                                      reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion))
+        if settingsWindow != nil, settingsState.runnerPose != animator.plan.pose { settingsState.runnerPose = animator.plan.pose }
     }
 
     func updateStatus() {
@@ -586,23 +731,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     private func handleAttention(_ groups: [SessionGroup]) {
         let signals = AttentionSignal.make(groups)
-        latestSignals = Dictionary(signals.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let next = Dictionary(signals.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Answered (or gone): its "입력 필요" notification is removed, whatever the toggles say now; at the first
+        // baseline also those an earlier run left behind.
+        if !clearedStaleInput {
+            clearedStaleInput = true
+            notifier.removeStaleInput(keeping: Set(signals.filter(\.input).map { AttentionEvent.inputIdentifier($0.id) }))
+        }
+        for (id, before) in latestSignals where before.input && next[id]?.input != true { notifier.removeInput(id) }
+        latestSignals = next
         // The baseline always advances, so turning a toggle on later never replays old transitions.
         for event in attention.update(signals) {
             switch event {
             case .input:
+                announce("TokenCat 세션 입력 필요", priority: .high)
                 guard model.preferences.notifyInput, !dashboardVisible else { continue }
-                notifier.post(event)
+                notifier.post(event, sound: model.preferences.notifyInputSound)
             case .finished(let signal):
-                guard model.preferences.notifyTurnComplete else { continue }
-                // A Stop hook can continue the turn right after a soft close; send only if it stayed closed.
+                // A Stop hook can continue the turn right after a soft close; act only if it stayed closed.
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
-                    guard let self, self.latestSignals[signal.id]?.live != true,
-                          self.model.preferences.notifyTurnComplete, !self.dashboardVisible else { return }
+                    guard let self, self.latestSignals[signal.id]?.live != true else { return }
+                    self.turnEnded(signal)
+                    self.announce(signal.ended == .interrupted ? "턴 중단" : "턴 완료", priority: .medium)
+                    guard self.model.preferences.notifyTurnComplete, !self.dashboardVisible else { return }
                     self.notifier.post(event)
                 }
             }
         }
+    }
+
+    /// A confirmed turn end plays the cat's `content` once per signal and event time, whatever the notification toggles (K-5).
+    private func turnEnded(_ signal: AttentionSignal) {
+        let key = "\(signal.id)@\(signal.endedAt?.timeIntervalSince1970 ?? 0)"
+        guard !playedContent.contains(key) else { return }
+        playedContent.append(key)
+        if playedContent.count > 64 { playedContent.removeFirst(playedContent.count - 64) }
+        guard model.preferences.showRunner, model.preferences.animationSource == .activity else { return }
+        animator.playContent()
+    }
+
+    private func announce(_ text: String, priority: NSAccessibilityPriorityLevel) {
+        guard dashboardVisible, NSWorkspace.shared.isVoiceOverEnabled else { return }
+        let decision = announcements.offer(text, priority: priority.rawValue, now: Date())
+        if let text = decision.post { postAnnouncement(text, priority: priority.rawValue) }
+        if let delay = decision.flushAfter {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, let held = self.announcements.flush(now: Date()), self.dashboardVisible else { return }
+                self.postAnnouncement(held.text, priority: held.priority)
+            }
+        }
+    }
+
+    private func postAnnouncement(_ text: String, priority: Int) {
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: text, .priority: priority])
     }
 
     // MARK: Status item, popover and panel
@@ -614,7 +796,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     @objc func togglePopover() {
         if let panel, panel.isVisible {
-            NSApp.activate(ignoringOtherApps: true)
+            activateSelf()
             panel.makeKeyAndOrderFront(nil)
             return
         }
@@ -626,15 +808,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     private func showPopover() {
         guard let button = statusItem.button else { return }
-        NSApp.activate(ignoringOtherApps: true)
+        let front = NSWorkspace.shared.frontmostApplication
+        previousApp = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier ? nil : front
+        // Built right before showing and released on close, so a closed popover runs no SwiftUI updates (P-6).
+        if popover.contentViewController == nil { popover.contentViewController = dashboardController(.popover) }
+        activateSelf()
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         button.highlight(true)
         statusView?.highlighted = true
     }
 
-    func openDashboard() {
+    /// `focus` (a top-level group id from a notification or the quick menu) is selected once the dashboard shows it.
+    func openDashboard(focus: String? = nil) {
+        if let focus { model.focusRequest = focus }
         if let panel, panel.isVisible {
-            NSApp.activate(ignoringOtherApps: true)
+            activateSelf()
             panel.makeKeyAndOrderFront(nil)
         } else if !popover.isShown {
             showPopover()
@@ -649,75 +837,126 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popoverClosedAt = Date()
         statusItem.button?.highlight(false)
         statusView?.highlighted = false
+        popover.contentViewController = nil
+        returnFocus()
+    }
+
+    /// Esc or a second click on the item hands focus back to the app that was in front (M-6); not when another app was
+    /// clicked (TokenCat is no longer active) or a TokenCat window (Settings, panel, About) is on screen.
+    private func returnFocus() {
+        guard let app = previousApp else { return }
+        previousApp = nil
+        guard NSApp.isActive, !app.isTerminated,
+              !NSApp.windows.contains(where: { $0.isVisible && $0.styleMask.contains(.titled) }) else { return }
+        if #available(macOS 14, *) { _ = app.activate(from: .current, options: []) } else { app.activate(options: []) }
     }
 
     func popoverShouldDetach(_ popover: NSPopover) -> Bool { true }
 
     /// Dragging the popover off the menu bar leaves the same dashboard in a panel that remembers its frame.
     func detachableWindow(for popover: NSPopover) -> NSWindow? {
+        previousApp = nil
         statusItem.button?.highlight(false)
         statusView?.highlighted = false
         model.popoverShownAt = Date()
+        UserDefaults.standard.set(true, forKey: Self.panelWasOpenKey)
         return makePanel()
     }
 
+    /// Resizable to the screen height at a fixed 420 pt width; the list fills the height (P-1). Its hosting view keeps
+    /// no size constraints, so content changes never move or resize it.
     private func makePanel() -> NSPanel {
         if let panel { return panel }
-        let controller = dashboardController()
-        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 420, height: 560), styleMask: [.titled, .closable, .utilityWindow],
-                            backing: .buffered, defer: true)
+        let host = NSHostingView(rootView: DashboardView(model: model, presentation: .panel, actions: dashboardActions))
+        host.sizingOptions = []
+        let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: 560),
+                            styleMask: [.titled, .closable, .resizable, .utilityWindow], backing: .buffered, defer: true)
         panel.title = "TokenCat"
         // A normal window level: other apps' windows can cover it ("always on top" is not a feature).
         panel.isFloatingPanel = false
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.delegate = self
-        panel.contentViewController = controller
-        if !panel.setFrameUsingName("TokenCatPanel") { panel.center() }
-        panel.setFrameAutosaveName("TokenCatPanel")
-        panelSize = controller.observe(\.preferredContentSize, options: [.initial, .new]) { [weak self] controller, _ in
-            let size = controller.preferredContentSize
-            DispatchQueue.main.async { self?.fitPanel(to: size) }
+        let effect = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: Self.panelWidth, height: 560))
+        effect.blendingMode = .behindWindow
+        effect.state = .followsWindowActiveState
+        host.frame = effect.bounds
+        host.autoresizingMask = [.width, .height]
+        effect.addSubview(host)
+        panel.contentView = effect
+        panelEffect = effect
+        updatePanelMaterial()
+        let screen = statusItem.button?.window?.screen ?? NSScreen.main
+        panel.contentMinSize = NSSize(width: Self.panelWidth, height: Self.panelMinimumHeight)
+        panel.contentMaxSize = NSSize(width: Self.panelWidth, height: screen?.visibleFrame.height ?? 4_000)
+        if panel.setFrameUsingName("TokenCatPanel") {
+            let content = panel.contentRect(forFrameRect: panel.frame)
+            if content.height < Self.panelMinimumHeight || content.width != Self.panelWidth {
+                var frame = panel.frameRect(forContentRect: NSRect(x: content.minX, y: 0, width: Self.panelWidth,
+                                                                   height: max(Self.panelMinimumHeight, content.height)))
+                frame.origin.y = panel.frame.maxY - frame.height
+                panel.setFrame(frame, display: false)
+            }
+        } else {
+            // `fittingSize` is zero without sizing options; measure the popover layout's ideal height instead.
+            let ideal = NSHostingController(rootView: DashboardView(model: model, actions: .none))
+                .sizeThatFits(in: NSSize(width: Self.panelWidth, height: 10_000)).height
+            placeNewPanel(panel, fitting: ideal, screen: screen)
         }
+        panel.setFrameAutosaveName("TokenCatPanel")
         self.panel = panel
         return panel
     }
 
-    /// Keeps the panel's top edge fixed while the dashboard's height changes.
-    private func fitPanel(to size: NSSize) {
-        guard let panel, size.width > 0, size.height > 0 else { return }
-        let content = panel.frameRect(forContentRect: NSRect(origin: .zero, size: size))
-        var frame = panel.frame
-        frame.origin.y += frame.height - content.height
-        frame.size = content.size
-        if frame != panel.frame { panel.setFrame(frame, display: true) }
+    /// First open: the panel's top-right corner 8 pt below the status item; later opens follow the autosaved frame.
+    private func placeNewPanel(_ panel: NSPanel, fitting: CGFloat, screen: NSScreen?) {
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let height = min(visible.height, max(Self.panelMinimumHeight, fitting > 0 ? fitting : 560))
+        var frame = panel.frameRect(forContentRect: NSRect(x: 0, y: 0, width: Self.panelWidth, height: height))
+        if let item = statusItem.button?.window?.frame {
+            frame.origin = NSPoint(x: item.maxX - frame.width, y: item.minY - 8 - frame.height)
+        } else {
+            frame.origin = NSPoint(x: visible.maxX - frame.width - 8, y: visible.maxY - 8 - frame.height)
+        }
+        frame.origin.x = min(max(frame.minX, visible.minX), visible.maxX - frame.width)
+        frame.origin.y = max(frame.minY, visible.minY)
+        panel.setFrame(frame, display: false)
     }
 
-    /// Closed windows are released so their SwiftUI views stop re-rendering on every model publish.
-    /// Frames are remembered by their autosave names.
+    /// Popover vibrancy; Reduce Transparency uses the window background.
+    private func updatePanelMaterial() {
+        panelEffect?.material = NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency ? .windowBackground : .popover
+    }
+
     /// Returning from System Settings (login item approval, notification permission) re-reads the real status.
     func windowDidBecomeKey(_ notification: Notification) {
         if (notification.object as? NSWindow) === settingsWindow { settingsState.refresh() }
     }
 
+    /// Closed windows are released so their SwiftUI views stop re-rendering on every model publish.
+    /// Frames are remembered by their autosave names.
     func windowWillClose(_ notification: Notification) {
         guard let window = notification.object as? NSWindow else { return }
         if window === settingsWindow {
             settingsWindow?.contentViewController = nil
             settingsWindow = nil
+            settingsTabs = nil
         } else if window === panel {
-            panelSize = nil
-            panel?.contentViewController = nil
+            if !terminating { UserDefaults.standard.set(false, forKey: Self.panelWasOpenKey) }
+            panel?.contentView = nil
             panel = nil
+            panelEffect = nil
         }
     }
 
     @objc private func openPanel() {
+        previousApp = nil
         popover.performClose(nil)
         let panel = makePanel()
         model.popoverShownAt = Date()
-        NSApp.activate(ignoringOtherApps: true)
+        activateSelf()
         panel.makeKeyAndOrderFront(nil)
+        UserDefaults.standard.set(true, forKey: Self.panelWasOpenKey)
     }
 
     // MARK: Menus
@@ -741,26 +980,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         return item
     }
 
-    /// Invisible for an accessory app, but gives Settings and the panel ⌘, ⌘W ⌘Q and copy.
+    /// Invisible for an accessory app, but gives the popover, Settings and the panel ⌘, ⌘Q ⌘W, copy and undo.
     private func installMainMenu() {
         let main = NSMenu()
         let quit = NSMenuItem(title: "TokenCat 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         main.addItem(submenu("TokenCat", [menuItem("TokenCat 정보", #selector(showAbout)), .separator(),
                                           menuItem("설정…", #selector(openSettingsAction), key: ","), .separator(), quit]))
-        main.addItem(submenu("편집", [NSMenuItem(title: "복사", action: #selector(NSText.copy(_:)), keyEquivalent: "c"),
+        let redo = NSMenuItem(title: "실행 복귀", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        main.addItem(submenu("편집", [NSMenuItem(title: "실행 취소", action: Selector(("undo:")), keyEquivalent: "z"), redo, .separator(),
+                                     NSMenuItem(title: "복사", action: #selector(NSText.copy(_:)), keyEquivalent: "c"),
                                      NSMenuItem(title: "모두 선택", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")]))
         main.addItem(submenu("윈도우", [NSMenuItem(title: "닫기", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")]))
         main.items.forEach { $0.submenu?.autoenablesItems = true }
         NSApp.mainMenu = main
     }
 
+    /// Live summary first (M-5), then the controls. Built at open and not refreshed while the menu stays open.
     private func showQuickMenu() {
         if popover.isShown { popover.performClose(nil) }
         let preferences = model.preferences
         let menu = NSMenu()
         menu.autoenablesItems = false
-        menu.addItem(menuItem("열기", #selector(openDashboardAction)))
-        menu.addItem(menuItem("패널로 열기", #selector(openPanel)))
+        let summary = QuickMenuSummary.make(groups: model.groups, counts: model.sessions.counts,
+                                            hasTokenSample: model.tokensSampledAt != nil, now: model.now)
+        menu.addItem(menuItem(summary.headline, #selector(openDashboardAction), enabled: false))
+        let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        for row in summary.rows {
+            let item = menuItem(row.title, #selector(focusGroup(_:)), value: row.id)
+            item.image = row.kind == .waiting ? StatusBarContentView.waitingGlyph(side: 10, contrast: contrast)
+                : StateGlyph.image(row.kind, side: 10, highlighted: false, contrast: contrast)
+            menu.addItem(item)
+        }
+        menu.addItem(.separator())
+        let open = menuItem("열기", #selector(openDashboardAction))
+        open.keyEquivalentModifierMask = []
+        let asPanel = menuItem("패널로 열기", #selector(openPanel))
+        asPanel.keyEquivalentModifierMask = [.option]
+        asPanel.isAlternate = true
+        menu.addItem(open)
+        menu.addItem(asPanel)
         menu.addItem(.separator())
         menu.addItem(submenu("표시 방식", StatusBarLayout.allCases.map {
             menuItem($0.title, #selector(selectLayout(_:)), value: $0.rawValue, checked: preferences.statusBarLayout == $0)
@@ -785,9 +1044,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     @objc private func openDashboardAction() { openDashboard() }
+    @objc private func focusGroup(_ sender: NSMenuItem) { openDashboard(focus: sender.representedObject as? String) }
     @objc private func openSettingsAction() { openSettings() }
     @objc private func toggleRunner() { model.preferences.setShowRunner(!model.preferences.showRunner) }
     @objc private func openActivityMonitor() {
+        previousApp = nil
         NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
     }
     @objc private func selectLayout(_ sender: NSMenuItem) {
@@ -797,31 +1058,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         if let raw = sender.representedObject as? String, let motion = RunnerMotion(rawValue: raw) { model.preferences.animationSource = motion }
     }
     @objc func showAbout() {
-        NSApp.activate(ignoringOtherApps: true)
+        previousApp = nil
+        activateSelf()
         NSApp.orderFrontStandardAboutPanel(options: AppInfo.aboutOptions)
     }
 
+    /// "TokenCat이 하는 일 다시 보기": the first-run card shows again in the dashboard.
+    private func reshowOnboarding() {
+        UserDefaults.standard.set(false, forKey: "onboardingSeen")
+        openDashboard()
+    }
+
     func openSettings(focus: SettingsFocus? = nil) {
+        previousApp = nil
         popover.performClose(nil)
-        if let focus { settingsState.focus = focus }
+        settingsState.runnerPose = animator.plan.pose
         if settingsWindow == nil {
-            let controller = NSHostingController(rootView: SettingsView(preferences: model.preferences, model: model, state: settingsState,
-                                                                        showAbout: { [weak self] in self?.showAbout() }))
-            controller.sizingOptions = []
-            let window = NSWindow(contentViewController: controller)
-            window.title = "TokenCat 설정"
-            window.styleMask = [.titled, .closable, .resizable]
-            window.isReleasedWhenClosed = false
+            let tabs = SettingsTabsController(preferences: model.preferences, model: model, state: settingsState,
+                                              actions: SettingsActions(about: { [weak self] in self?.showAbout() },
+                                                                       openPanel: { [weak self] in self?.openPanel() },
+                                                                       reshowOnboarding: { [weak self] in self?.reshowOnboarding() }))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SettingsTabsController.width, height: 400),
+                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            SettingsTabsController.configure(window, with: tabs)
             window.delegate = self
-            window.contentMinSize = NSSize(width: SettingsView.width, height: 360)
-            window.contentMaxSize = NSSize(width: SettingsView.width, height: 4_000)
-            window.setContentSize(NSSize(width: SettingsView.width, height: 640))
-            if !window.setFrameUsingName("TokenCatSettings") { window.center() }
-            window.setFrameAutosaveName("TokenCatSettings")
+            if !window.setFrameUsingName("TokenCatSettingsTabs") { window.center() }
+            window.setFrameAutosaveName("TokenCatSettingsTabs")
             settingsWindow = window
+            settingsTabs = tabs
         }
+        if focus == .telemetry { settingsTabs?.select(.telemetry) }
         settingsState.refresh()
-        NSApp.activate(ignoringOtherApps: true)
+        activateSelf()
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
@@ -839,6 +1107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             "contentWidth": statusView.requiredWidth, "sampled": model.hasSample,
             "telemetryReady": model.telemetry.isRunning, "telemetryConfigured": telemetryConfigured,
             "runnerPose": animator.plan.pose.rawValue, "runnerTimer": animator.isTimerRunning,
+            "runnerDeepSleep": animator.isDeepSleep,
             "metrics": metrics.map { ["id": $0.id.rawValue, "label": $0.label, "value": $0.value] }
         ]
         do {

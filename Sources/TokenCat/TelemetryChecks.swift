@@ -347,6 +347,12 @@ func runTelemetryChecks() -> [String] {
           "A successful export did not update connection freshness")
     check(LocalTelemetryCollector().state == .waiting && TelemetryCollectorState.busyTokenCat.status != TelemetryCollectorState.busyOtherApp.status,
           "Collector states did not separate another TokenCat from another app")
+    // Never started: retryNow has no retry to run and opens nothing (no port is touched).
+    let unstarted = LocalTelemetryCollector(port: 1)
+    unstarted.retryNow()
+    Thread.sleep(forTimeInterval: 0.05)
+    check(!unstarted.isRunning && unstarted.state == .waiting && unstarted.nextRetryAt == nil,
+          "retryNow started a collector that was never started")
     print("Telemetry checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }
@@ -433,8 +439,59 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
     }
     check(until { callbacks.snapshot.closedCount == 1 } && !collector.isRunning,
           "Stopping from the ready callback deadlocked or left the listener running")
+
+    // retryNow while a retry waits: one listener starts at once and the pending retry is cancelled.
+    let holder = LocalTelemetryCollector(port: port)
+    let retrying = LocalTelemetryCollector(port: port, retryDelays: [1.5])
+    let retryCallbacks = TelemetryCallbackProbe()
+    defer { holder.stop(); retrying.stop() }
+    holder.start()
+    check(until { holder.isRunning }, "retryNow: the holder did not take the test port")
+    retrying.start { retryCallbacks.didReady(retrying.isRunning) }
+    check(until { retrying.nextRetryAt != nil } && !retrying.isRunning && retrying.state == .busyTokenCat,
+          "retryNow: no retry was scheduled behind a busy port")
+    let scheduled = retrying.nextRetryAt ?? Date()
+    holder.stop()
+    check(until { telemetryTestPortIsFree(port) }, "retryNow: the holder did not release the test port")
+    retrying.retryNow()
+    let startedEarly = until { retrying.isRunning } && Date() < scheduled
+    check(startedEarly && retrying.state == .waiting && retrying.nextRetryAt == nil,
+          "retryNow did not start the listener before the scheduled retry")
+    retrying.retryNow()
+    // Past the cancelled deadline a stale attempt would open a second listener, fail on the port and drop the first.
+    Thread.sleep(until: scheduled.addingTimeInterval(0.4))
+    check(retrying.isRunning && retrying.state == .waiting && retrying.nextRetryAt == nil
+          && retryCallbacks.snapshot.readyCount == 1 && retryCallbacks.snapshot.onlyReadyCallbacks,
+          "retryNow while waiting left more than one listener or did not cancel the pending retry")
     print("Telemetry lifecycle checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
+}
+
+/// True when `port` can be bound on loopback right now (the socket is closed again at once).
+func telemetryTestPortIsFree(_ port: UInt16) -> Bool {
+    let probe = socket(AF_INET, SOCK_STREAM, 0)
+    guard probe >= 0 else { return false }
+    defer { close(probe) }
+    var address = sockaddr_in()
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = port.bigEndian
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    return withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(probe, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    } == 0
+}
+
+/// A free loopback port whose next port is free too (the lifecycle checks use both); never the app's port.
+/// Picked below the kernel's ephemeral range (49152+): there the "another app holds the port" check does not see
+/// the squatting socket as busy (observed on macOS 27), so that case could not be exercised.
+func telemetryTestPort() -> UInt16? {
+    for _ in 0..<64 {
+        let port = UInt16.random(in: 40_000...48_000)
+        guard port != LocalTelemetryCollector.port, port &+ 1 != LocalTelemetryCollector.port,
+              telemetryTestPortIsFree(port), telemetryTestPortIsFree(port &+ 1) else { continue }
+        return port
+    }
+    return nil
 }
 
 private final class TelemetryCallbackProbe {

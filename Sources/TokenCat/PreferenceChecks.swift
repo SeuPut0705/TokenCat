@@ -11,8 +11,8 @@ func runPreferenceChecks() -> [String] {
         if !valid() { failures.append(description) }
     }
     check(Preferences(defaults: defaults).animationSource == .activity && !Preferences(defaults: defaults).notifyTurnComplete
-          && !Preferences(defaults: defaults).notifyInput,
-          "A new install did not default to AI activity motion with notifications off")
+          && !Preferences(defaults: defaults).notifyInput && !Preferences(defaults: defaults).notifyInputSound,
+          "A new install did not default to AI activity motion with notifications and their sound off")
     defaults.set(["claude", "disk", "codex", "cpu", "memory", "battery", "network"], forKey: "metricOrder")
     defaults.set(["cpu", "claude", "network"], forKey: "visibleMetrics")
     defaults.set(false, forKey: "showRunner")
@@ -85,12 +85,26 @@ func runPreferenceChecks() -> [String] {
           "Dropping a row onto another did not take its place in either direction, or did not persist")
     defaults.set(1_234.0, forKey: "unrelatedKey")
     guarded.notifyInput = true
+    guarded.notifyInputSound = true
+    guarded.notifyTurnComplete = true
     guarded.animationSource = .still
-    guarded.reset()
-    check(guarded.order == MetricID.allCases && guarded.visible == Set(MetricID.allCases) && guarded.animationSource == .activity
-          && guarded.showRunner && guarded.statusBarLayout == .compact && !guarded.notifyInput && !guarded.notifyTurnComplete
-          && defaults.double(forKey: "unrelatedKey") == 1_234,
+    check(Preferences(defaults: defaults).notifyInputSound, "The input sound toggle did not persist")
+    let before = guarded.snapshot
+    let undo = UndoManager()
+    undo.groupsByEvent = false
+    undo.beginUndoGrouping()
+    guarded.reset(undoManager: undo)
+    undo.endUndoGrouping()
+    check(guarded.snapshot == Preferences.defaultSnapshot && guarded.order == MetricID.allCases && guarded.visible == Set(MetricID.allCases)
+          && guarded.animationSource == .activity && guarded.showRunner && guarded.statusBarLayout == .compact && !guarded.notifyInput
+          && !guarded.notifyTurnComplete && !guarded.notifyInputSound && defaults.double(forKey: "unrelatedKey") == 1_234,
           "Reset did not restore display defaults or touched unrelated state")
+    undo.undo()
+    let undone = guarded.snapshot
+    undo.redo()
+    check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .ai] && before.notifyInputSound
+          && guarded.snapshot == Preferences.defaultSnapshot && undo.undoActionName == "기본값으로 되돌리기",
+          "⌘Z after reset did not restore the previous order and all three notification toggles, or ⇧⌘Z did not reapply")
     print("Preference checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }
@@ -110,44 +124,68 @@ func runShellChecks() -> [String] {
         return value
     }
 
-    check(RunnerDirector.fps(cpu: 5) == 6 && RunnerDirector.fps(cpu: 100) == 14 && RunnerDirector.fps(cpu: 1) == 6
-          && abs(RunnerDirector.fps(cpu: 52.5) - 10) < 0.001, "CPU cadence is not 5–100% → 6–14 fps")
+    // Director (K-4, K-5): CPU gait with hysteresis and linear cadences, measured gait, bursts.
+    check(RunnerDirector.fps(cpu: 6, gait: .walk) == 5 && RunnerDirector.fps(cpu: 20, gait: .walk) == 8
+          && RunnerDirector.fps(cpu: 20, gait: .run) == 8 && RunnerDirector.fps(cpu: 100, gait: .run) == 14
+          && abs(RunnerDirector.fps(cpu: 13, gait: .walk) - 6.5) < 0.001 && abs(RunnerDirector.fps(cpu: 60, gait: .run) - 11) < 0.001,
+          "CPU cadence is not walk 6–20% → 5–8 fps, run 20–100% → 8–14 fps")
     var director = RunnerDirector()
-    func cpuPlan(_ cpu: Double) -> RunnerPlan {
+    var unread = RunnerActivity()
+    unread.known = false
+    check(RunnerDirector().plan(.activity, activity: unread, now: at, reduceMotion: false).pose == .sit,
+          "Before the first token sample the cat slept (and would yawn when the sample arrived)")
+    func cpuPose(_ cpu: Double) -> RunnerPose {
         let value = activity { $0.cpu = cpu }
         director.observe(value, now: at)
-        return director.plan(.cpu, activity: value, now: at, reduceMotion: false)
+        return director.plan(.cpu, activity: value, now: at, reduceMotion: false).pose
     }
-    check(cpuPlan(5).pose == .sit && cpuPlan(7).pose == .run && cpuPlan(5).pose == .run && cpuPlan(3.9).pose == .sit,
-          "CPU motion lacks sit <4% / run >6% hysteresis")
-    check(cpuPlan(50).smooth && cpuPlan(50).fps == RunnerDirector.fps(cpu: 50), "CPU motion does not ease toward its target")
+    let gaits = [5, 7, 5, 3.9, 12, 25, 18, 14.9, 21, 3].map(cpuPose)
+    check(gaits == [.sit, .walk, .walk, .sit, .walk, .run, .run, .walk, .run, .sit],
+          "CPU gait lacks sit <4%/>6% and walk <15%/run >20% hysteresis: \(gaits.map(\.rawValue))")
+    director.observe(activity { $0.cpu = 50 }, now: at)
+    let cpuRun = director.plan(.cpu, activity: activity { $0.cpu = 50 }, now: at, reduceMotion: false)
+    check(cpuRun.smooth && cpuRun.pose == .run && cpuRun.fps == RunnerDirector.fps(cpu: 50, gait: .run), "CPU motion does not ease toward its target")
+    check(RunnerDirector.measuredPlan(30) == RunnerPlan(pose: .walk, fps: 7.25, smooth: true)
+          && RunnerDirector.measuredPlan(40) == RunnerPlan(pose: .run, fps: 8, smooth: true)
+          && RunnerDirector.measuredPlan(500) == RunnerPlan(pose: .run, fps: 14, smooth: true)
+          && RunnerDirector().plan(.measured, activity: RunnerActivity(), now: at, reduceMotion: false) == RunnerPlan(pose: .sit),
+          "Measured motion is not walk below 40 tok/s, run from 40, sit without a measurement")
 
     director = RunnerDirector()
     let working = activity { $0.running = true; $0.newestActivityAt = at }
-    check(director.plan(.activity, activity: working, now: at, reduceMotion: false) == RunnerPlan(pose: .walk, fps: 8),
-          "Working or tool sessions do not walk at a fixed 8 fps")
+    check(director.plan(.activity, activity: working, now: at, reduceMotion: false) == RunnerPlan(pose: .walk),
+          "Working or tool sessions do not walk on the manifest timing")
     var output = working
     output.newestOutputAt = at
     director.observe(output, now: at)
     let burst = director.plan(.activity, activity: output, now: at.addingTimeInterval(0.5), reduceMotion: false)
     director.observe(output, now: at.addingTimeInterval(1))
-    check(burst.pose == .run && burst.fps == 14 && burst.until == at.addingTimeInterval(1.2)
-          && director.burstUntil == at.addingTimeInterval(1.2),
+    check(burst == RunnerPlan(pose: .run, until: at.addingTimeInterval(1.2)) && director.burstUntil == at.addingTimeInterval(1.2),
           "A fresh output event does not run once for 1.2 s, or a refresh of the same event retriggers it")
     check(director.plan(.activity, activity: output, now: at.addingTimeInterval(1.3), reduceMotion: false).pose == .walk,
           "The run burst does not end after 1.2 s")
-    output.newestOutputAt = at.addingTimeInterval(2)
-    director.observe(output, now: at.addingTimeInterval(2.2))
-    check(abs((director.burstUntil ?? at).timeIntervalSince(at) - 3.4) < 0.001, "A newer output event does not start a new burst")
+    var during = RunnerDirector()
+    output.newestOutputAt = at
+    during.observe(output, now: at)
+    output.newestOutputAt = at.addingTimeInterval(0.8)
+    during.observe(output, now: at.addingTimeInterval(0.9))
+    check(abs((during.burstUntil ?? at).timeIntervalSince(at) - 2.1) < 0.001, "A newer output during a run does not extend it")
+    output.newestOutputAt = at.addingTimeInterval(2.5)
+    during.observe(output, now: at.addingTimeInterval(2.6))
+    check(abs((during.burstUntil ?? at).timeIntervalSince(at) - 3.8) < 0.001, "An output within 1 s after a run ended did not run again")
+    output.newestOutputAt = at.addingTimeInterval(4)
+    during.observe(output, now: at.addingTimeInterval(4.1))
+    check(abs((during.burstUntil ?? at).timeIntervalSince(at) - 5.3) < 0.001, "An output well after a run ended did not start a new one")
     var oldOutput = working
     oldOutput.newestOutputAt = at.addingTimeInterval(-30)
     var quiet = RunnerDirector()
     quiet.observe(oldOutput, now: at)
     check(quiet.burstUntil == nil, "An output event older than 5 s triggered a burst")
     let input = activity { $0.input = true; $0.running = true }
+    director.observe(activity { $0.newestOutputAt = at.addingTimeInterval(2.4); $0.running = true }, now: at.addingTimeInterval(2.4))
     check(director.plan(.activity, activity: input, now: at.addingTimeInterval(2.5), reduceMotion: false).pose == .alert,
           "Waiting for input does not outrank a run burst")
-    check(director.plan(.activity, activity: input, now: at, reduceMotion: true) == RunnerPlan(pose: .alert),
+    check(director.plan(.activity, activity: input, now: at, reduceMotion: true) == RunnerPlan(pose: .alert, still: true),
           "Reduce Motion does not hold a still pose for the state")
     check(RunnerDirector().plan(.activity, activity: activity { $0.waiting = true }, now: at, reduceMotion: false).pose == .sit,
           "A log wait does not sit")
@@ -155,30 +193,171 @@ func runShellChecks() -> [String] {
     let recent = activity { $0.newestActivityAt = at.addingTimeInterval(-120) }
     check(idle.plan(.activity, activity: recent, now: at, reduceMotion: false).pose == .sit
           && idle.plan(.activity, activity: recent, now: at.addingTimeInterval(481), reduceMotion: false) == RunnerPlan(pose: .sleep),
-          "No live group does not sit, then sleep (a still pose, fps 0, no blink timer) 10 minutes after the last activity")
+          "No live group does not sit, then sleep 10 minutes after the last activity")
     idle.observe(working, now: at.addingTimeInterval(400))
     check(idle.plan(.activity, activity: RunnerActivity(), now: at.addingTimeInterval(900), reduceMotion: false).pose == .sit,
           "Sleep is not measured from the last time a session was live")
-    check(idle.plan(.still, activity: working, now: at, reduceMotion: false) == RunnerPlan(pose: .sit)
-          && idle.plan(.measured, activity: working, now: at, reduceMotion: false).pose == .sit
-          && idle.plan(.measured, activity: activity { $0.measuredRate = 200 }, now: at, reduceMotion: false) == RunnerPlan(pose: .run, fps: 14, smooth: true),
-          "Still or measured motion does not follow its source (no measurement sits)")
-    let animator = RunnerAnimator()
-    var rendered: [RunnerPose] = []
-    animator.render = { pose, _ in rendered.append(pose) }
-    animator.apply(RunnerPlan(pose: .walk, fps: 8))
-    let walking = animator.isTimerRunning
-    animator.paused = true
-    let pausedStops = !animator.isTimerRunning
-    animator.paused = false
-    animator.apply(RunnerPlan(pose: .alert))
-    check(walking && pausedStops && !animator.isTimerRunning && rendered == [.walk, .alert],
-          "The cat timer runs while hidden or for a still pose, or a pose change is not drawn")
-    animator.stop()
+    check(idle.plan(.still, activity: working, now: at, reduceMotion: false) == RunnerPlan(pose: .sit, still: true),
+          "Still motion does not hold the sit pose")
+
+    // Animator (K-2, K-3, K-5, K-6): driven by an injected clock; `advance()` is the timer's action.
+    var clock = at
+    var drawn: [(RunnerPose, Int, Int?)] = []
+    func animator(_ timing: [RunnerPose: RunnerTiming] = [:]) -> RunnerAnimator {
+        let value = RunnerAnimator()
+        value.clock = { clock }
+        value.timing = { timing[$0] ?? Runner.timing($0) }
+        value.render = { drawn.append(($0, $1, $2)) }
+        return value
+    }
+    /// Advances `count` timer steps, returning each step's (delay, frame, fx) before it fires.
+    func run(_ value: RunnerAnimator, _ count: Int) -> [(delay: TimeInterval, frame: Int, fx: Int?)] {
+        (0..<count).compactMap { _ in
+            guard let delay = value.scheduledDelay else { return nil }
+            let step = (delay, value.frame, value.fx)
+            clock = clock.addingTimeInterval(delay)
+            value.advance()
+            return step
+        }
+    }
+    func near(_ a: [TimeInterval], _ b: [TimeInterval]) -> Bool { a.count == b.count && zip(a, b).allSatisfy { abs($0 - $1) < 0.0001 } }
+
+    let interim = animator()
+    interim.apply(RunnerPlan(pose: .sit))
+    check(near(run(interim, 2).map(\.delay), [Runner.timing(.sit).durations[0], Runner.timing(.sit).durations[1]]),
+          "The sit blink does not read Runner.timing")
+    interim.stop()
+
+    let sitTiming = RunnerTiming(durations: [6, 0.12], holdSequence: [6, 9.5, 4.5, 11, 7.5], doubleEvery: 4)
+    let blinker = animator([.sit: sitTiming])
+    blinker.apply(RunnerPlan(pose: .walk))
+    clock = clock.addingTimeInterval(5)
+    blinker.apply(RunnerPlan(pose: .sit))
+    let rhythm = run(blinker, 12)
+    check(near(rhythm.map(\.delay), [6, 0.12, 9.5, 0.12, 4.5, 0.12, 11, 0.12, 0.15, 0.12, 7.5, 0.12])
+          && rhythm.map(\.frame) == [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1],
+          "Sit blinks do not cycle the hold sequence with a double blink every 4th: \(rhythm.map(\.delay))")
+    blinker.stop()
+
+    let walkTiming = RunnerTiming(durations: [0.15, 0.15, 0.15, 0.15])
+    let walker = animator([.walk: walkTiming, .run: RunnerTiming(durations: Array(repeating: 1 / 14, count: 6))])
+    walker.apply(RunnerPlan(pose: .walk))
+    let steps = run(walker, 5)
+    check(near(steps.map(\.delay), [0.15, 0.15, 0.15, 0.15, 0.15]) && steps.map(\.frame) == [0, 1, 2, 3, 0],
+          "Walking does not step 4 frames at the manifest's 0.150 s")
+    // Dwell: walk → run waits until the walk has shown 1 s; input never waits.
+    clock = at.addingTimeInterval(100)
+    walker.apply(RunnerPlan(pose: .sit))
+    walker.apply(RunnerPlan(pose: .walk))
+    clock = clock.addingTimeInterval(0.3)
+    walker.apply(RunnerPlan(pose: .run, until: clock.addingTimeInterval(1.2)))
+    let held = walker.shown.pose == .walk && (walker.scheduledDelay ?? 1) <= 0.7 + 0.0001
+    clock = clock.addingTimeInterval(0.7)
+    walker.advance()
+    check(held && walker.shown.pose == .run && walker.frame == 0, "walk → run did not wait for the 1 s dwell, or never switched")
+    clock = clock.addingTimeInterval(0.1)
+    walker.apply(RunnerPlan(pose: .run, until: clock.addingTimeInterval(1.2)))
+    let extended = walker.shown.pose == .run && walker.frame == 0
+    walker.apply(RunnerPlan(pose: .alert))
+    check(extended && walker.shown.pose == .alert, "A burst extension restarted the run, or input waited for the dwell")
+    // A burst within 1 s after a run ended continues that run's stride at once; a later one starts at frame 0.
+    clock = clock.addingTimeInterval(5)
+    walker.apply(RunnerPlan(pose: .sit))
+    walker.apply(RunnerPlan(pose: .run, until: clock.addingTimeInterval(1.2)))
+    let strides = run(walker, 3).map(\.frame)
+    clock = clock.addingTimeInterval(1.2 - 3.0 / 14)
+    walker.apply(RunnerPlan(pose: .walk))
+    let walked = walker.shown.pose == .walk
+    clock = clock.addingTimeInterval(0.6)
+    walker.apply(RunnerPlan(pose: .run, until: clock.addingTimeInterval(1.2)))
+    let joined = walker.shown.pose == .run && walker.frame == 4 && abs((walker.scheduledDelay ?? 0) - 1.0 / 14) < 0.0001
+    clock = clock.addingTimeInterval(1.2)
+    walker.apply(RunnerPlan(pose: .walk))
+    clock = clock.addingTimeInterval(1.1)
+    walker.apply(RunnerPlan(pose: .run, until: clock.addingTimeInterval(1.2)))
+    check(strides == [0, 1, 2] && walked && joined && walker.shown.pose == .run && walker.frame == 0,
+          "A burst within 1 s after a run ended did not continue the run's stride at once, or a later one did not start afresh")
+    walker.apply(RunnerPlan(pose: .alert))
+    walker.paused = true
+    let pausedStops = !walker.isTimerRunning
+    walker.paused = false
+    walker.apply(RunnerPlan(pose: .alert, still: true))
+    check(pausedStops && !walker.isTimerRunning, "The cat timer runs while hidden or for a still pose")
+    walker.stop()
+
+    // Sleep: 1.6 s breaths A → B (small z) → C (large z), deep sleep after 20 min with no timer; Reduce Motion holds zL.
+    clock = at
+    drawn = []
+    let sleeper = animator()
+    sleeper.apply(RunnerPlan(pose: .sleep))
+    let breaths = run(sleeper, 4)
+    check(breaths.map(\.frame) == [0, 1, 0, 0] && breaths.map(\.fx) == [nil, RunnerAnimator.smallZ, RunnerAnimator.largeZ, nil]
+          && breaths.allSatisfy { $0.delay >= 1.0 } && sleeper.isTimerRunning && !sleeper.isDeepSleep,
+          "Sleep does not breathe A/B/C on 1.6 s steps (fewer than one wake a second): \(breaths)")
+    clock = at.addingTimeInterval(RunnerAnimator.deepSleepAfter)
+    sleeper.advance()
+    check(sleeper.isDeepSleep && !sleeper.isTimerRunning && sleeper.scheduledDelay == nil && sleeper.frame == 0
+          && sleeper.fx == RunnerAnimator.largeZ && drawn.last.map { $0.0 == .sleep && $0.2 == RunnerAnimator.largeZ } == true,
+          "Deep sleep after 20 minutes does not hold frame 0 with the large z and stop the timer")
+    sleeper.paused = true
+    sleeper.paused = false
+    check(!sleeper.isTimerRunning, "Resuming a deep sleep restarted the breathing timer")
+    // Waking yawns once (0.6 s), then the plan; waking for input does not yawn.
+    sleeper.apply(RunnerPlan(pose: .walk))
+    let yawning = sleeper.shown.pose == .yawn && sleeper.isPlayingOneShot && abs((sleeper.scheduledDelay ?? 0) - Runner.timing(.yawn).durations[0]) < 0.001
+    clock = clock.addingTimeInterval(sleeper.scheduledDelay ?? 0)
+    sleeper.advance()
+    check(yawning && sleeper.shown.pose == .walk && !sleeper.isDeepSleep, "Waking does not yawn once before the next pose")
+    sleeper.apply(RunnerPlan(pose: .sleep))
+    sleeper.apply(RunnerPlan(pose: .alert))
+    check(sleeper.shown.pose == .alert && !sleeper.isPlayingOneShot, "Input waited for a wake-up yawn")
+    sleeper.apply(RunnerPlan(pose: .sleep, still: true))
+    check(sleeper.frame == 0 && sleeper.fx == RunnerAnimator.largeZ && !sleeper.isTimerRunning,
+          "Reduce Motion sleep is not a still frame with the large z")
+    sleeper.apply(RunnerPlan(pose: .sit, still: true))
+    check(sleeper.shown.pose == .sit && !sleeper.isPlayingOneShot, "Reduce Motion played the wake-up yawn")
+    check(!sleeper.playContent(), "Reduce Motion played the turn-end content")
+    sleeper.stop()
+
+    // Content: only on a moving sit; 0.5 → blink 0.45 → 0.55 from the manifest; input and run cancel it, walk waits.
+    clock = at
+    let contentTiming = RunnerTiming(durations: [0.5, 0.45], holdSequence: [0.5, 0.55])
+    let content = animator([.content: contentTiming])
+    content.apply(RunnerPlan(pose: .walk))
+    let refusesWalk = !content.playContent()
+    content.apply(RunnerPlan(pose: .sit))
+    let started = content.playContent()
+    let played = run(content, 3)
+    check(refusesWalk && started && near(played.map(\.delay), [0.5, 0.45, 0.55]) && played.map(\.frame) == [0, 1, 0]
+          && content.shown.pose == .sit && !content.isPlayingOneShot,
+          "Turn-end content is not sit 0.5 → blink 0.45 → sit 0.55, only while sitting")
+    content.playContent()
+    content.apply(RunnerPlan(pose: .walk))
+    let waits = content.shown.pose == .content
+    content.apply(RunnerPlan(pose: .run, until: clock.addingTimeInterval(1.2)))
+    check(waits && content.shown.pose == .run && !content.isPlayingOneShot, "A walk interrupted content, or a run did not cancel it")
+    // Hidden cat: a playing content is dropped, none starts, and waking does not queue a yawn for later.
+    content.apply(RunnerPlan(pose: .sit))
+    content.playContent()
+    content.paused = true
+    let dropped = !content.isPlayingOneShot && content.shown.pose == .sit && !content.isTimerRunning
+    let refusedHidden = !content.playContent()
+    content.apply(RunnerPlan(pose: .sleep))
+    content.apply(RunnerPlan(pose: .walk))
+    check(dropped && refusedHidden && content.shown.pose == .walk && !content.isPlayingOneShot,
+          "A one-shot stays queued while the cat is hidden and plays late")
+    content.paused = false
+    content.stop()
+    check(RunnerAnimator.stillFX(.sleep) == RunnerAnimator.largeZ && RunnerAnimator.stillFX(.sit) == nil,
+          "A still sleep frame does not keep only the large z")
     check(RunnerMotion.stored("tokens", confirmed: true) == .activity && RunnerMotion.stored(nil, confirmed: false) == .activity
           && RunnerMotion.stored("cpu", confirmed: true) == .cpu && RunnerMotion.stored("cpu", confirmed: false) == .activity
           && RunnerMotion.stored("still", confirmed: false) == .still,
           "Motion migration is wrong")
+    check(RunnerLegend.entries(.activity).map(\.pose) == [.walk, .run, .alert, .sit, .sleep]
+          && RunnerLegend.entries(.cpu).map(\.caption) == ["4% 미만", "20%까지", "20% 넘음"]
+          && RunnerLegend.entries(.measured).map(\.caption) == ["실측 없음", "40 tok/s 미만", "40 이상"] && RunnerLegend.entries(.still).isEmpty,
+          "The cat legend does not match the motion source")
 
     // Notifications: top-level transitions only, content-free bodies, no replay at launch.
     var tracker = AttentionTracker()
@@ -187,8 +366,9 @@ func runShellChecks() -> [String] {
     check(tracker.update([signal]).isEmpty, "The first publish replayed existing states")
     signal.input = true
     let asked = tracker.update([signal])
-    check(asked.count == 1 && asked.first?.body == "TokenCat · claude-opus-5-5 입력 필요" && asked.first?.title == "Claude Code",
-          "Entering input did not notify once with metadata only")
+    check(asked.count == 1 && asked.first?.title == "입력 필요 · TokenCat" && asked.first?.subtitle == "Claude Code · claude-opus-5-5"
+          && asked.first?.body == "답변하면 계속됩니다" && asked.first?.identifier == "input-claude:s1",
+          "Entering input did not notify once with the state-first title and metadata only")
     check(tracker.update([signal]).isEmpty, "Input notified again on an unchanged publish")
     signal.input = false
     signal.live = false
@@ -196,9 +376,15 @@ func runShellChecks() -> [String] {
     signal.outputTokens = 12_480
     signal.durationSeconds = 252
     let finished = tracker.update([signal])
-    check(finished.count == 1 && finished.first?.body == "TokenCat · claude-opus-5-5 턴 완료 · 12,480 tok · 4분 12초",
-          "Live → complete did not produce the metadata-only completion body")
+    check(finished.count == 1 && finished.first?.title == "턴 완료 · TokenCat" && finished.first?.body == "12,480 tok · 4분 12초"
+          && finished.first?.identifier == "done-claude:s1",
+          "Live → complete did not produce the metadata-only completion")
     check(tracker.update([signal]).isEmpty, "A completed turn notified twice")
+    check(Notifier.describeSound(.authorized, .notSupported, on: true).hasPrefix("macOS가 TokenCat 알림 소리를 허용하지 않았습니다")
+          && Notifier.soundBlocked(.authorized, .notSupported) && Notifier.soundBlocked(.authorized, .disabled)
+          && !Notifier.soundBlocked(.authorized, .enabled) && !Notifier.soundBlocked(.notDetermined, .notSupported)
+          && Notifier.describeSound(.notDetermined, .notSupported, on: true) == "알림 권한을 허용하면 소리가 납니다",
+          "A sound macOS will not play is captioned as still loading, or offers no way to System Settings")
     var codex = AttentionSignal(id: "codex:t1", source: .codex, project: nil, model: nil, live: false, input: false,
                                 ended: .interrupted, outputTokens: 0, durationSeconds: nil)
     check(tracker.update([signal, codex]).isEmpty, "A session first seen already finished was reported")
@@ -207,7 +393,9 @@ func runShellChecks() -> [String] {
     _ = tracker.update([signal, codex])
     codex.live = false
     codex.ended = .interrupted
-    check(tracker.update([signal, codex]).first?.body == "턴 중단", "An interrupted turn is not reported as 중단")
+    let interrupted = tracker.update([signal, codex]).first
+    check(interrupted?.title == "턴 중단 · 프로젝트 미확인" && interrupted?.subtitle == "Codex" && interrupted?.body == "",
+          "An interrupted turn is not reported as 중단 without a project, model or body")
     var repeated = signal
     repeated.id = "claude:s2"
     repeated.live = true
@@ -215,14 +403,14 @@ func runShellChecks() -> [String] {
     _ = tracker.update([repeated])
     repeated.live = false
     repeated.ended = .interrupted
-    check(tracker.update([repeated]).first?.body == "TokenCat · claude-opus-5-5 턴 중단",
+    check(tracker.update([repeated]).first.map { $0.title == "턴 중단 · TokenCat" && $0.body.isEmpty } == true,
           "An interrupted turn carried the previous completed turn's output and duration")
     repeated.live = true
     repeated.ended = nil
     _ = tracker.update([repeated])
     repeated.live = false
     repeated.ended = .complete
-    check(tracker.update([repeated]).first?.body == "TokenCat · claude-opus-5-5 턴 완료",
+    check(tracker.update([repeated]).first.map { $0.title == "턴 완료 · TokenCat" && $0.body.isEmpty } == true,
           "A completion without newly recorded values reused the previous turn's numbers")
 
     let groups = SessionPresentation.groups([
@@ -264,6 +452,34 @@ func runShellChecks() -> [String] {
                                           now: at.addingTimeInterval(86_401))
     check(state.needed.isEmpty && state.expired == [.codex] && state.pending[.codex] != nil,
           "A client used after its config change but silent for 24 h did not switch to the 'never received' message")
+    // VoiceOver announcements: at most one per 5 s; a held burst keeps its most urgent text.
+    var gate = AnnouncementGate()
+    let first = gate.offer("턴 완료", priority: 50, now: at)
+    let second = gate.offer("턴 완료", priority: 50, now: at.addingTimeInterval(1))
+    let third = gate.offer("TokenCat 세션 입력 필요", priority: 90, now: at.addingTimeInterval(2))
+    let flushed = gate.flush(now: at.addingTimeInterval(5))
+    let later = gate.offer("턴 완료", priority: 50, now: at.addingTimeInterval(10.1))
+    check(first.post == "턴 완료" && second.post == nil && second.flushAfter == 4 && third.post == nil && third.flushAfter == nil
+          && flushed?.text == "TokenCat 세션 입력 필요" && later.post == "턴 완료",
+          "Announcements are not limited to one per 5 s with the most urgent held text")
+
+    // Settings (T-1, T-3): tab order and symbols, collector and client status rows.
+    check(SettingsPane.allCases.map(\.title) == ["일반", "메뉴 막대", "고양이", "실측", "정보"] && SettingsPane.allCases.allSatisfy { $0.image != nil },
+          "Settings tabs are not 일반 · 메뉴 막대 · 고양이 · 실측 · 정보 with a symbol each")
+    check(TelemetryStatusRow.collector(.receiving) == (.receiving, "수신 중 · 127.0.0.1:16493")
+          && TelemetryStatusRow.collector(.waiting).text == "수신 대기 · 127.0.0.1:16493"
+          && TelemetryStatusRow.collector(.busyOtherApp) == (.problem, "꺼짐 · 다른 앱이 16493 포트 사용 중")
+          && TelemetryStatusRow.collector(.starting) == (.starting, "준비 중"),
+          "Collector status rows do not match the T-3 table")
+    let client = { (restart: Bool, expired: Bool, received: Date?, batch: Date?) in
+        TelemetryStatusRow.client(restartNeeded: restart, expired: expired, lastReceived: received, batch: batch, now: at)
+    }
+    check(client(true, true, at, at).row == .info && client(false, true, at, at).text == "이 버전에서 실측을 받지 못했습니다"
+          && client(false, false, at.addingTimeInterval(-30), at).text == "최근 수신 1분 이내"
+          && client(false, false, at.addingTimeInterval(-720), nil).text == "최근 수신 12분 전"
+          && client(false, false, nil, at).text == "기록 수신 중 · 속도 형식 없음" && client(false, false, nil, at).detail != nil
+          && client(false, false, nil, nil).text == "이번 실행에서 받은 실측 없음",
+          "Client telemetry rows are not checked restart → 24 h → received → batch only → none")
     print("Shell checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

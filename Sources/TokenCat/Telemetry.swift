@@ -241,6 +241,20 @@ final class LocalTelemetryCollector {
         }
     }
 
+    /// "지금 다시 시도": runs the scheduled retry now, on the collector queue. Acts only while running with a retry
+    /// scheduled after a failed start; ready or starting (no retry scheduled), it does nothing, so two listeners never exist.
+    /// The pending attempt is invalidated by the generation and `attempt` is kept, so a further failure keeps the schedule.
+    func retryNow() {
+        queue.async { [weak self] in self?.retryNowOnQueue() }
+    }
+
+    private func retryNowOnQueue() {
+        guard running, listener == nil, lock.withLock({ retryAt }) != nil else { return }
+        // The scheduled asyncAfter only listens while its epoch is current; listen() takes the next one again.
+        generation += 1
+        listen()
+    }
+
     func stop() {
         if DispatchQueue.getSpecific(key: queueKey) != nil { stopOnQueue(updateStatus: true) }
         else { queue.sync { stopOnQueue(updateStatus: true) } }

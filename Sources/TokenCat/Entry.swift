@@ -9,9 +9,21 @@ enum TokenCatMain {
     static func main() {
         if CommandLine.arguments.contains("--self-test") {
             let failures = runTrackerChecks() + runPreferenceChecks() + runShellChecks() + runStatusBarChecks() + runSessionPresentationChecks()
-                + runTelemetryChecks() + runTelemetrySetupChecks() + runTokenSpeedChecks() + Runner.resourceErrors()
-            if Runner.resourceErrors().isEmpty { print("Bundled artwork: PASS (\(RunnerPose.allCases.map(Runner.frames).reduce(0, +)) frames in \(RunnerPose.allCases.count) poses, transparent brand mark)") }
+                + runDesignTokenChecks() + runTelemetryChecks() + runTelemetrySetupChecks() + runTokenSpeedChecks() + Runner.resourceErrors()
+            if Runner.resourceErrors().isEmpty { print("Bundled artwork: PASS (\(RunnerPose.allCases.map(Runner.frames).reduce(0, +)) frames in \(RunnerPose.allCases.count) poses, \(RunnerHead.allCases.count) pixel heads)") }
             if failures.isEmpty { print("TokenCat checks: PASS") }
+            else { failures.forEach { print("FAIL: \($0)") }; exit(1) }
+            return
+        }
+        // Opens real loopback listeners on two free test ports (never the app's port), so it stays out of --self-test.
+        // `--telemetry-lifecycle-checks [port]` uses `port` and `port + 1`.
+        if CommandLine.arguments.contains("--telemetry-lifecycle-checks") {
+            let arguments = CommandLine.arguments
+            let explicit = arguments.firstIndex(of: "--telemetry-lifecycle-checks").flatMap { arguments.indices.contains($0 + 1) ? UInt16(arguments[$0 + 1]) : nil }
+            guard let port = explicit ?? telemetryTestPort(), port != LocalTelemetryCollector.port, port &+ 1 != LocalTelemetryCollector.port
+            else { print("FAIL: no free loopback test port"); exit(1) }
+            let failures = runTelemetryLifecycleChecks(port: port)
+            if failures.isEmpty { print("Telemetry lifecycle: PASS (ports \(port), \(port + 1))") }
             else { failures.forEach { print("FAIL: \($0)") }; exit(1) }
             return
         }
@@ -260,7 +272,8 @@ enum TokenCatMain {
         }
         let rows: [(String, [TokenReading])] = [
             ("활동 없음", []), ("진행", [reading(0, .working)]), ("도구 실행", [reading(1, .tool)]),
-            ("출력 기록", [reading(2, .output)]), ("로그 대기", [reading(3, .stale)]),
+            // A fresh record is an event: the cat runs while the mark stays 진행.
+            ("방금 기록", [reading(2, .output)]), ("로그 대기", [reading(3, .stale)]),
             ("입력 필요", [reading(4, .input), reading(5, .tool)]), ("세션 12개", (0..<12).map { reading($0, .tool) })
         ]
         var strips: [(String, [NSImage])] = []
@@ -281,7 +294,7 @@ enum TokenCatMain {
                     view.highlighted = highlighted
                     view.update(metrics: metrics, layout: layout, showRunner: showRunner)
                     view.frame.size.width = view.requiredWidth
-                    view.updateRunner(pose: pose, frame: 0)
+                    view.updateRunner(pose: pose, frame: 0, fx: RunnerAnimator.stillFX(pose))
                     guard let strip = view.snapshotImage(scale: 2) else { return nil }
                     images.append(MenuBarStrip.backdrop(strip, dark: dark, highlighted: highlighted))
                 }
@@ -310,63 +323,102 @@ enum TokenCatMain {
         }
     }
 
-    /// Renders Settings in an off-screen borderless window; ImageRenderer cannot draw AppKit-backed Form controls.
-    /// `--focus telemetry` renders the real window height after scrolling to that section.
-    /// Also prints the scroll offset and the drag types registered in the view tree (drop targets exist).
+    /// Renders the real Settings window (toolbar tabs and the selected pane) off screen; ImageRenderer cannot draw
+    /// AppKit-backed Form controls. `--pane general|menubar|cat|telemetry|about|all` (default all; `--focus telemetry`
+    /// is the telemetry pane) stacks the chosen panes vertically. The tab choice is kept in a throwaway defaults domain.
+    /// `--fixtures` uses synthetic state instead of this Mac's logs and preferences: the collector off with a retry in
+    /// 25 s, Codex waiting for a relaunch, default preferences.
+    /// Prints each pane's content height and the drag types registered in the view tree (drop targets exist).
     private static func snapshotSettings(path: String) {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         let arguments = CommandLine.arguments
         let light = arguments.contains("--light")
-        let focus = arguments.firstIndex(of: "--focus").flatMap { arguments.indices.contains($0 + 1) ? SettingsFocus(rawValue: arguments[$0 + 1]) : nil }
-        let model = DashboardModel(telemetryProvider: { LocalTelemetryCollector.fetchSnapshot() },
-                                   telemetryProbe: { LocalTelemetryCollector.isOwnCollectorRunning(timeout: 0.5) })
-        model.start()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+        func value(_ flag: String) -> String? { arguments.firstIndex(of: flag).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil } }
+        let requested = value("--pane") ?? (value("--focus") == SettingsFocus.telemetry.rawValue ? SettingsPane.telemetry.rawValue : "all")
+        let panes = requested == "all" ? SettingsPane.allCases : SettingsPane(rawValue: requested).map { [$0] } ?? []
+        guard !panes.isEmpty else { print("Unknown pane '\(requested)': general, menubar, cat, telemetry, about or all"); exit(1) }
+        let fixtures = arguments.contains("--fixtures")
+        let model = fixtures ? DashboardModel(telemetryProvider: { [] }, restoresRestartState: false)
+            : DashboardModel(telemetryProvider: { LocalTelemetryCollector.fetchSnapshot() },
+                             telemetryProbe: { LocalTelemetryCollector.isOwnCollectorRunning(timeout: 0.5) })
+        let suite = "dev.seuput.TokenCat.SettingsSnapshot.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { print("Settings snapshot failed"); exit(1) }
+        let preferences = fixtures ? Preferences(defaults: defaults) : model.preferences
+        if fixtures {
+            model.telemetryState = .busyOtherApp
+            model.telemetryNextRetryAt = model.now.addingTimeInterval(25)
+            model.telemetryRestartNeeded = [.codex]
+        } else {
+            model.start()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (fixtures ? 0.5 : 4)) {
             let state = SettingsState(notifier: Notifier())
-            state.focus = focus
-            let hosting = NSHostingView(rootView: SettingsView(preferences: model.preferences, model: model, state: state))
-            let window = NSWindow(contentRect: NSRect(x: -12_000, y: -12_000, width: SettingsView.width, height: focus == nil ? 2_200 : 640),
-                                  styleMask: [.borderless], backing: .buffered, defer: false)
+            // The preview shows the pose the cat would plan for these sessions now.
+            var director = RunnerDirector()
+            let activity = RunnerActivity(groups: model.groups, cpu: model.hasSample ? model.system.cpuPercent : nil, now: Date())
+            director.observe(activity, now: Date())
+            state.runnerPose = director.plan(preferences.animationSource, activity: activity, now: Date(), reduceMotion: false).pose
+            let tabs = SettingsTabsController(preferences: preferences, model: model, state: state, actions: .none, defaults: defaults)
+            let window = OffscreenWindow(contentRect: NSRect(x: -12_000, y: -12_000, width: SettingsTabsController.width, height: 400),
+                                        styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
-            window.backgroundColor = .windowBackgroundColor
-            window.contentView = hosting
+            SettingsTabsController.configure(window, with: tabs)
+            window.setFrameOrigin(NSPoint(x: -12_000, y: -12_000))
             window.orderFrontRegardless()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                hosting.layoutSubtreeIfNeeded()
-                guard let rep = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { print("Settings snapshot failed"); exit(1) }
-                hosting.cacheDisplay(in: hosting.bounds, to: rep)
-                func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
-                let tree = views(hosting)
-                let offset = tree.compactMap { $0 as? NSScrollView }.first.map { Int($0.contentView.bounds.minY) } ?? 0
-                let dragTypes = Set(tree.flatMap { $0.registeredDraggedTypes.map(\.rawValue) }).sorted()
+            var shots: [CGImage] = []
+            var report: [String] = []
+            var dragTypes = Set<String>()
+            func capture(_ remaining: ArraySlice<SettingsPane>) {
+                guard let pane = remaining.first else { finish(); return }
+                tabs.select(pane)
+                tabs.fitWindow(animated: false)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
+                    guard let frameView = window.contentView?.superview else { print("Settings snapshot failed"); exit(1) }
+                    frameView.layoutSubtreeIfNeeded()
+                    guard let rep = frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds) else { print("Settings snapshot failed"); exit(1) }
+                    frameView.cacheDisplay(in: frameView.bounds, to: rep)
+                    if let image = rep.cgImage { shots.append(image) }
+                    func views(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(views) }
+                    dragTypes.formUnion(views(frameView).flatMap { $0.registeredDraggedTypes.map(\.rawValue) })
+                    let height = Int(window.contentLayoutRect.height.rounded())
+                    report.append("\(pane.rawValue) \(height)pt\(height > Int(SettingsTabsController.maximumHeight) ? " (over \(Int(SettingsTabsController.maximumHeight)))" : "") title '\(window.title)'")
+                    capture(remaining.dropFirst())
+                }
+            }
+            func finish() {
                 window.orderOut(nil)
-                guard let image = rep.cgImage, let cropped = focus == nil ? trimBottom(image) : image else { print("Settings snapshot failed"); exit(1) }
-                guard let png = NSBitmapImageRep(cgImage: cropped).representation(using: .png, properties: [:]) else { exit(1) }
+                UserDefaults.standard.removePersistentDomain(forName: suite)
+                guard let image = stack(shots, gap: 24, dark: !light),
+                      let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { print("Settings snapshot failed"); exit(1) }
                 do {
                     try png.write(to: URL(fileURLWithPath: path))
-                    print("Settings snapshot saved (\(cropped.width)×\(cropped.height) px) · scroll \(offset)pt · drag types \(dragTypes)")
-                }
-                catch { print("Settings snapshot failed: \(error.localizedDescription)"); exit(1) }
+                    print("Settings snapshot saved (\(image.width)×\(image.height) px) · \(report.joined(separator: " · ")) · drag types \(dragTypes.sorted())")
+                } catch { print("Settings snapshot failed: \(error.localizedDescription)"); exit(1) }
                 model.stop()
                 app.terminate(nil)
             }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { capture(panes[...]) }
         }
         app.run()
     }
 
-    /// Drops the uniform background below the last row of content.
-    private static func trimBottom(_ image: CGImage) -> CGImage? {
-        let width = image.width, height = image.height
-        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
-                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
-              let data = context.data else { return nil }
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
-        let pixels = data.assumingMemoryBound(to: UInt32.self)
-        let background = pixels[(height - 1) * width]
-        var last = height - 1
-        while last > 0 && (0..<width).allSatisfy({ pixels[last * width + $0] == background }) { last -= 1 }
-        return image.cropping(to: CGRect(x: 0, y: 0, width: width, height: min(height, last + 24)))
+    /// Window captures one above another on a neutral backdrop.
+    nonisolated private static func stack(_ images: [CGImage], gap: Int, dark: Bool) -> CGImage? {
+        guard !images.isEmpty else { return nil }
+        let width = images.map(\.width).max() ?? 0
+        let height = images.map(\.height).reduce(0, +) + gap * (images.count - 1)
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        context.setFillColor(gray: dark ? 0.32 : 0.82, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        var top = height
+        for image in images {
+            top -= image.height
+            context.draw(image, in: CGRect(x: 0, y: top, width: image.width, height: image.height))
+            top -= gap
+        }
+        return context.makeImage()
     }
 
     private static func snapshot(path: String) {
@@ -377,7 +429,7 @@ enum TokenCatMain {
         model.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
             let light = CommandLine.arguments.contains("--light")
-            let content = DashboardView(model: model, settings: {}, quit: {}, scrollsSessions: false)
+            let content = DashboardView(model: model, actions: .none, scrollsSessions: false)
                 .environment(\.colorScheme, light ? .light : .dark)
                 .background(light ? Color(red: 0.97, green: 0.97, blue: 0.98) : Color(red: 0.12, green: 0.12, blue: 0.13))
             let renderer = ImageRenderer(content: content)
@@ -394,4 +446,9 @@ enum TokenCatMain {
         }
         app.run()
     }
+}
+
+/// Never pulled back onto a screen, so verification renders stay invisible.
+final class OffscreenWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }

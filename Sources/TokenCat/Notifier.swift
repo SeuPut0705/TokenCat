@@ -13,6 +13,8 @@ struct AttentionSignal: Equatable {
     var ended: TokenActivityState?
     var outputTokens: Int?
     var durationSeconds: Double?
+    /// The lead's newest record: with `id`, the key that keeps a turn end from replaying the cat's `content`.
+    var endedAt: Date? = nil
 
     static func make(_ groups: [SessionGroup]) -> [AttentionSignal] {
         groups.compactMap { group in
@@ -26,7 +28,7 @@ struct AttentionSignal: Equatable {
                 ? lead.activityState : nil
             return AttentionSignal(id: group.id, source: lead.source, project: lead.project, model: lead.model, live: live,
                                    input: input, ended: ended, outputTokens: lead.lastOutputTokens,
-                                   durationSeconds: lead.lastTurnDurationSeconds)
+                                   durationSeconds: lead.lastTurnDurationSeconds, endedAt: lead.lastActivity)
         }
     }
 }
@@ -38,23 +40,35 @@ enum AttentionEvent: Equatable {
     var signal: AttentionSignal {
         switch self { case .finished(let signal), .input(let signal): return signal }
     }
-    var title: String { signal.source.title }
-    /// e.g. "TokenCat · claude-opus-5-5 턴 완료 · 12,480 tok · 4분 12초".
-    var body: String {
-        let signal = self.signal
+    /// The state first (P-5): "입력 필요 · TokenCat", "턴 완료 · TokenCat", "턴 중단 · 프로젝트 미확인".
+    var title: String {
         let what: String
         switch self {
         case .input: what = "입력 필요"
         case .finished(let signal): what = signal.ended == .interrupted ? "턴 중단" : "턴 완료"
         }
-        let headline = [signal.model, what].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
-        var parts: [String?] = [signal.project, headline]
-        if case .finished = self, signal.ended == .complete {
-            parts.append(signal.outputTokens.flatMap { $0 > 0 ? "\(Format.tokens($0)) tok" : nil })
-            parts.append(signal.durationSeconds.flatMap(Self.duration))
-        }
-        return parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ")
+        return what + " · " + (signal.project.flatMap { $0.isEmpty ? nil : $0 } ?? "프로젝트 미확인")
     }
+    /// "Claude Code · claude-opus-5-5".
+    var subtitle: String { [signal.source.title, signal.model].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ") }
+    /// Completion "12,480 tok · 4분 12초" (never divided), input "답변하면 계속됩니다", interruption nothing.
+    var body: String {
+        switch self {
+        case .input: return "답변하면 계속됩니다"
+        case .finished(let signal):
+            guard signal.ended == .complete else { return "" }
+            return [signal.outputTokens.flatMap { $0 > 0 ? "\(Format.tokens($0)) tok" : nil }, signal.durationSeconds.flatMap(Self.duration)]
+                .compactMap { $0 }.joined(separator: " · ")
+        }
+    }
+    /// One delivered notification per group and kind: a newer one replaces it, and leaving input removes it.
+    var identifier: String {
+        switch self {
+        case .input(let signal): return Self.inputIdentifier(signal.id)
+        case .finished(let signal): return "done-" + signal.id
+        }
+    }
+    static func inputIdentifier(_ group: String) -> String { "input-" + group }
 
     /// Raw duration reported by the client; never combined with token counts.
     static func duration(_ seconds: Double) -> String? {
@@ -94,32 +108,63 @@ struct AttentionTracker {
     }
 }
 
-/// Opt-in local notifications. Permission is requested only when a toggle is turned on.
+/// Opt-in local notifications. Permission is requested only when a toggle is turned on; sound only with its own toggle.
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
-    var onOpen: (() -> Void)?
+    /// A click: the group (`SessionGroup.id`) to select, nil when the notification carries none.
+    var onOpen: ((String?) -> Void)?
     private var center: UNUserNotificationCenter { .current() }
 
     func activate() { center.delegate = self }
 
     func authorizationStatus(_ completion: @escaping (UNAuthorizationStatus) -> Void) {
+        settings { status, _ in completion(status) }
+    }
+
+    /// Permission and the sound setting as macOS reports them now.
+    func settings(_ completion: @escaping (UNAuthorizationStatus, UNNotificationSetting) -> Void) {
         center.getNotificationSettings { settings in
-            DispatchQueue.main.async { completion(settings.authorizationStatus) }
+            DispatchQueue.main.async { completion(settings.authorizationStatus, settings.soundSetting) }
         }
     }
 
-    func requestAuthorization(_ completion: @escaping (UNAuthorizationStatus, String?) -> Void) {
-        center.requestAuthorization(options: [.alert]) { [weak self] _, error in
+    /// `sound` adds `.sound` (the "입력 필요 알림에 소리" toggle); otherwise alerts only.
+    func requestAuthorization(sound: Bool = false, _ completion: @escaping (UNAuthorizationStatus, String?) -> Void) {
+        center.requestAuthorization(options: sound ? [.alert, .sound] : [.alert]) { [weak self] _, error in
             self?.authorizationStatus { completion($0, error?.localizedDescription) }
         }
     }
 
-    func post(_ event: AttentionEvent) {
+    /// Reuses the event's identifier, so a newer notification for the same group replaces the delivered one.
+    func post(_ event: AttentionEvent, sound: Bool = false) {
         let content = UNMutableNotificationContent()
         content.title = event.title
+        content.subtitle = event.subtitle
         content.body = event.body
         content.threadIdentifier = event.signal.id
-        center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)) { error in
+        content.userInfo = ["group": event.signal.id]
+        if sound, case .input = event { content.sound = .default }
+        center.add(UNNotificationRequest(identifier: event.identifier, content: content, trigger: nil)) { error in
             if let error { NSLog("TokenCat 알림 요청 실패: %@", error.localizedDescription) }
+        }
+    }
+
+    /// The group no longer waits for input: its "입력 필요" notification goes away.
+    func removeInput(_ group: String) {
+        let identifier = AttentionEvent.inputIdentifier(group)
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+    }
+
+    /// At launch: "입력 필요" notifications an earlier run delivered for groups no longer waiting go away.
+    /// True when the sound toggle is on but macOS will not play it: the settings button is shown (P-5).
+    static func soundBlocked(_ status: UNAuthorizationStatus?, _ sound: UNNotificationSetting?) -> Bool {
+        status != nil && status != .notDetermined && (status == .denied || sound == .disabled || sound == .notSupported)
+    }
+
+    func removeStaleInput(keeping: Set<String>) {
+        center.getDeliveredNotifications { [weak self] delivered in
+            let stale = delivered.map(\.request.identifier).filter { $0.hasPrefix(AttentionEvent.inputIdentifier("")) && !keeping.contains($0) }
+            if !stale.isEmpty { self?.center.removeDeliveredNotifications(withIdentifiers: stale) }
         }
     }
 
@@ -130,7 +175,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        DispatchQueue.main.async { self.onOpen?() }
+        let group = response.notification.request.content.userInfo["group"] as? String
+        DispatchQueue.main.async { self.onOpen?(group) }
         completionHandler()
     }
 
@@ -141,6 +187,20 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         case .notDetermined: return "켜면 macOS가 알림 권한을 한 번 묻습니다"
         case nil: return "알림 권한 확인 중"
         default: return "알림 권한 상태를 확인할 수 없습니다"
+        }
+    }
+
+    /// The sound toggle's caption, from the setting macOS reports (P-5). An earlier alert-only grant is not asked again,
+    /// so the sound can stay `.disabled` / `.notSupported` until the user changes it in System Settings.
+    static func describeSound(_ status: UNAuthorizationStatus?, _ sound: UNNotificationSetting?, on: Bool) -> String {
+        guard on else { return "꺼짐 · 입력 필요 알림을 소리 없이 보냅니다" }
+        switch (status, sound) {
+        case (.denied?, _): return "알림이 꺼져 있어 소리도 나지 않습니다"
+        case (_, .enabled?): return "켜짐 · 입력 필요 알림에 기본 소리를 냅니다"
+        case (.notDetermined?, _): return "알림 권한을 허용하면 소리가 납니다"
+        case (_, .disabled?): return "시스템 설정에서 TokenCat 알림 소리가 꺼져 있습니다"
+        case (_, .notSupported?): return "macOS가 TokenCat 알림 소리를 허용하지 않았습니다 · 시스템 설정 › 알림에서 확인하세요"
+        default: return "알림 소리 설정을 확인하는 중"
         }
     }
 }

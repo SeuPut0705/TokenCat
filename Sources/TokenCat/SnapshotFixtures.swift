@@ -11,7 +11,7 @@ enum SnapshotFixtures {
         var tokens: [TokenReading] = []
         var sampled = true
         var expanded = false
-        var status = "실측 수신 중"
+        var telemetry = TelemetryCollectorState.receiving
         var note: String?
         var failure: TelemetrySetupFailure?
         var restart: Set<TokenSource> = []
@@ -20,6 +20,10 @@ enum SnapshotFixtures {
         var contrast = false
         /// Seconds the AI collection lags behind the system sample, for the footer's longest state.
         var lag: TimeInterval = 0
+        var battery = true
+        /// A keyboard-selected row and an open inline detail, by reading id.
+        var selection: String?
+        var detail: String?
     }
 
     /// Thursday 15:00:03 local time, so 오늘/어제/이번 주/이전 all have members.
@@ -39,16 +43,38 @@ enum SnapshotFixtures {
             let images = [true, false].compactMap { dark in render(dashboard(fixture), dark: dark, contrast: fixture.contrast) }
             if save(images, to: folder.appendingPathComponent(fixture.name + ".png")) { written += 1 }
         }
-        let down = SessionPresentation.telemetryNotice(ready: false, status: "실측 꺼짐 · 다른 앱이 포트 16493 사용 중", note: nil, restart: [])
-        let onboarding = VStack(spacing: 12) {
-            OnboardingCard(notice: nil, note: nil, settings: {}, dismiss: {})
-            OnboardingCard(notice: nil, note: "실측 연결: Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.", failure: .conflict, settings: {}, dismiss: {})
-            OnboardingCard(notice: down, note: nil, ready: false, settings: {}, dismiss: {})
-            OnboardingCard(notice: nil, note: nil, ready: false, settings: {}, dismiss: {})
-        }.padding(14).frame(width: 420).buttonStyle(HoverButtonStyle())
-        if save([true, false].compactMap { render(onboarding, dark: $0, contrast: false) }, to: folder.appendingPathComponent("onboarding.png")) { written += 1 }
+        for (name, view) in components() {
+            if save([true, false].compactMap { render(view, dark: $0, contrast: false) }, to: folder.appendingPathComponent(name + ".png")) { written += 1 }
+        }
         print("Fixture snapshots saved: \(written)")
-        return written == fixtures().count + 1 ? 0 : 1
+        return written == fixtures().count + components().count ? 0 : 1
+    }
+
+    /// Component sheets: the five first-run outcomes (never part of a dashboard snapshot) and the limit row's four states.
+    @MainActor
+    private static func components() -> [(String, AnyView)] {
+        let down = SessionPresentation.telemetryNotice(state: .busyOtherApp, note: nil, restart: [])
+        let outcomes: [OnboardingCard.Outcome] = [
+            .added,
+            OnboardingCard.outcome(notice: nil, note: "실측 연결: Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.", failure: .conflict, state: .waiting),
+            OnboardingCard.outcome(notice: nil, note: "실측 연결: 설정 파일을 저장하지 못했습니다.", failure: .writeFailed(restored: true), state: .waiting),
+            OnboardingCard.outcome(notice: down, note: nil, failure: nil, state: .busyOtherApp),
+            OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .starting)
+        ]
+        let onboarding = VStack(spacing: 12) {
+            ForEach(Array(outcomes.enumerated()), id: \.offset) { OnboardingCard(outcome: $0.element, settings: {}, dismiss: {}) }
+        }
+        let limits = [limit(28, resetsIn: 5 * 86_400 + 8 * 3_600, recorded: -4 * 3_600), limit(87, resetsIn: 2 * 86_400 + 4 * 3_600, recorded: -95),
+                      limit(97, resetsIn: 3 * 3_600 + 20 * 60, recorded: -30), limit(64, resetsIn: -600, recorded: -7_000)]
+            .map { UsageLimitSummary(usedPercent: $0.usedPercent, windowMinutes: $0.windowMinutes, resetsAt: $0.resetsAt, recordedAt: $0.recordedAt) }
+        let rows = VStack(spacing: 12) {
+            ForEach(Array(limits.enumerated()), id: \.offset) { UsageLimitRow(limit: $0.element, now: now).container() }
+        }
+        func sheet<V: View>(_ view: V) -> AnyView {
+            AnyView(view.padding(.horizontal, DashboardLayout.gutter).padding(.vertical, 12).frame(width: DashboardLayout.width)
+                .buttonStyle(HoverButtonStyle()).environment(\.tokenCatSnapshot, true))
+        }
+        return [("onboarding", sheet(onboarding)), ("usage-limits", sheet(rows))]
     }
 
     @MainActor
@@ -63,7 +89,7 @@ enum SnapshotFixtures {
         system.uploadBytesPerSecond = 1_200
         system.downloadBytesPerSecond = 52_000
         system.localIPs = ["192.0.2.10"]
-        system.batteryPresent = true
+        system.batteryPresent = fixture.battery
         system.batteryPercent = 58
         system.isCharging = true
         system.memoryPressure = fixture.pressure
@@ -73,16 +99,18 @@ enum SnapshotFixtures {
         model.hasSample = fixture.sampled
         let history: [Double] = (0..<30).map { index in 10 + 6 * sin(Double(index) / 3) + Double(index % 4) }
         model.cpuHistory = fixture.sampled ? history : []
-        model.telemetryStatus = fixture.status
+        model.telemetryStatus = fixture.telemetry.status
+        model.telemetryState = fixture.telemetry
         model.telemetrySetupNote = fixture.note
         model.telemetrySetupFailure = fixture.failure
         model.telemetryRestartNeeded = fixture.restart
+        model.logFoldersFound = fixture.foldersFound
         model.tokens = fixture.tokens
         model.tokensSampledAt = fixture.sampled ? at(-fixture.lag) : nil
         // The model republishes its presentation (clock, flow, list) whenever the toggle changes.
         model.sessionsExpanded = !fixture.expanded
         model.sessionsExpanded = fixture.expanded
-        return DashboardView(model: model, settings: {}, quit: {}, scrollsSessions: false, logFoldersFound: fixture.foldersFound)
+        return DashboardView(model: model, actions: .none, scrollsSessions: false, selection: fixture.selection, detail: fixture.detail)
     }
 
     @MainActor
@@ -165,6 +193,7 @@ enum SnapshotFixtures {
         var value = reading(name, source, project: project, model: source == .codex ? "gpt-6.1-sol" : "claude-opus-5-5",
                             state: state, active: false, last: ago)
         value.lastOutputTokens = 7_493
+        value.lastOutputAt = at(ago)
         value.lastTurnDurationSeconds = 252
         return value
     }
@@ -282,7 +311,7 @@ enum SnapshotFixtures {
         let empty = Fixture(name: "empty")
         let noFolders = Fixture(name: "empty-no-folders",
                                 note: "실측 연결: Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.", failure: .conflict, foldersFound: false)
-        let loading = Fixture(name: "loading", sampled: false, status: "실측 준비 중")
+        let loading = Fixture(name: "loading", sampled: false, telemetry: .starting)
         var waitingSpeed = reading("rs01", .claude, project: "TokenCat", model: "claude-opus-5-5", state: .working, last: -3,
                                    output: 1_024, outputs: [-50: 1_024])
         waitingSpeed.context = TokenContextUsage(usedTokens: 96_000, windowTokens: nil, recordedAt: at(-50))
@@ -293,13 +322,34 @@ enum SnapshotFixtures {
         reset.lastActivity = at(-7_000)
         let restart = Fixture(name: "restart-needed", tokens: [waitingSpeed, reset], restart: [.claude, .codex], pressure: 2)
         let port = Fixture(name: "port-busy", tokens: [waitingSpeed, idle("p1", project: "notes-app", ago: -400)],
-                           status: "실측 꺼짐 · 다른 앱이 포트 16493 사용 중", pressure: 4)
+                           telemetry: .busyOtherApp, pressure: 4)
         // The footer's widest pair: a second TokenCat holds the collector while AI collection lags.
-        let busy = Fixture(name: "collector-busy", tokens: [waitingSpeed], status: "실측 꺼짐 · 다른 TokenCat이 수집 중", lag: 12)
+        let busy = Fixture(name: "collector-busy", tokens: [waitingSpeed], telemetry: .busyTokenCat, lag: 12)
 
         // 12. Increase Contrast over the hardest-to-see marks.
         let ring = [idle("c1", project: "sample-chat", ago: -2_000, state: .unfinished), idle("c2", project: "notes-app", ago: -2_400, state: .interrupted)]
         let contrast = Fixture(name: "contrast", tokens: [question, command, silent] + ring, contrast: true)
-        return [input, retry, tools, context, grouped, dates, empty, noFolders, loading, restart, port, busy, contrast]
+
+        // 13. Header "로그 대기 N개" alone: open turns with no new record, one with a stale child.
+        let stuck = reading("wait01", .claude, project: "api-server", model: "claude-opus-5-5", state: .stale, active: false, last: -200,
+                            output: 2_310)
+        let stuckChild = child(stuck, "a7777777e7", role: "Explore", state: .stale, active: false, last: -260, output: 940)
+        let logWait = Fixture(name: "log-wait", tokens: [stuck, stuckChild, reading("wait02", .codex, project: "docs-site", model: "gpt-6.1-sol",
+                                                                                     state: .stale, active: false, last: -420, output: 0)],
+                              battery: false)
+
+        // 14. Nothing running for two hours: header "진행 중인 세션 없음 · 마지막 활동 2시간 전", sleeping head, collapsed flow card.
+        var quietRows = [idle("q1", project: "TokenCat", ago: -7_300), idle("q2", project: "notes-app", ago: -9_000, state: .interrupted),
+                         idle("q3", project: "docs-site", ago: -86_400 - 400, source: .codex)]
+        quietRows[0].lastOutputAt = at(-7_320)
+        quietRows[0].lastOutputDelta = 512
+        let rest = Fixture(name: "quiet", tokens: quietRows)
+
+        // 15–16. Keyboard: the selected row with its inline detail open; a selected child row in the tree.
+        let detail = Fixture(name: "detail-open", tokens: [command, file, idle("idle02", project: "notes-app", ago: -1_800)],
+                             selection: command.id, detail: command.id)
+        let selected = Fixture(name: "keyboard-selection", tokens: [parent, explore, writer, waiter] + stale, selection: explore.id)
+        return [input, retry, tools, context, grouped, dates, empty, noFolders, loading, restart, port, busy, contrast,
+                logWait, rest, detail, selected]
     }
 }

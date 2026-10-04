@@ -31,7 +31,10 @@ struct StatusAISummary: Equatable {
     var running = 0
     /// Top-level groups with a member waiting for the person (question or plan approval).
     var input = 0
-    /// input > tool > output > working > stale (log wait) > idle.
+    /// Top-level groups waiting for a log; the count shown (secondary, half-disc mark) only while nothing runs (M-2).
+    var waiting = 0
+    /// `SessionCounts.phase`, with input forced: input > tool > working (API retry included) > stale (log wait) > idle.
+    /// A fresh output record is an event (the cat's run), never a phase.
     var phase: TokenActivityState = .idle
 
     init() {}
@@ -39,6 +42,7 @@ struct StatusAISummary: Equatable {
         let waiting = groups.filter { $0.members.contains { $0.reading.activityState == .input } }
         input = waiting.count
         running = counts.runningGroups + waiting.filter { !$0.state.isRunning }.count
+        self.waiting = counts.waiting
         phase = input > 0 ? .input : counts.phase
     }
 
@@ -46,7 +50,6 @@ struct StatusAISummary: Equatable {
         switch phase {
         case .input: return "입력 필요"
         case .tool: return "도구 실행"
-        case .output: return "출력 기록"
         case .working: return "진행"
         case .stale: return "로그 대기"
         default: return "활동 없음"
@@ -64,20 +67,20 @@ enum StatusBarContent {
             amount /= 1_000
             unit += 1
         }
-        var precision = unit > 0 && amount < 10 ? 1 : 0
-        var factor = precision == 1 ? 10.0 : 1.0
-        var rounded = (amount * factor).rounded() / factor
+        // kB/s and above keep one decimal below 10 ("1.0kB/s"), so the popover and the bar read the same string (M-4).
+        func round(_ amount: Double, _ unit: Int) -> (value: Double, precision: Int) {
+            let tenths = (amount * 10).rounded() / 10
+            return unit > 0 && tenths < 10 ? (tenths, 1) : (amount.rounded(), 0)
+        }
+        var rounded = round(amount, unit)
         // Promote the unit when display rounding would produce 1000kB/s.
-        if rounded >= 1_000 && unit < units.count - 1 {
+        if rounded.value >= 1_000 && unit < units.count - 1 {
             amount /= 1_000
             unit += 1
-            precision = amount < 10 ? 1 : 0
-            factor = precision == 1 ? 10 : 1
-            rounded = (amount * factor).rounded() / factor
+            rounded = round(amount, unit)
         }
-        if rounded >= 1_000 { return "≥999\(units[unit])" }
-        let number = String(format: precision == 1 ? "%.1f" : "%.0f", rounded)
-        return (number.hasSuffix(".0") ? String(number.dropLast(2)) : number) + units[unit]
+        if rounded.value >= 1_000 { return "≥999\(units[unit])" }
+        return String(format: rounded.precision == 1 ? "%.1f" : "%.0f", rounded.value) + units[unit]
     }
 
     /// "1.5kB/s" → ("1.5", "kB/s"); units are drawn smaller but never dropped.
@@ -121,14 +124,17 @@ enum StatusBarContent {
                 return StatusBarMetric(id: id, label: "NET", value: "↑\(upload)\n↓\(download)", symbol: "network",
                                        detail: "업로드 \(upload) · 다운로드 \(download)")
             case .ai:
-                // The value equals the popover's live chips combined; the mark shape carries the phase.
-                let value = hasTokenSample ? String(ai.running) : "—"
+                // Running groups with their phase mark; with none running, the log-wait groups (secondary, half disc);
+                // otherwise a tertiary "0" without a mark (M-2).
+                let waitingOnly = ai.running == 0 && ai.waiting > 0
+                let value = hasTokenSample ? String(waitingOnly ? ai.waiting : ai.running) : "—"
+                let state: TokenActivityState = !hasTokenSample ? .idle : ai.running > 0 ? ai.phase : waitingOnly ? .stale : .idle
+                let headline = waitingOnly ? "AI 로그 대기 \(ai.waiting)개" : "AI \(StatusAISummary.phaseTitle(ai.running > 0 ? ai.phase : .idle))"
                 let detail = hasTokenSample
-                    ? "AI \(StatusAISummary.phaseTitle(ai.phase)) · \(aiCountLine(counts, ai))\n최근 5분 출력 기록 \(Format.tokens(recorded)) tok · Codex \(counts.running[.codex] ?? 0), Claude Code \(counts.running[.claude] ?? 0)"
+                    ? "\(headline) · \(aiCountLine(counts, ai))\n최근 5분 출력 기록 \(Format.tokens(recorded)) tok · Codex \(counts.running[.codex] ?? 0), Claude Code \(counts.running[.claude] ?? 0)"
                     : "AI 기록 확인 중"
                 return StatusBarMetric(id: id, label: "AI", value: value, symbol: "", detail: detail,
-                                       isActive: hasTokenSample && ai.running > 0,
-                                       activityState: hasTokenSample ? ai.phase : .idle)
+                                       isActive: hasTokenSample && ai.running > 0, activityState: state)
             }
         }
     }
@@ -160,12 +166,69 @@ enum StatusBarContent {
     }
 }
 
+/// The quick menu's live summary (M-5), built when the menu opens and not refreshed while it stays open.
+struct QuickMenuSummary: Equatable {
+    struct Row: Equatable {
+        /// `SessionGroup.id`, handed to `DashboardModel.focusRequest`.
+        var id: String
+        var kind: StateGlyph.Kind
+        var title: String
+    }
+    var headline: String
+    /// Up to three live top-level groups in urgency order.
+    var rows: [Row] = []
+
+    static func make(groups: [SessionGroup], counts: SessionCounts, hasTokenSample: Bool, now: Date) -> QuickMenuSummary {
+        guard hasTokenSample else { return QuickMenuSummary(headline: "AI 기록 확인 중") }
+        let parts = [("입력", counts.input), ("재시도", counts.retrying), ("도구", counts.tool), ("진행", counts.working), ("로그 대기", counts.waiting)]
+            .filter { $0.1 > 0 }.map { "\($0.0) \($0.1)" }
+        let live = groups.filter { $0.state.isLive && $0.state != .measurement }.sorted {
+            let a = SessionDisplayState.liveOrder.firstIndex(of: $0.state) ?? 99, b = SessionDisplayState.liveOrder.firstIndex(of: $1.state) ?? 99
+            return a != b ? a < b : ($0.lastActivity != $1.lastActivity ? $0.lastActivity > $1.lastActivity : $0.id < $1.id)
+        }
+        let rows = live.prefix(3).compactMap { group -> Row? in
+            guard let kind = StateGlyph.Kind(group.state) else { return nil }
+            var project = group.lead.reading.project.flatMap { $0.isEmpty ? nil : $0 } ?? "프로젝트 미확인"
+            if project.count > 28 { project = String(project.prefix(27)) + "…" }
+            return Row(id: group.id, kind: kind, title: "\(project) — \(detail(group, now: now))")
+        }
+        return QuickMenuSummary(headline: parts.isEmpty ? "진행 중인 세션 없음" : (["AI 세션"] + parts).joined(separator: " · "), rows: rows)
+    }
+
+    /// "입력 대기 3분", "명령 실행 · 턴 7분", "로그 대기 · 3분째 기록 없음": minutes only, never seconds.
+    static func detail(_ group: SessionGroup, now: Date) -> String {
+        let member = group.members.first { $0.state == group.state }?.reading ?? group.lead.reading
+        let turn = group.members.compactMap(\.reading.currentTurnStartedAt).min().map { " · 턴 " + minutes(now.timeIntervalSince($0)) } ?? ""
+        switch group.state {
+        case .input:
+            let since = member.lastActivity.map { " " + minutes(now.timeIntervalSince($0)) } ?? ""
+            return (SessionPresentation.isPlanApproval(member) ? "계획 승인 대기" : "입력 대기") + since
+        case .retrying: return "API 재시도" + turn
+        case .tool: return SessionPresentation.toolTitle(member.toolCategory) + turn
+        case .working: return "진행" + turn
+        default:
+            guard let at = SessionPresentation.liveAt(member), now.timeIntervalSince(at) >= 60 else { return "로그 대기" }
+            return "로그 대기 · \(minutes(now.timeIntervalSince(at)))째 기록 없음"
+        }
+    }
+
+    static func minutes(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds)) / 60
+        if total < 1 { return "1분 미만" }
+        return total >= 60 ? "\(total / 60)시간 \(total % 60)분" : "\(total)분"
+    }
+}
+
 final class StatusBarContentView: NSView {
     private(set) var metrics: [StatusBarMetric] = []
     private(set) var layout: StatusBarLayout = .compact
     private(set) var showRunner = true
     private(set) var runnerPose: RunnerPose = .sit
     private(set) var runnerFrame = 0
+    /// `Runner.fxMask` step drawn over the sprite (the sleep z); nil draws none.
+    private(set) var runnerFX: Int?
+    /// The effect-layer source; checks substitute a synthetic mask until the assets ship.
+    var fxMask: (RunnerPose, Int) -> NSImage? = { Runner.fxMask(pose: $0, step: $1) }
     /// Open popover or menu: the system draws the selection plate. Text keeps label colours;
     /// only the AI state colour is dropped (the mark shape stays).
     var highlighted = false { didSet { if highlighted != oldValue { needsDisplay = true } } }
@@ -207,10 +270,11 @@ final class StatusBarContentView: NSView {
         needsDisplay = true
     }
 
-    func updateRunner(pose: RunnerPose, frame: Int) {
-        guard pose != runnerPose || frame != runnerFrame else { return }
+    func updateRunner(pose: RunnerPose, frame: Int, fx: Int? = nil) {
+        guard pose != runnerPose || frame != runnerFrame || fx != runnerFX else { return }
         runnerPose = pose
         runnerFrame = frame
+        runnerFX = fx
         if showRunner { setNeedsDisplay(runnerRect(in: bounds)) }
     }
 
@@ -262,10 +326,11 @@ final class StatusBarContentView: NSView {
         }
     }
 
+    /// `StateGlyph` sizes in the bar: 7 pt, the input disc 8 pt (A0-3).
     static func markWidth(_ state: TokenActivityState) -> CGFloat {
         switch state {
         case .input: return 8
-        case .output, .tool, .working, .stale: return 6
+        case .tool, .working, .stale: return 7
         default: return 0
         }
     }
@@ -302,13 +367,13 @@ final class StatusBarContentView: NSView {
         let contrast = NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
         let isHighlighted = highlighted || (superview as? NSStatusBarButton)?.isHighlighted == true
         let palette = Palette(label: .labelColor,
-                              secondary: contrast ? NSColor.labelColor.withAlphaComponent(0.7) : .secondaryLabelColor,
+                              secondary: Self.secondaryColor(contrast: contrast),
                               tertiary: contrast ? .secondaryLabelColor : .tertiaryLabelColor,
                               contrast: contrast, stateColours: !isHighlighted)
         var x = edge
         if showRunner {
             let slot = runnerRect(in: rect)
-            if slot.intersects(dirtyRect) { drawRunner(in: slot) }
+            if slot.intersects(dirtyRect) { drawRunner(in: slot, palette) }
             x += Self.runnerSlot.width + (metrics.isEmpty ? 0 : 2)
         }
         if metrics.isEmpty && !showRunner {
@@ -333,16 +398,26 @@ final class StatusBarContentView: NSView {
         }
     }
 
-    private func drawRunner(in slot: NSRect) {
+    private func drawRunner(in slot: NSRect, _ palette: Palette) {
         let image = Runner.image(pose: runnerPose, frame: runnerFrame)
         var size = image.size
         if size.width <= 0 || size.height <= 0 || size.width > slot.width || size.height > slot.height {
             let fit = size.width > 0 && size.height > 0 ? min(slot.width / size.width, slot.height / size.height) : 1
             size = size.width > 0 && size.height > 0 ? NSSize(width: size.width * fit, height: size.height * fit) : slot.size
         }
-        let origin = NSPoint(x: snap(slot.midX - size.width / 2), y: snap(slot.midY - size.height / 2))
-        image.draw(in: NSRect(origin: origin, size: size), from: .zero, operation: .sourceOver,
-                   fraction: 1, respectFlipped: true, hints: nil)
+        let rect = NSRect(origin: NSPoint(x: snap(slot.midX - size.width / 2), y: snap(slot.midY - size.height / 2)), size: size)
+        image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        // The z is a label-coloured template at the sprite's own snapped origin, never resampled (K-2).
+        guard let step = runnerFX, let mask = fxMask(runnerPose, step), let context = NSGraphicsContext.current else { return }
+        let colour: NSColor = palette.contrast || !palette.stateColours ? .labelColor : .secondaryLabelColor
+        context.saveGraphicsState()
+        context.imageInterpolation = .none
+        context.cgContext.beginTransparencyLayer(in: rect, auxiliaryInfo: nil)
+        mask.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        colour.setFill()
+        rect.fill(using: .sourceIn)
+        context.cgContext.endTransparencyLayer()
+        context.restoreGraphicsState()
     }
 
     private var valueFont: NSFont { .monospacedDigitSystemFont(ofSize: 11, weight: .medium) }
@@ -386,13 +461,14 @@ final class StatusBarContentView: NSView {
             return
         }
         // Natural aspect at an 11pt height, trailing-aligned in a 16pt slot so each icon hugs its own value.
+        // An opaque label-coloured symbol dimmed once by `fraction`, so it reads like the "AI" caption (M-3).
         let slot = NSRect(x: cell.minX + 2, y: cell.midY - 5.5, width: 16, height: 11)
-        if let icon = symbol(metric.symbol, color: palette.secondary, key: palette.contrast ? "c" : "n"),
-           icon.size.width > 0, icon.size.height > 0 {
+        if let icon = symbol(metric.symbol, contrast: palette.contrast), icon.size.width > 0, icon.size.height > 0 {
             let fit = min(slot.height / icon.size.height, slot.width / icon.size.width)
             let size = NSSize(width: icon.size.width * fit, height: icon.size.height * fit)
             icon.draw(in: NSRect(x: snap(slot.maxX - size.width), y: snap(slot.midY - size.height / 2), width: size.width, height: size.height),
-                      from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+                      from: .zero, operation: .sourceOver, fraction: Self.symbolFraction(contrast: palette.contrast),
+                      respectFlipped: true, hints: nil)
         }
         draw(valueRuns(metric.value, palette), centerY: cell.midY,
              in: NSRect(x: slot.maxX + 3, y: 0, width: cell.maxX - slot.maxX - 3, height: cell.height), alignment: .left)
@@ -404,10 +480,12 @@ final class StatusBarContentView: NSView {
                font: .monospacedDigitSystemFont(ofSize: 12, weight: .medium), palette, centered: true, prefix: prefix)
     }
 
-    /// Mark slot (shape = state) then the count; 0 or unknown is tertiary with an empty slot.
+    /// Mark slot (shape = state) then the count: label while running, secondary for log wait or before the
+    /// first sample ("—"), tertiary "0" with an empty slot (M-2).
     private func drawAI(_ metric: StatusBarMetric, centerY: CGFloat, in rect: NSRect, font: NSFont, _ palette: Palette,
                         centered: Bool, prefix: [Run] = []) {
-        let count = [Run(text: metric.value, font: font, color: metric.isActive ? palette.label : palette.tertiary)]
+        let tone = metric.isActive ? palette.label : metric.value == "—" || metric.activityState == .stale ? palette.secondary : palette.tertiary
+        let count = [Run(text: metric.value, font: font, color: tone)]
         let countWidth = string(count).size().width
         let prefixWidth = prefix.isEmpty ? 0 : string(prefix).size().width + 3
         let total = prefixWidth + Self.markSlot + countWidth
@@ -421,66 +499,45 @@ final class StatusBarContentView: NSView {
         draw(count, centerY: centerY, in: NSRect(x: x, y: rect.minY, width: max(1, rect.maxX - x), height: rect.height), alignment: .left)
     }
 
-    /// Filled dot output · rounded square tool · ring working · half ring log wait · '?' badge input.
+    /// `StateGlyph` marks: purple ring working, blue rounded square tool, neutral half disc log wait, yellow "?" input.
+    /// Output has no mark: it is an event. An open item drops the state colour and keeps the shape in the label colour.
     private func drawMark(_ state: TokenActivityState, center: NSPoint, _ palette: Palette) {
         let size = Self.markWidth(state)
-        guard size > 0 else { return }
+        guard size > 0, let kind = StateGlyph.Kind(phase: state), let context = NSGraphicsContext.current?.cgContext else { return }
         let rect = NSRect(x: snap(center.x - size / 2), y: snap(center.y - size / 2), width: size, height: size)
-        let colour: NSColor
-        if !palette.stateColours { colour = palette.label } else {
-            switch state {
-            case .output: colour = .systemGreen
-            case .tool: colour = .systemBlue
-            case .stale: colour = .systemOrange
-            case .input: colour = .systemYellow
-            default: colour = palette.label
+        guard kind == .waiting, palette.stateColours else {
+            StateGlyph.draw(kind, in: rect, context: context, highlighted: !palette.stateColours, contrast: palette.contrast)
+            // Increase Contrast: the filled yellow and blue marks get a label-colour edge on a light bar.
+            if palette.contrast, palette.stateColours, kind == .tool || kind == .input {
+                context.saveGState()
+                context.setStrokeColor(NSColor.labelColor.cgColor)
+                context.setLineWidth(1)
+                context.addPath(StateGlyph.drawing(kind, in: rect.insetBy(dx: 0.5, dy: 0.5)).path)
+                context.strokePath()
+                context.restoreGState()
             }
+            return
         }
-        let ring = NSBezierPath(ovalIn: rect.insetBy(dx: 0.6, dy: 0.6))
-        ring.lineWidth = 1.2
-        var outline: NSBezierPath?
-        switch state {
-        case .output:
-            colour.setFill()
-            outline = NSBezierPath(ovalIn: rect)
-            outline?.fill()
-        case .tool:
-            colour.setFill()
-            outline = NSBezierPath(roundedRect: rect.insetBy(dx: 0.25, dy: 0.25), xRadius: 1.4, yRadius: 1.4)
-            outline?.fill()
-        case .working:
-            colour.setStroke()
-            ring.stroke()
-        case .stale:
-            colour.setStroke()
-            ring.stroke()
-            let half = NSBezierPath()
-            half.move(to: NSPoint(x: rect.midX, y: rect.minY))
-            half.appendArc(withCenter: NSPoint(x: rect.midX, y: rect.midY), radius: size / 2, startAngle: 270, endAngle: 90, clockwise: true)
-            half.close()
-            colour.setFill()
-            half.fill()
-        case .input:
-            let glyph: NSColor
-            if palette.stateColours {
-                colour.setFill()
-                outline = NSBezierPath(ovalIn: rect)
-                outline?.fill()
-                glyph = .black
-            } else {
-                colour.setStroke()
-                ring.stroke()
-                glyph = colour
-            }
-            draw([Run(text: "?", font: .systemFont(ofSize: 7, weight: .heavy), color: glyph)], centerY: rect.midY,
-                 in: rect.insetBy(dx: -2, dy: 0))
-        default:
-            break
-        }
-        if palette.contrast, palette.stateColours, let outline {
-            NSColor.labelColor.setStroke()
-            outline.lineWidth = 1
-            outline.stroke()
+        Self.fillWaiting(in: rect, color: palette.secondary, context: context)
+    }
+
+    /// The bar's secondary tone. The log-wait half disc uses it too (M-1): neutral 0.45 stays under 3:1 on a light bar or menu.
+    static func secondaryColor(contrast: Bool) -> NSColor { contrast ? NSColor.labelColor.withAlphaComponent(0.7) : .secondaryLabelColor }
+
+    private static func fillWaiting(in rect: NSRect, color: NSColor, context: CGContext) {
+        context.saveGState()
+        context.setFillColor(color.cgColor)
+        context.addPath(StateGlyph.drawing(.waiting, in: rect).path)
+        context.fillPath(using: .evenOdd)
+        context.restoreGState()
+    }
+
+    /// The quick menu's log-wait glyph, drawn like the bar's mark; the colour resolves against the menu's appearance.
+    static func waitingGlyph(side: CGFloat, contrast: Bool) -> NSImage {
+        NSImage(size: NSSize(width: side, height: side), flipped: true) { rect in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            fillWaiting(in: rect, color: secondaryColor(contrast: contrast), context: context)
+            return true
         }
     }
 
@@ -516,9 +573,17 @@ final class StatusBarContentView: NSView {
         }
     }
 
-    private func symbol(_ name: String, color: NSColor, key: String) -> NSImage? {
-        let cacheKey = name + "/" + key
+    /// The inline symbols' only dimming (M-3): 0.55, Increase Contrast 0.75.
+    static func symbolFraction(contrast: Bool) -> CGFloat { contrast ? 0.75 : 0.55 }
+
+    /// Opaque label colour of the current drawing appearance; the cache key carries the appearance and contrast.
+    private func symbol(_ name: String, contrast: Bool) -> NSImage? {
+        let appearance = NSAppearance.currentDrawing()
+        let dark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let cacheKey = "\(name)/\(dark ? "dark" : "light")/\(contrast ? "contrast" : "normal")"
         if let image = symbolImages[cacheKey] { return image }
+        var color = NSColor.labelColor
+        appearance.performAsCurrentDrawingAppearance { color = (NSColor.labelColor.usingColorSpace(.sRGB) ?? .labelColor).withAlphaComponent(1) }
         let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .medium)
             .applying(NSImage.SymbolConfiguration(paletteColors: [color]))
         guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
@@ -599,17 +664,15 @@ enum MenuBarStrip {
         }
     }
 
-    static func preview(model: DashboardModel, preferences: Preferences) -> (images: [NSImage], width: CGFloat) {
-        let counts = model.sessions.counts
-        let metrics = StatusBarContent.metrics(system: model.system, counts: counts, ai: StatusAISummary(groups: model.groups, counts: counts),
-                                               recorded: model.flow.total, preferences: preferences, hasSample: model.hasSample,
-                                               hasTokenSample: model.tokensSampledAt != nil)
+    /// Light and dark strips of the real status content with the cat's planned pose, frame 0 (T-5).
+    static func preview(metrics: [StatusBarMetric], preferences: Preferences, pose: RunnerPose) -> (images: [NSImage], width: CGFloat) {
         var images: [NSImage] = []
         var width: CGFloat = 0
         for dark in [false, true] {
             let view = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
             view.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             view.update(metrics: metrics, layout: preferences.statusBarLayout, showRunner: preferences.showRunner)
+            view.updateRunner(pose: pose, frame: 0, fx: RunnerAnimator.stillFX(pose))
             view.frame.size.width = view.requiredWidth
             width = view.requiredWidth
             if let strip = view.snapshotImage() { images.append(backdrop(strip, dark: dark, outlined: true)) }
@@ -631,13 +694,45 @@ enum MenuBarStrip {
     }
 }
 
+/// Settings preview memo (T-5): a preference or pose change rebuilds at once; value-only changes (CPU %, network)
+/// rebuild at most once a second, so the open Settings window does not rasterize on every publish.
+final class MenuBarPreviewCache {
+    private var structure: String?
+    private var values: [String] = []
+    private var builtAt = Date.distantPast
+    private(set) var result: (images: [NSImage], width: CGFloat) = ([], 0)
+    private(set) var builds = 0
+
+    func preview(model: DashboardModel, preferences: Preferences, pose: RunnerPose, now: Date = Date()) -> (images: [NSImage], width: CGFloat) {
+        let counts = model.sessions.counts
+        let metrics = StatusBarContent.metrics(system: model.system, counts: counts, ai: StatusAISummary(groups: model.groups, counts: counts),
+                                               recorded: model.flow.total, preferences: preferences, hasSample: model.hasSample,
+                                               hasTokenSample: model.tokensSampledAt != nil)
+        return preview(metrics: metrics, preferences: preferences, pose: pose, now: now)
+    }
+
+    func preview(metrics: [StatusBarMetric], preferences: Preferences, pose: RunnerPose, now: Date) -> (images: [NSImage], width: CGFloat) {
+        let key = [preferences.statusBarLayout.rawValue, "\(preferences.showRunner)", preferences.order.map(\.rawValue).joined(separator: ","),
+                   preferences.visible.map(\.rawValue).sorted().joined(separator: ","), pose.rawValue].joined(separator: "|")
+        let current = metrics.map { "\($0.id.rawValue)=\($0.value)/\($0.activityState.rawValue)/\($0.isActive)" }
+        if key == structure && (current == values || now.timeIntervalSince(builtAt) < 1) { return result }
+        structure = key
+        values = current
+        builtAt = now
+        builds += 1
+        result = MenuBarStrip.preview(metrics: metrics, preferences: preferences, pose: pose)
+        return result
+    }
+}
+
 func runStatusBarChecks() -> [String] {
     let cases: [(String, Double?, String)] = [
         ("missing rate", nil, "—"), ("zero rate", 0, "0B/s"),
-        ("byte rounding", 999.49, "999B/s"), ("byte unit crossover", 999.5, "1kB/s"),
-        ("kilobyte unit", 1_000, "1kB/s"), ("kilobyte precision", 1_499, "1.5kB/s"),
-        ("kilobyte rounding", 999_499, "999kB/s"), ("megabyte crossover", 999_500, "1MB/s"),
-        ("gigabyte unit", 1_000_000_000, "1GB/s"), ("terabyte unit", 1_000_000_000_000, "1TB/s"),
+        ("byte rounding", 999.49, "999B/s"), ("byte unit crossover", 999.5, "1.0kB/s"),
+        ("kilobyte unit", 1_000, "1.0kB/s"), ("kilobyte precision", 1_499, "1.5kB/s"),
+        ("ten kilobytes drop the decimal", 9_960, "10kB/s"), ("two-digit kilobytes", 12_345, "12kB/s"),
+        ("kilobyte rounding", 999_499, "999kB/s"), ("megabyte crossover", 999_500, "1.0MB/s"),
+        ("gigabyte unit", 1_000_000_000, "1.0GB/s"), ("terabyte unit", 1_000_000_000_000, "1.0TB/s"),
         ("invalid rate", .infinity, "—"), ("negative rate", -1, "—")
     ]
     var failures = cases.compactMap { name, value, expected -> String? in
@@ -706,19 +801,32 @@ func runStatusBarChecks() -> [String] {
         metrics(system, readings, now: now, layout: layout).first(where: { $0.id == .ai })
     }
     check("pending tool remains visible alongside output", ai([output, tool])?.activityState == .tool && ai([output, tool])?.value == "2")
-    check("confirmed recent output is highlighted", ai([output])?.activityState == .output)
+    check("a fresh record is an event: the mark stays working", ai([output])?.activityState == .working
+          && ai([output])?.isActive == true && ai([output])?.value == "1")
+    // The cat's 1.2 s run reads `lastOutputAt` within 5 s, not a display state.
+    let fresh = SessionPresentation.groups([output], now: at)
+    var runner = RunnerDirector()
+    let freshActivity = RunnerActivity(groups: fresh, cpu: nil, now: at)
+    runner.observe(freshActivity, now: at)
+    check("a fresh record still runs the cat", freshActivity.newestOutputAt == at
+          && runner.plan(.activity, activity: freshActivity, now: at, reduceMotion: false).pose == .run)
     output.sampledAt = at.addingTimeInterval(6)
-    check("old output stops highlighting while turn remains active",
+    check("old output keeps the working mark while the turn remains active",
           ai([output], now: at.addingTimeInterval(6))?.activityState == .working)
     let stale = TokenReading(source: .codex, id: "stale", active: false, lastActivity: at.addingTimeInterval(-180),
                              activityState: .stale, sampledAt: at)
-    check("stale logs are waiting rather than running",
-          ai([stale])?.activityState == .stale && ai([stale])?.value == "0" && ai([stale])?.isActive == false)
+    check("with nothing running, log-wait groups show their count and the half-disc mark, not as running",
+          ai([stale])?.activityState == .stale && ai([stale])?.value == "1" && ai([stale])?.isActive == false
+          && ai([stale])?.detail.hasPrefix("AI 로그 대기 1개") == true)
     let unfinished = TokenReading(source: .codex, id: "unfinished", active: false, lastActivity: at.addingTimeInterval(-3_600),
                                   activityState: .unfinished, sampledAt: at)
     check("unfinished turns are neither counted nor marked",
           ai([unfinished])?.activityState == .idle && ai([unfinished])?.value == "0")
-    check("a running session outranks waiting for the mark", ai([stale, tool])?.activityState == .tool && ai([stale, tool])?.value == "1")
+    check("a running session outranks waiting for the mark and the count", ai([stale, tool])?.activityState == .tool
+          && ai([stale, tool])?.value == "1" && ai([stale, tool])?.isActive == true)
+    check("marks are 7 pt glyphs, the input disc 8 pt, in the unchanged 11 pt slot",
+          StatusBarContentView.markWidth(.tool) == 7 && StatusBarContentView.markWidth(.working) == 7 && StatusBarContentView.markWidth(.stale) == 7
+          && StatusBarContentView.markWidth(.input) == 8 && StatusBarContentView.markWidth(.output) == 0 && StatusBarContentView.markSlot == 11)
     let question = TokenReading(source: .claude, id: "question", sessionID: "q1", active: true, activityState: .input, sampledAt: at)
     check("input outranks tool and counts once per group",
           ai([question, tool])?.activityState == .input && ai([question, tool])?.value == "2"
@@ -815,6 +923,144 @@ func runStatusBarChecks() -> [String] {
     }
     check("worst-case values fit their slots without shrinking: \(shrunk.joined(separator: ", "))", shrunk.isEmpty)
     check("AI count stays put when its state mark changes: \(drifting.joined(separator: ", "))", drifting.isEmpty)
-    print("Status bar checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
+
+    // Rendered pixels on a light menu-bar backdrop (0.94 white), 2× scale.
+    func render(_ view: StatusBarContentView) -> (pixel: (Int, Int) -> (luma: Double, rgb: [Double]), width: Int, height: Int)? {
+        guard let image = view.snapshotImage(scale: 2), let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let context = CGContext(data: nil, width: cg.width, height: cg.height, bitsPerComponent: 8, bytesPerRow: cg.width * 4,
+                                      space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let data = context.data else { return nil }
+        context.setFillColor(CGColor(srgbRed: 0.94, green: 0.94, blue: 0.94, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
+        let bytes = Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: cg.width * cg.height * 4))
+        let width = cg.width
+        func linear(_ c: Double) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+        return ({ x, y in
+            let i = (y * width + x) * 4
+            let rgb = (0..<3).map { Double(bytes[i + $0]) / 255 }
+            return (0.2126 * linear(rgb[0]) + 0.7152 * linear(rgb[1]) + 0.0722 * linear(rgb[2]), rgb)
+        }, cg.width, cg.height)
+    }
+    func contrast(_ a: Double, _ b: Double) -> Double { (max(a, b) + 0.05) / (min(a, b) + 0.05) }
+    let lightView = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
+    lightView.appearance = NSAppearance(named: .aqua)
+    lightView.update(metrics: [metric(.cpu, "37%")], layout: .inline, showRunner: false)
+    lightView.frame.size.width = lightView.requiredWidth
+    var symbolContrast = 0.0
+    if let pixels = render(lightView) {
+        // The CPU symbol's 16 × 11 pt slot starts 2 pt into the cell, after the 4 pt edge.
+        let background = pixels.pixel(1, 1).luma
+        for x in 12..<44 { for y in 0..<pixels.height { symbolContrast = max(symbolContrast, contrast(background, pixels.pixel(x, y).luma)) } }
+    }
+    check("the inline symbol reaches 3.5:1 on a light bar (got \(String(format: "%.2f", symbolContrast)):1), dimmed once by 0.55 (0.75 contrast)",
+          symbolContrast >= 3.5 && StatusBarContentView.symbolFraction(contrast: false) == 0.55
+          && StatusBarContentView.symbolFraction(contrast: true) == 0.75)
+
+    // The sleep z: a template mask at the sprite's snapped origin, label-coloured, nothing outside the mask (K-2).
+    let fxView = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
+    fxView.appearance = NSAppearance(named: .aqua)
+    fxView.update(metrics: [], layout: .minimal, showRunner: true)
+    fxView.frame.size.width = fxView.requiredWidth
+    let mask = NSImage(size: Runner.size, flipped: true) { _ in
+        NSColor.black.setFill()
+        NSRect(x: 27, y: 1, width: 3, height: 3).fill()
+        return true
+    }
+    fxView.fxMask = { pose, step in pose == .sleep && step == RunnerAnimator.largeZ ? mask : nil }
+    fxView.updateRunner(pose: .sleep, frame: 0)
+    let plain = render(fxView)
+    fxView.updateRunner(pose: .sleep, frame: 0, fx: RunnerAnimator.largeZ)
+    let withZ = render(fxView)
+    var fxPainted = false, fxOutside = false
+    if let plain, let withZ {
+        // Sprite slot origin x = 4 pt edge, y = (22 - 20) / 2 = 1 pt; the mask square sits at (27, 1)–(30, 4) pt.
+        let inside = withZ.pixel((4 + 28) * 2 + 1, (1 + 2) * 2 + 1)
+        fxPainted = plain.pixel((4 + 28) * 2 + 1, (1 + 2) * 2 + 1).luma > 0.8 && inside.luma < 0.4
+        for x in 0..<withZ.width { for y in 0..<withZ.height where !(62...67).contains(x) || !(4...9).contains(y) {
+            if abs(withZ.pixel(x, y).luma - plain.pixel(x, y).luma) > 0.01 { fxOutside = true }
+        } }
+    }
+    check("the effect mask is filled in the secondary label colour only where the mask is opaque", fxPainted && !fxOutside)
+    // `Runner.fxMask` steps follow the manifest (0 no z, 1 zS, 2 zL); manifest cell (22, 3) / (25, 0) plus the 1 pt frame inset.
+    func opaque(_ image: NSImage) -> (count: Int, origin: (Int, Int))? {
+        let width = Int(Runner.size.width), height = Int(Runner.size.height)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4,
+                                         hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        rep.size = Runner.size
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        NSGraphicsContext.current?.imageInterpolation = .none
+        image.draw(in: NSRect(origin: .zero, size: Runner.size))
+        NSGraphicsContext.restoreGraphicsState()
+        let points = (0..<height).flatMap { y in (0..<width).filter { (rep.colorAt(x: $0, y: y)?.alphaComponent ?? 0) > 0.5 }.map { ($0, y) } }
+        return (points.count, (points.map(\.0).min() ?? -1, points.map(\.1).min() ?? -1))
+    }
+    var skipped = 0
+    if let small = Runner.fxMask(pose: .sleep, step: RunnerAnimator.smallZ).flatMap(opaque),
+       let large = Runner.fxMask(pose: .sleep, step: RunnerAnimator.largeZ).flatMap(opaque) {
+        check("fx steps follow the manifest's sleep order: zS 8 px at (23, 4) = \(small), zL 10 px at (26, 1) = \(large)",
+              small.count == 8 && small.origin == (23, 4) && large.count == 10 && large.origin == (26, 1))
+    } else { skipped += 1 }
+
+    // The quick menu's log-wait glyph is the bar's secondary half disc, not neutral 0.45: ≥ 3:1 on a light menu (A0-2, M-1).
+    var menuGlyphContrast = 0.0
+    if let context = CGContext(data: nil, width: 20, height: 20, bitsPerComponent: 8, bytesPerRow: 80, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                               bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue), let data = context.data {
+        context.setFillColor(CGColor(srgbRed: 0.94, green: 0.94, blue: 0.94, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        NSAppearance(named: .aqua)?.performAsCurrentDrawingAppearance {
+            StatusBarContentView.waitingGlyph(side: 10, contrast: false).draw(in: NSRect(x: 0, y: 0, width: 20, height: 20))
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        let bytes = data.assumingMemoryBound(to: UInt8.self)
+        func luma(_ i: Int) -> Double {
+            func linear(_ c: Double) -> Double { c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4) }
+            return 0.2126 * linear(Double(bytes[i]) / 255) + 0.7152 * linear(Double(bytes[i + 1]) / 255) + 0.0722 * linear(Double(bytes[i + 2]) / 255)
+        }
+        menuGlyphContrast = (0..<400).map { contrast(luma(0), luma($0 * 4)) }.max() ?? 0
+    }
+    check("the quick menu's log-wait glyph reaches 3:1 on a light menu (got \(String(format: "%.2f", menuGlyphContrast)):1)", menuGlyphContrast >= 3)
+
+    // Quick menu (M-5): headline counts and up to three groups in urgency order, minutes only.
+    func live(_ id: String, _ project: String?, _ state: TokenActivityState, tool: ToolCategory? = nil, turn: TimeInterval? = nil,
+              last: TimeInterval = -2) -> TokenReading {
+        var reading = TokenReading(source: .claude, id: id, sessionID: id, project: project, active: state != .stale,
+                                   lastActivity: at.addingTimeInterval(last), activityState: state, sampledAt: at)
+        reading.toolCategory = tool
+        reading.currentTurnStartedAt = turn.map { at.addingTimeInterval(-$0) }
+        return reading
+    }
+    let menuReadings = [live("w", "web", .working, turn: 30), live("t", "api-server", .tool, tool: .command, turn: 420),
+                        live("q", "TokenCat", .input, last: -185), live("s", nil, .stale, last: -190),
+                        live("z", "zz", .working, turn: 5)]
+    let menuGroups = SessionPresentation.groups(menuReadings, now: at)
+    let quick = QuickMenuSummary.make(groups: menuGroups, counts: SessionCounts(menuGroups), hasTokenSample: true, now: at)
+    check("the quick menu summarises live groups by urgency: \(quick.headline) / \(quick.rows.map(\.title))",
+          quick.headline == "AI 세션 · 입력 1 · 도구 1 · 진행 2 · 로그 대기 1"
+          && quick.rows.map(\.title) == ["TokenCat — 입력 대기 3분", "api-server — 명령 실행 · 턴 7분", "web — 진행 · 턴 1분 미만"]
+          && quick.rows.map(\.kind) == [.input, .tool, .working] && quick.rows.first?.id == "q")
+    let waitingOnly = SessionPresentation.groups([live("s", nil, .stale, last: -190)], now: at)
+    check("quiet and loading quick menus say so",
+          QuickMenuSummary.make(groups: [], counts: SessionCounts(), hasTokenSample: true, now: at).headline == "진행 중인 세션 없음"
+          && QuickMenuSummary.make(groups: menuGroups, counts: SessionCounts(menuGroups), hasTokenSample: false, now: at)
+            == QuickMenuSummary(headline: "AI 기록 확인 중")
+          && QuickMenuSummary.make(groups: waitingOnly, counts: SessionCounts(waitingOnly), hasTokenSample: true, now: at).rows.first?.title
+            == "프로젝트 미확인 — 로그 대기 · 3분째 기록 없음")
+
+    // Settings preview memo (T-5): preferences and pose rebuild at once, values at most once a second.
+    let cache = MenuBarPreviewCache()
+    let base = [metric(.cpu, "10%"), metric(.ai, "1", .working)]
+    _ = cache.preview(metrics: base, preferences: preferences, pose: .walk, now: at)
+    _ = cache.preview(metrics: base, preferences: preferences, pose: .walk, now: at.addingTimeInterval(0.2))
+    _ = cache.preview(metrics: [metric(.cpu, "11%"), base[1]], preferences: preferences, pose: .walk, now: at.addingTimeInterval(0.5))
+    let throttled = cache.builds
+    _ = cache.preview(metrics: [metric(.cpu, "11%"), base[1]], preferences: preferences, pose: .sit, now: at.addingTimeInterval(0.6))
+    _ = cache.preview(metrics: [metric(.cpu, "12%"), base[1]], preferences: preferences, pose: .sit, now: at.addingTimeInterval(1.7))
+    check("the settings preview rebuilds on a pose change at once and on value changes at most once a second",
+          throttled == 1 && cache.builds == 3 && cache.result.images.count == 2)
+    print("Status bar checks: \(checks - failures.count) PASS / \(failures.count) FAIL / \(skipped) SKIP")
     return failures
 }

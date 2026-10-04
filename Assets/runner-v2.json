@@ -1,12 +1,23 @@
 {
-  "version": 2,
+  "version": 3,
   "cell": {"width": 30, "height": 18},
   "sheets": {"1": "runner-v2@1x.png", "2": "runner-v2@2x.png"},
+  "fxSheets": {"1": "runner-v2-fx@1x.png", "2": "runner-v2-fx@2x.png"},
   "poses": [
-    {"pose": "sit", "row": 0, "frames": 2, "durations": [3.200, 0.160]},
-    {"pose": "sleep", "row": 1, "frames": 2, "durations": [1.600, 1.600]},
-    {"pose": "walk", "row": 2, "frames": 4, "durations": [0.125, 0.125, 0.125, 0.125]},
-    {"pose": "run", "row": 3, "frames": 6, "durations": [0.071, 0.071, 0.071, 0.071, 0.071, 0.071]},
-    {"pose": "alert", "row": 4, "frames": 2, "durations": [0.600, 0.300]}
+    {"pose": "sit", "row": 0, "frames": 2, "durations": [6, 0.12], "holdSequence": [6, 9.5, 4.5, 11, 7.5], "doubleEvery": 4, "doubleGap": 0.15},
+    {"pose": "sleep", "row": 1, "frames": 2, "durations": [1.6, 1.6]},
+    {"pose": "walk", "row": 2, "frames": 4, "durations": [0.15, 0.15, 0.15, 0.15]},
+    {"pose": "run", "row": 3, "frames": 6, "durations": [0.0714, 0.0714, 0.0714, 0.0714, 0.0714, 0.0714]},
+    {"pose": "alert", "row": 4, "frames": 2, "durations": [2.4, 0.3]},
+    {"pose": "yawn", "row": 5, "frames": 1, "durations": [0.6]},
+    {"pose": "content", "row": 6, "frames": 2, "durations": [0.5, 0.45], "holdSequence": [0.5, 0.55]}
+  ],
+  "glyphs": {
+    "zS": {"x": 0, "y": 0, "width": 3, "height": 4},
+    "zL": {"x": 4, "y": 0, "width": 4, "height": 4}
+  },
+  "fx": [
+    {"pose": "sleep", "step": 1, "glyph": "zS", "x": 22, "y": 3},
+    {"pose": "sleep", "step": 2, "glyph": "zL", "x": 25, "y": 0}
   ]
 }
