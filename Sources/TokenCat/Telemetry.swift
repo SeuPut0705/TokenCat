@@ -386,7 +386,8 @@ private enum TelemetryDecoder {
     private static func source(_ attrs: [String: Any], fallback: String?) -> TokenSource? {
         if let service = attrs["service.name"] as? String {
             switch service {
-            case "claude-code", "claude_code": return .claude
+            // CLI services and the exact service observed in Claude desktop OTLP.
+            case "claude-code", "claude_code", "claude-code-desktop": return .claude
             // Fixed first-party surfaces present in the bundled 0.160.0 CLI's
             // service-name classification; unknown/custom services stay rejected.
             case "codex", "codex-cli", "codex_cli_rs", "codex_exec", "codex-app-server",

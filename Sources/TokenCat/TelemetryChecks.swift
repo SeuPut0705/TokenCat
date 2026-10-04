@@ -14,13 +14,13 @@ func runTelemetryChecks() -> [String] {
         values.sorted { $0.key < $1.key }.map { attribute($0.key, $0.value) }
     }
     func json(_ value: [String: Any]) -> Data { (try? JSONSerialization.data(withJSONObject: value)) ?? Data() }
-    func logs(_ values: [String: Any], time: String = "1750000000000000000") -> Data {
-        json(["resourceLogs": [["resource": ["attributes": attrs(["service.name": "claude-code"])],
+    func logs(_ values: [String: Any], time: String = "1750000000000000000", service: String = "claude-code") -> Data {
+        json(["resourceLogs": [["resource": ["attributes": attrs(["service.name": service])],
             "scopeLogs": [["logRecords": [["timeUnixNano": time, "body": ["stringValue": "claude_code.api_request"],
                 "attributes": attrs(values)]]]]]]])
     }
-    func trace(_ values: [String: Any]) -> Data {
-        json(["resourceSpans": [["resource": ["attributes": attrs(["service.name": "claude-code"])],
+    func trace(_ values: [String: Any], service: String = "claude-code") -> Data {
+        json(["resourceSpans": [["resource": ["attributes": attrs(["service.name": service])],
             "scopeSpans": [["spans": [["name": "claude_code.llm_request", "endTimeUnixNano": "1750000001000000000",
                 "attributes": attrs(values)]]]]]]])
     }
@@ -47,6 +47,35 @@ func runTelemetryChecks() -> [String] {
             attrs(["output_tokens": 100, "duration_ms": 2000]) + [["key": "success", "value": ["boolValue": false]]]]]]]]]])
     check(failedRequest.ingest(failedPayload, path: "/v1/logs") && failedRequest.snapshot().isEmpty,
           "An explicitly failed API request produced a successful request rate")
+    let desktopRequest: [String: Any] = ["session.id": "desktop-session", "request_id": "desktop-request",
+        "model": "claude-opus-5-5", "output_tokens": 200, "duration_ms": 4532, "ttft_ms": 2534]
+    let desktop = LocalTelemetryCollector()
+    _ = desktop.ingest(logs(desktopRequest, service: "claude-code-desktop"), path: "/v1/logs")
+    check(desktop.snapshot().first?.provider == .claude && desktop.snapshot().first?.outputTokens == 200
+          && desktop.snapshot().first?.requestDurationMs == 4532
+          && desktop.snapshot().first?.sessionID == "desktop-session",
+          "The observed Claude desktop service did not decode API request usage and duration")
+    let desktopTrace = LocalTelemetryCollector()
+    _ = desktopTrace.ingest(trace(desktopRequest, service: "claude-code-desktop"), path: "/v1/traces")
+    check(desktopTrace.snapshot().first?.provider == .claude && desktopTrace.snapshot().first?.ttftMs == 2534
+          && desktopTrace.snapshot().first?.requestDurationIncludesRetries == true,
+          "The observed Claude desktop service did not decode request trace timing")
+    _ = desktop.ingest(trace(desktopRequest, service: "claude-code-desktop"), path: "/v1/traces")
+    check(desktop.snapshot().count == 1 && desktop.snapshot().first?.outputTokens == 200
+          && desktop.snapshot().first?.ttftMs == 2534
+          && desktop.snapshot().first?.requestDurationIncludesRetries == false,
+          "Claude desktop log and trace did not preserve successful-attempt duration and TTFT")
+    check(Set(desktop.diagnostics().entries.filter { $0.resourceServiceName == "claude-code-desktop"
+          && $0.recognized }.map(\.signal)) == ["logs", "traces"],
+          "Claude desktop log/trace metadata remained unrecognized in diagnostics")
+    let unrecognizedClaude = LocalTelemetryCollector()
+    for service in ["claude-code-desktop-external", "claude-code-desktop ", "arbitrary-claude-service", "codex_cli_rs"] {
+        _ = unrecognizedClaude.ingest(logs(desktopRequest, service: service), path: "/v1/logs")
+        _ = unrecognizedClaude.ingest(trace(desktopRequest, service: service), path: "/v1/traces")
+    }
+    check(unrecognizedClaude.snapshot().isEmpty
+          && unrecognizedClaude.diagnostics().entries.allSatisfy { !$0.recognized },
+          "Claude log/trace names bypassed exact service or provider matching")
     check(collector.ingest(logs(request), path: "/v1/logs") && collector.snapshot().count == 1
           && collector.snapshot().first?.outputTokens == 100,
           "Repeated OTLP delivery doubled request usage")
