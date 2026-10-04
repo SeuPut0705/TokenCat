@@ -108,11 +108,22 @@ enum TokenSpeed {
             let matches: [Int]
             if (measurement.serverTokenIntervalSampleCount ?? 1) > 1 { matches = [] }
             else if let agent = measurement.agentID { matches = sessionMatches.filter { result[$0].agentID == agent } }
+            else if measurement.provider == .claude {
+                // Claude Code tags every subagent request with agent_id; an untagged request
+                // belongs to the session's single main-thread log.
+                let main = sessionMatches.filter { result[$0].agentID == nil && !result[$0].isSubagent }
+                matches = main.count == 1 ? main : []
+            }
             else { matches = sessionMatches.count == 1 && result[sessionMatches[0]].agentID == nil ? sessionMatches : [] }
             if matches.count == 1, let index = matches.first {
-                if result[index].speedMeasurement.map({ $0.at > speed.at }) != true {
-                    result[index].speedMeasurement = speed
+                // A side request on another model (e.g. title generation) must not hide the
+                // current model's rate; a different model is shown only when nothing else matches.
+                func current(_ value: TokenSpeedMeasurement) -> Bool { value.model != nil && value.model == result[index].model }
+                if let existing = result[index].speedMeasurement,
+                   current(existing) != current(speed) ? current(existing) : existing.at > speed.at {
+                    continue
                 }
+                result[index].speedMeasurement = speed
             } else {
                 let key = [measurement.provider.rawValue, measurement.sessionID ?? "model", measurement.agentID ?? "", measurement.model ?? ""].joined(separator: ":")
                 var reading = TokenReading(source: measurement.provider, id: "telemetry:\(key)",

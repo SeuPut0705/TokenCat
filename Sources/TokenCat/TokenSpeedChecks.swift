@@ -41,6 +41,22 @@ func runTokenSpeedChecks() -> [String] {
     let child = TokenReading(source: .codex, id: "child", sessionID: "a", agentID: "worker", model: "same-model", isSubagent: true)
     let ambiguous = TokenSpeed.apply([a, child], measurements: [server])
     check("missing agent cannot select a parent among shared sessions", ambiguous.count == 3 && ambiguous[0].speedMeasurement == nil && ambiguous[1].speedMeasurement == nil)
+    let claudeMain = TokenReading(source: .claude, id: "claude-main", sessionID: "c", model: "main-model")
+    let claudeChild = TokenReading(source: .claude, id: "claude-child", sessionID: "c", agentID: "helper",
+                                   model: "main-model", isSubagent: true)
+    let mainRequest = reading(["provider": "claude", "sessionID": "c", "model": "main-model",
+                               "outputTokens": 300, "requestDurationMs": 3_000])
+    let sideRequest = reading(["provider": "claude", "sessionID": "c", "model": "side-model", "at": "2026-10-04T10:00:05Z",
+                               "outputTokens": 10, "requestDurationMs": 500])
+    let claudeShared = TokenSpeed.apply([claudeMain, claudeChild], measurements: [mainRequest, sideRequest])
+    check("untagged Claude request attaches to the main log, not its subagent or a new row",
+          claudeShared.count == 2 && claudeShared[0].speedMeasurement?.tokensPerSecond == 100
+          && claudeShared[1].speedMeasurement == nil)
+    check("a newer side request on another model does not hide the current model's rate",
+          claudeShared[0].speedMeasurement?.model == "main-model")
+    let sideOnly = TokenSpeed.apply([claudeMain], measurements: [sideRequest])
+    check("a different-model rate is kept when it is the only match", sideOnly.count == 1
+          && sideOnly[0].speedMeasurement?.model == "side-model")
     var agent = server
     agent.agentID = "worker"
     let identified = TokenSpeed.apply([a, child], measurements: [agent])

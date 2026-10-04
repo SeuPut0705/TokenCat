@@ -121,6 +121,7 @@ enum TokenCatMain {
                     "repeatedStartKeepsOneTimer": oneTimer, "noPublishAfterStop": noLatePublish,
                     "nativeReadyBeforeTokens": nativeReadyBeforeTokens,
                     "observedLiveStates": observedLiveStates.sorted(), "samplesWithRecentLogDelta": recentDeltas,
+                    "logFileEvents": model.logEventCount,
                     "pass": passed
                 ]
                 if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {

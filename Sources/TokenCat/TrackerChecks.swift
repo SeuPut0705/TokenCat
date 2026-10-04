@@ -131,9 +131,15 @@ func runTrackerChecks() -> [String] {
                      "payload": ["type": "function_call_output", "call_id": "tool-b"]])
     check(liveCodex.activityState(at: liveStart.addingTimeInterval(5)) == .working,
           "Codex live: matching final tool result should return to working state")
-    check(liveCodex.activityState(at: liveStart.addingTimeInterval(126)) == .stale
+    check(liveCodex.activityState(at: liveStart.addingTimeInterval(300)) == .working
+          && liveCodex.isActive(at: liveStart.addingTimeInterval(300)),
+          "Codex live: a long model wait (no tool pending) must stay running within ten minutes")
+    check(liveCodex.activityState(at: liveStart.addingTimeInterval(700)) == .stale
           && liveCodex.currentTurnStartedAt == liveStart && liveCodex.currentTurnOutputTokens == 100,
           "Codex live: stale logs must keep elapsed time without claiming completion")
+    check(liveCodex.activityState(at: liveStart.addingTimeInterval(2_000)) == .unfinished
+          && !liveCodex.isActive(at: liveStart.addingTimeInterval(2_000)),
+          "Codex live: an open turn silent for over 30 minutes must not stay in the waiting state")
     feed(liveCodex, codex("task_complete", "2026-10-04T03:00:06Z", ["turn_id": "live-codex", "duration_ms": 6_000]))
     check(liveCodex.currentTurnStartedAt == nil && liveCodex.currentTurnOutputTokens == nil
           && liveCodex.activityState(at: liveStart.addingTimeInterval(6)) == .complete,
@@ -151,6 +157,130 @@ func runTrackerChecks() -> [String] {
         ["info": ["total_token_usage": ["output_tokens": "unavailable"]]]))
     check(unknownLiveCount.currentTurnOutputTokens == nil && unknownLiveCount.lastOutputDelta == nil,
           "Codex live: an unrecognized output counter must remain unknown, not fall back to zero")
+
+    func usageRecord(_ response: String, turn: String, output: Int, turnTotal: Int, _ timestamp: String) -> [String: Any] {
+        ["type": "token_usage_record", "timestamp": timestamp, "payload": [
+            "turn_id": turn, "response_id": response,
+            "usage": ["output_tokens": output, "input_tokens": 90_000],
+            "turn_token_usage": ["output_tokens": turnTotal, "input_tokens": 900_000],
+            "thread_token_usage": ["output_tokens": turnTotal + 10_000]]]
+    }
+    let recorded = TokenLogParser(source: .codex)
+    feed(recorded, usage(10_000, 300, "2026-10-04T05:00:00Z"))
+    feed(recorded, codex("task_started", "2026-10-04T05:00:01Z", ["turn_id": "usage-turn"]))
+    feed(recorded, usageRecord("resp-1", turn: "usage-turn", output: 120, turnTotal: 120, "2026-10-04T05:00:02Z"))
+    feed(recorded, ["type": "response_item", "timestamp": "2026-10-04T05:00:02Z",
+                    "payload": ["type": "function_call", "call_id": "long-tool"]])
+    let usageStart = ISO8601DateFormatter().date(from: "2026-10-04T05:00:02Z")!
+    check(recorded.currentTurnOutputTokens == 120 && recorded.lastOutputDelta == 120
+          && recorded.lastOutputAt == usageStart && recorded.recentOutputs.last?.tokens == 120,
+          "Codex usage record: a response must count before its tool finishes and token_count arrives")
+    feed(recorded, ["type": "response_item", "timestamp": "2026-10-04T05:03:00Z",
+                    "payload": ["type": "function_call_output", "call_id": "long-tool"]])
+    feed(recorded, usage(10_120, 120, "2026-10-04T05:03:00Z"))
+    feed(recorded, usageRecord("resp-1", turn: "usage-turn", output: 120, turnTotal: 120, "2026-10-04T05:03:01Z"))
+    check(recorded.currentTurnOutputTokens == 120 && recorded.lastOutputAt == usageStart
+          && recorded.recentOutputs.filter { $0.at >= usageStart }.count == 1,
+          "Codex usage record: the delayed token_count or a repeated response_id was counted again")
+    feed(recorded, usageRecord("resp-compact", turn: "usage-turn", output: 4_000, turnTotal: 4_120, "2026-10-04T05:03:02Z"))
+    feed(recorded, usage(10_120, 0, "2026-10-04T05:03:02Z"))
+    feed(recorded, usageRecord("resp-other", turn: "foreign-turn", output: 999, turnTotal: 999, "2026-10-04T05:03:03Z"))
+    check(recorded.currentTurnOutputTokens == 4_120 && recorded.lastOutputDelta == 4_000,
+          "Codex usage record: compaction output was dropped, or another turn's record leaked into the open turn")
+    feed(recorded, codex("task_complete", "2026-10-04T05:03:05Z", ["turn_id": "usage-turn", "duration_ms": 184_000]))
+    check(recorded.completion?.output == 4_120 && recorded.currentTurnOutputTokens == nil,
+          "Codex usage record: completed turn must report the recorded turn total and clear live counters")
+
+    let inheritedUsage = TokenLogParser(source: .codex)
+    feed(inheritedUsage, ["type": "session_meta", "payload": ["id": "fork", "timestamp": "2026-10-04T05:10:00Z",
+        "source": ["subagent": ["parent_thread_id": "parent"]]]])
+    feed(inheritedUsage, codex("task_started", "2026-10-04T05:10:01Z",
+        ["turn_id": "parent-turn", "started_at": "2026-10-04T05:00:00Z"]))
+    feed(inheritedUsage, usageRecord("parent-resp", turn: "parent-turn", output: 500, turnTotal: 500, "2026-10-04T05:10:01Z"))
+    check(inheritedUsage.lastOutputDelta == nil && inheritedUsage.recentOutputs.isEmpty && inheritedUsage.lastActivity == nil,
+          "Codex usage record: an inherited parent response was counted in a forked log")
+
+    // Liveness horizons: Codex tools yield quickly; any record keeps a turn alive.
+    let toolWait = TokenLogParser(source: .codex)
+    feed(toolWait, codex("task_started", "2026-10-04T06:00:00Z", ["turn_id": "tool-wait"]))
+    feed(toolWait, ["type": "response_item", "timestamp": "2026-10-04T06:00:01Z",
+                    "payload": ["type": "function_call", "call_id": "stuck"]])
+    let toolWaitStart = ISO8601DateFormatter().date(from: "2026-10-04T06:00:00Z")!
+    check(toolWait.activityState(at: toolWaitStart.addingTimeInterval(150)) == .stale,
+          "Codex liveness: a tool silent past its 120 s horizon must become log-waiting")
+    feed(toolWait, ["type": "world_state", "timestamp": "2026-10-04T06:08:00Z", "payload": ["full": true]])
+    check(toolWait.isActive(at: toolWaitStart.addingTimeInterval(530)) && toolWait.lastActivity == toolWaitStart.addingTimeInterval(1),
+          "Codex liveness: any newer record must keep the turn alive without becoming content activity")
+
+    func claudeUser(_ uuid: String, _ timestamp: String, content: Any, extra: [String: Any] = [:]) -> [String: Any] {
+        var record: [String: Any] = ["type": "user", "uuid": uuid, "timestamp": timestamp, "message": ["content": content]]
+        extra.forEach { record[$0.key] = $0.value }
+        return record
+    }
+    func claudeReply(_ id: String, _ count: Int, _ timestamp: String, _ uuid: String,
+                     blocks: [[String: Any]], stop: String? = nil, model: String = "fixture-model") -> [String: Any] {
+        var message: [String: Any] = ["id": id, "model": model, "usage": ["output_tokens": count], "content": blocks]
+        if let stop { message["stop_reason"] = stop }
+        return ["type": "assistant", "timestamp": timestamp, "uuid": uuid, "message": message]
+    }
+    let closeStart = ISO8601DateFormatter().date(from: "2026-10-04T07:00:00Z")!
+    let workflowAgent = TokenLogParser(source: .claude, isSubagent: true)
+    feed(workflowAgent, claudeUser("w-in", "2026-10-04T07:00:00Z", content: "task", extra: ["isSidechain": true]))
+    feed(workflowAgent, claudeReply("w-msg", 80, "2026-10-04T07:00:02Z", "w-out", blocks: [["type": "tool_use", "id": "w-tool"]],
+                                    stop: "tool_use"))
+    feed(workflowAgent, claudeUser("w-end", "2026-10-04T07:00:03Z", content: [["type": "tool_result", "tool_use_id": "w-tool"]],
+                                   extra: ["isSidechain": true, "toolEndsTurn": true]))
+    check(workflowAgent.activityState(at: closeStart.addingTimeInterval(4)) == .complete
+          && !workflowAgent.isActive(at: closeStart.addingTimeInterval(4)) && workflowAgent.currentTurnStartedAt == nil,
+          "Claude close: a workflow agent's turn-ending tool result must complete it")
+
+    let replied = TokenLogParser(source: .claude)
+    feed(replied, claudeUser("r-in", "2026-10-04T07:00:00Z", content: "hello", extra: ["origin": ["kind": "human"]]))
+    feed(replied, claudeReply("r-msg", 40, "2026-10-04T07:00:02Z", "r-out", blocks: [["type": "text"]], stop: "end_turn"))
+    check(replied.activityState(at: closeStart.addingTimeInterval(3)) == .complete && replied.currentTurnOutputTokens == nil,
+          "Claude close: a final reply without tool use must close the turn even without a stop marker")
+    feed(replied, claudeReply("r-more", 25, "2026-10-04T07:00:05Z", "r-more", blocks: [["type": "text"]]))
+    check(replied.isActive(at: closeStart.addingTimeInterval(6)) && replied.currentTurnOutputTokens == 65
+          && replied.currentTurnStartedAt == closeStart,
+          "Claude close: output after a final reply (blocking Stop hook) must reopen the same turn")
+    feed(replied, ["type": "system", "subtype": "stop_hook_summary", "parentUuid": "unseen-attachment",
+                   "timestamp": "2026-10-04T07:00:06Z"])
+    check(replied.activityState(at: closeStart.addingTimeInterval(7)) == .complete && !replied.isActive(at: closeStart.addingTimeInterval(7)),
+          "Claude close: a stop marker whose parent is an attachment must still end the turn")
+    feed(replied, claudeUser("r-cmd", "2026-10-04T07:01:00Z", content: "<command-name>/compact</command-name>"))
+    check(replied.currentTurnStartedAt == nil && replied.activityState(at: closeStart.addingTimeInterval(61)) == .complete,
+          "Claude close: a local slash-command echo must not open a turn")
+    feed(replied, claudeUser("r-note", "2026-10-04T07:02:00Z", content: "done",
+                             extra: ["origin": ["kind": "task-notification"]]))
+    check(replied.currentTurnStartedAt == closeStart.addingTimeInterval(120),
+          "Claude close: a task notification prompt must start a turn")
+    feed(replied, claudeReply("r-err", 0, "2026-10-04T07:02:01Z", "r-err", blocks: [["type": "text"]],
+                              stop: "stop_sequence", model: "<synthetic>"))
+    check(replied.activityState(at: closeStart.addingTimeInterval(122)) == .interrupted && replied.model == "fixture-model",
+          "Claude close: an API error reply must interrupt the turn without replacing the model")
+    feed(replied, claudeUser("r-again", "2026-10-04T07:03:00Z", content: "again", extra: ["origin": ["kind": "human"]]))
+    feed(replied, claudeUser("r-stop", "2026-10-04T07:03:01Z", content: [["type": "text", "text": "[Request interrupted by user]"]]))
+    check(replied.activityState(at: closeStart.addingTimeInterval(182)) == .interrupted && replied.currentTurnStartedAt == nil,
+          "Claude close: an interruption notice must end the turn rather than start a new one")
+
+    let replayed = TokenLogParser(source: .claude)
+    feed(replayed, claudeUser("p-in", "2026-10-04T08:00:00Z", content: "first", extra: ["origin": ["kind": "human"]]))
+    feed(replayed, claudeReply("p-msg", 30, "2026-10-04T08:00:01Z", "p-a", blocks: [["type": "thinking"]], stop: "tool_use"))
+    feed(replayed, claudeReply("p-msg", 30, "2026-10-04T08:00:04Z", "p-b", blocks: [["type": "tool_use", "id": "p-tool"]], stop: "tool_use"))
+    let replayStart = ISO8601DateFormatter().date(from: "2026-10-04T08:00:00Z")!
+    check(replayed.currentTurnOutputTokens == 30 && replayed.lastOutputAt == replayStart.addingTimeInterval(4)
+          && replayed.recentOutputs.count == 1 && replayed.recentOutputs.last?.at == replayStart.addingTimeInterval(4),
+          "Claude freshness: later blocks of one message must move its record time without counting again")
+    feed(replayed, claudeUser("old-in", "2026-10-04T07:00:00Z", content: "restored", extra: ["origin": ["kind": "human"]]))
+    feed(replayed, claudeUser("p-in", "2026-10-04T08:00:00Z", content: "first", extra: ["origin": ["kind": "human"]]))
+    check(replayed.currentTurnStartedAt == replayStart && replayed.currentTurnOutputTokens == 30
+          && replayed.activityState(at: replayStart.addingTimeInterval(5)) == .tool,
+          "Claude replay: re-appended history must not rewind the open turn")
+    var oversized = Data("{\"parentUuid\":\"p-b\",\"isSidechain\":false,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"p-tool\",\"type\":\"tool_result\",\"content\":\"".utf8)
+    oversized.append(Data(repeating: 120, count: 20_000))
+    replayed.consumeOversizedPrefix(oversized.prefix(16_384))
+    check(replayed.activityState(at: replayStart.addingTimeInterval(6)) == .working,
+          "Oversized tool result: the call named in its prefix must stop counting as a running tool")
 
     let liveClaude = TokenLogParser(source: .claude)
     feed(liveClaude, ["type": "user", "uuid": "live-human", "timestamp": "2026-10-04T03:00:00Z",
@@ -415,6 +545,60 @@ func runTrackerChecks() -> [String] {
         check(closedLong?.activityState == .complete && closedLong?.currentTurnStartedAt == nil
               && closedLong?.currentTurnOutputTokens == nil,
               "A restored live turn's completion must close state without a partial-rate accumulator")
+        // A Codex turn whose start is outside the tail still reports its recorded total.
+        for (name, usageInTail) in [("usage-in-tail", true), ("usage-before-tail", false)] {
+            let usageHome = root.appendingPathComponent(name)
+            let usageFolder = usageHome.appendingPathComponent(".codex/sessions/2026/10/04")
+            try FileManager.default.createDirectory(at: usageFolder, withIntermediateDirectories: true)
+            var usageBody = line(["type": "session_meta", "payload": ["id": name, "timestamp": "2026-10-04T04:00:00Z"]])
+            usageBody.append(line(codex("task_started", "2026-10-04T04:00:01Z", ["turn_id": "restored-turn"])))
+            usageBody.append(line(["type": "turn_context", "timestamp": "2026-10-04T04:00:01Z",
+                "payload": ["model": "usage-model", "turn_id": "restored-turn"]]))
+            let record = line(usageRecord("restored-resp", turn: "restored-turn", output: 300, turnTotal: 5_300,
+                                          "2026-10-04T04:00:06Z"))
+            if !usageInTail { usageBody.append(record) }
+            usageBody.append(Data(repeating: 32, count: 4_096))
+            usageBody.append(10)
+            if usageInTail { usageBody.append(record) }
+            try usageBody.write(to: usageFolder.appendingPathComponent("\(name).jsonl"))
+            let restored = TokenTracker(homeDirectory: usageHome, now: { longNow }, initialTailBytes: 512).sample().first
+            check(restored?.active == true && restored?.currentTurnOutputTokens == 5_300
+                  && restored?.currentTurnStartedAt == ISO8601DateFormatter().date(from: "2026-10-04T04:00:01Z"),
+                  "Codex usage record (\(name)): a turn started outside the tail lost its recorded cumulative output")
+        }
+
+        // A long Claude turn whose human input precedes the tail is read from that input.
+        let claudeLongHome = root.appendingPathComponent("claude-long-turn")
+        let claudeLongFolder = claudeLongHome.appendingPathComponent(".claude/projects/long")
+        try FileManager.default.createDirectory(at: claudeLongFolder, withIntermediateDirectories: true)
+        func compact(_ value: [String: Any]) -> Data {
+            var data = (try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys, .withoutEscapingSlashes])) ?? Data()
+            data.append(10)
+            return data
+        }
+        var openTurn = compact(["type": "user", "uuid": "long-human", "timestamp": "2026-10-04T04:00:00Z",
+                                "sessionId": "long-claude", "message": ["content": [["type": "text"]]]])
+        openTurn.append(compact(assistant("long-1", 400, "2026-10-04T04:00:01Z", "long-a")))
+        openTurn.append(Data(repeating: 32, count: 4_096))
+        openTurn.append(10)
+        openTurn.append(compact(assistant("long-2", 50, "2026-10-04T04:00:07Z", "long-b")))
+        try openTurn.write(to: claudeLongFolder.appendingPathComponent("open.jsonl"))
+        var closedTurn = compact(["type": "user", "uuid": "closed-human", "timestamp": "2026-10-04T03:59:00Z",
+                                  "sessionId": "closed-claude", "message": ["content": [["type": "text"]]]])
+        closedTurn.append(compact(assistant("closed-1", 100, "2026-10-04T03:59:01Z", "closed-a")))
+        closedTurn.append(compact(["type": "system", "subtype": "stop_hook_summary", "parentUuid": "closed-a",
+                                   "timestamp": "2026-10-04T03:59:02Z"]))
+        closedTurn.append(Data(repeating: 32, count: 4_096))
+        closedTurn.append(10)
+        try closedTurn.write(to: claudeLongFolder.appendingPathComponent("closed.jsonl"))
+        let claudeLong = TokenTracker(homeDirectory: claudeLongHome, now: { longNow }, initialTailBytes: 512).sample()
+        let openClaude = claudeLong.first(where: { $0.sessionID == "long-claude" })
+        check(openClaude?.active == true && openClaude?.currentTurnOutputTokens == 450
+              && openClaude?.currentTurnStartedAt == ISO8601DateFormatter().date(from: "2026-10-04T04:00:00Z"),
+              "Claude long turn: output before the tail was reported unknown instead of read from the human input")
+        check(!claudeLong.contains(where: { $0.sessionID == "closed-claude" }),
+              "Claude long turn: a closed turn before the tail was replayed")
+
         let abortedHome = root.appendingPathComponent("restored-interruption")
         let abortedFolder = abortedHome.appendingPathComponent(".codex/sessions/2026/10/04")
         try FileManager.default.createDirectory(at: abortedFolder, withIntermediateDirectories: true)
@@ -490,6 +674,85 @@ func runTrackerChecks() -> [String] {
         check(newlyDiscovered?.activityState == .working && newlyDiscovered?.currentTurnOutputTokens == 0
               && newlyDiscovered?.sampledAt == discoveryNow,
               "Default discovery must collect a new observed session within five seconds")
+
+        // Appends wake sampling through file-system events, and stop() ends callbacks.
+        let watchRoot = root.appendingPathComponent("watch/.codex/sessions")
+        try FileManager.default.createDirectory(at: watchRoot, withIntermediateDirectories: true)
+        let woke = DispatchSemaphore(value: 0)
+        let watchedFile = watchRoot.appendingPathComponent("live.jsonl")
+        let watcher = LogWatcher { paths in
+            if paths.contains(where: { $0.hasSuffix("/live.jsonl") }) { woke.signal() }
+        }
+        check(watcher.start(directories: [watchRoot, root.appendingPathComponent("missing")]),
+              "Log watcher could not watch an existing log directory")
+        let written = Date()
+        try line(codex("task_started", "2026-10-04T04:00:00Z", ["turn_id": "watched"])).write(to: watchedFile)
+        let wokeInTime = woke.wait(timeout: .now() + 3) == .success
+        check(wokeInTime && Date().timeIntervalSince(written) < 1.5,
+              "Log watcher did not report a log write within 1.5 s")
+        watcher.stop()
+        while woke.wait(timeout: .now() + 0.3) == .success {}
+        try line(usage(10, 10, "2026-10-04T04:00:01Z")).write(to: watchedFile)
+        check(woke.wait(timeout: .now() + 0.6) == .timedOut, "Log watcher delivered events after stop()")
+        check(!LogWatcher { _ in }.start(directories: [root.appendingPathComponent("missing")]),
+              "Log watcher claimed to watch a missing directory")
+
+        // A forked Codex log replays the parent's session_meta and open turn after its own.
+        let forkHome = root.appendingPathComponent("fork")
+        let forkFolder = forkHome.appendingPathComponent(".codex/sessions/2026/10/04")
+        try FileManager.default.createDirectory(at: forkFolder, withIntermediateDirectories: true)
+        let childID = "0000c41d-0000-7000-8000-00000000c41d"
+        let rootID = "0000a007-0000-7000-8000-00000000a007"
+        var forkBody = line(["type": "session_meta", "timestamp": "2026-10-04T06:54:35Z", "payload": [
+            "id": childID, "session_id": rootID, "timestamp": "2026-10-04T06:54:35Z", "cwd": "/tmp/ForkProject",
+            "agent_path": "/root/worker", "source": ["subagent": ["thread_spawn": ["parent_thread_id": rootID]]]]])
+        forkBody.append(line(["type": "session_meta", "timestamp": "2026-10-04T06:54:35Z", "payload": [
+            "id": rootID, "session_id": rootID, "timestamp": "2026-10-04T03:43:12Z", "cwd": "/tmp/ParentProject", "source": "vscode"]]))
+        forkBody.append(line(codex("task_started", "2026-10-04T06:54:35Z", ["turn_id": "parent-open", "started_at": 1_791_090_000])))
+        forkBody.append(line(codex("task_started", "2026-10-04T06:54:36Z", ["turn_id": "child-own"])))
+        forkBody.append(line(usageRecord("child-resp", turn: "child-own", output: 161, turnTotal: 161, "2026-10-04T06:54:41Z")))
+        try forkBody.write(to: forkFolder.appendingPathComponent("rollout-2026-10-04T06-54-35-\(childID).jsonl"))
+        let forkNow = ISO8601DateFormatter().date(from: "2026-10-04T06:54:45Z")!
+        let forkReading = TokenTracker(homeDirectory: forkHome, now: { forkNow }).sample().first
+        check(forkReading?.sessionID == childID && forkReading?.parentSessionID == rootID && forkReading?.isSubagent == true
+              && forkReading?.project == "ForkProject",
+              "Forked Codex log: the replayed parent session_meta replaced the child's identity")
+        check(forkReading?.currentTurnOutputTokens == 161
+              && forkReading?.currentTurnStartedAt == ISO8601DateFormatter().date(from: "2026-10-04T06:54:36Z"),
+              "Forked Codex log: the inherited parent turn was treated as the child's own")
+
+        // A quiet main session in a turn survives a burst of newer logs.
+        let retainHome = root.appendingPathComponent("retain")
+        let retainFolder = retainHome.appendingPathComponent(".claude/projects/busy")
+        try FileManager.default.createDirectory(at: retainFolder, withIntermediateDirectories: true)
+        let quiet = retainFolder.appendingPathComponent("quiet.jsonl")
+        var quietBody = line(claudeUser("q-in", "2026-10-04T04:00:00Z", content: "long job",
+                                        extra: ["sessionId": "quiet", "origin": ["kind": "human"]]))
+        quietBody.append(line(claudeReply("q-msg", 10, "2026-10-04T04:00:01Z", "q-out", blocks: [["type": "tool_use", "id": "q-tool"]])))
+        try quietBody.write(to: quiet)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-600)], ofItemAtPath: quiet.path)
+        let retainTracker = TokenTracker(homeDirectory: retainHome, now: { now }, discoveryInterval: 0)
+        check(retainTracker.sample().contains(where: { $0.sessionID == "quiet" }), "Retention fixture: quiet session not discovered")
+        for index in 0..<33 {
+            var busy = line(claudeUser("b\(index)", "2026-10-04T04:00:02Z", content: "x", extra: ["sessionId": "busy-\(index)"]))
+            busy.append(line(["type": "system", "subtype": "stop_hook_summary", "timestamp": "2026-10-04T04:00:03Z"]))
+            try busy.write(to: retainFolder.appendingPathComponent("busy-\(index).jsonl"))
+        }
+        check(retainTracker.sample().contains(where: { $0.sessionID == "quiet" && $0.currentTurnOutputTokens == 10 }),
+              "Discovery evicted a quiet session that is still in a turn")
+
+        // A tool result over the 1 MB line limit still completes its call.
+        let bigHome = root.appendingPathComponent("oversized")
+        let bigFolder = bigHome.appendingPathComponent(".claude/projects/big")
+        try FileManager.default.createDirectory(at: bigFolder, withIntermediateDirectories: true)
+        var bigBody = line(claudeUser("g-in", "2026-10-04T04:00:00Z", content: "read", extra: ["origin": ["kind": "human"]]))
+        bigBody.append(line(claudeReply("g-msg", 10, "2026-10-04T04:00:01Z", "g-out", blocks: [["type": "tool_use", "id": "g-tool"]])))
+        bigBody.append(Data("{\"parentUuid\":\"g-out\",\"isSidechain\":false,\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"tool_use_id\":\"g-tool\",\"type\":\"tool_result\",\"content\":\"".utf8))
+        bigBody.append(Data(repeating: 120, count: 1_200_000))
+        bigBody.append(Data("\"}]},\"uuid\":\"g-result\",\"timestamp\":\"2026-10-04T04:00:02Z\"}\n".utf8))
+        try bigBody.write(to: bigFolder.appendingPathComponent("big.jsonl"))
+        let bigReading = TokenTracker(homeDirectory: bigHome, now: { now }, initialTailBytes: 4_194_304).sample().first
+        check(bigReading?.activityState == .working, "An oversized tool result left its call running")
 
         // Resuming an old Codex conversation updates its file, not its date-directory name.
         let resumedHome = root.appendingPathComponent("resumed")

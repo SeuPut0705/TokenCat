@@ -21,14 +21,25 @@ enum TokenSource: String, Codable, CaseIterable {
     var title: String { self == .codex ? "Codex" : "Claude Code" }
 }
 
+/// `stale`: an open turn past its liveness horizon (tool or model wait) but logged within
+/// 30 minutes. `unfinished`: an open turn with no log for longer; it is not shown as waiting.
 enum TokenActivityState: String, Codable {
-    case idle, working, tool, output, complete, interrupted, stale
+    case idle, working, tool, output, complete, interrupted, stale, unfinished
+}
+
+/// One log-recorded output increment. `at` is the log write time, not a streaming time.
+struct TokenOutputEvent: Codable, Equatable {
+    var at: Date
+    var tokens: Int
 }
 
 struct TokenReading: Codable, Identifiable {
     var id: String
     var source: TokenSource
     var sessionID: String? = nil
+    /// Exact identifier of the session a subagent belongs to (Claude: shared sessionId,
+    /// Codex: root thread). Nil for main sessions. Used only for grouping.
+    var parentSessionID: String? = nil
     var agentID: String? = nil
     var project: String? = nil
     var model: String? = nil
@@ -43,8 +54,11 @@ struct TokenReading: Codable, Identifiable {
     var currentTurnOutputTokens: Int? = nil
     var lastOutputAt: Date? = nil
     var lastOutputDelta: Int? = nil
+    var recentOutputs: [TokenOutputEvent] = []
     var sampledAt: Date? = nil
     var lastActivity: Date? = nil
+    /// Newest timestamp of any record in the log; liveness only, not shown as activity.
+    var lastLogAt: Date? = nil
     var measurementAt: Date? = nil
     var sessionCount: Int = 0
     var quality: String = "완료된 턴 평균 · 도구·대기 포함"

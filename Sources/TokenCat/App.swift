@@ -75,11 +75,19 @@ final class DashboardModel: ObservableObject {
     private let systemQueue = DispatchQueue(label: "dev.seuput.TokenCat.system", qos: .utility)
     private let tokenQueue = DispatchQueue(label: "dev.seuput.TokenCat.tokens", qos: .utility)
     private var timer: Timer?
+    private var watcher: LogWatcher?
     private var systemInFlight = false
     private var tokensInFlight = false
+    private var tokenRefreshPending = false
+    private var tokenRefreshScheduled = false
+    private var lastTokenSampleStart: Date?
+    private var changedPaths: [String] = []
     private var running = false
     private var generation: UInt64 = 0
     static let samplingInterval: TimeInterval = 1
+    /// File events can arrive many times per second while a client streams tool output.
+    static let minimumTokenInterval: TimeInterval = 0.25
+    private(set) var logEventCount = 0
     var onUpdate: (() -> Void)?
     init(telemetryProvider: (() -> [TelemetryReading])? = nil) { self.telemetryProvider = telemetryProvider }
     func start() {
@@ -92,15 +100,77 @@ final class DashboardModel: ObservableObject {
         next.tolerance = interval * 0.1
         RunLoop.main.add(next, forMode: .common)
         timer = next
+        let watcher = LogWatcher { [weak self] paths in
+            DispatchQueue.main.async { self?.logsChanged(paths) }
+        }
+        watcher.start(directories: tracker.watchedDirectories)
+        self.watcher = watcher
     }
     func stop() {
         running = false
         generation &+= 1
         timer?.invalidate()
         timer = nil
+        watcher?.stop()
+        watcher = nil
+        changedPaths.removeAll()
+        tokenRefreshPending = false
+    }
+    private func logsChanged(_ paths: [String]) {
+        guard running else { return }
+        changedPaths.append(contentsOf: paths.filter { $0.hasSuffix(".jsonl") }.prefix(64))
+        if changedPaths.count > 256 { changedPaths.removeFirst(changedPaths.count - 256) }
+        logEventCount += 1
+        refreshTokens()
     }
     func refresh() {
         guard running else { return }
+        refreshSystem()
+        refreshTokens()
+    }
+    private func refreshTokens() {
+        guard running else { return }
+        if tokensInFlight { tokenRefreshPending = true; return }
+        if let last = lastTokenSampleStart, Date().timeIntervalSince(last) < Self.minimumTokenInterval {
+            guard !tokenRefreshScheduled else { return }
+            tokenRefreshScheduled = true
+            let currentGeneration = generation
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.minimumTokenInterval - Date().timeIntervalSince(last)) { [weak self] in
+                guard let self else { return }
+                self.tokenRefreshScheduled = false
+                guard self.generation == currentGeneration else { return }
+                self.refreshTokens()
+            }
+            return
+        }
+        let currentGeneration = generation
+        let paths = changedPaths
+        changedPaths.removeAll()
+        lastTokenSampleStart = Date()
+        tokensInFlight = true
+        tokenQueue.async { [weak self] in
+            guard let self else { return }
+            self.tracker.noteChanged(paths: paths)
+            let logs = self.tracker.sample()
+            let measurements = self.telemetryProvider?() ?? self.telemetry.snapshot()
+            let tokens = TokenSpeed.apply(logs, measurements: measurements)
+            let telemetryStatus = self.telemetry.status
+            let measuredAt = Date()
+            DispatchQueue.main.async {
+                self.tokensInFlight = false
+                guard self.running, self.generation == currentGeneration else { return }
+                self.tokens = tokens
+                self.tokensSampledAt = measuredAt
+                self.telemetryStatus = telemetryStatus
+                self.onUpdate?()
+                if self.tokenRefreshPending {
+                    self.tokenRefreshPending = false
+                    self.refreshTokens()
+                }
+            }
+        }
+    }
+    private func refreshSystem() {
         let currentGeneration = generation
         if !systemInFlight {
             systemInFlight = true
@@ -116,25 +186,6 @@ final class DashboardModel: ObservableObject {
                         self.cpuHistory.append(cpu)
                         self.cpuHistory = Array(self.cpuHistory.suffix(90))
                     }
-                    self.onUpdate?()
-                }
-            }
-        }
-        if !tokensInFlight {
-            tokensInFlight = true
-            tokenQueue.async { [weak self] in
-                guard let self else { return }
-                let logs = self.tracker.sample()
-                let measurements = self.telemetryProvider?() ?? self.telemetry.snapshot()
-                let tokens = TokenSpeed.apply(logs, measurements: measurements)
-                let telemetryStatus = self.telemetry.status
-                let measuredAt = Date()
-                DispatchQueue.main.async {
-                    self.tokensInFlight = false
-                    guard self.running, self.generation == currentGeneration else { return }
-                    self.tokens = tokens
-                    self.tokensSampledAt = measuredAt
-                    self.telemetryStatus = telemetryStatus
                     self.onUpdate?()
                 }
             }
@@ -306,6 +357,7 @@ struct SessionRow: View {
         case .complete: return "완료"
         case .interrupted: return "중단"
         case .stale: return "로그 대기"
+        case .unfinished: return "종료 기록 없음"
         }
     }
     private var hasPreviousModel: Bool {
