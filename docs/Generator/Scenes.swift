@@ -1,0 +1,317 @@
+import CoreGraphics
+import CoreText
+import Foundation
+
+// Compositions for docs/images. Calm indigo/slate backdrops only (no provider brand colours).
+
+struct Look {
+    let theme: Theme
+    let wall: [UInt32]           // backdrop gradient, top-left → bottom-right
+    let glows: [Glow]            // relative to the canvas; radius × the longer side
+    let text: CGColor, secondary: CGColor
+    let border: CGColor
+    let shadow: CGColor
+    let menuGlyph: CGColor       // menu bar label colour (hero clock and status glyphs)
+    let menuHairline: CGColor
+    let neutral: [UInt32]        // icon showcase background
+
+    static func of(_ theme: Theme) -> Look {
+        switch theme {
+        case .dark:
+            return Look(theme: theme,
+                        wall: [0x141830, 0x222852, 0x353C74],
+                        glows: [Glow(x: 0.10, y: 0.95, radius: 0.60, hex: 0x5060D6, alpha: 0.42),
+                                Glow(x: 0.90, y: 0.12, radius: 0.48, hex: 0x6C5BBE, alpha: 0.30),
+                                Glow(x: 0.55, y: 0.55, radius: 0.50, hex: 0x2C3A80, alpha: 0.25)],
+                        text: color(0xF2F2F7), secondary: color(0xA7A9B8),
+                        border: color(0xFFFFFF, 0.13), shadow: color(0x05060C, 0.60),
+                        menuGlyph: color(0xFFFFFF, 0.90), menuHairline: color(0x000000, 0.55),
+                        neutral: [0x26272C, 0x18191C])
+        case .light:
+            return Look(theme: theme,
+                        wall: [0xF0F2FB, 0xDCE0F5, 0xC6CDEF],
+                        glows: [Glow(x: 0.10, y: 0.95, radius: 0.60, hex: 0x98A4F0, alpha: 0.50),
+                                Glow(x: 0.92, y: 0.10, radius: 0.48, hex: 0xCDBEF3, alpha: 0.45),
+                                Glow(x: 0.45, y: 0.35, radius: 0.50, hex: 0xFFFFFF, alpha: 0.40)],
+                        text: color(0x1D1D1F), secondary: color(0x5E6070),
+                        border: color(0x000000, 0.11), shadow: color(0x1C2452, 0.26),
+                        menuGlyph: color(0x000000, 0.85), menuHairline: color(0x000000, 0.08),
+                        neutral: [0xF6F7F9, 0xE6E8EE])
+        }
+    }
+
+    func paintWall(_ canvas: Canvas, glowScale: CGFloat = 1) {
+        let scaled = glows.map { Glow(x: $0.x, y: $0.y, radius: $0.radius, hex: $0.hex, alpha: $0.alpha * glowScale) }
+        canvas.draw(wallpaper(width: canvas.width, height: canvas.height, stops: wall, glows: scaled), canvas.bounds, quality: .none)
+    }
+}
+
+// MARK: - Hero
+
+/// Desktop-like product shot: menu bar strip with the TokenCat item (open state) and its popover hanging below.
+/// The minimal item is used because the menu bar and popover fixtures carry different system values.
+/// `window` (the 고양이 settings tab) sits at the lower left, bottom-aligned with the popover.
+func hero(_ theme: Theme, popover sheet: FixtureSheet, menu: MenuMatrix, window: CGImage) -> CGImage {
+    let look = Look.of(theme)
+    let width = 1600, height = 1080
+    let scale: CGFloat = 0.8, u = 2 * scale            // u = pixels per point
+    let canvas = Canvas(width, height)
+    look.paintWall(canvas)
+
+    // Layout: bar, then the popover (arrow + body) under the item; the window shares the popover's bottom edge.
+    let state = MenuMatrix.stateNames.firstIndex(of: "입력 필요")!
+    let item = menu.slice(state, MenuMatrix.column(theme, open: true))
+    let popover = sheet.crop(theme, sheet.rows(.all))
+    let barHeight = CGFloat(item.height) * scale
+    let arrowHeight = 9 * u
+    let popoverTop = barHeight + 3 * u + arrowHeight
+    let popoverSize = CGSize(width: CGFloat(popover.width) * scale, height: CGFloat(popover.height) * scale)
+    let popoverBottom = popoverTop + popoverSize.height
+
+    // Menu bar
+    canvas.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: barHeight), color(menu.bar[theme]!))
+    canvas.fill(CGRect(x: 0, y: barHeight, width: CGFloat(width), height: 1), look.menuHairline)
+    let mid = barHeight / 2
+    var right = CGFloat(width) - 14 * u
+    let clockSize = 13 * u
+    let clock = "10월 5일 (월) 오전 9:41"
+    canvas.text(clock, x: right, baseline: mid + clockSize * 0.36, size: clockSize, color: look.menuGlyph, align: .right)
+    right -= Canvas.measure(clock, size: clockSize) + 17 * u
+    right -= controlCenterGlyph(canvas, right: right, mid: mid, u: u, look.menuGlyph) + 17 * u
+    right -= searchGlyph(canvas, right: right, mid: mid, u: u, look.menuGlyph) + 17 * u
+    right -= wifiGlyph(canvas, right: right, mid: mid, u: u, look.menuGlyph) + 17 * u
+    right -= batteryGlyph(canvas, right: right, mid: mid, u: u, level: 0.58, look.menuGlyph) + 12 * u
+    let itemWidth = CGFloat(item.width) * scale
+    let itemRect = CGRect(x: right - itemWidth, y: 0, width: itemWidth, height: barHeight)
+    canvas.draw(item, itemRect)
+
+    // Settings window behind, lower left
+    let windowScale: CGFloat = 0.7
+    let windowSize = CGSize(width: CGFloat(window.width) * windowScale, height: CGFloat(window.height) * windowScale)
+    let windowRect = CGRect(origin: CGPoint(x: 44, y: popoverBottom - windowSize.height), size: windowSize)
+    framed(canvas, window, windowRect, radius: 10 * u * windowScale / scale, base: color(Pixels(window).rgb(4, 4)), look: look,
+           shadowOffset: 14, shadowBlur: 44)
+
+    // Popover under the item
+    let arrowX = itemRect.midX
+    let left = min(max(arrowX - popoverSize.width / 2, 40), CGFloat(width) - 40 - popoverSize.width)
+    let rect = CGRect(origin: CGPoint(x: left, y: popoverTop), size: popoverSize)
+    guard popoverBottom < CGFloat(height) - 32, windowRect.maxX < rect.minX else { fail("히어로 배치가 캔버스에 맞지 않음") }
+    let outline = canvas.cg(popoverPath(rect, radius: 12 * u, arrowX: arrowX, arrowHalfWidth: 13 * u, arrowHeight: arrowHeight))
+    let base = color(sheet.background[theme]!)
+    canvas.shadow(outline, fill: base, offsetY: 20, blur: 64, look.shadow)
+    canvas.fill(outline, base)
+    canvas.clipped(canvas.rounded(rect, 12 * u)) { canvas.draw(popover, rect) }
+    canvas.stroke(outline, look.border, width: 1.5)
+    return roundCorners(canvas, radius: 32)
+}
+
+// Generic status glyphs (plain shapes, no logos). Each returns its width.
+
+private func controlCenterGlyph(_ canvas: Canvas, right: CGFloat, mid: CGFloat, u: CGFloat, _ tint: CGColor) -> CGFloat {
+    let w = 15 * u, h = 6.4 * u
+    for (index, y) in [mid - 7.4 * u, mid + 1 * u].enumerated() {
+        let rect = CGRect(x: right - w, y: y, width: w, height: h)
+        canvas.stroke(canvas.rounded(rect.insetBy(dx: 0.7 * u, dy: 0.7 * u), h / 2 - 0.7 * u), tint, width: 1.4 * u)
+        let knobX = index == 0 ? rect.minX + h / 2 : rect.maxX - h / 2
+        canvas.fill(canvas.rounded(CGRect(x: knobX - 2.1 * u, y: rect.midY - 2.1 * u, width: 4.2 * u, height: 4.2 * u), 2.1 * u), tint)
+    }
+    return w
+}
+
+private func searchGlyph(_ canvas: Canvas, right: CGFloat, mid: CGFloat, u: CGFloat, _ tint: CGColor) -> CGFloat {
+    let w = 14 * u, radius = 4.6 * u
+    let center = CGPoint(x: right - w + radius + 1 * u, y: mid - 1.6 * u)
+    canvas.stroke(canvas.rounded(CGRect(x: center.x - radius, y: center.y - radius, width: radius * 2, height: radius * 2), radius),
+                  tint, width: 1.7 * u)
+    let handle = CGMutablePath()
+    handle.move(to: CGPoint(x: center.x + 3.6 * u, y: center.y + 3.6 * u))
+    handle.addLine(to: CGPoint(x: center.x + 7.4 * u, y: center.y + 7.4 * u))
+    canvas.context.setLineCap(.round)
+    canvas.stroke(canvas.cg(handle), tint, width: 2 * u)
+    return w
+}
+
+private func wifiGlyph(_ canvas: Canvas, right: CGFloat, mid: CGFloat, u: CGFloat, _ tint: CGColor) -> CGFloat {
+    let w = 17 * u
+    let center = canvas.cg(CGPoint(x: right - w / 2, y: mid + 6 * u))
+    let context = canvas.context
+    context.saveGState()
+    context.setLineCap(.round)
+    context.setStrokeColor(tint)
+    context.setLineWidth(2.1 * u)
+    for radius in [6.8 * u, 10.6 * u] {
+        context.addArc(center: center, radius: radius, startAngle: .pi / 4, endAngle: .pi * 3 / 4, clockwise: false)
+        context.strokePath()
+    }
+    context.move(to: center)
+    context.addArc(center: center, radius: 3.6 * u, startAngle: .pi / 4, endAngle: .pi * 3 / 4, clockwise: false)
+    context.closePath()
+    context.setFillColor(tint)
+    context.fillPath()
+    context.restoreGState()
+    return w
+}
+
+private func batteryGlyph(_ canvas: Canvas, right: CGFloat, mid: CGFloat, u: CGFloat, level: CGFloat, _ tint: CGColor) -> CGFloat {
+    let bodyWidth = 23 * u, bodyHeight = 11.5 * u, nub = 1.6 * u
+    let body = CGRect(x: right - nub - 0.8 * u - bodyWidth, y: mid - bodyHeight / 2, width: bodyWidth, height: bodyHeight)
+    let faint = tint.copy(alpha: tint.alpha * 0.45)!
+    canvas.stroke(canvas.rounded(body.insetBy(dx: 0.5 * u, dy: 0.5 * u), 3.2 * u), faint, width: 1 * u)
+    canvas.fill(canvas.rounded(CGRect(x: body.maxX + 0.8 * u, y: mid - 2 * u, width: nub, height: 4 * u), 0.8 * u), faint)
+    let inner = body.insetBy(dx: 2 * u, dy: 2 * u)
+    canvas.fill(canvas.rounded(CGRect(x: inner.minX, y: inner.minY, width: inner.width * level, height: inner.height), 1.6 * u), tint)
+    return bodyWidth + nub + 0.8 * u
+}
+
+// MARK: - Feature shots
+
+/// One popover region on the backdrop, in a rounded frame.
+func featureShot(_ theme: Theme, _ sheet: FixtureSheet, _ region: FixtureSheet.Region) -> CGImage {
+    let look = Look.of(theme)
+    let image = sheet.crop(theme, sheet.rows(region))
+    let pad: CGFloat = 48
+    let canvas = Canvas(image.width + Int(pad) * 2, image.height + Int(pad) * 2)
+    look.paintWall(canvas, glowScale: 0.8)
+    framed(canvas, image, CGRect(x: pad, y: pad, width: CGFloat(image.width), height: CGFloat(image.height)), radius: 24,
+           base: color(sheet.background[theme]!), look: look)
+    return roundCorners(canvas, radius: 28)
+}
+
+// MARK: - Menu bar
+
+/// Draws a fixture cell on a fresh rounded bar (the grey matrix background never shows).
+private func menuTile(_ canvas: Canvas, _ menu: MenuMatrix, state: Int, theme: Theme, at origin: CGPoint, look: Look) {
+    let cell = menu.cell(state, MenuMatrix.column(theme))
+    let rect = CGRect(origin: origin, size: cell.size)
+    let bar = color(menu.bar[theme]!)
+    canvas.shadow(canvas.rounded(rect, 12), fill: bar, offsetY: 3, blur: 12, look.shadow.copy(alpha: look.shadow.alpha * 0.6)!)
+    canvas.clipped(canvas.rounded(rect.insetBy(dx: 3, dy: 3), 12)) {
+        canvas.draw(menu.inner(state, MenuMatrix.column(theme)), rect.insetBy(dx: 3, dy: 3), quality: .none)
+    }
+    canvas.stroke(canvas.rounded(rect.insetBy(dx: 0.5, dy: 0.5), 11.5), look.border, width: 1)
+}
+
+/// The three display layouts, each as a menu bar strip with the item at its right end.
+func menubarLayouts(_ theme: Theme, minimal: MenuMatrix, twoLine: MenuMatrix, oneLine: MenuMatrix) -> CGImage {
+    let look = Look.of(theme)
+    let state = MenuMatrix.stateNames.firstIndex(of: "도구 실행")!
+    let entries: [(title: String, note: String, menu: MenuMatrix)] = [
+        ("최소", "고양이 · AI 상태 · 세션 수", minimal),
+        ("두 줄 · 기본", "시스템 지표와 AI를 두 줄로", twoLine),
+        ("한 줄", "모든 항목을 한 줄로", oneLine),
+    ]
+    let slices = entries.map { $0.menu.slice(state, MenuMatrix.column(theme)) }
+    let pad: CGFloat = 48, captionHeight: CGFloat = 40, rowGap: CGFloat = 30, sliceInset: CGFloat = 14
+    let barWidth = CGFloat(slices.map(\.width).max()!) + 2 * sliceInset + 96
+    let barHeight = CGFloat(slices[0].height)
+    let rowHeight = captionHeight + barHeight
+    let canvas = Canvas(Int(barWidth + pad * 2), Int(pad * 2 + rowHeight * 3 + rowGap * 2))
+    look.paintWall(canvas, glowScale: 0.8)
+    for (index, entry) in entries.enumerated() {
+        let y = pad + CGFloat(index) * (rowHeight + rowGap)
+        let titleWidth = canvas.text(entry.title, x: pad + 4, baseline: y + 24, size: 24, bold: true, color: look.text)
+        canvas.text(entry.note, x: pad + 4 + titleWidth + 14, baseline: y + 24, size: 21, color: look.secondary)
+        let bar = CGRect(x: pad, y: y + captionHeight, width: barWidth, height: barHeight)
+        let fill = color(entry.menu.bar[theme]!)
+        canvas.shadow(canvas.rounded(bar, 14), fill: fill, offsetY: 4, blur: 16, look.shadow.copy(alpha: look.shadow.alpha * 0.7)!)
+        canvas.fill(canvas.rounded(bar, 14), fill)
+        let slice = slices[index]
+        canvas.draw(slice, CGRect(x: bar.maxX - sliceInset - CGFloat(slice.width), y: bar.minY, width: CGFloat(slice.width),
+                                  height: barHeight), quality: .none)
+        canvas.stroke(canvas.rounded(bar.insetBy(dx: 0.5, dy: 0.5), 13.5), look.border, width: 1)
+    }
+    return roundCorners(canvas, radius: 28)
+}
+
+/// Legend: the minimal item in each AI state with its meaning.
+func menubarStates(_ theme: Theme, minimal: MenuMatrix) -> CGImage {
+    let look = Look.of(theme)
+    let legend: [(state: String, note: String)] = [
+        ("진행", "보라 링 · 걷기"), ("도구 실행", "파란 사각 · 걷기"), ("방금 기록", "출력 기록 · 달리기"),
+        ("입력 필요", "노란 ? · 정면 앉기"), ("로그 대기", "회색 반원 · 앉기"), ("활동 없음", "흐린 0 · 잠"),
+    ]
+    let cell = minimal.cell(0, .light).size
+    let pad: CGFloat = 48, gap: CGFloat = 48
+    let width = pad * 2 + CGFloat(legend.count) * cell.width + CGFloat(legend.count - 1) * gap
+    let canvas = Canvas(Int(width), Int(pad + cell.height + 92 + pad - 8))
+    look.paintWall(canvas, glowScale: 0.8)
+    for (index, entry) in legend.enumerated() {
+        let x = pad + CGFloat(index) * (cell.width + gap)
+        menuTile(canvas, minimal, state: MenuMatrix.stateNames.firstIndex(of: entry.state)!, theme: theme,
+                 at: CGPoint(x: x, y: pad), look: look)
+        let center = x + cell.width / 2
+        canvas.text(entry.state, x: center, baseline: pad + cell.height + 40, size: 23, bold: true, color: look.text, align: .center)
+        canvas.text(entry.note, x: center, baseline: pad + cell.height + 72, size: 19, color: look.secondary, align: .center)
+    }
+    return roundCorners(canvas, radius: 28)
+}
+
+// MARK: - Settings
+
+/// Four settings tabs in two balanced columns (일반 + 고양이 | 메뉴 막대 + 정보).
+func settingsCollage(_ theme: Theme, panes: [String: CGImage]) -> CGImage {
+    let look = Look.of(theme)
+    let columns = [["general", "cat"], ["menubar", "about"]]
+    let scale: CGFloat = 0.75, pad: CGFloat = 56, gap: CGFloat = 40
+    let windowWidth = CGFloat(panes["general"]!.width) * scale
+    func height(_ name: String) -> CGFloat { CGFloat(panes[name]!.height) * scale }
+    let columnHeights = columns.map { names in names.map(height).reduce(0, +) + gap * CGFloat(names.count - 1) }
+    let tallest = columnHeights.max()!
+    let canvas = Canvas(Int(pad * 2 + windowWidth * 2 + gap), Int(pad * 2 + tallest))
+    look.paintWall(canvas, glowScale: 0.8)
+    for (column, names) in columns.enumerated() {
+        // Every column spans the full height (shared top and bottom edges); the shorter one gets a larger gap.
+        let columnGap = (tallest - names.map(height).reduce(0, +)) / CGFloat(names.count - 1)
+        var y = pad
+        for name in names {
+            let image = panes[name]!
+            let rect = CGRect(x: pad + CGFloat(column) * (windowWidth + gap), y: y, width: windowWidth, height: height(name))
+            let base = color(Pixels(image).rgb(4, 4))
+            framed(canvas, image, rect, radius: 18, base: base, look: look, shadowOffset: 12, shadowBlur: 36)
+            y += rect.height + columnGap
+        }
+    }
+    return roundCorners(canvas, radius: 28)
+}
+
+// MARK: - App icon
+
+/// 1024 master at 256 / 128 / 64 px, the 32 / 16 px pixel-head icons at 1:1, and both magnified.
+/// The master keeps macOS's transparent margin (100/1024 per side), so spacing and bottoms follow the visible tile.
+func iconShowcase(_ theme: Theme, assets: String) -> CGImage {
+    let look = Look.of(theme)
+    let master = readPNG(assets + "/app-icon-v2-1024.png")
+    let small32 = readPNG(assets + "/app-icon-v2-32.png"), small16 = readPNG(assets + "/app-icon-v2-16.png")
+    struct Item { let image: CGImage, size: CGFloat, label: String, nearest: Bool; var margin: CGFloat { nearest ? 0 : size * 100 / 1024 } }
+    let items = [
+        Item(image: downscale(master, to: 256), size: 256, label: "256 px", nearest: false),
+        Item(image: downscale(master, to: 128), size: 128, label: "128", nearest: false),
+        Item(image: downscale(master, to: 64), size: 64, label: "64", nearest: false),
+        Item(image: small32, size: 32, label: "32", nearest: true),
+        Item(image: small16, size: 16, label: "16", nearest: true),
+    ]
+    let zoomed = [
+        Item(image: small32, size: 192, label: "32 px · 6배", nearest: true),
+        Item(image: small16, size: 192, label: "16 px · 12배", nearest: true),
+    ]
+    let all = items + zoomed
+    let pad: CGFloat = 64, gap: CGFloat = 52, separator: CGFloat = 96
+    let visible = all.map { $0.size - 2 * $0.margin }.reduce(0, +)
+    let width = pad * 2 + visible + gap * CGFloat(all.count - 2) + separator
+    let baseline: CGFloat = 64 + 206
+    let canvas = Canvas(Int(width), Int(baseline + 96))
+    canvas.draw(wallpaper(width: canvas.width, height: canvas.height, stops: look.neutral), canvas.bounds, quality: .none)
+    var x = pad                                            // left edge of the next visible tile
+    for (index, item) in all.enumerated() {
+        if index == items.count {
+            x += separator - gap
+            canvas.fill(CGRect(x: x - separator / 2, y: baseline - 200, width: 1.5, height: 200 + 48), look.border)
+        }
+        let rect = CGRect(x: x - item.margin, y: baseline - item.size + item.margin, width: item.size, height: item.size)
+        canvas.draw(item.image, rect, quality: item.nearest ? .none : .high)
+        canvas.text(item.label, x: rect.midX, baseline: baseline + 44, size: 21, color: look.secondary, align: .center)
+        x += item.size - 2 * item.margin + gap
+    }
+    return roundCorners(canvas, radius: 28)
+}

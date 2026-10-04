@@ -274,7 +274,7 @@ enum TokenCatMain {
             ("활동 없음", []), ("진행", [reading(0, .working)]), ("도구 실행", [reading(1, .tool)]),
             // A fresh record is an event: the cat runs while the mark stays 진행.
             ("방금 기록", [reading(2, .output)]), ("로그 대기", [reading(3, .stale)]),
-            ("입력 필요", [reading(4, .input), reading(5, .tool)]), ("세션 12개", (0..<12).map { reading($0, .tool) })
+            ("입력 필요", [reading(4, .input), reading(6, .input), reading(5, .working)]), ("세션 12개", (0..<12).map { reading($0, .tool) })
         ]
         var strips: [(String, [NSImage])] = []
         for (title, tokens) in rows {
