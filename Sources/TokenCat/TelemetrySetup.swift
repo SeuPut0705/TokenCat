@@ -47,6 +47,44 @@ final class TelemetrySetup {
     private let files = FileManager.default
     private var support: URL { home.appendingPathComponent("Library/Application Support/TokenCat", isDirectory: true) }
     private var activeManifest: URL { support.appendingPathComponent("telemetry-connection.json") }
+    private var bridgeScript: URL { support.appendingPathComponent(Self.statusLineScriptName) }
+    private var bridgeOriginal: URL { support.appendingPathComponent(Self.statusLineOriginalName) }
+
+    /// Claude Code writes its usage limits only to the JSON it pipes to a statusLine command, so TokenCat wraps that
+    /// command: the bridge forwards a copy to the loopback collector and runs the original command on the same input.
+    static let statusLineScriptName = "claude-statusline.sh"
+    /// The original statusLine command as raw bytes, read by the bridge; absent when there was none.
+    static let statusLineOriginalName = "claude-statusline-command"
+    /// `$HOME` keeps the account's home path out of settings.json; Claude Code runs the command through a shell. The script
+    /// and the original command live only in this Mac's Application Support, so a copy of settings.json on another Mac (or
+    /// after that folder is deleted) runs nothing useful until TokenCat writes them there.
+    static let statusLineCommand = "/bin/sh \"$HOME/Library/Application Support/TokenCat/\(statusLineScriptName)\""
+    /// Any spelling of a command that runs the bridge script (an expanded home, other quoting): never wrapped again, and the
+    /// script stays while one names it.
+    static func runsBridge(_ command: String) -> Bool { command.contains("/Library/Application Support/TokenCat/\(statusLineScriptName)") }
+    /// Migration only: the Claude Code settings right before the bridge was added to an existing connection.
+    static let preBridgeBackupName = "claude-settings-before-statusline.json"
+    /// The copy runs detached with every descriptor on /dev/null, so Claude Code's pipe closes when the original
+    /// command ends, whether TokenCat is absent or slow. `-q` skips ~/.curlrc and `--noproxy` keeps it on loopback.
+    static let statusLineScript = """
+        #!/bin/sh
+        # TokenCat: Claude Code status line bridge. TokenCat --disconnect-telemetry restores the original status line.
+        # Sends Claude Code's status JSON to TokenCat on 127.0.0.1 only (TokenCat keeps the usage limits, nothing else),
+        # then runs the original status line command with the same input; its output and exit status pass through.
+        [ -n "${TOKENCAT_STATUSLINE_BRIDGE:-}" ] && exit 0
+        input=$(cat; printf x)
+        input=${input%x}
+        { printf '%s' "$input" | /usr/bin/curl -q -s -o /dev/null --noproxy '*' --connect-timeout 1 --max-time 2 \\
+            -H 'Content-Type: application/json' --data-binary @- http://127.0.0.1:\(port)\(LocalTelemetryCollector.claudeStatusPath); } \\
+            </dev/null >/dev/null 2>&1 &
+        sidecar="${0%/*}/\(statusLineOriginalName)"
+        [ -s "$sidecar" ] || exit 0
+        original=$(cat "$sidecar") || exit 0
+        TOKENCAT_STATUSLINE_BRIDGE=1
+        export TOKENCAT_STATUSLINE_BRIDGE
+        printf '%s' "$input" | /bin/sh -c "$original"
+
+        """
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser) { self.home = home }
 
@@ -62,12 +100,22 @@ final class TelemetrySetup {
         var version: Int = 1
         var backupDirectory: String
         var entries: [Entry]
+        /// Present once TokenCat wrapped the Claude Code status line; manifests from before the bridge have none.
+        var statusLine: StatusLine?
         struct Entry: Codable {
             var source: TokenSource
             var existed: Bool
             var permissions: Int
             var originalSHA256: String?
             var connectedSHA256: String
+        }
+        struct StatusLine: Codable {
+            /// The replaced `statusLine` object as JSON text; nil when settings had none.
+            var original: String?
+            /// Migration only: the settings before the bridge (backed up as `preBridgeBackupName`) and the bridged result.
+            /// While the file is still exactly the bridged result, a refused whole-file restore puts those bytes back.
+            var preBridgeSHA256: String? = nil
+            var bridgedSHA256: String? = nil
         }
     }
 
@@ -79,34 +127,48 @@ final class TelemetrySetup {
         let claudeURL = configURL(.claude)
         let codex = try read(codexURL)
         let claude = try read(claudeURL)
+        let connected = files.fileExists(atPath: activeManifest.path)
+        let manifest = connected ? (try? read(activeManifest)).flatMap(validated) : nil
         let codexAfter = try codexConfiguration(codex)
-        let claudeAfter = try claudeConfiguration(claude)
+        let plan = try claudeConfiguration(claude, bridgedBefore: manifest?.statusLine != nil)
         let candidates = [Change(source: .codex, url: codexURL, original: codex,
                                  replacement: codexAfter, permissions: try permissions(codexURL)),
                           Change(source: .claude, url: claudeURL, original: claude,
-                                 replacement: claudeAfter, permissions: try permissions(claudeURL))]
+                                 replacement: plan.data, permissions: try permissions(claudeURL))]
         let changes = candidates.filter { $0.original != $0.replacement }
+        // Settings that already run the bridge (not wrapped now) need its original command beside it.
+        let bridgeNote = plan.bridged && !plan.wraps ? bridgeOriginalNote(manifest) : nil
+        let note = [plan.note, bridgeNote].compactMap { $0 }.map { " " + $0 }.joined()
         guard !changes.isEmpty else {
-            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "로컬 실측 연결 설정이 이미 적용돼 있습니다.")
+            // A bridge in use is kept current; a failed refresh leaves the working one.
+            if plan.bridged { try? writeBridgeScript() }
+            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "로컬 실측 연결 설정이 이미 적용돼 있습니다." + note)
         }
-        guard !files.fileExists(atPath: activeManifest.path) else {
-            throw TelemetrySetupError.conflict("연결 이후 실측 설정이 변경됐습니다. 기존 백업을 보존하기 위해 다시 덮어쓰지 않았습니다.")
+        if connected {
+            // A connection made before the status line bridge existed gets only the bridge, under the same backups.
+            guard let manifest, let claude, plan.wraps, codexAfter == codex, plan.envOnly == claude else {
+                throw TelemetrySetupError.conflict("연결 이후 실측 설정이 변경됐습니다. 기존 백업을 보존하기 위해 다시 덮어쓰지 않았습니다.")
+            }
+            return try addStatusLineBridge(to: manifest, claude: claude, plan: plan)
         }
 
         let backupName = "\(Int(Date().timeIntervalSince1970 * 1_000))-\(UUID().uuidString)"
         let backupDirectory = support.appendingPathComponent("telemetry-backups/\(backupName)", isDirectory: true)
         try createPrivateDirectory(backupDirectory)
-        let manifest = Manifest(backupDirectory: backupName, entries: changes.map {
+        var manifestRecord = Manifest(backupDirectory: backupName, entries: changes.map {
             Manifest.Entry(source: $0.source, existed: $0.original != nil, permissions: $0.permissions,
                            originalSHA256: $0.original.map(hash), connectedSHA256: hash($0.replacement))
         })
+        if plan.wraps { manifestRecord.statusLine = Manifest.StatusLine(original: plan.originalStatusLine) }
         for change in changes {
             if let original = change.original {
                 try atomicWrite(original, to: backupURL(change.source, directory: backupDirectory), permissions: 0o600)
             }
         }
-        let manifestData = try JSONEncoder().encode(manifest)
+        let manifestData = try JSONEncoder().encode(manifestRecord)
         try atomicWrite(manifestData, to: backupDirectory.appendingPathComponent("manifest.json"), permissions: 0o600)
+        // The bridge exists before settings name it.
+        if plan.wraps { try writeBridge(originalCommand: plan.originalCommand) } else if plan.bridged { try? writeBridgeScript() }
 
         var written: [Change] = []
         do {
@@ -120,12 +182,54 @@ final class TelemetrySetup {
             try atomicWrite(manifestData, to: activeManifest, permissions: 0o600)
         } catch {
             let restored = rollback(written)
+            if restored && plan.wraps { removeBridgeIfUnused() }
             // A config changed by another program mid-write is a conflict once the rollback succeeded.
             if restored, let setupError = error as? TelemetrySetupError, case .conflict = setupError { throw setupError }
             throw TelemetrySetupError.writeFailed(restored: restored)
         }
         return TelemetrySetupResult(changedFiles: changes.map { $0.url.path }, restartRequired: changes.map(\.source),
-            message: "로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다.")
+            message: "로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다." + note)
+    }
+
+    /// Migration for a connection without the bridge (env already connected, status line untouched). The current file is
+    /// backed up first (`preBridgeBackupName`) and the replaced status line is recorded in the manifest. The whole-file
+    /// restore keeps covering it: an entry unchanged since the connection moves its connected hash to the bridged file
+    /// (its backup predates the bridge); a missing entry is added with the current file as its backup; an entry edited
+    /// after the connection refuses a whole-file restore, and disconnecting then puts the pre-bridge bytes back.
+    private func addStatusLineBridge(to manifest: Manifest, claude: Data, plan: ClaudePlan) throws -> TelemetrySetupResult {
+        let url = configURL(.claude)
+        let mode = try permissions(url)
+        let directory = support.appendingPathComponent("telemetry-backups/\(manifest.backupDirectory)", isDirectory: true)
+        try atomicWrite(claude, to: directory.appendingPathComponent(Self.preBridgeBackupName), permissions: 0o600)
+        var updated = manifest
+        updated.statusLine = Manifest.StatusLine(original: plan.originalStatusLine, preBridgeSHA256: hash(claude), bridgedSHA256: hash(plan.data))
+        if let index = updated.entries.firstIndex(where: { $0.source == .claude }) {
+            if updated.entries[index].connectedSHA256 == hash(claude) { updated.entries[index].connectedSHA256 = hash(plan.data) }
+        } else {
+            try atomicWrite(claude, to: backupURL(.claude, directory: directory), permissions: 0o600)
+            updated.entries.append(Manifest.Entry(source: .claude, existed: true, permissions: mode,
+                                                  originalSHA256: hash(claude), connectedSHA256: hash(plan.data)))
+        }
+        let manifestData = try JSONEncoder().encode(updated)
+        try writeBridge(originalCommand: plan.originalCommand)
+        let record = directory.appendingPathComponent("manifest.json")
+        let previousRecord = try read(record)
+        do {
+            guard try read(url) == claude else { throw TelemetrySetupError.conflict("설정이 다른 프로그램에서 변경돼 연결을 중단했습니다.") }
+            try atomicWrite(plan.data, to: url, permissions: mode)
+            try atomicWrite(manifestData, to: record, permissions: 0o600)
+            try atomicWrite(manifestData, to: activeManifest, permissions: 0o600)
+        } catch {
+            let restored = rollback([Change(source: .claude, url: url, original: claude, replacement: plan.data, permissions: mode)])
+            if let previousRecord { try? atomicWrite(previousRecord, to: record, permissions: 0o600) }
+            if restored { removeBridgeIfUnused() }
+            if restored, let setupError = error as? TelemetrySetupError, case .conflict = setupError { throw setupError }
+            throw TelemetrySetupError.writeFailed(restored: restored)
+        }
+        // The OTLP connection is unchanged, so no restart notice: until a running Claude Code reloads its settings,
+        // its limits are simply not shown yet.
+        return TelemetrySetupResult(changedFiles: [url.path], restartRequired: [],
+            message: "Claude Code 상태 표시줄에 사용량 한도 연결을 추가했습니다. 기존 상태 표시줄 출력은 그대로입니다.")
     }
 
     func disconnect() throws -> TelemetrySetupResult {
@@ -134,19 +238,25 @@ final class TelemetrySetup {
         guard let data = try read(activeManifest) else {
             return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "복구할 TokenCat 실측 연결이 없습니다.")
         }
-        guard let manifest = try? JSONDecoder().decode(Manifest.self, from: data), manifest.version == 1,
-              !manifest.entries.isEmpty, Set(manifest.entries.map(\.source)).count == manifest.entries.count,
-              manifest.entries.allSatisfy({ (0...0o7777).contains($0.permissions) }),
-              manifest.backupDirectory.range(of: #"^[0-9]+-[A-Fa-f0-9-]+$"#, options: .regularExpression) != nil else {
+        guard let manifest = validated(data) else {
             throw TelemetrySetupError.invalid("실측 백업 정보가 올바르지 않아 설정을 변경하지 않았습니다.")
         }
         let directory = support.appendingPathComponent("telemetry-backups/\(manifest.backupDirectory)", isDirectory: true)
-        var restored: [(entry: Manifest.Entry, current: Data, original: Data?)] = []
-        // Whole-file checks deliberately refuse to overwrite any intervening user edit.
+        // Whole-file checks deliberately refuse to overwrite any intervening user edit, in either file. Only the status
+        // line is still put back then, since it runs a script from this folder.
+        var currents: [TokenSource: Data] = [:]
+        var edited: [TokenSource] = []
         for entry in manifest.entries {
-            guard let current = try read(configURL(entry.source)), hash(current) == entry.connectedSHA256 else {
-                throw TelemetrySetupError.conflict("연결 후 \(entry.source.title) 설정이 수정됐습니다. 사용자 변경을 보존하기 위해 자동 복구하지 않았습니다.")
-            }
+            if let current = try read(configURL(entry.source)), hash(current) == entry.connectedSHA256 { currents[entry.source] = current }
+            else { edited.append(entry.source) }
+        }
+        guard edited.isEmpty else {
+            let statusLine = restoreStatusLine(manifest, directory: directory)
+            throw TelemetrySetupError.conflict("연결 후 \(edited.map(\.title).joined(separator: ", ")) 설정이 수정됐습니다. 사용자 변경을 보존하기 위해 자동 복구하지 않았습니다." + statusLine)
+        }
+        var restored: [(entry: Manifest.Entry, current: Data, original: Data?)] = []
+        for entry in manifest.entries {
+            guard let current = currents[entry.source] else { continue }
             let original = entry.existed ? try read(backupURL(entry.source, directory: directory)) : nil
             guard !entry.existed || original.map(hash) == entry.originalSHA256 else {
                 throw TelemetrySetupError.invalid("원본 실측 백업이 없거나 변경돼 설정을 복구하지 않았습니다.")
@@ -174,8 +284,151 @@ final class TelemetrySetup {
             }
             throw TelemetrySetupError.writeFailed(restored: rolledBack)
         }
+        // The restored settings hold the original status line, so the bridge goes too unless something still names it.
+        if manifest.statusLine != nil { removeBridgeIfUnused() }
         return TelemetrySetupResult(changedFiles: restored.map { configURL($0.entry.source).path },
             restartRequired: restored.map { $0.entry.source }, message: "TokenCat 실측 연결 전의 설정으로 복구했습니다. 클라이언트 재시작 후 적용됩니다.")
+    }
+
+    private func validated(_ data: Data) -> Manifest? {
+        guard let manifest = try? JSONDecoder().decode(Manifest.self, from: data), manifest.version == 1,
+              !manifest.entries.isEmpty, Set(manifest.entries.map(\.source)).count == manifest.entries.count,
+              manifest.entries.allSatisfy({ (0...0o7777).contains($0.permissions) }),
+              manifest.backupDirectory.range(of: #"^[0-9]+-[A-Fa-f0-9-]+$"#, options: .regularExpression) != nil else { return nil }
+        return manifest
+    }
+
+    /// A whole-file restore was refused. While Claude Code settings still run the bridge exactly as TokenCat wrote it, the
+    /// status line alone goes back: the exact pre-bridge bytes when the file is still the migration's result, otherwise the
+    /// recorded original object (or no `statusLine` when there was none) with every other key as it is now. The current
+    /// bytes are backed up first, and an unchanged Claude entry moves its connected hash so a later whole-file restore
+    /// still applies. Returns the sentence for the refusal message ("" without a bridge record).
+    private func restoreStatusLine(_ manifest: Manifest, directory: URL) -> String {
+        guard let record = manifest.statusLine else { return "" }
+        let url = configURL(.claude)
+        let kept = " 상태 표시줄도 지금 설정 그대로 두었습니다."
+        let failed = " Claude Code 상태 표시줄은 되돌리지 못했습니다."
+            + (files.fileExists(atPath: bridgeOriginal.path) ? " 원래 명령은 ~/Library/Application Support/TokenCat/\(Self.statusLineOriginalName)에 있습니다." : "")
+        guard let current = try? read(url),
+              let settings = try? JSONSerialization.jsonObject(with: current) as? [String: Any] else { return kept }
+        guard (settings["statusLine"] as? [String: Any])?["command"] as? String == Self.statusLineCommand else {
+            removeBridgeIfUnused()
+            return kept
+        }
+        var replacement: Data?
+        if let bridged = record.bridgedSHA256, hash(current) == bridged, let pre = record.preBridgeSHA256,
+           let bytes = try? read(directory.appendingPathComponent(Self.preBridgeBackupName)), hash(bytes) == pre {
+            replacement = bytes
+        } else if let text = record.original {
+            guard let original = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
+                  let command = original["command"] as? String, !Self.runsBridge(command) else { return failed }
+            var target = settings
+            target["statusLine"] = original
+            replacement = Self.replacingLiteral(Self.statusLineCommand, with: command, in: current, expecting: target)
+                ?? (try? settingsData(target, original: current))
+        } else {
+            var target = settings
+            target["statusLine"] = nil
+            replacement = Self.removingMember("statusLine", in: current, expecting: target) ?? (try? settingsData(target, original: current))
+        }
+        guard let replacement else { return failed }
+        let stamp = Int(Date().timeIntervalSince1970 * 1_000)
+        do {
+            try atomicWrite(current, to: directory.appendingPathComponent("claude-settings-before-statusline-restore-\(stamp).json"), permissions: 0o600)
+            guard try read(url) == current else { return failed }
+            try atomicWrite(replacement, to: url, permissions: try permissions(url))
+        } catch { return failed }
+        var updated = manifest
+        if let index = updated.entries.firstIndex(where: { $0.source == .claude && $0.connectedSHA256 == hash(current) }) {
+            updated.entries[index].connectedSHA256 = hash(replacement)
+            if let data = try? JSONEncoder().encode(updated) {
+                try? atomicWrite(data, to: directory.appendingPathComponent("manifest.json"), permissions: 0o600)
+                try? atomicWrite(data, to: activeManifest, permissions: 0o600)
+            }
+        }
+        removeBridgeIfUnused()
+        let restoredLine = (try? JSONSerialization.jsonObject(with: replacement) as? [String: Any])?["statusLine"] != nil
+        return restoredLine ? " Claude Code 상태 표시줄은 원래 명령으로 되돌렸습니다." : " TokenCat이 추가한 Claude Code 상태 표시줄은 지웠습니다."
+    }
+
+    /// Settings already run the bridge but this connection did not wrap them now. A missing sidecar is recreated from the
+    /// record; without a record (a settings.json copied from another Mac, or the folder deleted) the original command is
+    /// unknown, which the note says instead of "already applied". Nil when nothing needs saying.
+    private func bridgeOriginalNote(_ manifest: Manifest?) -> String? {
+        guard !files.fileExists(atPath: bridgeOriginal.path) else { return nil }
+        let unknown = "Claude Code 상태 표시줄이 TokenCat 브리지를 가리키지만 원래 명령을 찾을 수 없어 상태 표시줄이 비어 보입니다. settings.json의 statusLine을 직접 고쳐 주세요."
+        guard let record = manifest?.statusLine else { return unknown }
+        // There was no status line: the bridge only forwards and prints nothing, as intended.
+        guard let text = record.original else { return nil }
+        guard let original = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
+              let command = original["command"] as? String, !Self.runsBridge(command) else { return unknown }
+        do { try atomicWrite(Data(command.utf8), to: bridgeOriginal, permissions: 0o600) } catch { return unknown }
+        return "Claude Code 상태 표시줄의 원래 명령을 백업 기록에서 다시 만들었습니다."
+    }
+
+    /// `data` with one occurrence of the JSON string literal for `old` swapped for `new`, when that swap alone turns it into
+    /// `expected`: Claude Code's own formatting and number spelling stay. Nil when no single swap does.
+    static func replacingLiteral(_ old: String, with new: String, in data: Data, expecting expected: [String: Any]) -> Data? {
+        guard let text = String(data: data, encoding: .utf8), let replacement = jsonLiterals(new).first else { return nil }
+        for literal in jsonLiterals(old) {
+            var start = text.startIndex
+            while let range = text.range(of: literal, range: start..<text.endIndex) {
+                let candidate = Data(text.replacingCharacters(in: range, with: replacement).utf8)
+                if parses(candidate, to: expected) { return candidate }
+                start = range.upperBound
+            }
+        }
+        return nil
+    }
+
+    /// `data` without the member `key` (a flat object value) and one adjacent comma, when that alone turns it into `expected`.
+    static func removingMember(_ key: String, in data: Data, expecting expected: [String: Any]) -> Data? {
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        let member = NSRegularExpression.escapedPattern(for: "\"\(key)\"") + #"\s*:\s*\{[^{}]*\}"#
+        for pattern in [member + #"\s*,\s*"#, #"\s*,\s*"# + member, member] {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+                guard let range = Range(match.range, in: text) else { continue }
+                let candidate = Data(text.replacingCharacters(in: range, with: "").utf8)
+                if parses(candidate, to: expected) { return candidate }
+            }
+        }
+        return nil
+    }
+
+    /// The ways a JSON writer spells `string`: slashes plain (JavaScript, TokenCat) and escaped.
+    private static func jsonLiterals(_ string: String) -> [String] {
+        guard let data = try? JSONSerialization.data(withJSONObject: string, options: [.fragmentsAllowed, .withoutEscapingSlashes]),
+              let plain = String(data: data, encoding: .utf8) else { return [] }
+        let escaped = plain.replacingOccurrences(of: "/", with: "\\/")
+        return escaped == plain ? [plain] : [plain, escaped]
+    }
+
+    private static func parses(_ data: Data, to expected: [String: Any]) -> Bool {
+        (try? JSONSerialization.jsonObject(with: data) as? NSDictionary)?.isEqual(to: expected) == true
+    }
+
+    /// The sidecar goes first, so the script never pairs with a stale original command.
+    private func writeBridge(originalCommand: String?) throws {
+        if let originalCommand { try atomicWrite(Data(originalCommand.utf8), to: bridgeOriginal, permissions: 0o600) }
+        else if files.fileExists(atPath: bridgeOriginal.path) { try files.removeItem(at: bridgeOriginal) }
+        try writeBridgeScript()
+    }
+
+    private func writeBridgeScript() throws {
+        let script = Data(Self.statusLineScript.utf8)
+        guard (try? Data(contentsOf: bridgeScript)) != script else { return }
+        try atomicWrite(script, to: bridgeScript, permissions: 0o700)
+    }
+
+    /// Leaves the bridge in place while Claude Code settings still run it (an edited file that was not restored).
+    private func removeBridgeIfUnused() {
+        let current: Data?
+        do { current = try read(configURL(.claude)) } catch { return }
+        let settings = current.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        guard !(((settings?["statusLine"] as? [String: Any])?["command"] as? String).map(Self.runsBridge) ?? false) else { return }
+        try? files.removeItem(at: bridgeOriginal)
+        try? files.removeItem(at: bridgeScript)
     }
 
     private func configURL(_ source: TokenSource) -> URL {
@@ -233,7 +486,22 @@ final class TelemetrySetup {
         return restored
     }
 
-    private func claudeConfiguration(_ original: Data?) throws -> Data {
+    private struct ClaudePlan {
+        var data: Data
+        /// The same settings without the status line change, to recognise a connection made before the bridge.
+        var envOnly: Data
+        /// This plan wraps the status line: `originalStatusLine` is the replaced object as JSON text, nil when none.
+        var wraps = false
+        var originalStatusLine: String?
+        var originalCommand: String?
+        /// The planned settings run the bridge.
+        var bridged = false
+        var note: String?
+    }
+
+    /// `bridgedBefore`: the active connection already wrapped the status line once, so a status line that no longer
+    /// runs the bridge is the person's choice and stays as it is.
+    private func claudeConfiguration(_ original: Data?, bridgedBefore: Bool) throws -> ClaudePlan {
         var object: [String: Any] = [:]
         if let original {
             guard let decoded = try? JSONSerialization.jsonObject(with: original), let dictionary = decoded as? [String: Any] else {
@@ -284,6 +552,37 @@ final class TelemetrySetup {
             if !["", "0", "false", "no", "off"].contains(value) { env[key] = "0" }
         }
         object["env"] = env
+        let envOnly = try settingsData(object, original: original)
+        var plan = ClaudePlan(data: envOnly, envOnly: envOnly)
+        if object["statusLine"] == nil {
+            // Without an original the bridge prints nothing after forwarding. A bridge the person removed stays removed.
+            guard !bridgedBefore else { return plan }
+            object["statusLine"] = ["type": "command", "command": Self.statusLineCommand]
+        } else if let line = object["statusLine"] as? [String: Any], line["type"] as? String == "command",
+                  let command = line["command"] as? String, !command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if Self.runsBridge(command) { plan.bridged = true; return plan }
+            guard !bridgedBefore else { return plan }
+            // Every other field (padding and any future key) is kept; only the command runs through the bridge.
+            var wrapped = line
+            wrapped["command"] = Self.statusLineCommand
+            object["statusLine"] = wrapped
+            plan.originalCommand = command
+            plan.originalStatusLine = String(decoding: try JSONSerialization.data(withJSONObject: line,
+                options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
+        } else {
+            plan.note = "Claude Code statusLine 형식이 예상과 달라 사용량 한도 연결은 건너뛰었습니다."
+            return plan
+        }
+        plan.wraps = true
+        plan.bridged = true
+        // Swapping only the command keeps the file's own formatting; a new status line rewrites it.
+        plan.data = try plan.originalCommand.flatMap { Self.replacingLiteral($0, with: Self.statusLineCommand, in: envOnly, expecting: object) }
+            ?? settingsData(object, original: original)
+        return plan
+    }
+
+    /// The original bytes when nothing changed, so an applied connection is never rewritten.
+    private func settingsData(_ object: [String: Any], original: Data?) throws -> Data {
         if let original, let prior = try? JSONSerialization.jsonObject(with: original) as? NSDictionary,
            prior.isEqual(to: object) { return original }
         return try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]) + Data([10])

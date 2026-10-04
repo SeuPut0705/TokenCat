@@ -25,8 +25,10 @@ for name size in icon_32x32@2x 64 icon_128x128 128 icon_128x128@2x 256 icon_256x
     sips -z "$size" "$size" Assets/app-icon-v2-1024.png --out "work/TokenCat.iconset/$name.png" >/dev/null
 done
 iconutil -c icns work/TokenCat.iconset -o dist/TokenCat.app/Contents/Resources/TokenCat.icns
-swift build --configuration release --scratch-path work/build
-cp work/build/release/TokenCat dist/TokenCat.app/Contents/MacOS/TokenCat
+# Universal binary (arm64 + x86_64). Multi-arch builds put the product elsewhere, so ask SwiftPM for the path.
+build=(swift build --configuration release --arch arm64 --arch x86_64 --scratch-path work/build)
+$build
+cp "$($build --show-bin-path)/TokenCat" dist/TokenCat.app/Contents/MacOS/TokenCat
 cat > dist/TokenCat.app/Contents/Info.plist <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -36,8 +38,8 @@ cat > dist/TokenCat.app/Contents/Info.plist <<'PLIST'
 <key>CFBundleName</key><string>TokenCat</string>
 <key>CFBundleDisplayName</key><string>TokenCat</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.8.0</string>
-<key>CFBundleVersion</key><string>9</string>
+<key>CFBundleShortVersionString</key><string>0.9.0</string>
+<key>CFBundleVersion</key><string>10</string>
 <key>CFBundleIconFile</key><string>TokenCat</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>

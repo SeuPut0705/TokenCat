@@ -13,6 +13,9 @@ func runPreferenceChecks() -> [String] {
     check(Preferences(defaults: defaults).animationSource == .activity && !Preferences(defaults: defaults).notifyTurnComplete
           && !Preferences(defaults: defaults).notifyInput && !Preferences(defaults: defaults).notifyInputSound,
           "A new install did not default to AI activity motion with notifications and their sound off")
+    check(Preferences(defaults: defaults).autoCheckUpdates && !Preferences(defaults: defaults).notifyUpdate
+          && Preferences(defaults: defaults).dismissedUpdateVersion == nil,
+          "A new install did not default to automatic update checks on and the new-version notification off")
     defaults.set(["claude", "disk", "codex", "cpu", "memory", "battery", "network"], forKey: "metricOrder")
     defaults.set(["cpu", "claude", "network"], forKey: "visibleMetrics")
     defaults.set(false, forKey: "showRunner")
@@ -88,7 +91,12 @@ func runPreferenceChecks() -> [String] {
     guarded.notifyInputSound = true
     guarded.notifyTurnComplete = true
     guarded.animationSource = .still
-    check(Preferences(defaults: defaults).notifyInputSound, "The input sound toggle did not persist")
+    guarded.notifyUpdate = true
+    guarded.autoCheckUpdates = false
+    guarded.dismissedUpdateVersion = "0.9.1"
+    let stored = Preferences(defaults: defaults)
+    check(stored.notifyInputSound && stored.notifyUpdate && !stored.autoCheckUpdates && stored.dismissedUpdateVersion == "0.9.1",
+          "The input sound, new-version notification, automatic check or dismissed version did not persist")
     let before = guarded.snapshot
     let undo = UndoManager()
     undo.groupsByEvent = false
@@ -97,14 +105,15 @@ func runPreferenceChecks() -> [String] {
     undo.endUndoGrouping()
     check(guarded.snapshot == Preferences.defaultSnapshot && guarded.order == MetricID.allCases && guarded.visible == Set(MetricID.allCases)
           && guarded.animationSource == .activity && guarded.showRunner && guarded.statusBarLayout == .compact && !guarded.notifyInput
-          && !guarded.notifyTurnComplete && !guarded.notifyInputSound && defaults.double(forKey: "unrelatedKey") == 1_234,
-          "Reset did not restore display defaults or touched unrelated state")
+          && !guarded.notifyTurnComplete && !guarded.notifyInputSound && !guarded.notifyUpdate && defaults.double(forKey: "unrelatedKey") == 1_234
+          && !guarded.autoCheckUpdates && guarded.dismissedUpdateVersion == "0.9.1",
+          "Reset did not restore display and notification defaults, or touched unrelated state, the automatic check or the dismissed version")
     undo.undo()
     let undone = guarded.snapshot
     undo.redo()
-    check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .ai] && before.notifyInputSound
+    check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .ai] && before.notifyInputSound && before.notifyUpdate
           && guarded.snapshot == Preferences.defaultSnapshot && undo.undoActionName == "기본값으로 되돌리기",
-          "⌘Z after reset did not restore the previous order and all three notification toggles, or ⇧⌘Z did not reapply")
+          "⌘Z after reset did not restore the previous order and all four notification toggles, or ⇧⌘Z did not reapply")
     print("Preference checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

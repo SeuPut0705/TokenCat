@@ -21,6 +21,61 @@ struct TelemetryReading: Codable {
     var serverInferenceMs: Double?
 }
 
+/// One Claude usage-limit window as Claude Code last piped it to its status line: the percentage and times only.
+struct ClaudeLimitWindow: Codable, Equatable {
+    var usedPercent: Double
+    var resetsAt: Date
+    /// When TokenCat received it; the status line JSON carries no record time of its own.
+    var receivedAt: Date
+}
+
+/// `rate_limits.five_hour` and `.seven_day` from the status line JSON (Claude.ai subscribers, after the first response).
+/// Everything else in that JSON (paths, model, cost, session) is dropped on receipt and never stored or written.
+struct ClaudeUsageLimits: Codable, Equatable {
+    var fiveHour: ClaudeLimitWindow?
+    var sevenDay: ClaudeLimitWindow?
+    static let defaultsKey = "claudeUsageLimits"
+
+    var isEmpty: Bool { fiveHour == nil && sevenDay == nil }
+
+    /// Per window, the newer receipt wins. A window missing from a receipt is kept: Claude Code drops a window once it
+    /// resets, and the kept one then reads as reset by its own time.
+    func merged(_ other: ClaudeUsageLimits) -> ClaudeUsageLimits {
+        func newer(_ a: ClaudeLimitWindow?, _ b: ClaudeLimitWindow?) -> ClaudeLimitWindow? {
+            guard let a else { return b }
+            guard let b else { return a }
+            return b.receivedAt > a.receivedAt ? b : a
+        }
+        return ClaudeUsageLimits(fiveHour: newer(fiveHour, other.fiveHour), sevenDay: newer(sevenDay, other.sevenDay))
+    }
+
+    /// Nil when the body is not a JSON object. A window needs a 0–100 `used_percentage` and `resets_at` in Unix seconds.
+    static func decode(_ data: Data, receivedAt: Date) -> ClaudeUsageLimits? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
+        let limits = root["rate_limits"] as? [String: Any]
+        func number(_ value: Any?) -> Double? {
+            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite else { return nil }
+            return number.doubleValue
+        }
+        func window(_ key: String) -> ClaudeLimitWindow? {
+            guard let value = limits?[key] as? [String: Any],
+                  let used = number(value["used_percentage"]), (0...100).contains(used),
+                  let reset = number(value["resets_at"]), (1_000_000_000...10_000_000_000).contains(reset) else { return nil }
+            return ClaudeLimitWindow(usedPercent: used, resetsAt: Date(timeIntervalSince1970: reset), receivedAt: receivedAt)
+        }
+        return ClaudeUsageLimits(fiveHour: window("five_hour"), sevenDay: window("seven_day"))
+    }
+
+    static func load(from defaults: UserDefaults) -> ClaudeUsageLimits {
+        defaults.data(forKey: defaultsKey).flatMap { try? JSONDecoder().decode(Self.self, from: $0) } ?? ClaudeUsageLimits()
+    }
+
+    func save(to defaults: UserDefaults) {
+        guard !isEmpty, let data = try? JSONEncoder().encode(self) else { defaults.removeObject(forKey: Self.defaultsKey); return }
+        defaults.set(data, forKey: Self.defaultsKey)
+    }
+}
+
 struct TelemetryDiagnosticEntry: Codable, Equatable {
     var signal: String
     var resourceServiceName: String?
@@ -69,6 +124,9 @@ final class LocalTelemetryCollector {
     static let port: UInt16 = 16493
     static let boundHost = "127.0.0.1"
     static let maximumBodyBytes = 2_097_152
+    /// Claude Code's status line JSON, forwarded by TokenCat's statusLine bridge; it is a few kilobytes.
+    static let claudeStatusPath = "/v1/claude/status"
+    static let maximumStatusBodyBytes = 65_536
     static let maximumHeaderBytes = 16_384
     static let maximumConnections = 16
     static let maximumReadings = 256
@@ -100,6 +158,7 @@ final class LocalTelemetryCollector {
     private var retryAt: Date?
     private var receivedAt: Date?
     private var batches: [TokenSource: Date] = [:]
+    private var claudeStatus = ClaudeUsageLimits()
     private var ready = false
     private var attempt = 0
     private let listeningPort: UInt16
@@ -122,6 +181,8 @@ final class LocalTelemetryCollector {
     var lastReceivedAt: Date? { lock.withLock { receivedAt } }
     /// Newest batch per client, decoded or not: proof that a restarted client exports here.
     var lastBatchAt: [TokenSource: Date] { lock.withLock { batches } }
+    /// Newest Claude usage-limit windows received from the status line bridge in this process.
+    var claudeLimits: ClaudeUsageLimits { lock.withLock { claudeStatus } }
     var isRunning: Bool { lock.withLock { ready } }
     func snapshot() -> [TelemetryReading] {
         lock.withLock {
@@ -311,6 +372,12 @@ final class LocalTelemetryCollector {
     /// Kept internal so the decoder and transport can be checked without opening a port.
     @discardableResult
     func ingest(_ data: Data, path: String) -> Bool {
+        // The status line copy is not an OTLP batch: it proves neither an export nor a restart, so only the limits change.
+        if path == Self.claudeStatusPath {
+            guard data.count <= Self.maximumStatusBodyBytes, let limits = ClaudeUsageLimits.decode(data, receivedAt: Date()) else { return false }
+            lock.withLock { claudeStatus = claudeStatus.merged(limits) }
+            return true
+        }
         guard let signal = ["/v1/logs": "logs", "/v1/metrics": "metrics", "/v1/traces": "traces"][path] else { return false }
         lock.withLock { diagnosticCounts[signal] = min(diagnosticCounts[signal] ?? 0, Int.max - 1) + 1 }
         guard data.count <= Self.maximumBodyBytes,
@@ -724,9 +791,10 @@ enum TelemetryHTTP {
             guard (length ?? 0) == 0, data.count == range.upperBound else { return response(400) }
             return .request(path: path, body: Data())
         }
-        guard ["/v1/logs", "/v1/metrics", "/v1/traces"].contains(path) else { return response(404) }
+        guard ["/v1/logs", "/v1/metrics", "/v1/traces", LocalTelemetryCollector.claudeStatusPath].contains(path) else { return response(404) }
         guard method == "POST" else { return response(405) }
         guard contentType == "application/json", let length else { return response(400) }
+        if path == LocalTelemetryCollector.claudeStatusPath, length > LocalTelemetryCollector.maximumStatusBodyBytes { return response(413) }
         let end = range.upperBound + length
         if data.count < end { return .waiting }
         guard data.count == end else { return response(400) }

@@ -13,7 +13,7 @@ enum AppInfo {
     static var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—" }
     static var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—" }
     static var title: String { "TokenCat \(version) (\(build))" }
-    static let privacy = "로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다."
+    static let privacy = "로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인과, 업데이트를 누를 때의 내려받기뿐입니다."
     static let copyright = "Copyright © 2026 TokenCat contributors · MIT License"
     static func license() -> String {
         Bundle.main.url(forResource: "LICENSE", withExtension: nil).flatMap { try? String(contentsOf: $0, encoding: .utf8) }
@@ -208,11 +208,11 @@ struct SettingsPaneView: View {
     var body: some View {
         Group {
             switch pane {
-            case .general: GeneralPane(preferences: preferences, state: state, actions: actions)
+            case .general: GeneralPane(preferences: preferences, model: model, state: state, actions: actions)
             case .menubar: MenuBarPane(preferences: preferences, model: model, state: state)
             case .cat: CatPane(preferences: preferences, state: state)
             case .telemetry: TelemetryPane(model: model)
-            case .about: AboutPane(actions: actions)
+            case .about: AboutPane(model: model, preferences: preferences, state: state, actions: actions)
             }
         }
         .formStyle(.grouped)
@@ -247,8 +247,17 @@ private func settingsCaption(_ text: String, color: Color = .secondary) -> some 
     Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
 }
 
+/// System Settings › Notifications, at TokenCat.
+private func openNotificationSettings() {
+    let id = Bundle.main.bundleIdentifier ?? "dev.seuput.TokenCat"
+    if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)") {
+        NSWorkspace.shared.open(url)
+    }
+}
+
 private struct GeneralPane: View {
     @ObservedObject var preferences: Preferences
+    let model: DashboardModel
     @ObservedObject var state: SettingsState
     let actions: SettingsActions
     @State private var confirmsReset = false
@@ -290,18 +299,14 @@ private struct GeneralPane: View {
                 .disabled(!preferences.notifyInput)
                 LabeledContent("권한") {
                     Text(Notifier.describe(state.notificationStatus)).font(.system(size: 11)).multilineTextAlignment(.trailing)
-                        .foregroundStyle(state.notificationStatus == .denied && (preferences.notifyTurnComplete || preferences.notifyInput)
+                        .foregroundStyle(state.notificationStatus == .denied
+                                         && (preferences.notifyTurnComplete || preferences.notifyInput || preferences.notifyUpdate)
                                          ? TCColor.warning : Color.secondary)
                 }
                 if let error = state.notificationError { settingsCaption(error, color: .red) }
                 if state.notificationStatus == .denied
                     || (preferences.notifyInput && preferences.notifyInputSound && Notifier.soundBlocked(state.notificationStatus, state.soundSetting)) {
-                    Button("알림 설정 열기") {
-                        let id = Bundle.main.bundleIdentifier ?? "dev.seuput.TokenCat"
-                        if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(id)") {
-                            NSWorkspace.shared.open(url)
-                        }
-                    }
+                    Button("알림 설정 열기", action: openNotificationSettings)
                 }
             } header: {
                 Text("알림")
@@ -328,7 +333,7 @@ private struct GeneralPane: View {
             Button("되돌리기", role: .destructive) { preferences.reset(undoManager: undoManager) }
             Button("취소", role: .cancel) {}
         } message: {
-            Text("항목 순서와 표시, 표시 방식, 고양이, 알림 선택이 바뀝니다. 로그인 항목과 macOS 알림 권한은 그대로입니다.")
+            Text("항목 순서와 표시, 표시 방식, 고양이, 알림 선택이 바뀝니다. 로그인 항목, 새 버전 자동 확인과 macOS 알림 권한은 그대로입니다.")
         }
     }
 
@@ -337,6 +342,65 @@ private struct GeneralPane: View {
             preferences[keyPath: key] = on
             if on { state.notificationToggleEnabled() }
         })
+    }
+}
+
+/// "업데이트" on the 정보 tab: automatic checks, the status line with its buttons and the opt-in notice.
+/// Only this section follows the model's clock.
+private struct UpdateSection: View {
+    @ObservedObject var model: DashboardModel
+    @ObservedObject var preferences: Preferences
+    @ObservedObject var state: SettingsState
+
+    var body: some View {
+        let update = model.update
+        let status = update.status(now: model.now)
+        let failure = update.installFailure
+        Section {
+            Toggle("새 버전 자동 확인", isOn: $preferences.autoCheckUpdates)
+                .disabled(update.disabled != nil)
+                .help("실행 직후, 15분마다, 잠자기에서 깨어난 뒤 GitHub 최신 릴리스를 확인합니다")
+            // One row: the full failure sentence spans the width under the status and its buttons.
+            VStack(alignment: .leading, spacing: 6) {
+                LabeledContent {
+                    // Like the dashboard footer: after a failure, a retry only when it can help, and the release page.
+                    HStack(spacing: 6) {
+                        if let failure {
+                            if failure.retryable && update.canInstall {
+                                Button("다시 시도") { model.requestUpdate(.install) }
+                                    .help("릴리스 정보를 다시 확인하고 내려받습니다")
+                            }
+                            Button("릴리스 페이지 열기") { model.requestUpdate(.openReleasePage) }
+                        } else if update.canInstall {
+                            Button("업데이트") { model.requestUpdate(.install) }
+                                .help("내려받아 설치한 뒤 TokenCat을 다시 엽니다")
+                        }
+                        Button("지금 확인") { model.requestUpdate(.check) }.disabled(!update.canCheck)
+                    }
+                    .fixedSize()
+                } label: {
+                    SettingsLabel(title: status.title, subtitle: status.detail, subtitleColor: status.problem ? TCColor.warning : .secondary)
+                }
+                if let failure { settingsCaption(failure.text, color: TCColor.warning) }
+            }
+            // Turned on while macOS denies notifications: said here too, not only on the 일반 tab.
+            let denied = preferences.notifyUpdate && state.notificationStatus == .denied
+            Toggle(isOn: Binding(get: { preferences.notifyUpdate }, set: { on in
+                preferences.notifyUpdate = on
+                if on { state.notificationToggleEnabled() }
+            })) {
+                SettingsLabel(title: "새 버전 알림",
+                              subtitle: denied ? "macOS 알림 권한이 꺼져 있어 보내지 않습니다" : "새 버전을 찾으면 소리 없이 한 번 알립니다",
+                              subtitleColor: denied ? TCColor.warning : .secondary)
+            }
+            .disabled(update.disabled != nil)
+            if preferences.notifyUpdate, let error = state.notificationError { settingsCaption(error, color: .red) }
+            if denied { Button("알림 설정 열기", action: openNotificationSettings) }
+        } header: {
+            Text("업데이트")
+        } footer: {
+            settingsFooter("GitHub에 최신 버전만 묻고, 설치 파일은 업데이트를 누를 때만 내려받습니다.")
+        }
     }
 }
 
@@ -560,7 +624,7 @@ private struct TelemetryPane: View {
                     LabeledContent(source.title) { statusLine(status.row, status.text, detail: status.detail) }
                 }
             } footer: {
-                settingsFooter("실측은 클라이언트가 보낸 출력 토큰·요청 시간 같은 수치만 받습니다. 연결 설정은 앱이 시작할 때 확인하며, 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.")
+                settingsFooter("실측은 클라이언트가 보낸 출력 토큰·요청 시간 같은 수치만 받습니다. Claude Code 상태 표시줄로 받은 정보는 사용량 한도만 남기고, 원래 상태 표시줄 출력은 바꾸지 않습니다. 연결 설정은 앱이 시작할 때 확인하며, 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.")
             }
             if !files.isEmpty {
                 Section {
@@ -635,6 +699,9 @@ private struct TelemetryPane: View {
 }
 
 private struct AboutPane: View {
+    let model: DashboardModel
+    let preferences: Preferences
+    let state: SettingsState
     let actions: SettingsActions
     @State private var showsLicense = false
 
@@ -663,6 +730,7 @@ private struct AboutPane: View {
                     Spacer()
                 }
             }
+            UpdateSection(model: model, preferences: preferences, state: state)
         }
         .sheet(isPresented: $showsLicense) { LicenseView() }
     }

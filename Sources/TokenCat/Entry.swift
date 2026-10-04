@@ -9,7 +9,8 @@ enum TokenCatMain {
     static func main() {
         if CommandLine.arguments.contains("--self-test") {
             let failures = runTrackerChecks() + runPreferenceChecks() + runShellChecks() + runStatusBarChecks() + runSessionPresentationChecks()
-                + runDesignTokenChecks() + runTelemetryChecks() + runTelemetrySetupChecks() + runTokenSpeedChecks() + Runner.resourceErrors()
+                + runDesignTokenChecks() + runTelemetryChecks() + runTelemetrySetupChecks() + runTokenSpeedChecks() + runUpdaterChecks()
+                + Runner.resourceErrors()
             if Runner.resourceErrors().isEmpty { print("Bundled artwork: PASS (\(RunnerPose.allCases.map(Runner.frames).reduce(0, +)) frames in \(RunnerPose.allCases.count) poses, \(RunnerHead.allCases.count) pixel heads)") }
             if failures.isEmpty { print("TokenCat checks: PASS") }
             else { failures.forEach { print("FAIL: \($0)") }; exit(1) }
@@ -52,6 +53,10 @@ enum TokenCatMain {
                 print(String(decoding: data, as: UTF8.self))
             }
             return
+        }
+        // Read-only: one GET of the latest release, printed; nothing is stored, downloaded or installed.
+        if CommandLine.arguments.contains("--update-check") {
+            exit(Updater.commandLineCheck())
         }
         if CommandLine.arguments.contains("--notification-status") {
             notificationStatus()
@@ -327,7 +332,8 @@ enum TokenCatMain {
     /// AppKit-backed Form controls. `--pane general|menubar|cat|telemetry|about|all` (default all; `--focus telemetry`
     /// is the telemetry pane) stacks the chosen panes vertically. The tab choice is kept in a throwaway defaults domain.
     /// `--fixtures` uses synthetic state instead of this Mac's logs and preferences: the collector off with a retry in
-    /// 25 s, Codex waiting for a relaunch, default preferences.
+    /// 25 s, Codex waiting for a relaunch, version 0.9.1 available (checked 3 min ago), default preferences.
+    /// `--update-failure network|translocated|not-writable|no-digest|invalid-bundle` adds that failed install to it.
     /// Prints each pane's content height and the drag types registered in the view tree (drop targets exist).
     private static func snapshotSettings(path: String) {
         let app = NSApplication.shared
@@ -349,6 +355,11 @@ enum TokenCatMain {
             model.telemetryState = .busyOtherApp
             model.telemetryNextRetryAt = model.now.addingTimeInterval(25)
             model.telemetryRestartNeeded = [.codex]
+            let failures: [String: UpdateFailure] = ["network": .network, "translocated": .translocated, "not-writable": .notWritable,
+                                                     "no-digest": .noDigest, "invalid-bundle": .invalidBundle("코드 서명을 확인하지 못했습니다")]
+            let failure = value("--update-failure")
+            guard failure.map({ failures[$0] != nil }) ?? true else { print("Unknown update failure '\(failure ?? "")': \(failures.keys.sorted())"); exit(1) }
+            model.update = SnapshotFixtures.update(failure.flatMap { failures[$0] }.map { .failed($0) } ?? .none, now: model.now)
         } else {
             model.start()
         }

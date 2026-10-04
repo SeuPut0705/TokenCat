@@ -241,8 +241,13 @@ struct DashboardView: View {
             }
             VStack(spacing: 0) {
                 FlowCard(flow: model.flow, counts: model.sessions.counts, now: model.now, loading: loading,
-                         newestOutputAt: model.newestOutputAt, collapsed: flowEmpty && !flowOpened)
+                         newestOutputAt: model.newestOutputAt, collapsed: flowEmpty && !flowOpened,
+                         speed: loading ? nil : SessionPresentation.speedHeadline(model.sessions, now: model.now,
+                                                                                  restart: model.telemetryRestartNeeded))
                 if let limit = model.sessions.usageLimit, limit.isShown(now: model.now) {
+                    UsageLimitRow(limit: limit, now: model.now)
+                }
+                if let limit = SessionPresentation.claudeUsageLimit(model.claudeLimits, now: model.now), limit.isShown(now: model.now) {
                     UsageLimitRow(limit: limit, now: model.now)
                 }
             }
@@ -253,7 +258,8 @@ struct DashboardView: View {
                 .padding(.top, DashboardLayout.titleGap)
             SystemArea(system: model.system, cpuHistory: model.cpuHistory, hasSample: model.hasSample, open: actions.activityMonitor)
                 .padding(.top, DashboardLayout.block)
-            DashboardFooter(status: footerStatus, notice: telemetryNotice, help: footerHelp, open: actions.openTelemetrySettings)
+            DashboardFooter(status: footerStatus, notice: telemetryNotice, help: footerHelp, open: actions.openTelemetrySettings,
+                            update: model.update.notice(dismissed: model.preferences.dismissedUpdateVersion), updateAction: model.requestUpdate)
                 .padding(.top, DashboardLayout.block)
         }
         .padding(.top, 12).padding(.horizontal, DashboardLayout.gutter).padding(.bottom, 12)
@@ -413,7 +419,8 @@ struct OnboardingCard: View {
             row("lock.shield", "대화 본문은 저장하지 않습니다", "모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 읽습니다")
             row("slider.horizontal.3", telemetry.title, telemetry.detail, backups: outcome == .added)
             HStack(alignment: .bottom, spacing: 8) {
-                row("hand.raised", "모델 호출·계정 로그인을 하지 않습니다", "로그인 시 열기와 알림은 직접 켠 경우에만 동작합니다")
+                row("hand.raised", "모델 호출·계정 로그인을 하지 않습니다",
+                    "로그인 시 열기와 알림은 직접 켠 경우에만 동작합니다. 새 버전 확인만 GitHub에 묻습니다(설정 › 정보에서 끌 수 있음)")
                 Spacer(minLength: 0)
                 SmallBorderedButton(title: "실측 설정 열기", action: settings)
             }
@@ -474,12 +481,21 @@ struct FlowCard: View {
     var loading: Bool
     var newestOutputAt: Date?
     var collapsed: Bool
+    /// "지금 속도" (`SessionPresentation.speedHeadline`): measured by the client, never derived from these log records.
+    var speed: SpeedHeadline? = nil
     @State private var showsHelp = false
     @Environment(\.tokenCatHighContrast) private var high
     static let help = "막대 하나는 5초 동안 로그에 기록된 출력 토큰 수입니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다. 속도로 환산하지 않습니다."
 
     private var total: Int { flow.total }
     private var caption: FlowCaption { SessionPresentation.flowCaption(counts: counts, last: flow.last?.at, now: now) }
+    private var lowerHeight: CGFloat? { Self.lowerHeight(loading: loading, total: total, speed: speed) }
+    /// The slot under the number: the provider split on the left, "지금 속도" on the right. Always 18 pt (its 15 pt value),
+    /// so the card and the popover do not move by 4 pt each time the speed comes and goes.
+    static func lowerHeight(loading: Bool, total: Int, speed: SpeedHeadline?) -> CGFloat? {
+        guard !loading, total > 0 || speed != nil else { return nil }
+        return 18
+    }
 
     var body: some View {
         Group {
@@ -505,7 +521,7 @@ struct FlowCard: View {
             titleRow.frame(height: 16)
             VStack(alignment: .leading, spacing: 0) {
                 numberRow.frame(height: 32).padding(.top, 6)
-                if !loading && total > 0 { providerRow.frame(height: 14).padding(.top, 2) }
+                if let lowerHeight { Color.clear.frame(height: lowerHeight).padding(.top, 2) }
                 FlowChart(values: flow.hero, fresh: flow.fresh, loading: loading).frame(height: 61).padding(.top, 8)
             }
             .accessibilityElement(children: .ignore)
@@ -513,6 +529,18 @@ struct FlowCard: View {
             .accessibilityValue(accessibilityValue)
             .accessibilityHint(Self.help)
             .accessibilityChartDescriptor(FlowChartDescriptor(values: flow.hero))
+            // Drawn over the reserved slot, outside the record element: the speed is its own VoiceOver element,
+            // since the record element says it is not a speed.
+            .overlay(alignment: .top) {
+                if let lowerHeight {
+                    HStack(alignment: .firstTextBaseline, spacing: 0) {
+                        providerRow.fixedSize().accessibilityHidden(true)
+                        Spacer(minLength: 8)
+                        if let speed { SpeedHeadlineView(headline: speed) }
+                    }
+                    .frame(height: lowerHeight).padding(.top, 40)
+                }
+            }
         }
     }
 
@@ -584,6 +612,39 @@ struct FlowCard: View {
         if caption.glyph != nil || caption.text != "마지막 기록" { parts.append(caption.text) }
         parts.append("로그 기록 시점 기준이며 속도가 아닙니다")
         return parts.joined(separator: ". ")
+    }
+}
+
+/// "지금 속도 · TokenCat  52.3 요청 tok/s": the value in `metric`, one step under the hero and above the last record.
+/// The project drops first when the row is tight, then the label; help and VoiceOver always name the session.
+private struct SpeedHeadlineView: View {
+    var headline: SpeedHeadline
+    @Environment(\.tokenCatHighContrast) private var high
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            labelled(headline.project.map { "지금 속도 · " + $0 } ?? "지금 속도")
+            labelled("지금 속도")
+            value
+        }
+        .help(headline.help)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("지금 속도")
+        .accessibilityValue(headline.spoken)
+    }
+
+    private func labelled(_ label: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Text(label).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize()
+            value
+        }
+    }
+
+    /// An unknown rate is a bare tertiary "—", like the row's speed cell.
+    private var value: some View {
+        let unit = headline.kind.map { Text(" " + $0).font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high)) } ?? Text("")
+        return (Text(headline.value).font(TCFont.metric).foregroundColor(headline.known ? nil : TCColor.textTertiary(contrast: high)) + unit)
+            .lineLimit(1).fixedSize()
     }
 }
 
@@ -664,9 +725,9 @@ struct FlowChart: View {
     }
 }
 
-// MARK: - Codex usage limit
+// MARK: - Usage limits
 
-/// The AI container's bottom row: the last logged Codex limit window, always with its record age; no forecast.
+/// The AI container's bottom rows (Codex, then Claude): the last recorded limit window, always with its record age; no forecast.
 struct UsageLimitRow: View {
     var limit: UsageLimitSummary
     var now: Date
@@ -694,7 +755,7 @@ struct UsageLimitRow: View {
         .overlay(alignment: .top) {
             Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5).padding(.horizontal, DashboardLayout.inset)
         }
-        .help(UsageLimitSummary.help)
+        .help(limit.help(now: now))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(limit.title)
         .accessibilityValue(limit.spoken(now: now))
@@ -754,10 +815,9 @@ struct RowContext {
     func detailHeight(_ item: SessionRowItem) -> CGFloat {
         detailID == item.id ? SessionPresentation.detailHeight(item.reading, state: item.state) : 0
     }
-    /// The speed cell for a row's third line: hidden without a column or while the client waits for a restart.
-    func speed(_ reading: TokenReading) -> SpeedSlot? {
-        guard showsSpeed, !restart.contains(reading.source) else { return nil }
-        return SessionPresentation.speed(reading, now: now)
+    /// The speed cell for a row's third line (`SessionPresentation.speedCell`).
+    func speed(_ item: SessionRowItem) -> SpeedSlot? {
+        SessionPresentation.speedCell(item.reading, state: item.state, now: now, showsColumn: showsSpeed, restart: restart)
     }
     func showsID(_ reading: TokenReading) -> Bool { reading.project.map(sharedProjects.contains) ?? false }
 }
@@ -1320,7 +1380,7 @@ struct LiveSessionRow: View {
     }
 
     var body: some View {
-        let speed = context.speed(reading)
+        let speed = context.speed(item)
         let contextSlot = SessionPresentation.context(reading, now: now)
         let record = SessionPresentation.lastRecord(reading)
         VStack(alignment: .leading, spacing: 2) {
@@ -1375,7 +1435,8 @@ struct LiveSessionRow: View {
         if item.state == .retrying { state = reading.retry.map { "API " + SessionPresentation.retryText($0, now: now) } }
         return [state, SessionPresentation.effortLabel(reading).map { "추론 \($0)" },
                 SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { "턴 경과 \($0)" },
-                RowText.output(reading), RowText.children(childCount), contextSlot?.spoken, speed.spoken].compactMap { $0 }.joined(separator: ", ")
+                RowText.output(reading), RowText.children(childCount), contextSlot?.spoken,
+                speed.known || item.state.expectsSpeed ? speed.spoken : nil].compactMap { $0 }.joined(separator: ", ")
     }
 
     /// Starts at the glyph column: the last-record dot hangs there, its text sits on the text column.
@@ -1817,15 +1878,27 @@ struct SystemArea: View {
 // MARK: - Footer
 
 /// One leading status item (9): collection delay, telemetry notice, or "실시간"; the latter two open telemetry settings.
+/// The update item sits trailing and takes the rest of the row; the status item never shrinks for it.
 struct DashboardFooter: View {
     var status: FooterStatus
     var notice: TelemetryNotice?
     var help: String
     var open: () -> Void
+    var update: UpdateNotice? = nil
+    var updateAction: (UpdateCommand) -> Void = { _ in }
     @Environment(\.tokenCatHighContrast) private var high
 
     var body: some View {
         HStack(spacing: 0) {
+            leading.fixedSize()
+            Spacer(minLength: 12)
+            if let update { UpdateFooterItem(notice: update, action: updateAction).layoutPriority(1) }
+        }
+        .frame(height: 18)
+    }
+
+    @ViewBuilder private var leading: some View {
+        Group {
             switch status.kind {
             case .loading:
                 Circle().fill(TCColor.idle).frame(width: 6, height: 6)
@@ -1849,9 +1922,7 @@ struct DashboardFooter: View {
                     .help(help)
                     .accessibilityHint("설정을 엽니다")
             }
-            Spacer(minLength: 0)
         }
-        .frame(height: 18)
     }
 
     private func item<Mark: View>(_ mark: Mark, primary: Bool) -> some View {
@@ -1862,5 +1933,78 @@ struct DashboardFooter: View {
         }
         .frame(height: 18)
         .accessibilityElement(children: .combine)
+    }
+}
+
+/// The footer's quiet update line: secondary text, accent text buttons, ✕ hides it for that version only.
+/// The failure's short reason drops first when the row is narrow.
+struct UpdateFooterItem: View {
+    var notice: UpdateNotice
+    var action: (UpdateCommand) -> Void
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            row(detail: true)
+            row(detail: false)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("업데이트")
+    }
+
+    private func row(detail: Bool) -> some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 4) {
+                if case .failed = notice.kind {
+                    Image(systemName: "exclamationmark.triangle.fill").font(TCFont.meta).foregroundStyle(TCColor.warning)
+                }
+                Text(detail ? ([notice.text] + [notice.detail].compactMap { $0 }).joined(separator: " · ") : notice.text)
+                    .font(TCFont.metaMono).toneSecondary().lineLimit(1)
+            }
+            .fixedSize()
+            .help(notice.help)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(notice.text)
+            .accessibilityValue(notice.detail ?? "")
+            .accessibilityHint(notice.help)
+            .padding(.trailing, 2)
+            buttons
+        }
+        .frame(height: 18)
+    }
+
+    @ViewBuilder private var buttons: some View {
+        switch notice.kind {
+        case .available:
+            textButton("업데이트", help: notice.help) { action(.install) }
+            close("이 버전 알림 숨기기")
+        case .failed(let retryable):
+            if retryable { textButton("다시 시도", help: "릴리스 정보를 다시 확인하고 내려받습니다") { action(.install) } }
+            Button { action(.openReleasePage) } label: {
+                Image(systemName: "arrow.up.forward.square").font(TCFont.meta).frame(width: 18, height: 18)
+            }
+            .buttonStyle(HoverButtonStyle(circle: true))
+            .help("릴리스 페이지 열기").accessibilityLabel("릴리스 페이지 열기")
+            close("이 버전 알림 숨기기")
+        case .updated:
+            close("알림 닫기")
+        case .downloading, .installing:
+            EmptyView()
+        }
+    }
+
+    private func textButton(_ title: String, help: String, _ perform: @escaping () -> Void) -> some View {
+        Button(action: perform) {
+            Text(title).font(TCFont.metaMedium).foregroundStyle(Color.accentColor).padding(.horizontal, 5).frame(height: 18)
+        }
+        .fixedSize()
+        .help(help)
+    }
+
+    private func close(_ label: String) -> some View {
+        Button { action(.dismiss) } label: {
+            Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).frame(width: 18, height: 18)
+        }
+        .buttonStyle(HoverButtonStyle(circle: true))
+        .help(label).accessibilityLabel(label)
     }
 }

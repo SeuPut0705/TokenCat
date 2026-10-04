@@ -269,6 +269,22 @@ func runSessionPresentationChecks() -> [String] {
           && !make([restingSpeed]).showsSpeedColumn && !make([claudeParent, measuredChild]).showsSpeedColumn
           && !make([claudeParent, measuredChild], expanded: true).showsSpeedColumn,
           "speed column follows visible live lead measurements")
+    // The column never adds a third line of its own, and a client waiting for a restart opens none.
+    let column = make([alpha, withSpeed])
+    let restarting = SessionListModel.make(tokens: [withSpeed], now: now, expanded: false, restart: [.claude], calendar: utc)
+    check(column.showsSpeedColumn && column.item(alpha.id)?.height == 44 && column.item(withSpeed.id)?.height == 58
+          && !restarting.showsSpeedColumn && restarting.blocks.first?.lead.height == 44,
+          "a row without a record, context or speed stays at 44 pt beside a speed column; a restart-waiting measurement opens nothing")
+    // "—" only where a speed is expected: working, tool and API retry rows; input and log-wait rows show a measured value or nothing.
+    func cell(_ reading: TokenReading, _ state: SessionDisplayState, column: Bool = true, restart: Set<TokenSource> = []) -> String? {
+        SessionPresentation.speedCell(reading, state: state, now: now, showsColumn: column, restart: restart)?.value
+    }
+    var measuredInput = question
+    measuredInput.speedMeasurement = measurement
+    check(cell(alpha, .working) == "—" && cell(alpha, .tool) == "—" && cell(retrying, .retrying) == "—"
+          && cell(question, .input) == nil && cell(waiting, .waiting) == nil && cell(measuredInput, .input) == "100.0"
+          && cell(alpha, .working, column: false) == nil && cell(withSpeed, .working, restart: [.claude]) == nil,
+          "the speed cell shows a dash only where a speed is expected")
     // Short IDs only where two visible rows share a project.
     var twin = beta
     twin.id = "claude:beta2"
@@ -397,7 +413,8 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.usageLimit([question]) == nil && SessionPresentation.windowLabel(300) == "5시간"
           && SessionPresentation.windowLabel(2_880) == "2일" && SessionPresentation.countdown(to: at(42 * 60), now: now) == "42분",
           "expired windows, labels and countdowns")
-    check(!UsageLimitSummary.help.contains("예상") && !(usage?.detail(now: now).contains("소진") ?? true), "no forecast in limit copy")
+    check(!(usage?.help(now: now).contains("예상") ?? true) && !(usage?.detail(now: now).contains("소진") ?? true)
+          && usage?.help(now: now).contains("Claude") == false, "no forecast in limit copy, and no claim that Claude limits are missing")
     check(usage?.details(now: now) == ["5일 11시간 후 초기화 · 1분 전 기록", "5일 11시간 후 초기화"] && usage?.percentText == "28"
           && expired.details(now: now) == ["초기화됨 · 다음 Codex 기록 대기"], "limit row variants keep the countdown whole")
     // Old Codex logs carry no reset time: different weeks cannot be told apart, so only the newest record counts.
@@ -416,6 +433,51 @@ func runSessionPresentationChecks() -> [String] {
     // A reset window says "초기화됨" for one day, then the card goes away.
     check(expired.isShown(now: now) && !UsageLimitSummary(usedPercent: 64, windowMinutes: 300, resetsAt: at(-day - 1), recordedAt: at(-2 * day)).isShown(now: now)
           && usage?.isShown(now: now) == true, "expired windows hide after a day")
+
+    // Claude limits from the status line bridge: the Codex row's rules, the higher live window, the other one in help.
+    func claudeWindow(_ percent: Double, resetsIn: TimeInterval, received: TimeInterval = -60) -> ClaudeLimitWindow {
+        ClaudeLimitWindow(usedPercent: percent, resetsAt: at(resetsIn), receivedAt: at(received))
+    }
+    let bothLive = ClaudeUsageLimits(fiveHour: claudeWindow(42, resetsIn: 2 * 3_600 + 13 * 60 + 30), sevenDay: claudeWindow(31, resetsIn: 3 * day + 4 * 3_600 + 30))
+    let claudeSummary = SessionPresentation.claudeUsageLimit(bothLive, now: now)
+    check(claudeSummary?.title == "Claude 5시간 한도" && claudeSummary?.value(now: now) == "42% 사용" && claudeSummary?.source == .claude
+          && claudeSummary?.details(now: now) == ["2시간 13분 후 초기화 · 1분 전 기록", "2시간 13분 후 초기화"]
+          && claudeSummary?.help(now: now).hasSuffix("\n주간 한도 31% 사용 · 3일 4시간 후 초기화") == true
+          && claudeSummary?.spoken(now: now) == "42퍼센트 사용, 2시간 13분 후 초기화, 1분 전 기록 기준, 주간 한도 31퍼센트 사용, 3일 4시간 후 초기화",
+          "Claude limit row: higher live window, Codex row wording, the other window in help and VoiceOver")
+    let weeklyHigher = SessionPresentation.claudeUsageLimit(ClaudeUsageLimits(fiveHour: claudeWindow(30, resetsIn: 600),
+                                                                              sevenDay: claudeWindow(30, resetsIn: 2 * day)), now: now)
+    let fiveHourReset = SessionPresentation.claudeUsageLimit(ClaudeUsageLimits(fiveHour: claudeWindow(97, resetsIn: -60),
+                                                                               sevenDay: claudeWindow(55, resetsIn: 2 * day)), now: now)
+    check(weeklyHigher?.title == "Claude 주간 한도" && fiveHourReset?.title == "Claude 주간 한도" && fiveHourReset?.usedPercent == 55
+          && fiveHourReset?.other == nil && fiveHourReset?.help(now: now).contains("\n") == false,
+          "a tie goes to the longer window; a reset window never outranks a live one")
+    let allReset = SessionPresentation.claudeUsageLimit(ClaudeUsageLimits(fiveHour: claudeWindow(77, resetsIn: -1_200, received: -9_000),
+                                                                          sevenDay: claudeWindow(58, resetsIn: -600, received: -9_000)), now: now)
+    check(allReset?.expired(now: now) == true && allReset?.value(now: now) == "—" && allReset?.title == "Claude 주간 한도"
+          && allReset?.details(now: now) == ["초기화됨 · 다음 Claude Code 기록 대기"] && allReset?.isShown(now: now) == true
+          && SessionPresentation.claudeUsageLimit(ClaudeUsageLimits(fiveHour: claudeWindow(77, resetsIn: -day - 1)), now: now)?.isShown(now: now) == false
+          && SessionPresentation.claudeUsageLimit(ClaudeUsageLimits(), now: now) == nil,
+          "reset Claude windows read like Codex's: a dash for a day, then gone")
+    check(claudeSummary?.isOld(now: now) == false && SessionPresentation.claudeUsageLimit(
+            ClaudeUsageLimits(sevenDay: claudeWindow(31, resetsIn: day, received: -900)), now: now)?.isOld(now: now) == true,
+          "a Claude limit received over 10 minutes ago reads weaker")
+    // Receipts merge per window (newer wins, a missing window is kept) and persist as numbers and times only.
+    let newer = ClaudeUsageLimits(fiveHour: claudeWindow(44, resetsIn: 7_000, received: -5))
+    let merged = bothLive.merged(newer).merged(ClaudeUsageLimits(fiveHour: claudeWindow(10, resetsIn: 7_000, received: -500)))
+    check(merged.fiveHour?.usedPercent == 44 && merged.sevenDay == bothLive.sevenDay, "newer receipts win per window")
+    let suite = "TokenCat-check-\(UUID().uuidString)"
+    if let defaults = UserDefaults(suiteName: suite) {
+        merged.save(to: defaults)
+        let stored = defaults.data(forKey: ClaudeUsageLimits.defaultsKey).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let keys = Set(((stored?["fiveHour"] as? [String: Any]) ?? [:]).keys)
+        check(ClaudeUsageLimits.load(from: defaults) == merged && keys == ["usedPercent", "resetsAt", "receivedAt"],
+              "Claude limits persist as numbers and times only and survive a restart")
+        ClaudeUsageLimits().save(to: defaults)
+        check(defaults.data(forKey: ClaudeUsageLimits.defaultsKey) == nil && ClaudeUsageLimits.load(from: defaults).isEmpty,
+              "empty Claude limits clear the stored value")
+        defaults.removePersistentDomain(forName: suite)
+    } else { check(false, "temporary defaults suite unavailable") }
 
     // Effort, last turn and help ages.
     var effort = command
@@ -600,6 +662,70 @@ func runSessionPresentationChecks() -> [String] {
     previous.model = "claude-haiku"
     let currentSlot = SessionPresentation.speed(previous, now: now)
     check(currentSlot.prefix == nil && currentSlot.recent && currentSlot.kind == "요청 tok/s", "current-model measurement")
+
+    // "지금 속도": the newest fresh measurement of one visible live session; never a sum or an average.
+    func timed(_ id: String, _ source: TokenSource, project: String, model: String, measured: String? = nil, ago: TimeInterval,
+               interval: Double? = nil, live: Bool = true) -> TokenReading {
+        var value = reading(id, source, session: id.uppercased(), project: project, active: live, state: live ? .working : .complete, last: -2)
+        value.model = model
+        var measurement = TokenSpeedMeasurement(TelemetryReading(provider: source, at: at(ago)))
+        measurement.model = measured ?? model
+        if let interval { measurement.serverTokenIntervalMs = interval } else {
+            measurement.outputTokens = 441
+            measurement.requestDurationMs = 10_000
+        }
+        value.speedMeasurement = measurement
+        return value
+    }
+    func headline(_ tokens: [TokenReading], restart: Set<TokenSource> = []) -> SpeedHeadline? {
+        SessionPresentation.speedHeadline(make(tokens), now: now, restart: restart)
+    }
+    let speedAlpha = timed("claude:alpha", .claude, project: "Alpha", model: "m1", ago: -30)
+    let speedBeta = timed("codex:beta", .codex, project: "Beta", model: "g1", ago: -10, interval: 20)
+    let pair = headline([speedAlpha, speedBeta])
+    check(pair?.value == "50.0" && pair?.kind == "생성 tok/s" && pair?.project == "Beta" && pair?.spoken == "생성 속도 초당 50.0 토큰, Beta"
+          && pair?.help.hasPrefix("Beta · Codex g1 · 측정 1분 이내\n서버 실측 토큰 간 시간 20.000 ms") == true
+          && pair?.help.hasSuffix("세션끼리 합치거나 평균내지 않습니다") == true,
+          "the newest fresh measurement wins, with its kind and session; 44.1 and 50.0 are never summed or averaged")
+    let switched = timed("codex:beta", .codex, project: "Beta", model: "g1", measured: "g0", ago: -5, interval: 20)
+    check(headline([speedAlpha, switched])?.value == "44.1" && headline([speedAlpha, switched])?.kind == "요청 tok/s",
+          "a measurement from the session's previous model is left out")
+    let restartWaiting = headline([speedAlpha, speedBeta], restart: [.codex, .claude])
+    check(headline([speedAlpha, speedBeta], restart: [.codex])?.project == "Alpha"
+          && restartWaiting?.value == "—" && restartWaiting?.known == false && restartWaiting?.help == "실측 연결됨 · Codex · Claude Code를 새로 실행하면 속도가 표시됩니다",
+          "clients waiting for a restart are left out, like the row speed")
+    let staleAlpha = timed("claude:alpha", .claude, project: "Alpha", model: "m1", ago: -130)
+    let stalePair = headline([staleAlpha, timed("codex:beta", .codex, project: "Beta", model: "g1", ago: -121, interval: 20)], restart: [.codex])
+    check(stalePair?.value == "—" && stalePair?.spoken == "속도 실측 없음"
+          && stalePair?.help == "진행 중인 세션의 최근 2분 실측 없음 · 로그 시각으로 추정하지 않습니다\nCodex를 새로 실행하면 속도가 표시됩니다",
+          "running sessions without a measurement under 2 minutes show a dash, with why in help")
+    let previousOnly = headline([switched])
+    check(previousOnly?.value == "—" && previousOnly?.help == "최근 실측은 이전 모델(g0) 기준이라 지금 속도로 쓰지 않습니다",
+          "a fresh measurement left out for its previous model is named as such, not as a missing one")
+    // The card keeps one height whether or not "지금 속도" shows.
+    check(FlowCard.lowerHeight(loading: false, total: 120, speed: nil) == 18 && FlowCard.lowerHeight(loading: false, total: 120, speed: pair) == 18
+          && FlowCard.lowerHeight(loading: false, total: 0, speed: nil) == nil && FlowCard.lowerHeight(loading: true, total: 120, speed: pair) == nil,
+          "the speed slot does not resize the flow card")
+    let quiet = timed("claude:quiet", .claude, project: "Quiet", model: "m1", ago: -3, live: false)
+    let unmatched = timed("telemetry:claude:x", .claude, project: "요청 실측", model: "m1", ago: -3, live: false)
+    check(headline([quiet, unmatched]) == nil && headline([]) == nil, "nothing running hides the speed, even beside a fresh unmatched measurement")
+    var logWait = timed("claude:wait", .claude, project: "Wait", model: "m1", ago: -300)
+    logWait.active = false
+    logWait.activityState = .stale
+    var asking = timed("codex:ask", .codex, project: "Ask", model: "g1", ago: -300)
+    asking.activityState = .input
+    var freshWait = logWait
+    freshWait.speedMeasurement?.at = at(-20)
+    check(headline([logWait, asking]) == nil && headline([freshWait, asking])?.value == "44.1",
+          "sessions only waiting for a log or the person show no placeholder, but a fresh measurement of theirs still shows")
+    var helper = timed("claude:alpha/sub", .claude, project: "Alpha", model: "m1", ago: -4)
+    helper.sessionID = "CLAUDE:ALPHA"
+    helper.isSubagent = true
+    helper.agentID = "a1111111e1"
+    helper.agentRole = "Explore"
+    let child = headline([speedAlpha, helper])
+    check(child?.value == "44.1" && child?.help.hasPrefix("Alpha · 하위 Explore · Claude Code m1") == true,
+          "a visible live subagent's own measurement counts and is named")
 
     // Fixture PNGs carry only visibly fake identifiers.
     let fixtureReadings = SnapshotFixtures.fixtures().flatMap(\.tokens)

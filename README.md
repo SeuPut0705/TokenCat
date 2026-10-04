@@ -9,6 +9,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/SeuPut0705/TokenCat/releases/latest"><img alt="최신 릴리스" src="https://img.shields.io/github/v/release/SeuPut0705/TokenCat?style=flat-square&label=release&color=4b55c8"></a>
   <img alt="macOS 13 이상" src="https://img.shields.io/badge/macOS-13%2B-4b55c8?style=flat-square">
   <img alt="Swift · AppKit · SwiftUI" src="https://img.shields.io/badge/Swift-AppKit%20%C2%B7%20SwiftUI-3b4252?style=flat-square">
   <img alt="개인정보: 로컬 전용" src="https://img.shields.io/badge/%EA%B0%9C%EC%9D%B8%EC%A0%95%EB%B3%B4-%EB%A1%9C%EC%BB%AC%20%EC%A0%84%EC%9A%A9-4b55c8?style=flat-square">
@@ -18,7 +19,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-    <img src="docs/images/hero-light.png" width="800" alt="macOS 메뉴 막대의 TokenCat 항목(노란 물음표와 세션 수 3) 아래로 열린 상세 화면. 입력이 필요한 세션 두 개와 진행 중인 세션 하나, 최근 5분 출력 토큰 막대, Codex 주간 한도, 시스템 지표가 보이고 왼쪽에는 고양이 설정 창이 있습니다.">
+    <img src="docs/images/hero-light.png" width="800" alt="macOS 메뉴 막대의 TokenCat 항목(노란 물음표와 세션 수 3) 아래로 열린 상세 화면. 최근 5분 출력 토큰 막대와 지금 속도(docs-site 55.6 생성 tok/s), Codex 주간 한도와 Claude 5시간 한도, 입력이 필요한 세션 두 개와 진행 중인 세션 하나, 시스템 지표가 보이고 왼쪽에는 고양이 설정 창이 있습니다.">
   </picture>
 </p>
 
@@ -33,13 +34,13 @@
 
 ---
 
-터미널 여러 개에서 Codex와 Claude Code를 돌리다 보면 어느 세션이 일하고 있고 어느 세션이 내 답을 기다리는지 놓치기 쉽습니다. TokenCat은 그 상태를 메뉴 막대 한 칸에 모읍니다. 고양이가 걸으면 작업 중이고, 정면을 보고 앉아 있으면 입력이 필요하다는 뜻입니다. 항목을 누르면 세션별 상태, 최근 5분 출력 토큰, Codex 사용 한도, Mac 시스템 지표를 한 화면에서 봅니다.
+터미널 여러 개에서 Codex와 Claude Code를 돌리다 보면 어느 세션이 일하고 있고 어느 세션이 내 답을 기다리는지 놓치기 쉽습니다. TokenCat은 그 상태를 메뉴 막대 한 칸에 모읍니다. 고양이가 걸으면 작업 중이고, 정면을 보고 앉아 있으면 입력이 필요하다는 뜻입니다. 항목을 누르면 세션별 상태, 최근 5분 출력 토큰, 지금 속도, Codex·Claude 사용 한도, Mac 시스템 지표를 한 화면에서 봅니다.
 
-숫자는 있는 그대로 보여 줍니다. 토큰 수는 로컬 로그에 실제로 기록된 값이고, tok/s 속도는 클라이언트가 이 Mac의 수집기로 보낸 **실측**이 있을 때만 표시합니다. 로그 시각의 차이로 속도를 추정하지 않으며, 모르는 값은 `—`로 둡니다.
+숫자는 있는 그대로 보여 줍니다. 토큰 수는 로컬 로그에 실제로 기록된 값이고, tok/s 속도는 클라이언트가 이 Mac의 수집기로 보낸 **실측**이 있을 때만 표시합니다. 로그 시각의 차이로 속도를 추정하지 않고, 여러 세션의 속도를 합치거나 평균내지 않으며, 모르는 값은 `—`로 둡니다.
 
 - **입력 요청을 놓치지 않게**: 질문이나 계획 승인을 기다리는 세션은 노란 `?`와 정면을 보는 고양이로 알립니다. 원하면 알림도 보냅니다.
 - **세션과 하위 에이전트를 한 목록에**: 진행 상태, 실행 중인 도구 종류, 이번 턴 출력, 컨텍스트를 세션마다 보여 주고 하위 에이전트는 부모 아래에 묶습니다.
-- **로컬 전용**: 대화 본문을 저장하지 않고, 실측 수집기는 `127.0.0.1`에서만 열며, 모델 호출이나 계정 로그인을 하지 않습니다. 실측을 받기 위해 Codex·Claude Code 설정에 이 Mac으로 보내는 전송 설정을 자동으로 추가하며, 원본은 먼저 백업합니다.
+- **로컬 전용**: 대화 본문을 저장하지 않고, 실측 수집기는 `127.0.0.1`에서만 열며, 모델 호출이나 계정 로그인을 하지 않습니다. 인터넷에는 업데이트를 확인하고 내려받을 때만 GitHub에 접속하며, 자동 확인은 끌 수 있습니다. 실측을 받기 위해 Codex·Claude Code 설정에 이 Mac으로 보내는 전송 설정을 자동으로 추가하고 Claude Code 상태 표시줄 명령을 TokenCat 브리지로 감싸며, 원본은 먼저 백업합니다.
 - **네이티브 앱**: Swift·AppKit·SwiftUI만 쓰고 외부 패키지가 없습니다. macOS 13 이상이 대상입니다.
 
 ## 주요 기능
@@ -49,11 +50,13 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/popover-flow-dark.png">
-    <img src="docs/images/popover-flow-light.png" width="468" alt="상세 화면 위쪽. 최근 5분 출력 토큰 7,800 tok과 클라이언트별 내역, 5초 단위 막대, 입력 대기 사유, Codex 주간 한도 28% 사용 행.">
+    <img src="docs/images/popover-flow-light.png" width="468" alt="상세 화면 위쪽. 최근 5분 출력 토큰 7,800 tok과 클라이언트별 내역, 지금 속도 docs-site 55.6 생성 tok/s, 입력 대기 사유, 5초 단위 막대, Codex 주간 한도 28% 사용과 Claude 5시간 한도 42% 사용 행.">
   </picture>
 </p>
 
 최근 5분 동안 로그에 기록된 출력 토큰을 5초 단위 막대로 보여 줍니다. 두 클라이언트가 함께 기록하면 `Codex 1.2k · Claude Code 6.6k`처럼 나눠 보입니다. 오른쪽에는 마지막 기록이 나오고, 30초 동안 새 기록이 없으면 그 자리에서 지금 기다리는 이유(입력 대기, 계획 승인 대기, API 재시도, `명령 실행 중` 같은 도구 범주)를 알려 줍니다. 막대는 기록량이며 속도로 환산하지 않습니다.
+
+숫자 아래 **지금 속도**는 보이는 진행 세션 가운데 2분 안에 받은 가장 최근 실측 한 건입니다(`지금 속도 · docs-site 55.6 생성 tok/s`). 그 세션의 현재 모델로 잰 값만 쓰고, 재시작을 기다리는 클라이언트는 빼며, 세션끼리 합치거나 평균내지 않습니다. 진행·도구 실행·API 재시도 중인데 실측이 없으면 `—`, 입력이나 로그만 기다리면 숨깁니다. 로그 시각으로 만든 속도는 쓰지 않습니다.
 
 ### 세션마다 지금 하는 일
 
@@ -64,7 +67,7 @@
   </picture>
 </p>
 
-진행 중인 세션이 위로 올라옵니다. 행마다 상태 칩, 이번 턴 출력 누적, 클라이언트·모델·Codex effort, 턴 경과 시간, 컨텍스트 사용량을 보여 줍니다. 컨텍스트는 Codex의 경우 기록된 창 대비 비율(`컨텍스트 91% 사용`)로, Claude Code는 창 크기를 기록하지 않아 `컨텍스트 182k`처럼 절대값으로 표시하고, 압축했으면 `압축 1분 전`을 붙입니다. 실측이 있는 세션에는 `44.1 요청 tok/s`처럼 근거 단위와 함께 속도가 붙고, 없으면 `—`로 둡니다.
+진행 중인 세션이 위로 올라옵니다. 행마다 상태 칩, 이번 턴 출력 누적, 클라이언트·모델·Codex effort, 턴 경과 시간, 컨텍스트 사용량을 보여 줍니다. 컨텍스트는 Codex의 경우 기록된 창 대비 비율(`컨텍스트 91% 사용`)로, Claude Code는 창 크기를 기록하지 않아 `컨텍스트 182k`처럼 절대값으로 표시하고, 압축했으면 `압축 1분 전`을 붙입니다. 실측이 있는 세션에는 `44.1 요청 tok/s`처럼 근거 단위와 함께 속도가 붙습니다. 실측이 없으면 생성 중일 수 있는 진행·도구 실행·API 재시도 행에만 `—`를 두고, 입력이나 로그를 기다리는 행에는 아무것도 붙이지 않습니다.
 
 `입력 필요`는 Claude Code의 질문(AskUserQuestion)·계획 승인(ExitPlanMode)과 Codex Plan 모드의 질문(`request_user_input`)을 로그에서 읽어 판단합니다. 권한 확인 요청은 로그에 남지 않아 표시하지 못합니다.
 
@@ -90,16 +93,19 @@ Codex와 Claude Code의 하위 에이전트를 정확한 부모 세션 식별자
 
 행을 클릭하거나 Return을 누르면 세션 ID, 모델, 실행 중인 도구, 기록 시점이 펼쳐집니다. 우클릭 메뉴에서는 세션·에이전트 ID와 재개 명령(`claude --resume …`, `codex resume …`)을 복사하고, 기록 파일이나 프로젝트 폴더를 Finder에서 보여 줍니다. 파일 내용은 열지 않습니다. ↑↓ · Return · ⌘C로 키보드만으로도 다룰 수 있습니다.
 
-### Codex 사용 한도
+### Codex·Claude 사용 한도
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/popover-limits-dark.png">
-    <img src="docs/images/popover-limits-light.png" width="468" alt="Codex 주간 한도 행의 네 가지 상태. 28% 사용, 87% 주황, 97% 빨강, 초기화된 뒤의 대시.">
+    <img src="docs/images/popover-limits-light.png" width="468" alt="사용 한도 행의 일곱 가지 상태. Codex 주간 한도 28% 사용, 87% 주황, 97% 빨강, 초기화된 뒤의 대시와 Claude 5시간 한도 42% 사용, 91% 주황, 초기화된 Claude 주간 한도의 대시.">
   </picture>
 </p>
 
-Codex 로그에 마지막으로 기록된 사용률, 초기화까지 남은 시간, 기록된 지 얼마나 됐는지를 출력 카드 맨 아래에 보여 줍니다. 85% 이상은 주황, 95% 이상은 빨강이고 초기화 시각이 지나면 `—`로 바뀝니다. 실시간 잔여량이나 소진 예측은 아닙니다. Claude Code는 한도를 로그에 남기지 않아 표시하지 않습니다.
+출력 카드 맨 아래에 클라이언트마다 한 줄씩, 마지막으로 받은 사용률과 초기화까지 남은 시간, 받은 지 얼마나 됐는지를 보여 줍니다. 85% 이상은 주황, 95% 이상은 빨강이고 초기화 시각이 지나면 `—`로 바뀝니다. 실시간 잔여량이나 소진 예측은 아닙니다.
+
+- **Codex**: Codex 로그에 기록된 사용률입니다.
+- **Claude**: Claude Code는 사용 한도를 로그에 남기지 않고 상태 표시줄 명령에만 넘겨 줍니다. 그래서 TokenCat은 상태 표시줄 명령을 [브리지](docs/DETAILS.md#claude-사용-한도와-상태-표시줄-브리지)로 감싸 그 안의 5시간·주간 한도만 받습니다. Claude.ai 구독 계정에서, 연결 뒤 새로 실행한 Claude Code가 응답을 한 번 받은 뒤부터 보이며, Claude Code가 상태 표시줄을 다시 그릴 때만 갱신됩니다. 초기화 전인 두 창 가운데 사용률이 높은 쪽을 보이고, 다른 창은 도움말에 적습니다.
 
 ### 메뉴 막대는 원하는 만큼
 
@@ -146,42 +152,88 @@ AI 숫자는 진행 중이거나 입력을 기다리는 최상위 세션 수이�
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-dark.png">
-    <img src="docs/images/settings-light.png" width="796" alt="설정 창의 일반, 메뉴 막대, 고양이, 정보 탭.">
+    <img src="docs/images/settings-light.png" width="796" alt="설정 창의 다섯 탭. 일반(로그인 시 열기, 알림), 메뉴 막대, 고양이, 실측(다른 앱이 포트를 쓰는 예시), 정보(새 버전 자동 확인, 새 버전 0.9.1과 업데이트·지금 확인 버튼, 새 버전 알림이 있는 업데이트 섹션).">
   </picture>
 </p>
 
-- **일반**: 로그인 시 열기와 알림(턴 완료, 입력 필요, 입력 필요 알림 소리). 모두 기본으로 꺼져 있고, 켤 때만 로그인 항목에 등록하거나 알림 권한을 묻습니다.
+- **일반**: 로그인 시 열기, 알림(턴 완료, 입력 필요, 입력 필요 알림 소리). 로그인 항목과 알림은 모두 기본으로 꺼져 있고, 켤 때만 로그인 항목에 등록하거나 알림 권한을 묻습니다.
 - **메뉴 막대**: 라이트·다크 1:1 미리보기, 표시 방식, 항목 표시·순서.
 - **고양이**: 표시 여부, 움직임 기준, 상태별 자세 범례.
-- **실측**: 수집기 상태, 클라이언트별 수신 여부, 백업 폴더 바로 보기.
-- **정보**: 버전, 개인정보 문구, MIT 라이선스.
+- **실측**: 수집기 상태와 재시도, 클라이언트별 수신 여부, 백업 폴더·설정 파일 Finder에서 보기.
+- **정보**: 버전, 개인정보 문구, MIT 라이선스, 처음 실행 안내 다시 보기, 업데이트(새 버전 자동 확인, 상태 줄과 `업데이트`·`지금 확인`, 실패하면 `릴리스 페이지 열기`, 새 버전 알림). 새 버전 자동 확인만 기본으로 켜져 있고, 새 버전 알림은 켤 때만 알림 권한을 묻습니다.
 
-알림에는 프로젝트, 클라이언트·모델, 토큰 수, 소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다. 상세 화면이 보이는 동안에는 보내지 않습니다.
+알림에는 프로젝트, 클라이언트·모델, 토큰 수, 소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다. 상세 화면이 보이는 동안에는 보내지 않습니다. 새 버전 알림은 버전마다 한 번, 소리 없이 보내며, 더 새 버전이 나오거나 업데이트하면 이전 알림을 지웁니다.
 
 ## 개인정보와 안전
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/popover-onboarding-dark.png">
-    <img src="docs/images/popover-onboarding-light.png" width="468" alt="처음 실행 안내 카드. 대화 본문은 저장하지 않는다, 실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했다, 모델 호출과 계정 로그인을 하지 않는다는 세 줄과 백업 보기, 실측 설정 열기 버튼.">
+    <img src="docs/images/popover-onboarding-light.png" width="468" alt="처음 실행 안내 카드. 대화 본문은 저장하지 않는다, 실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했다, 모델 호출과 계정 로그인을 하지 않고 새 버전 확인만 GitHub에 묻는다는 세 줄과 백업 보기, 실측 설정 열기 버튼.">
   </picture>
 </p>
 
 처음 실행하면 TokenCat이 실제로 한 일과 하지 않는 일을 위 카드로 알려 줍니다.
 
 - **본문은 저장하지 않습니다.** 로컬 로그에서 모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 씁니다. 도구 입력은 읽지 않고, API 재시도 기록의 오류 메시지도 저장하지 않습니다.
-- **수집기는 이 Mac 안에만 엽니다.** `127.0.0.1:16493`에서만 받고, 웹페이지 Origin이 붙은 요청은 거부합니다. 받은 실측은 정해진 개수만 메모리에 두고 파일로 남기지 않습니다.
+- **수집기는 이 Mac 안에만 엽니다.** `127.0.0.1:16493`에서만 받고, 웹페이지 Origin이 붙은 요청은 거부합니다. 받은 실측은 정해진 개수만 메모리에 두고 파일로 남기지 않습니다. 수집기로 받은 것 가운데 디스크에 남는 것은 Claude 한도의 사용률·초기화 시각·받은 시각뿐이며, 다음 실행에도 보이도록 TokenCat 설정 값(UserDefaults)에 둡니다.
 - **본문 전송은 끈 채로 연결합니다.** Codex·Claude Code 설정에 실측 전송을 추가할 때 프롬프트·응답 본문 로깅은 끕니다.
+- **Claude Code 상태 표시줄은 감싸기만 합니다.** Claude Code는 사용 한도를 상태 표시줄 명령에만 넘겨 주므로, `~/.claude/settings.json`의 `statusLine` 명령을 TokenCat 브리지(`~/Library/Application Support/TokenCat/claude-statusline.sh`)로 바꿉니다. 브리지는 Claude Code가 넘긴 상태 JSON(작업 폴더, 세션, 모델, 비용, 사용 한도 등)을 `127.0.0.1`로만 보내고, 같은 입력으로 원래 명령을 실행해 출력과 종료 코드를 그대로 돌려줍니다. TokenCat은 받은 JSON에서 5시간·주간 한도 숫자만 남기고 나머지는 버립니다. 상태 표시줄이 없었다면 아무것도 출력하지 않는 브리지만 추가합니다.
 - **모델 호출·계정 로그인이 없습니다.** TokenCat은 어떤 모델도 호출하지 않고 어떤 계정에도 로그인하지 않습니다.
-- **원본 설정을 먼저 백업합니다.** 바꾸기 전에 원본을 접근 제한된 폴더에 보관하고, 기존 외부 실측 목적지와 충돌하면 덮어쓰지 않습니다. 연결 뒤 설정 파일을 직접 고쳤다면 연결 해제 명령(`--disconnect-telemetry`)도 그 파일을 덮어쓰지 않습니다.
-- **로그인 항목과 알림은 직접 켤 때만.** 둘 다 기본으로 꺼져 있습니다.
+- **인터넷 접속은 업데이트뿐입니다.** GitHub에 최신 릴리스의 버전 번호만 묻고, 사용 기록·기기 정보·식별자는 보내지 않습니다. 설정 › 정보의 `새 버전 자동 확인`을 끄면 `지금 확인`을 누를 때만 묻습니다. 새 버전 파일은 `업데이트`를 누를 때만 내려받습니다. 그 밖의 통신은 모두 이 Mac 안(`127.0.0.1`)에서만 일어납니다.
+- **원본 설정을 먼저 백업합니다.** 바꾸기 전에 원본을 접근 제한된 폴더에 보관하고, 기존 외부 실측 목적지와 충돌하면 덮어쓰지 않습니다. 연결 뒤 설정 파일이 바뀌었다면 연결 해제 명령(`--disconnect-telemetry`)도 그 파일을 덮어쓰지 않고, TokenCat이 감싼 Claude Code 상태 표시줄 항목만 원래대로 되돌립니다.
+- **로그인 항목과 알림은 직접 켤 때만.** 둘 다 기본으로 꺼져 있습니다. 업데이트 설치도 직접 누를 때만 합니다.
 
 ## 설치
 
-현재는 소스에서 빌드합니다. macOS 13 이상과 Swift 툴체인(Xcode 또는 Command Line Tools)이 필요합니다. `Package.swift`는 Swift 5.9 이상을 요구하며, macOS 27.0.1 · Swift 6.4에서 빌드를 확인했습니다.
+macOS 13 이상에서 실행되며, 한 앱으로 Apple silicon과 Intel Mac을 모두 지원합니다(universal).
+
+1. [**TokenCat.zip 내려받기**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip) ([최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest)의 첨부 파일)
+2. 압축을 풀고 `TokenCat.app`을 **응용 프로그램** 폴더로 옮깁니다. 로그인 시 열기를 쓰려면 이 위치가 좋습니다.
+3. 처음 한 번은 아래 [처음 열 때](#처음-열-때) 순서로 엽니다.
 
 > [!IMPORTANT]
-> 처음 실행하면 실측을 받기 위해 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 이 Mac(`127.0.0.1:16493`)으로 보내는 설정을 **자동으로** 추가합니다. 원본은 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 실행할 때마다 연결을 다시 확인하며, 이를 끄는 설정은 아직 없습니다. 되돌리는 방법은 [연결 해제와 제거](#연결-해제와-제거)에 있습니다.
+> 처음 실행하면 실측을 받기 위해 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 이 Mac(`127.0.0.1:16493`)으로 보내는 설정을 **자동으로** 추가하고, Claude Code의 상태 표시줄(`statusLine`) 명령을 TokenCat 브리지로 감쌉니다(원래 상태 표시줄 출력은 그대로). 원본은 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 실행할 때마다 연결을 다시 확인하며, 이를 끄는 설정은 아직 없습니다. 되돌리는 방법은 [연결 해제와 제거](#연결-해제와-제거)에 있습니다.
+
+### 처음 열 때
+
+TokenCat은 Apple Developer ID 서명과 공증을 받지 않고 ad-hoc 서명만 한 앱입니다. 그래서 브라우저로 내려받은 앱을 처음 열면 macOS(Gatekeeper)가 확인되지 않은 앱으로 보고 막습니다. 설치한 앱마다 한 번만 허용하면 됩니다.
+
+**macOS 15 이상**
+
+1. `TokenCat.app`을 엽니다. 열 수 없다는 창이 나오면 **완료**를 누릅니다. **휴지통으로 이동**은 누르지 마세요.
+2. **시스템 설정 › 개인정보 보호 및 보안**을 열고 아래쪽 **보안** 항목까지 내립니다.
+3. 'Mac을 보호하기 위해 ‘TokenCat’을(를) 차단했습니다.' 옆의 **그래도 열기**를 누릅니다. 이 버튼은 열기를 시도한 뒤 약 1시간 동안만 보입니다.
+4. 다시 나오는 창에서 **그래도 열기**를 누르고 Mac 암호나 Touch ID로 확인합니다.
+
+**macOS 13–14**
+
+1. Finder에서 `TokenCat.app`을 Control-클릭(또는 우클릭)하고 **열기**를 고릅니다.
+2. 확인 창에서 **열기**를 누릅니다. 창에 열기 버튼이 없으면 macOS 15와 같이 **시스템 설정 › 개인정보 보호 및 보안**에서 **그래도 열기**를 누릅니다.
+
+### 터미널로 설치
+
+먼저 내려받아 SHA-256을 [최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest) 노트의 값과 비교합니다.
+
+```sh
+curl -fL https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip -o /tmp/TokenCat.zip \
+  && shasum -a 256 /tmp/TokenCat.zip
+```
+
+값이 같으면 새 앱을 먼저 풀어 둔 뒤, 실행 중인 TokenCat을 종료하고 기존 앱과 바꿔 엽니다. 압축 풀기에 실패하면 기존 앱은 지우지 않습니다. 설정 값과 백업은 앱 밖에 있어 그대로 남습니다.
+
+```sh
+rm -rf /tmp/TokenCat-new && ditto -x -k /tmp/TokenCat.zip /tmp/TokenCat-new \
+  && { pkill -x TokenCat; rm -rf /Applications/TokenCat.app; } \
+  && mv /tmp/TokenCat-new/TokenCat.app /Applications/ \
+  && open /Applications/TokenCat.app
+```
+
+브라우저와 달리 `curl`은 내려받은 파일에 격리 속성(`com.apple.quarantine`)을 붙이지 않아 위 확인 창 없이 열립니다. 그래서 주소가 이 저장소인지와 SHA-256을 먼저 확인하는 것이 중요합니다.
+
+### 소스에서 빌드
+
+Xcode가 필요합니다. `Package.swift`는 Swift 5.9 이상을 요구하며, macOS 27.0.1 · Xcode 27.0 · Swift 6.4에서 빌드를 확인했습니다. 같은 환경에서 Command Line Tools만으로는 SwiftUI 매크로 플러그인이 없어 빌드에 실패합니다.
 
 ```sh
 git clone https://github.com/SeuPut0705/TokenCat.git
@@ -190,13 +242,13 @@ cd TokenCat
 open dist/TokenCat.app
 ```
 
-`build.sh`는 릴리스 빌드로 `dist/TokenCat.app`을 만들고 이 Mac에서 실행하도록 ad-hoc 서명합니다. Developer ID 서명, 공증, 자동 업데이트, App Store 배포는 없습니다. 로그인할 때 자동으로 열려면 앱을 `/Applications`로 옮긴 뒤 설정 › 일반에서 켜세요. 다른 위치의 앱을 다시 빌드하거나 옮기면 등록이 풀릴 수 있습니다.
+`build.sh`는 Apple silicon·Intel용 universal 릴리스 빌드로 `dist/TokenCat.app`을 만들고 ad-hoc 서명합니다. Developer ID 서명, 공증, App Store 배포는 없습니다. 로그인할 때 자동으로 열려면 앱을 `/Applications`로 옮긴 뒤 설정 › 일반에서 켜세요. 다른 위치의 앱을 다시 빌드하거나 옮기면 등록이 풀릴 수 있습니다.
 
 ### 처음 실행하면
 
 1. 메뉴 막대에 고양이가 나타납니다. Dock 아이콘은 없으며, 실행 중에 앱을 다시 열면 설정 창이 열립니다.
-2. 로컬 수집기가 준비되면 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 로컬 실측 전송 설정을 **자동으로** 추가합니다. 원본은 `~/Library/Application Support/TokenCat/telemetry-backups/`에 먼저 백업하며, 인증·모델·훅 같은 기존 설정과 파일 권한은 그대로 둡니다. 수집기가 준비되지 않으면 설정을 바꾸지 않습니다.
-3. 두 클라이언트는 **다음에 새로 실행할 때부터** 실측을 보냅니다. 진행 중인 작업은 재시작하지 않습니다. 세션 상태와 토큰 수는 로그에서 읽으므로 바로 보입니다.
+2. 로컬 수집기가 준비되면 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 로컬 실측 전송 설정을 **자동으로** 추가합니다. Claude Code는 사용 한도를 받기 위해 `statusLine` 명령도 브리지 스크립트로 바꾸고, 원래 명령은 `~/Library/Application Support/TokenCat/claude-statusline-command`에 두어 브리지가 그대로 실행합니다. 원본 설정 파일은 `~/Library/Application Support/TokenCat/telemetry-backups/`에 먼저 백업하며, 인증·모델·훅 같은 다른 설정과 파일 권한은 그대로 둡니다. 수집기가 준비되지 않으면 설정을 바꾸지 않습니다.
+3. 두 클라이언트는 **다음에 새로 실행할 때부터** 실측과 Claude 사용 한도를 보냅니다. 진행 중인 작업은 재시작하지 않습니다. 세션 상태와 토큰 수는 로그에서 읽으므로 바로 보입니다.
 
 <p align="center">
   <picture>
@@ -207,30 +259,42 @@ open dist/TokenCat.app
 
 아직 기록이 없으면 고양이가 잠든 화면이 보입니다. Codex나 Claude Code에서 새 세션을 시작하면 바로 나타납니다.
 
+### 업데이트
+
+TokenCat은 GitHub의 최신 릴리스를 스스로 확인하고, 설치는 사용자가 누를 때만 합니다.
+
+- **확인**: 설정 › 정보 › 업데이트의 `새 버전 자동 확인`(기본 켜짐)이 켜져 있으면 실행 직후, 이후 15분마다, Mac이 잠자기에서 깬 뒤, 마지막 확인이 5분 넘게 지난 상태에서 상세 화면을 열 때 확인합니다. 끄면 `지금 확인`을 누를 때만 확인합니다.
+- **알림**: 새 버전이 있으면 상세 화면 아래쪽에 `새 버전 0.9.1`과 `업데이트` 버튼이 한 줄로 조용히 나타나고, 우클릭 빠른 메뉴에 `업데이트 0.9.1 설치…`가 생깁니다. 줄의 닫기 버튼은 그 버전 알림만 숨깁니다. 시스템 알림도 받으려면 `새 버전 알림`을 켜세요(기본 꺼짐).
+- **설치**: `업데이트`를 누르면 `TokenCat.zip`을 내려받고(`업데이트 내려받는 중 45%`), GitHub가 기록한 SHA-256과 맞는지 확인한 뒤 앱을 바꾸고(`설치 중…`) 다시 실행합니다. 다시 열리면 `0.9.1로 업데이트했습니다`를 한 번 보여 줍니다. 실패하면 `업데이트 실패`와 릴리스 페이지 열기가 나오고, 다시 해서 나아질 수 있는 실패에는 `다시 시도`도 나옵니다. 설치 중에 종료하면 설치 단계를 마친 뒤 종료합니다.
+
+설정 값과 실측 백업은 앱 밖에 있어 업데이트 뒤에도 그대로입니다. 직접 받으려면 [설치](#설치)를 다시 하거나 [터미널로 설치](#터미널로-설치)의 명령을 실행합니다.
+
 ### 연결 해제와 제거
 
 TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다시 추가합니다. 자동 연결을 끄는 설정은 아직 없으므로, 되돌리려면 TokenCat을 먼저 종료하세요.
 
 1. 로그인 시 열기를 켰다면 설정 › 일반에서 끕니다.
 2. 메뉴 막대 항목을 우클릭해 TokenCat을 종료합니다.
-3. 클라이언트 설정을 복구합니다. 앱을 옮겼다면 그 위치의 `TokenCat.app` 안 실행 파일을 씁니다.
+3. 클라이언트 설정을 복구합니다. 앱이 다른 곳에 있다면(소스에서 빌드했다면 `dist/TokenCat.app`) 그 위치의 `TokenCat.app` 안 실행 파일을 씁니다.
 
    ```sh
-   dist/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry
+   /Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry
    ```
 
-   연결한 뒤 설정 파일이 바뀌지 않았으면 원본 바이트로 되돌립니다. 그사이 직접 수정했다면 사용자 변경을 지키기 위해 되돌리지 않으므로, 백업 폴더의 원본을 보고 직접 정리합니다. 복구는 클라이언트를 다음에 실행할 때부터 적용됩니다.
-4. 앱을 지웁니다. 복구를 마쳤다면 `~/Library/Application Support/TokenCat/`(백업)과 설정 값(`defaults delete dev.seuput.TokenCat`)도 지울 수 있습니다.
+   연결한 뒤 설정 파일이 바뀌지 않았으면 두 파일을 원본 바이트로 되돌리고 브리지 스크립트를 지웁니다. 그사이 둘 중 한 파일이라도 수정됐다면(Codex의 폴더 신뢰 기록, Claude Code의 설정 저장 포함) 사용자 변경을 지키기 위해 두 파일 모두 통째로 되돌리지 않습니다. 대신 Claude Code `statusLine` 명령이 TokenCat이 쓴 브리지 명령 그대로면 그 항목만 원래대로 되돌리고(원래 없었으면 지우고, 바꾸기 직전 파일은 백업 폴더에 남김) 브리지 스크립트를 지웁니다. 나머지 실측 전송 설정(Codex `[otel]`의 exporter 항목, Claude Code `env`의 `OTEL_*`·`CLAUDE_CODE_*` 항목)은 백업 폴더의 원본을 보고 직접 정리합니다. 그 뒤에도 `statusLine.command`가 `claude-statusline.sh`를 가리키면(되돌리지 못했다는 안내가 나왔거나 명령 표기가 달라진 경우) `~/Library/Application Support/TokenCat/claude-statusline-command`에 적힌 원래 명령으로 직접 바꿉니다. 원래 `statusLine` 객체는 같은 폴더 `telemetry-connection.json`의 `statusLine.original`에도 있으며, 이 값이 없으면 원래 상태 표시줄이 없었던 것이니 `statusLine` 키를 지웁니다. 복구는 클라이언트를 다음에 실행할 때부터 적용됩니다.
+4. 앱을 지웁니다. 복구를 마쳤다면 `~/Library/Application Support/TokenCat/`(백업·브리지)과 설정 값(`defaults delete dev.seuput.TokenCat`, Claude 한도 기록 포함)도 지울 수 있습니다. `~/.claude/settings.json`이 아직 `claude-statusline.sh`를 가리키면 이 폴더를 지우지 마세요. 원래 명령이 함께 사라지고 Claude Code 상태 표시줄이 실행에 실패합니다.
 
 ## 작동 방식
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
-  <img src="docs/images/architecture-light.png" width="839" alt="Codex·Claude Code의 로컬 JSONL 기록(파일 변경 감지, 추가분만 읽기)과 OTLP 실측(127.0.0.1:16493), macOS 시스템 지표가 TokenCat으로 들어가 이 Mac 안에서 처리되고 메뉴 막대와 상세 화면에 표시되는 구조">
+  <img src="docs/images/architecture-light.png" width="839" alt="Codex·Claude Code의 로컬 JSONL 기록(파일 변경 감지, 추가분만 읽기)과 OTLP 실측·Claude Code 상태 표시줄의 사용 한도(127.0.0.1:16493), macOS 시스템 지표가 TokenCat으로 들어가 이 Mac 안에서 처리되고 메뉴 막대와 상세 화면에 표시되는 구조">
 </picture>
 
 - **로그**에서 세션, 모델, 출력 토큰, 진행 상태를 읽습니다. 로그가 기록한 시점에만 반영하므로 Claude Code처럼 메시지가 끝날 때 기록하는 클라이언트는 메시지 완료 후 숫자가 오릅니다. 진행 표시는 마지막 기록 뒤 허용 시간(모델 응답 대기 10분, Claude Code 도구 15분, Codex 도구 120초) 안에서만 유지하고, 지나면 `로그 대기`로 바꿉니다. OS 프로세스가 살아 있는지를 뜻하지는 않습니다.
 - **실측**은 제공사·세션·에이전트 식별자가 정확히 일치할 때만 세션 행에 붙입니다. 모델 이름이나 시간이 가깝다는 이유로 연결하지 않습니다. 속도는 근거에 따라 단위를 나눠 표시합니다.
+- **Claude 사용 한도**는 Claude Code가 상태 표시줄을 그릴 때 브리지가 같은 수집기(`/v1/claude/status`)로 보낸 상태 JSON에서 5시간·주간 한도만 읽습니다.
+- **업데이트**만 이 Mac 밖으로 나갑니다. GitHub API에 최신 릴리스를 물어 버전 번호를 비교하고, `업데이트`를 누를 때만 파일을 내려받습니다. 위 그림의 수집 경로와는 따로 돕니다.
 
 | 단위 | 근거 |
 |---|---|
@@ -243,11 +307,38 @@ TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다�
 ## 자주 묻는 질문
 
 <details>
+<summary><b>처음 열 때 Apple이 악성 코드가 없음을 확인할 수 없다고 나와요.</b></summary>
+
+<br>
+
+TokenCat이 Apple 공증을 받지 않은 앱이라 나오는 안내입니다. [처음 열 때](#처음-열-때)의 순서대로 한 번 허용하면 그다음부터는 바로 열립니다. 소스 코드를 직접 확인하고 [소스에서 빌드](#소스에서-빌드)해도 됩니다.
+
+</details>
+
+<details>
+<summary><b>인터넷으로 무엇을 보내나요?</b></summary>
+
+<br>
+
+업데이트 확인뿐입니다. `api.github.com`에 이 저장소의 최신 릴리스를 묻는 GET 요청이며, HTTP 요청에 기본으로 따르는 정보(IP 주소, `TokenCat/0.9.0` 같은 User-Agent, `en`으로 고정한 언어 헤더) 외에 사용 기록·기기 정보·식별자는 보내지 않습니다. 바뀌지 않은 응답은 다시 받지 않도록 캐시 확인 헤더를 쓰고, GitHub가 요청 한도를 알리면 그 시각까지 쉽니다. 설정 › 정보에서 `새 버전 자동 확인`을 끄면 직접 누를 때만 확인합니다. `업데이트`를 누르면 그때 GitHub에서 `TokenCat.zip`을 내려받습니다. 로그·실측·대화 내용은 이 Mac 밖으로 나가지 않습니다.
+
+</details>
+
+<details>
+<summary><b>업데이트는 어떻게 하나요?</b></summary>
+
+<br>
+
+새 버전이 나오면 상세 화면 아래쪽에 `새 버전` 줄이 나타납니다. `업데이트`를 누르면 내려받기, SHA-256 확인, 교체, 다시 실행까지 한 번에 합니다. 자동으로 설치하지는 않습니다. 자세한 내용은 [업데이트](#업데이트)에 있습니다. 소스에서 빌드했다면 `git pull` 뒤 `./build.sh`를 다시 실행해도 됩니다.
+
+</details>
+
+<details>
 <summary><b>속도가 <code>—</code>로 보여요.</b></summary>
 
 <br>
 
-실측이 아직 없다는 뜻입니다. TokenCat은 로그 시각으로 속도를 만들지 않습니다. 실측을 받으려면 TokenCat이 실행 중이어야 하고, 연결 뒤 Codex나 Claude Code를 새로 실행해야 합니다. 설정 › 실측 탭에서 클라이언트별 수신 여부를 확인할 수 있습니다. 클라이언트 버전이나 서버 응답에 따라 지표가 오지 않을 수도 있습니다.
+실측이 아직 없다는 뜻입니다. TokenCat은 로그 시각으로 속도를 만들지 않습니다. 실측을 받으려면 TokenCat이 실행 중이어야 하고, 연결 뒤 Codex나 Claude Code를 새로 실행해야 합니다. 설정 › 실측 탭에서 클라이언트별 수신 여부를 확인할 수 있습니다. 클라이언트 버전이나 서버 응답에 따라 지표가 오지 않을 수도 있습니다. 출력 카드의 `지금 속도`는 2분 안에 받은 실측만 쓰므로, 그보다 오래됐거나 세션이 지금과 다른 모델로 잰 값이면 행에 속도가 있어도 `—`로 둡니다. 이유는 `—`에 포인터를 올리면 보입니다.
 
 </details>
 
@@ -279,11 +370,29 @@ Codex 데스크톱(codex-app-server)은 로그와 trace를 보내지만 요청�
 </details>
 
 <details>
-<summary><b>Claude Code 사용 한도는 왜 없나요?</b></summary>
+<summary><b>Claude 사용 한도가 보이지 않아요.</b></summary>
 
 <br>
 
-Claude Code가 한도를 로그에 남기지 않기 때문입니다. 같은 이유로 컨텍스트도 창 대비 비율 대신 절대값으로 보여 주며, 창 크기를 모델 이름으로 추정하지 않습니다.
+Claude 한도는 Claude Code가 상태 표시줄 명령에 넘기는 `rate_limits`(5시간·주간)에서 옵니다. 이 값은 Claude.ai 구독 계정에서만, 그것도 첫 응답을 받은 뒤에야 들어 있습니다. 그래서 TokenCat이 실행 중이고, 연결 뒤 새로 실행한 Claude Code가 응답을 한 번 받아 상태 표시줄을 다시 그려야 행이 나타납니다. 한 번 받은 값은 다음 실행에도 남고, 초기화 시각이 지나면 `—`와 `초기화됨`을 하루 동안 보인 뒤 숨깁니다. `statusLine`이 명령 형식이 아니면 연결을 건너뛰고, 브리지를 직접 지웠다면 다시 넣지 않습니다.
+
+</details>
+
+<details>
+<summary><b>Claude Code 상태 표시줄 설정이 바뀌었어요.</b></summary>
+
+<br>
+
+사용 한도를 받으려고 TokenCat이 `statusLine` 명령을 `/bin/sh "$HOME/Library/Application Support/TokenCat/claude-statusline.sh"`로 감싼 것입니다. 브리지는 원래 명령(`claude-statusline-command` 파일)을 같은 입력으로 실행하므로 상태 표시줄 출력은 그대로이고, `padding` 같은 다른 필드도 유지합니다. 되돌리는 방법은 [연결 해제와 제거](#연결-해제와-제거)에 있습니다.
+
+</details>
+
+<details>
+<summary><b>Claude Code 컨텍스트는 왜 비율이 아닌가요?</b></summary>
+
+<br>
+
+Claude Code가 컨텍스트 창 크기를 로그에 남기지 않기 때문입니다. 그래서 창 대비 비율 대신 `컨텍스트 182k`처럼 절대값으로 보여 주며, 창 크기를 모델 이름으로 추정하지 않습니다.
 
 </details>
 
@@ -323,9 +432,10 @@ CPU·메모리 측정값은 아직 이 문서에 정리하지 않았습니다. �
 
 ```sh
 ./build.sh
-dist/TokenCat.app/Contents/MacOS/TokenCat --self-test                    # 로그 파싱·상태·실측·설정 백업 검사
+dist/TokenCat.app/Contents/MacOS/TokenCat --self-test                    # 로그 파싱·상태·실측·설정 백업·상태 표시줄 브리지·업데이트 단계 검사
 dist/TokenCat.app/Contents/MacOS/TokenCat --telemetry-lifecycle-checks   # 테스트용 루프백 포트로 수집기 수명 검사
 dist/TokenCat.app/Contents/MacOS/TokenCat --live-check                   # 실제 시스템·로그로 약 6초간 갱신 확인
+dist/TokenCat.app/Contents/MacOS/TokenCat --update-check                 # 최신 릴리스와 비교만(설치하지 않음)
 ```
 
 화면은 로컬 로그와 수집기 대신 합성 데이터로도 렌더할 수 있습니다.
@@ -347,18 +457,27 @@ mkdir -p work && swiftc -O docs/Generator/*.swift -o work/docs-generator && work
 
 전체 명령과 검사 범위는 [자세한 동작 › 검증 명령](docs/DETAILS.md#검증-명령)에 있습니다.
 
+### 릴리스
+
+1. `build.sh`의 `CFBundleShortVersionString`(예: `0.9.1`)을 올리고 `CFBundleVersion`을 1 늘립니다.
+2. main에 푸시하면 GitHub Actions의 [릴리스 워크플로](.github/workflows/release.yml)가 macOS 러너에서 빌드하고 `--self-test`, universal·버전·서명 확인을 거쳐 `TokenCat.zip`을 초안 릴리스에 올립니다. GitHub가 기록한 자산 SHA-256이 zip과 같을 때만 `v0.9.1` 태그의 최신 릴리스로 게시합니다. 같은 태그가 이미 있으면 아무것도 하지 않고, 새 버전이 현재 최신 릴리스보다 높지 않으면 멈춥니다.
+3. 실행 중인 TokenCat은 다음 확인 때(보통 15분 안) 새 버전을 알립니다.
+
+Actions 탭에서 워크플로를 직접 실행할 수도 있습니다(main 브랜치만). 릴리스 노트에는 이전 태그 이후 커밋 제목, 설치·Gatekeeper 안내, 처음 실행 때 바뀌는 설정과 되돌리는 명령, `TokenCat.zip`의 SHA-256이 들어갑니다.
+
 ### 프로젝트 구조
 
 | 경로 (`Sources/TokenCat/` 기준) | 내용 |
 |---|---|
-| `Entry.swift` | 진입점과 명령줄 옵션(검사·스냅숏·진단·실측 연결) |
+| `Entry.swift` | 진입점과 명령줄 옵션(검사·스냅숏·진단·실측 연결·업데이트 확인) |
 | `App.swift` | 앱 수명, 메뉴 막대 항목, 팝오버·패널, 설정 값 |
 | `Models.swift` | 시스템·토큰·세션 상태 데이터 모델 |
 | `StatusBarView.swift` | 메뉴 막대 렌더링 |
 | `DashboardView.swift`, `SessionPresentation.swift`, `TokenFlow.swift` | 상세 화면, 세션 묶음과 상태, 출력 막대 |
 | `SettingsView.swift` | 설정 창 |
 | `TokenTracker.swift`, `LogWatcher.swift` | 로컬 JSONL 파싱과 파일 변경 감지 |
-| `Telemetry.swift`, `TelemetrySetup.swift`, `TokenSpeed.swift` | 로컬 OTLP 수집기, 클라이언트 설정 연결·복구, 실측 속도 |
+| `Telemetry.swift`, `TelemetrySetup.swift`, `TokenSpeed.swift` | 로컬 OTLP·상태 표시줄 수집기, 클라이언트 설정 연결·복구와 Claude Code 상태 표시줄 브리지, 실측 속도 |
+| `Updater.swift` | GitHub 최신 릴리스 확인, 내려받기·SHA-256 검증·앱 교체·다시 실행 |
 | `SystemSampler.swift` | CPU·메모리·저장 공간·배터리·네트워크 |
 | `Runner.swift`, `RunnerAnimator.swift` | 고양이 스프라이트와 움직임 |
 | `Notifier.swift`, `LoginItem.swift` | 알림, 로그인 항목 |

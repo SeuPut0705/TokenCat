@@ -347,6 +347,43 @@ func runTelemetryChecks() -> [String] {
           "A successful export did not update connection freshness")
     check(LocalTelemetryCollector().state == .waiting && TelemetryCollectorState.busyTokenCat.status != TelemetryCollectorState.busyOtherApp.status,
           "Collector states did not separate another TokenCat from another app")
+    // Claude Code status line JSON from the bridge: only rate_limits survive; nothing else is kept or counted as an export.
+    let status = LocalTelemetryCollector()
+    let statusBody = json(["session_id": "status-session", "cwd": "/Users/example/private-project", "transcript_path": "/Users/example/t.jsonl",
+                           "model": ["id": "claude-opus-5-5", "display_name": "Opus"], "cost": ["total_cost_usd": 1.25],
+                           "rate_limits": ["five_hour": ["used_percentage": 42, "resets_at": 1_790_007_980],
+                                           "seven_day": ["used_percentage": 31.5, "resets_at": 1_790_300_000],
+                                           "spend_limit": ["used_percentage": 99, "resets_at": 1_790_300_000]]])
+    let before = Date()
+    check(status.ingest(statusBody, path: LocalTelemetryCollector.claudeStatusPath)
+          && status.claudeLimits.fiveHour?.usedPercent == 42 && status.claudeLimits.sevenDay?.usedPercent == 31.5
+          && status.claudeLimits.fiveHour?.resetsAt == Date(timeIntervalSince1970: 1_790_007_980)
+          && (status.claudeLimits.fiveHour?.receivedAt ?? .distantPast) >= before,
+          "Claude status line limits were not decoded")
+    let kept = String(decoding: (try? JSONEncoder().encode(status.claudeLimits)) ?? Data(), as: UTF8.self)
+    check(!["private-project", "status-session", "claude-opus", "cost", "transcript", "spend"].contains(where: kept.contains)
+          && status.snapshot().isEmpty && status.lastBatchAt.isEmpty && status.lastReceivedAt == nil && status.state == .waiting
+          && status.diagnostics().entries.isEmpty, "The status line copy kept more than the limits or posed as an OTLP export")
+    let invalidWindows = json(["rate_limits": ["five_hour": ["used_percentage": 142, "resets_at": 1_790_007_980],
+                                               "seven_day": ["used_percentage": true, "resets_at": 1_790_300_000_000]]])
+    check(status.ingest(json(["cwd": "/tmp"]), path: LocalTelemetryCollector.claudeStatusPath)
+          && status.ingest(invalidWindows, path: LocalTelemetryCollector.claudeStatusPath)
+          && status.claudeLimits.fiveHour?.usedPercent == 42 && status.claudeLimits.sevenDay?.usedPercent == 31.5,
+          "A status line without valid limits replaced the kept windows")
+    check(!status.ingest(Data("not json".utf8), path: LocalTelemetryCollector.claudeStatusPath)
+          && !status.ingest(Data("[1]".utf8), path: LocalTelemetryCollector.claudeStatusPath)
+          && !status.ingest(Data(repeating: 32, count: LocalTelemetryCollector.maximumStatusBodyBytes + 1), path: LocalTelemetryCollector.claudeStatusPath),
+          "Garbage or oversized status line bodies were accepted")
+    let statusWire = "POST /v1/claude/status HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+    if case .request(let path, let body) = TelemetryHTTP.parse(wire(statusWire)) {
+        check(path == LocalTelemetryCollector.claudeStatusPath && body == wire("{}"), "Status line route altered its body")
+    } else { check(false, "Status line route was rejected") }
+    check(responseCode(TelemetryHTTP.parse(wire("POST /v1/claude/status HTTP/1.1\r\nOrigin: null\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"))) == 403
+          && responseCode(TelemetryHTTP.parse(wire("POST /v1/claude/status HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 65537\r\n\r\n"))) == 413
+          && responseCode(TelemetryHTTP.parse(wire("POST /v1/claude/status HTTP/1.1\r\nContent-Type: text/plain\r\nContent-Length: 2\r\n\r\n{}"))) == 400
+          && responseCode(TelemetryHTTP.parse(wire("GET /v1/claude/status HTTP/1.1\r\n\r\n"))) == 405,
+          "Status line route accepted a browser Origin, an oversized body, a non-JSON type or a read")
+
     // Never started: retryNow has no retry to run and opens nothing (no port is touched).
     let unstarted = LocalTelemetryCollector(port: 1)
     unstarted.retryNow()
@@ -382,6 +419,27 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
     check(until { callbacks.snapshot.readyCount == 1 }, "Listener readiness did not deliver its callback")
     check(callbacks.snapshot.onlyReadyCallbacks && collector.isRunning,
           "The ready callback preceded listener readiness")
+    // The status line bridge's route over a real loopback socket: limits are kept, a browser Origin is refused.
+    final class Reply: @unchecked Sendable { var code: Int? }
+    func postStatus(_ body: [String: Any], origin: String? = nil) -> Int? {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(LocalTelemetryCollector.claudeStatusPath)")!, timeoutInterval: 2)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let origin { request.setValue(origin, forHTTPHeaderField: "Origin") }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let reply = Reply(), done = DispatchSemaphore(value: 0)
+        session.dataTask(with: request) { _, response, _ in reply.code = (response as? HTTPURLResponse)?.statusCode; done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 3)
+        return reply.code
+    }
+    let limited: [String: Any] = ["cwd": "/tmp/project", "rate_limits": ["five_hour": ["used_percentage": 12, "resets_at": 1_790_007_980]]]
+    check(postStatus(limited, origin: "null") == 403 && collector.claudeLimits.isEmpty
+          && postStatus(limited) == 200 && until { collector.claudeLimits.fiveHour?.usedPercent == 12 },
+          "The status line route did not keep limits over loopback or accepted a browser Origin")
     collector.start { callbacks.didDuplicate() }
     Thread.sleep(forTimeInterval: 0.05)
     check(callbacks.snapshot.readyCount == 1 && callbacks.snapshot.duplicateCount == 0,

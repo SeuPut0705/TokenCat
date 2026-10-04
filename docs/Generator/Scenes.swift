@@ -51,12 +51,10 @@ struct Look {
 /// Desktop-like product shot: menu bar strip with the TokenCat item (open state) and its popover hanging below.
 /// The minimal item is used because the menu bar and popover fixtures carry different system values.
 /// `window` (the 고양이 settings tab) sits at the lower left, bottom-aligned with the popover.
+/// The canvas is at least 1080 px tall and grows with the popover, keeping a 64 px margin under it.
 func hero(_ theme: Theme, popover sheet: FixtureSheet, menu: MenuMatrix, window: CGImage) -> CGImage {
     let look = Look.of(theme)
-    let width = 1600, height = 1080
     let scale: CGFloat = 0.8, u = 2 * scale            // u = pixels per point
-    let canvas = Canvas(width, height)
-    look.paintWall(canvas)
 
     // Layout: bar, then the popover (arrow + body) under the item; the window shares the popover's bottom edge.
     let state = MenuMatrix.stateNames.firstIndex(of: "입력 필요")!
@@ -67,6 +65,10 @@ func hero(_ theme: Theme, popover sheet: FixtureSheet, menu: MenuMatrix, window:
     let popoverTop = barHeight + 3 * u + arrowHeight
     let popoverSize = CGSize(width: CGFloat(popover.width) * scale, height: CGFloat(popover.height) * scale)
     let popoverBottom = popoverTop + popoverSize.height
+
+    let width = 1600, height = max(1080, Int((popoverBottom + 64).rounded(.up)))
+    let canvas = Canvas(width, height)
+    look.paintWall(canvas)
 
     // Menu bar
     canvas.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: barHeight), color(menu.bar[theme]!))
@@ -261,7 +263,7 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
     let rightGap: CGFloat = 96, rightWidth: CGFloat = 380
     let groupLabel: CGFloat = 60, cardGap: CGFloat = 16, groupInset: CGFloat = 24, systemGap: CGFloat = 28
     let jsonl = CGRect(x: pad + groupInset, y: pad + groupLabel, width: leftWidth - 2 * groupInset, height: 136)
-    let otlp = CGRect(x: jsonl.minX, y: jsonl.maxY + cardGap, width: jsonl.width, height: 112)
+    let otlp = CGRect(x: jsonl.minX, y: jsonl.maxY + cardGap, width: jsonl.width, height: 136)
     let codeGroup = CGRect(x: pad, y: pad, width: leftWidth, height: otlp.maxY + 22 - pad)
     let system = CGRect(x: pad, y: codeGroup.maxY + systemGap, width: leftWidth, height: 112)
     let canvas = Canvas(Int(pad * 2 + leftWidth + leftGap + midWidth + rightGap + rightWidth), Int(system.maxY + pad))
@@ -302,7 +304,8 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
     canvas.text("Codex · Claude Code", x: codeGroup.minX + 24, baseline: codeGroup.minY + 40, size: 21, bold: true,
                 color: look.secondary)
     source(jsonl, "로컬 JSONL 기록", ["~/.codex/sessions", "~/.claude/projects"])
-    source(otlp, "OTLP 실측", ["HTTP/JSON"])
+    // Both reach the same loopback collector: OTLP for speeds, the Claude Code status line bridge for usage limits.
+    source(otlp, "OTLP 실측 · 상태 표시줄", ["HTTP/JSON · 속도 실측", "Claude Code 상태 표시줄 · 사용 한도"])
     source(system, "macOS 시스템 지표", ["CPU · 메모리 · 저장 공간 · 배터리 · 네트워크"])
 
     // Menu bar item (the app's own render) shown inside the output card.
@@ -344,10 +347,10 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
 
 // MARK: - Settings
 
-/// Four settings tabs in two balanced columns (일반 + 고양이 | 메뉴 막대 + 정보).
+/// All five settings tabs in tab order, in two columns of nearly equal height (일반 + 메뉴 막대 | 고양이 + 실측 + 정보).
 func settingsCollage(_ theme: Theme, panes: [String: CGImage]) -> CGImage {
     let look = Look.of(theme)
-    let columns = [["general", "cat"], ["menubar", "about"]]
+    let columns = [["general", "menubar"], ["cat", "telemetry", "about"]]
     let scale: CGFloat = 0.75, pad: CGFloat = 56, gap: CGFloat = 40
     let windowWidth = CGFloat(panes["general"]!.width) * scale
     func height(_ name: String) -> CGFloat { CGFloat(panes[name]!.height) * scale }

@@ -24,11 +24,22 @@ enum SnapshotFixtures {
         /// A keyboard-selected row and an open inline detail, by reading id.
         var selection: String?
         var detail: String?
+        var update = UpdateState()
+        /// Claude usage-limit windows as the status line bridge would have delivered them.
+        var claudeLimits = ClaudeUsageLimits()
     }
 
     /// Thursday 15:00:03 local time, so 오늘/어제/이번 주/이전 all have members.
     static let now = Calendar.current.date(from: DateComponents(year: 2026, month: 10, day: 1, hour: 15, minute: 0, second: 3)) ?? Date(timeIntervalSince1970: 1_790_000_003)
     static func at(_ offset: TimeInterval) -> Date { now.addingTimeInterval(offset) }
+
+    /// A made-up newer release (the digest is all zeros) checked 3 minutes before `now`.
+    static func update(_ install: UpdateState.Install = .none, now: Date = now) -> UpdateState {
+        let page = URL(string: "https://github.com/SeuPut0705/TokenCat/releases/tag/v0.9.1")!
+        let asset = UpdateRelease.Asset(url: page, size: 5_242_880, sha256: String(repeating: "0", count: 64))
+        return UpdateState(check: .done, install: install, checkedAt: now.addingTimeInterval(-180),
+                           available: UpdateRelease(version: "0.9.1", tag: "v0.9.1", page: page, asset: asset))
+    }
 
     @MainActor
     static func write(to directory: String) -> Int32 {
@@ -50,7 +61,7 @@ enum SnapshotFixtures {
         return written == fixtures().count + components().count ? 0 : 1
     }
 
-    /// Component sheets: the five first-run outcomes (never part of a dashboard snapshot) and the limit row's four states.
+    /// Component sheets: the five first-run outcomes (never part of a dashboard snapshot) and the limit row states (Codex four, Claude three).
     @MainActor
     private static func components() -> [(String, AnyView)] {
         let down = SessionPresentation.telemetryNotice(state: .busyOtherApp, note: nil, restart: [])
@@ -64,9 +75,15 @@ enum SnapshotFixtures {
         let onboarding = VStack(spacing: 12) {
             ForEach(Array(outcomes.enumerated()), id: \.offset) { OnboardingCard(outcome: $0.element, settings: {}, dismiss: {}) }
         }
-        let limits = [limit(28, resetsIn: 5 * 86_400 + 8 * 3_600, recorded: -4 * 3_600), limit(87, resetsIn: 2 * 86_400 + 4 * 3_600, recorded: -95),
-                      limit(97, resetsIn: 3 * 3_600 + 20 * 60, recorded: -30), limit(64, resetsIn: -600, recorded: -7_000)]
+        let codex = [limit(28, resetsIn: 5 * 86_400 + 8 * 3_600, recorded: -4 * 3_600), limit(87, resetsIn: 2 * 86_400 + 4 * 3_600, recorded: -95),
+                     limit(97, resetsIn: 3 * 3_600 + 20 * 60, recorded: -30), limit(64, resetsIn: -600, recorded: -7_000)]
             .map { UsageLimitSummary(usedPercent: $0.usedPercent, windowMinutes: $0.windowMinutes, resetsAt: $0.resetsAt, recordedAt: $0.recordedAt) }
+        // Claude: both windows live (the higher one shown), the 5-hour window at the warning level, and both reset.
+        let claude = [claudeLimits(fiveHour: (42, 2 * 3_600 + 13 * 60), weekly: (31, 3 * 86_400 + 4 * 3_600), recorded: -50),
+                      claudeLimits(fiveHour: (91, 47 * 60), weekly: (64, 2 * 86_400), recorded: -20),
+                      claudeLimits(fiveHour: (77, -1_200), weekly: (58, -600), recorded: -9_000)]
+            .compactMap { SessionPresentation.claudeUsageLimit($0, now: now) }
+        let limits = codex + claude
         let rows = VStack(spacing: 12) {
             ForEach(Array(limits.enumerated()), id: \.offset) { UsageLimitRow(limit: $0.element, now: now).container() }
         }
@@ -105,6 +122,8 @@ enum SnapshotFixtures {
         model.telemetrySetupFailure = fixture.failure
         model.telemetryRestartNeeded = fixture.restart
         model.logFoldersFound = fixture.foldersFound
+        model.update = fixture.update
+        model.claudeLimits = fixture.claudeLimits
         model.tokens = fixture.tokens
         model.tokensSampledAt = fixture.sampled ? at(-fixture.lag) : nil
         // The model republishes its presentation (clock, flow, list) whenever the toggle changes.
@@ -202,6 +221,20 @@ enum SnapshotFixtures {
         TokenRateLimit(usedPercent: percent, windowMinutes: 10_080, resetsAt: at(resetsIn), recordedAt: at(recorded))
     }
 
+    private static func claudeLimits(fiveHour: (Double, TimeInterval), weekly: (Double, TimeInterval), recorded: TimeInterval) -> ClaudeUsageLimits {
+        ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: fiveHour.0, resetsAt: at(fiveHour.1), receivedAt: at(recorded)),
+                          sevenDay: ClaudeLimitWindow(usedPercent: weekly.0, resetsAt: at(weekly.1), receivedAt: at(recorded)))
+    }
+
+    /// A Codex server rate ("생성 tok/s"): one token every `interval` ms.
+    private static func generated(_ value: inout TokenReading, interval: Double, ago: TimeInterval) {
+        var measurement = TokenSpeedMeasurement(TelemetryReading(provider: value.source, at: at(ago)))
+        measurement.model = value.model
+        measurement.serverTokenIntervalMs = interval
+        measurement.serverTokenIntervalSampleCount = 1
+        value.speedMeasurement = measurement
+    }
+
     static func fixtures() -> [Fixture] {
         let quiet: [TimeInterval: Int] = [-250: 820, -205: 1_460, -170: 380, -120: 2_210, -85: 640, -60: 1_120]
 
@@ -220,7 +253,11 @@ enum SnapshotFixtures {
                            turn: -600, output: 4_020)
         plan.toolCategory = .question
         plan.toolName = "ExitPlanMode"
-        let input = Fixture(name: "input-needed", tokens: [question, docs, plan, idle("idle01", project: "notes-app", ago: -1_800)])
+        // The Codex session's fresh server rate is the card's "지금 속도"; both account limits sit under the card.
+        var docsMeasured = docs
+        generated(&docsMeasured, interval: 18, ago: -12)
+        let input = Fixture(name: "input-needed", tokens: [question, docsMeasured, plan, idle("idle01", project: "notes-app", ago: -1_800)],
+                            claudeLimits: claudeLimits(fiveHour: (42, 2 * 3_600 + 13 * 60), weekly: (31, 3 * 86_400 + 4 * 3_600), recorded: -50))
 
         // 2. API retries: countdown and network-down.
         var retrying = reading("retry01", .claude, project: "api-server", model: "claude-opus-5-5", state: .working, last: -3,
@@ -349,7 +386,25 @@ enum SnapshotFixtures {
         let detail = Fixture(name: "detail-open", tokens: [command, file, idle("idle02", project: "notes-app", ago: -1_800)],
                              selection: command.id, detail: command.id)
         let selected = Fixture(name: "keyboard-selection", tokens: [parent, explore, writer, waiter] + stale, selection: explore.id)
+
+        // 17. Only Claude Code runs: its 5-hour limit at the warning level and the newer of two fresh request rates.
+        var claudeRun = reading("cl01", .claude, project: "TokenCat", model: "claude-opus-5-5", state: .working, last: -3,
+                                output: 4_812, outputs: [-140: 1_020, -70: 1_560, -3: 640])
+        measured(&claudeRun, tokens: 612, milliseconds: 9_840, ago: -6)
+        var claudeTool = reading("cl02", .claude, project: "api-server", model: "claude-sonnet-5", state: .tool, last: -25,
+                                 output: 1_930, outputs: [-90: 1_930])
+        claudeTool.toolCategory = .command
+        claudeTool.toolName = "Bash"
+        measured(&claudeTool, tokens: 380, milliseconds: 5_100, ago: -40)
+        let claudeOnly = Fixture(name: "claude-only", tokens: [claudeRun, claudeTool, idle("cl03", project: "notes-app", ago: -2_400)],
+                                 claudeLimits: claudeLimits(fiveHour: (87, 3_600 + 20 * 60), weekly: (46, 4 * 86_400 + 2 * 3_600), recorded: -40))
+
+        // 18–20. The footer's update line: a new version, the download, and a failure beside a telemetry problem (the longest pair).
+        let working = [waitingSpeed, idle("u1", project: "notes-app", ago: -400)]
+        let available = Fixture(name: "update-available", tokens: working, update: update())
+        let downloading = Fixture(name: "update-downloading", tokens: working, update: update(.downloading(0.45)))
+        let failed = Fixture(name: "update-failed", tokens: working, telemetry: .busyOtherApp, update: update(.failed(.network)))
         return [input, retry, tools, context, grouped, dates, empty, noFolders, loading, restart, port, busy, contrast,
-                logWait, rest, detail, selected]
+                logWait, rest, detail, selected, claudeOnly, available, downloading, failed]
     }
 }

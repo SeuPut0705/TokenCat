@@ -45,7 +45,7 @@ runSnapshot(binary, ["--snapshot-fixtures", snap("fixtures")])
 runSnapshot(binary, ["--snapshot-menubar", snap("menubar-two-line.png"), "--fixtures"])
 runSnapshot(binary, ["--snapshot-menubar", snap("menubar-one-line.png"), "--fixtures", "--inline"])
 runSnapshot(binary, ["--snapshot-menubar", snap("menubar-minimal.png"), "--fixtures", "--minimal"])
-let panes = ["general", "menubar", "cat", "about"]
+let panes = ["general", "menubar", "cat", "telemetry", "about"]
 for pane in panes {
     runSnapshot(binary, ["--snapshot-settings", snap("settings-\(pane)-dark.png"), "--pane", pane, "--fixtures"])
     runSnapshot(binary, ["--snapshot-settings", snap("settings-\(pane)-light.png"), "--pane", pane, "--fixtures", "--light"])

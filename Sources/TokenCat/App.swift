@@ -29,6 +29,12 @@ final class Preferences: ObservableObject {
     @Published var notifyInput: Bool { didSet { persist() } }
     /// "입력 필요 알림에 소리": off by default; `.sound` permission is asked only when it is turned on (P-5).
     @Published var notifyInputSound: Bool { didSet { persist() } }
+    /// "새 버전 자동 확인": on by default; TokenCat's only internet request. Not part of "기본값으로 되돌리기".
+    @Published var autoCheckUpdates: Bool { didSet { persist() } }
+    /// "새 버전 알림": off by default like every notification; silent, once per version.
+    @Published var notifyUpdate: Bool { didSet { persist() } }
+    /// The version whose dashboard notice was closed with ✕; a newer version shows again.
+    @Published var dismissedUpdateVersion: String? { didSet { persist() } }
     /// Runtime only, from the system sampler; a battery item without a battery shows nothing.
     @Published var hasBattery = true { didSet { if hasBattery != oldValue { keepSomethingVisible() } } }
     init(defaults: UserDefaults = .standard) {
@@ -51,6 +57,10 @@ final class Preferences: ObservableObject {
         notifyTurnComplete = defaults.bool(forKey: "notifyTurnComplete")
         notifyInput = defaults.bool(forKey: "notifyInput")
         notifyInputSound = defaults.bool(forKey: "notifyInputSound")
+        autoCheckUpdates = defaults.object(forKey: "autoCheckUpdates") as? Bool ?? true
+        notifyUpdate = defaults.bool(forKey: "notifyUpdate")
+        // An optional wrapped property already starts as nil; setting the wrapper keeps didSet (and its write) out of init.
+        _dismissedUpdateVersion = Published(initialValue: defaults.string(forKey: "dismissedUpdateVersion"))
         // An older build could hide every item and the cat, leaving only a "TC" placeholder.
         if statusBarLayout != .minimal && !showRunner && shownItems.isEmpty { showRunner = true }
     }
@@ -64,6 +74,9 @@ final class Preferences: ObservableObject {
         defaults.set(notifyTurnComplete, forKey: "notifyTurnComplete")
         defaults.set(notifyInput, forKey: "notifyInput")
         defaults.set(notifyInputSound, forKey: "notifyInputSound")
+        defaults.set(autoCheckUpdates, forKey: "autoCheckUpdates")
+        defaults.set(notifyUpdate, forKey: "notifyUpdate")
+        defaults.set(dismissedUpdateVersion, forKey: "dismissedUpdateVersion")
     }
     /// Items the compact and inline layouts actually draw.
     var shownItems: [MetricID] { order.filter { visible.contains($0) && ($0 != .battery || hasBattery) } }
@@ -89,14 +102,14 @@ final class Preferences: ObservableObject {
     /// The display, cat and notification choices that "기본값으로 되돌리기" covers; login item and permission are not here.
     struct Snapshot: Equatable {
         var order: [MetricID], visible: Set<MetricID>, animationSource: RunnerMotion, showRunner: Bool
-        var statusBarLayout: StatusBarLayout, notifyTurnComplete: Bool, notifyInput: Bool, notifyInputSound: Bool
+        var statusBarLayout: StatusBarLayout, notifyTurnComplete: Bool, notifyInput: Bool, notifyInputSound: Bool, notifyUpdate: Bool
     }
     static let defaultSnapshot = Snapshot(order: MetricID.allCases, visible: Set(MetricID.allCases), animationSource: .activity,
                                           showRunner: true, statusBarLayout: .compact, notifyTurnComplete: false, notifyInput: false,
-                                          notifyInputSound: false)
+                                          notifyInputSound: false, notifyUpdate: false)
     var snapshot: Snapshot {
         Snapshot(order: order, visible: visible, animationSource: animationSource, showRunner: showRunner, statusBarLayout: statusBarLayout,
-                 notifyTurnComplete: notifyTurnComplete, notifyInput: notifyInput, notifyInputSound: notifyInputSound)
+                 notifyTurnComplete: notifyTurnComplete, notifyInput: notifyInput, notifyInputSound: notifyInputSound, notifyUpdate: notifyUpdate)
     }
     /// Applies `snapshot` and registers the previous values with `undoManager`, so ⌘Z (and ⇧⌘Z) step back and forth (T-6).
     func restore(_ snapshot: Snapshot, undoManager: UndoManager? = nil) {
@@ -109,10 +122,11 @@ final class Preferences: ObservableObject {
         notifyTurnComplete = snapshot.notifyTurnComplete
         notifyInput = snapshot.notifyInput
         notifyInputSound = snapshot.notifyInputSound
+        notifyUpdate = snapshot.notifyUpdate
         undoManager?.registerUndo(withTarget: self) { $0.restore(previous, undoManager: undoManager) }
         undoManager?.setActionName("기본값으로 되돌리기")
     }
-    /// Display, cat and notification choices only; login item and notification permission are untouched.
+    /// Display, cat and notification choices only; login item, automatic update checks and notification permission are untouched.
     func reset(undoManager: UndoManager? = nil) { restore(Self.defaultSnapshot, undoManager: undoManager) }
 }
 
@@ -161,6 +175,8 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var telemetryLastReceived: [TokenSource: Date] = [:]
     /// Newest batch per client seen by this process, decoded or not ("기록 수신 중 · 속도 형식 없음").
     @Published private(set) var telemetryBatches: [TokenSource: Date] = [:]
+    /// Claude usage-limit windows from the status line bridge, kept across launches (numbers and times only). Fixtures pin it.
+    @Published var claudeLimits = ClaudeUsageLimits()
     /// Whether ~/.codex/sessions or ~/.claude/projects exists. Checked every 5 s on the token queue, never in a
     /// view body; a folder that appears later restarts the log watcher. Fixtures pin it.
     @Published var logFoldersFound = true
@@ -177,6 +193,8 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var sessions = SessionListModel.empty
     @Published var sessionsExpanded = false { didSet { if sessionsExpanded != oldValue { rebuildPresentation() } } }
     @Published var popoverShownAt: Date?
+    /// Update check and install progress from the app shell's `Updater`; fixtures set it directly.
+    @Published var update = UpdateState()
     /// Top-level groups for this publish; the shell derives the menu bar, cat and notifications from them.
     private(set) var groups: [SessionGroup] = []
     let preferences = Preferences()
@@ -212,6 +230,9 @@ final class DashboardModel: ObservableObject {
     /// Set by the app shell, so views can open Settings at a section without knowing about windows.
     var settingsRequest: ((SettingsFocus?) -> Void)?
     func showSettings(_ focus: SettingsFocus? = nil) { settingsRequest?(focus) }
+    /// Set by the app shell; nil in fixtures and verification commands, where the update buttons do nothing.
+    var updateRequest: ((UpdateCommand) -> Void)?
+    func requestUpdate(_ command: UpdateCommand) { updateRequest?(command) }
     /// `telemetryProbe` reports whether the running app's collector answers, for verification commands
     /// that read it through `telemetryProvider`. Synthetic fixtures pass `restoresRestartState: false`.
     init(telemetryProvider: (() -> [TelemetryReading])? = nil, telemetryProbe: (() -> Bool)? = nil,
@@ -221,6 +242,7 @@ final class DashboardModel: ObservableObject {
         let stored = restoresRestartState
             ? UserDefaults.standard.dictionary(forKey: Self.pendingRestartKey) as? [String: Double] ?? [:] : [:]
         for (key, seconds) in stored { if let source = TokenSource(rawValue: key) { pendingRestart[source] = Date(timeIntervalSince1970: seconds) } }
+        if restoresRestartState { claudeLimits = ClaudeUsageLimits.load(from: .standard) }
         updateRestartState(now: Date())
     }
     /// Only the app's own model persists restart notices; verification commands read them.
@@ -361,6 +383,7 @@ final class DashboardModel: ObservableObject {
             for measurement in measurements { received[measurement.provider] = max(received[measurement.provider] ?? measurement.at, measurement.at) }
             // Any batch from a restarted client clears its notice, even one TokenCat cannot decode yet.
             let batches = self.telemetryProvider == nil ? self.telemetry.lastBatchAt : [:]
+            let claudeLimits = self.telemetryProvider == nil ? self.telemetry.claudeLimits : ClaudeUsageLimits()
             // Verification commands read the running app's collector, never this unstarted one.
             let probed = self.telemetryProbe?()
             let telemetryState = probed.map { $0 ? (measurements.isEmpty ? .waiting : .receiving) : .stopped } ?? self.telemetry.state
@@ -381,6 +404,11 @@ final class DashboardModel: ObservableObject {
                 if lastReceived != self.telemetryLastReceived { self.telemetryLastReceived = lastReceived }
                 let mergedBatches = self.telemetryBatches.merging(batches) { max($0, $1) }
                 if mergedBatches != self.telemetryBatches { self.telemetryBatches = mergedBatches }
+                let limits = self.claudeLimits.merged(claudeLimits)
+                if limits != self.claudeLimits {
+                    self.claudeLimits = limits
+                    if self.ownsTelemetryState { limits.save(to: .standard) }
+                }
                 self.updateRestartState(now: measuredAt)
                 self.rebuildPresentation()
                 self.onUpdate?()
@@ -420,7 +448,7 @@ final class DashboardModel: ObservableObject {
         let flow = FlowSeries.make(tokens, now: now)
         if flow != self.flow { self.flow = flow }
         groups = SessionPresentation.groups(tokens, now: now)
-        sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow)
+        sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow, restart: telemetryRestartNeeded)
         let newest = tokens.filter { !SessionPresentation.isTelemetry($0) }.compactMap(\.lastOutputAt).max()
         if newest != newestOutputAt { newestOutputAt = newest }
     }
@@ -519,8 +547,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     static let openAcknowledged = Notification.Name("dev.seuput.TokenCat.openPopover.ack")
     /// Set while the panel is open; a panel open at quit comes back at launch without taking focus (P-1).
     static let panelWasOpenKey = "panelWasOpen"
-    /// The minimum covers the fixed chrome (header, flow card with limit row, titles, system, footer ≈ 405 pt) plus one row.
-    static let panelWidth: CGFloat = 420, panelMinimumHeight: CGFloat = 470
+    /// The minimum covers the fixed chrome (header, flow card with its speed and both limit rows, titles, system,
+    /// footer ≈ 450 pt) plus one row.
+    static let panelWidth: CGFloat = 420, panelMinimumHeight: CGFloat = 510
     let model = DashboardModel()
     private var statusItem: NSStatusItem!
     private let popover = NSPopover()
@@ -530,6 +559,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var panel: NSPanel?
     private var panelEffect: NSVisualEffectView?
     private let notifier = Notifier()
+    private let updater = Updater()
     private lazy var settingsState = SettingsState(notifier: notifier)
     private var attention = AttentionTracker()
     private var latestSignals: [String: AttentionSignal] = [:]
@@ -554,6 +584,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var terminating = false
     private var telemetrySetupInFlight = false
     private var telemetryConfigured = false
+    private var updateNotificationStale = false
 
     /// Registered before the status item exists, so a second launch during startup is answered.
     func applicationWillFinishLaunching(_ notification: Notification) {
@@ -590,14 +621,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         notifier.activate()
         model.onUpdate = { [weak self] in self?.publish() }
         model.settingsRequest = { [weak self] in self?.openSettings(focus: $0) }
+        model.updateRequest = { [weak self] in self?.handleUpdate($0) }
+        updater.onChange = { [weak self] state in
+            guard let self else { return }
+            self.model.update = state
+            // A delivered "새 버전" notification goes once it no longer applies: nothing newer, installing, or just updated.
+            let stale = state.available == nil || state.installing || state.updatedTo != nil
+            if stale && !self.updateNotificationStale { self.notifier.removeUpdate() }
+            self.updateNotificationStale = stale
+        }
+        updater.onDiscovered = { [weak self] in self?.updateDiscovered($0) }
         preferenceChanges = model.preferences.objectWillChange.sink { [weak self] _ in
-            DispatchQueue.main.async { self?.updateStatus(); self?.planRunner() }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.updateStatus()
+                self.planRunner()
+                self.updater.setAutomatic(self.model.preferences.autoCheckUpdates)
+            }
         }
         observeSystem()
         model.telemetry.start { [weak self] in
             DispatchQueue.main.async { self?.connectTelemetryAutomatically() }
         }
         model.start()
+        updater.start(automatic: model.preferences.autoCheckUpdates)
         publish()
         if UserDefaults.standard.bool(forKey: Self.panelWasOpenKey) {
             // Restored behind the current app: ordered front, never activated or made key.
@@ -618,12 +665,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
     }
 
+    /// A quit during "설치 중…" waits for that step (a few seconds) so the app bundle is never left mid-swap.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        updater.deferQuit { NSApp.reply(toApplicationShouldTerminate: true) } ? .terminateLater : .terminateNow
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
         // The panel's open state stays as it was at quit (windowWillClose must not clear it now).
         terminating = true
         animator.stop()
         observers.forEach { $0.0.removeObserver($0.1) }
         observers.removeAll()
+        updater.stop()
         model.stop()
         model.telemetry.stop()
         if let statusItem { NSStatusBar.system.removeStatusItem(statusItem) }
@@ -667,6 +720,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         on(workspace, NSWorkspace.screensDidWakeNotification) { $0.screensAsleep = false; $0.planRunner() }
         on(workspace, NSWorkspace.sessionDidResignActiveNotification) { $0.sessionActive = false; $0.planRunner() }
         on(workspace, NSWorkspace.sessionDidBecomeActiveNotification) { $0.sessionActive = true; $0.planRunner() }
+        on(workspace, NSWorkspace.didWakeNotification) { $0.updater.systemDidWake() }
         on(workspace, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification) {
             $0.statusView?.displayOptionsChanged()
             $0.settingsState.refresh()
@@ -831,10 +885,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     func popoverWillShow(_ notification: Notification) {
         model.popoverShownAt = Date()
+        updater.dashboardOpened()
     }
 
     func popoverDidClose(_ notification: Notification) {
         popoverClosedAt = Date()
+        // "…로 업데이트했습니다" shows for one showing of the dashboard.
+        updater.clearUpdatedNote()
         statusItem.button?.highlight(false)
         statusView?.highlighted = false
         popover.contentViewController = nil
@@ -942,7 +999,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             settingsWindow = nil
             settingsTabs = nil
         } else if window === panel {
-            if !terminating { UserDefaults.standard.set(false, forKey: Self.panelWasOpenKey) }
+            if !terminating {
+                UserDefaults.standard.set(false, forKey: Self.panelWasOpenKey)
+                updater.clearUpdatedNote()
+            }
             panel?.contentView = nil
             panel = nil
             panelEffect = nil
@@ -954,9 +1014,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         popover.performClose(nil)
         let panel = makePanel()
         model.popoverShownAt = Date()
+        updater.dashboardOpened()
         activateSelf()
         panel.makeKeyAndOrderFront(nil)
         UserDefaults.standard.set(true, forKey: Self.panelWasOpenKey)
+    }
+
+    // MARK: Updates
+
+    /// Install is only ever started here, from a button or menu item.
+    private func handleUpdate(_ command: UpdateCommand) {
+        switch command {
+        case .check:
+            updater.checkNow()
+        case .install:
+            updater.install()
+        case .openReleasePage:
+            previousApp = nil
+            NSWorkspace.shared.open(model.update.available?.page ?? UpdateClient.releases)
+        case .dismiss:
+            let preferences = model.preferences
+            guard let notice = model.update.notice(dismissed: preferences.dismissedUpdateVersion) else { return }
+            switch notice.kind {
+            case .updated:
+                updater.clearUpdatedNote()
+            case .available, .failed:
+                updater.clearFailure()
+                if !notice.version.isEmpty { preferences.dismissedUpdateVersion = notice.version }
+                model.objectWillChange.send()
+            case .downloading, .installing:
+                break
+            }
+        }
+    }
+
+    /// "새 버전 알림": silent, once per version, not while the dashboard already shows the notice.
+    private func updateDiscovered(_ release: UpdateRelease) {
+        let preferences = model.preferences
+        guard preferences.notifyUpdate, !dashboardVisible, release.version != preferences.dismissedUpdateVersion else { return }
+        notifier.postUpdate(release)
+    }
+
+    /// The quick menu item: the dashboard opens to show the progress.
+    @objc private func installUpdateAction() {
+        updater.install()
+        openDashboard()
     }
 
     // MARK: Menus
@@ -1030,6 +1132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             menuItem($0.title, #selector(selectMotion(_:)), value: $0.rawValue, checked: preferences.animationSource == $0)
         }))
         menu.addItem(.separator())
+        if let title = model.update.quickMenuTitle { menu.addItem(menuItem(title, #selector(installUpdateAction))) }
         menu.addItem(menuItem("설정…", #selector(openSettingsAction), key: ","))
         menu.addItem(menuItem("활성 상태 보기", #selector(openActivityMonitor)))
         menu.addItem(menuItem("TokenCat 정보", #selector(showAbout)))

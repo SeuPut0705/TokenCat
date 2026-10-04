@@ -148,6 +148,26 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
+    static let updateIdentifier = "update"
+
+    /// "새 버전 알림": no sound, one identifier for every version, so a newer version replaces the delivered one; a click
+    /// opens the dashboard, where the notice offers the install.
+    func postUpdate(_ release: UpdateRelease) {
+        let content = UNMutableNotificationContent()
+        content.title = "새 버전 \(release.version)"
+        content.body = "TokenCat 상세 화면이나 설정에서 업데이트할 수 있습니다"
+        content.threadIdentifier = Self.updateIdentifier
+        center.add(UNNotificationRequest(identifier: Self.updateIdentifier, content: content, trigger: nil)) { error in
+            if let error { NSLog("TokenCat 알림 요청 실패: %@", error.localizedDescription) }
+        }
+    }
+
+    /// The "새 버전" notification no longer applies (nothing newer, installing, or just updated): it goes away.
+    func removeUpdate() {
+        center.removePendingNotificationRequests(withIdentifiers: [Self.updateIdentifier])
+        center.removeDeliveredNotifications(withIdentifiers: [Self.updateIdentifier])
+    }
+
     /// The group no longer waits for input: its "입력 필요" notification goes away.
     func removeInput(_ group: String) {
         let identifier = AttentionEvent.inputIdentifier(group)

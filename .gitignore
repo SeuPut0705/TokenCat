@@ -2,3 +2,4 @@
 work/
 dist/
 .DS_Store
+.claude/worktrees/
