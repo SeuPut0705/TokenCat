@@ -15,6 +15,10 @@ func color(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor {
 
 enum Theme: String, CaseIterable { case dark, light }
 
+/// Image language ("ko" or "en"), set by main per pass. `loc` picks the generator's own labels like the app's `loc`.
+var language = "ko"
+func loc(_ korean: String, _ english: String) -> String { language == "en" ? english : korean }
+
 // MARK: - Files
 
 func readPNG(_ path: String) -> CGImage {
@@ -210,10 +214,10 @@ final class Canvas {
         context.restoreGState()
     }
 
-    // MARK: Text (system font with the Korean cascade)
+    // MARK: Text (system font with the image language's cascade)
 
     static func line(_ string: String, size: CGFloat, bold: Bool, color: CGColor) -> CTLine {
-        let font = CTFontCreateUIFontForLanguage(bold ? .emphasizedSystem : .system, size, "ko" as CFString)!
+        let font = CTFontCreateUIFontForLanguage(bold ? .emphasizedSystem : .system, size, language as CFString)!
         let attributes: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): color,

@@ -1,6 +1,6 @@
 # README 미리보기 생성기
 
-`docs/images/`의 미리보기 이미지를 만드는 Swift 코드입니다. 앱의 합성 스냅숏만 써서 이 Mac의 로그·프로젝트·경로·IP가 들어가지 않습니다. CoreGraphics·CoreText·ImageIO만 쓰고 외부 도구와 네트워크는 쓰지 않습니다.
+`docs/images/`의 미리보기 이미지를 만드는 Swift 코드입니다. 글자가 들어간 이미지는 한국어·영어로 각각 만들어 `docs/images/ko/`·`docs/images/en/`에 두고, 글자 없는 이미지는 `docs/images/`에 둡니다. 앱의 합성 스냅숏만 써서 이 Mac의 로그·프로젝트·경로·IP가 들어가지 않습니다. CoreGraphics·CoreText·ImageIO만 쓰고 외부 도구와 네트워크는 쓰지 않습니다.
 
 ## 명령 (저장소 루트)
 
@@ -10,7 +10,8 @@ mkdir -p work && swiftc -O docs/Generator/*.swift -o work/docs-generator && work
 ```
 
 - `--app <TokenCat.app 또는 실행 파일>`: 기본 `dist/TokenCat.app`
-- `--out <폴더>`: 기본 `docs/images`
+- `--out <폴더>`: 기본 `docs/images`(언어별 이미지는 그 아래 `ko/`·`en/`)
+- 언어 옵션은 없습니다. 한 번 실행에 한국어와 영어를 모두 만들고, 앱 스냅숏마다 `--language ko|en`을 붙여 이 Mac의 언어와 상관없이 같은 결과를 냅니다.
 
 macOS 27.0.1·Swift 6.4에서 두 번 실행해 모든 파일의 SHA-256이 같음을 확인했습니다. OS나 글꼴 버전이 다르면 바이트가 달라질 수 있습니다.
 
@@ -29,18 +30,21 @@ macOS 27.0.1·Swift 6.4에서 두 번 실행해 모든 파일의 SHA-256이 같�
 
 ## 출력
 
-- 다크·라이트 한 쌍: `hero`, `popover-flow`·`-sessions`·`-subagents`·`-detail`·`-limits`·`-empty`·`-onboarding`, `menubar-layouts`, `menubar-states`, `architecture`(데이터 흐름도), `settings`, `poses`(밝은 막대와 어두운 막대에서 일곱 자세), `app-icon`, `cat`(GIF)
-- 테마 공용: `icon.png`(README 머리의 256 px 앱 아이콘, 바깥은 투명)
+- `ko/`·`en/`에 같은 이름으로 다크·라이트 한 쌍: `hero`, `popover-flow`·`-sessions`·`-subagents`·`-detail`·`-limits`·`-empty`·`-onboarding`, `menubar-layouts`, `menubar-states`, `architecture`(데이터 흐름도), `settings`, `poses`(밝은 막대와 어두운 막대에서 일곱 자세), `cat`(GIF, 자세 이름과 상태 칩)
+- `docs/images/` 언어 공용: `app-icon`(다크·라이트, 라벨은 숫자와 `×`뿐), `icon.png`(README 머리의 256 px 앱 아이콘, 바깥은 투명)
 - PNG는 2배 해상도(144 dpi)이고 바깥 모서리는 투명하게 둥글립니다. GIF도 같은 반지름으로 둥글리되, GIF는 반투명을 못 쓰므로 모서리를 앤티에일리어싱 없이 잘라 바깥을 투명 색으로 둡니다. README에서는 표시 폭을 픽셀의 절반으로 지정합니다.
 
 ```html
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/hero-dark.png">
-  <img src="docs/images/hero-light.png" width="800" alt="…">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/hero-dark.png">
+  <img src="docs/images/en/hero-light.png" width="800" alt="…">
 </picture>
 ```
 
 ## 정한 것
+
+- 생성기가 직접 그리는 글자(장면 제목·범례·자세 이름·흐름도 카드·히어로 시계)는 앱처럼 `loc(한국어, 영어)`로 고릅니다. 글꼴도 그 언어의 시스템 글꼴을 씁니다. 시계는 `10월 5일 (월) 오전 9:41` / `Mon Oct 5  9:41 AM`입니다. 메뉴 막대 매트릭스의 `stateNames`는 한국어 행 이름을 열쇠로만 쓰고 그리지 않습니다.
+- 영어 문구는 한국어 배치에 맞춰 짧게 골랐습니다. 배치 수치는 두 언어가 같습니다.
 
 - 배경은 차분한 인디고·슬레이트 그라디언트이고, 제공사 브랜드 색과 로고는 쓰지 않습니다. 그라디언트는 픽셀마다 직접 계산합니다. CoreGraphics 그라디언트는 디더링 때문에 PNG가 약 6배 커졌습니다.
 - 히어로 팝오버는 `input-needed` 픽스처 전체(지금 속도, Codex·Claude 한도 행 포함)입니다. 캔버스는 폭 1600 px에 높이 최소 1080 px이고, 팝오버가 길면 아래 여백 64 px을 두고 늘어납니다.

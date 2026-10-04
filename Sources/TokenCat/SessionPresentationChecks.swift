@@ -192,8 +192,8 @@ func runSessionPresentationChecks() -> [String] {
           "plan approvals say 승인; a mix keeps the general copy")
 
     // Header sentence (H-2) and head echo (H-3): one sentence per top state.
-    func header(_ counts: SessionCounts, loading: Bool = false) -> HeaderStatus {
-        SessionPresentation.headerStatus(counts: counts, loading: loading, now: now)
+    func header(_ counts: SessionCounts, loading: Bool = false, spoken: Bool = false) -> HeaderStatus {
+        SessionPresentation.headerStatus(counts: counts, loading: loading, now: now, spoken: spoken)
     }
     let loadingHeader = header(SessionCounts(), loading: true)
     check(loadingHeader.sentence == "기록 확인 중" && loadingHeader.muted && loadingHeader.suffix.isEmpty && loadingHeader.glyph == nil,
@@ -747,7 +747,8 @@ func runSessionPresentationChecks() -> [String] {
     AppLanguage.with(.en) {
         check(header(urgent).spoken == "1 session needs input · 2 working" && header(plans).spoken == "2 plans awaiting approval · 1 working"
               && header(retryOnly).spoken == "1 session retrying · Retry 2/10 · in 4s"
-              && header(noticeCounts).spoken == "1 session waiting for log · no record for 3m"
+              && header(retryOnly, spoken: true).spoken == "1 session retrying · Retry 2/10 · in 4 seconds"
+              && header(noticeCounts, spoken: true).spoken == "1 session waiting for log · no record for 3 minutes"
               && header(SessionCounts(SessionPresentation.groups([claudeParent, claudeChild, codexParent, codexChild], now: now))).spoken
                 == "2 sessions working · 1 tool · 2 subagents"
               && caption(urgent, -40).text == "Waiting for input · reply to resume" && caption(plans, nil).text == "Plan approval · approve to resume"
@@ -757,13 +758,14 @@ func runSessionPresentationChecks() -> [String] {
               && SessionPresentation.childGroupText(.waiting, count: 4) == "4 subagents waiting for log"
               && SessionPresentation.spokenLabel(modelled, state: .input) == "Input needed, TokenCat, Claude Code claude-opus-5-5"
               && SessionPresentation.spokenLabel(codexChild, state: .working) == "Subagent sample_runner, Working"
-              && make([floodParent] + flood).blocks.first?.moreText == "+9 subagents waiting for log · last record 1m ago",
+              && make([floodParent] + flood).blocks.first?.moreText == "+9 subagents waiting for log · last record 1m ago"
+              && make([floodParent] + flood).blocks.first?.moreSpoken == "+9 subagents waiting for log · last record 1 minute ago",
               "English subagent counts and VoiceOver labels")
         check(usage?.title == "Codex weekly limit" && usage?.value(now: now) == "28% used"
               && usage?.detail(now: now) == "Resets in 5d 11h · as of 1m ago"
               && usage?.details(now: now) == ["Resets in 5d 11h · recorded 1m ago", "Resets in 5d 11h"]
               && undated?.detail(now: now) == "As of 10m ago" && expired.detail(now: now) == "Reset · waiting for a Codex record"
-              && claudeSummary?.spoken(now: now) == "42 percent used, Resets in 2h 13m, as of 1m ago, Weekly limit 31 percent used, resets in 3d 4h"
+              && claudeSummary?.spoken(now: now) == "42 percent used, Resets in 2 hours 13 minutes, as of 1 minute ago, Weekly limit 31 percent used, resets in 3 days 4 hours"
               && claudeSummary?.help(now: now).hasSuffix("\nWeekly limit 31% used · resets in 3d 4h") == true,
               "English usage limit copy")
         check(SessionPresentation.context(codexContext, now: now)?.text == "Context 61% used"

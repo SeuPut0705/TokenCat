@@ -138,22 +138,60 @@ jobs:
           repo_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
           previous=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
           {
+            echo "TokenCat is a macOS app whose pixel cat in the menu bar tells you what your Codex and Claude Code sessions are doing right now."
+            echo
             echo "TokenCat은 Codex와 Claude Code 세션이 지금 무엇을 하는지 메뉴 막대의 픽셀 고양이로 알려 주는 macOS 앱입니다."
             echo
-            echo "## 변경 사항"
+            echo "## Changes · 변경 사항"
             echo
             if [[ -n $previous ]]; then
               # Commit subjects since the previous release, newest first, capped so the page stays readable.
               git log --no-merges --format='- %s' "$previous..HEAD" > "$RUNNER_TEMP/changes.txt"
               count=$(wc -l < "$RUNNER_TEMP/changes.txt" | tr -d ' ')
               head -n 30 "$RUNNER_TEMP/changes.txt"
-              if (( count > 30 )); then echo "- 외 $((count - 30))개"; fi
+              if (( count > 30 )); then echo "- $((count - 30)) more · 외 $((count - 30))개"; fi
               echo
-              echo "전체 비교: [$previous...$TAG]($repo_url/compare/$previous...$TAG)"
+              echo "Full comparison · 전체 비교: [$previous...$TAG]($repo_url/compare/$previous...$TAG)"
             else
+              echo "This is the first release. Changes so far are in the [commit history]($repo_url/commits/$TAG)."
+              echo
               echo "첫 릴리스입니다. 지금까지의 변경은 [커밋 기록]($repo_url/commits/$TAG)에서 볼 수 있습니다."
             fi
             cat <<NOTES
+
+          ## Install
+
+          Runs on macOS 13 or later, on Apple silicon and Intel Macs (universal).
+
+          1. Download **TokenCat.zip** below, unzip it and move \`TokenCat.app\` to the **Applications** folder.
+          2. The app has no Developer ID signature or Apple notarization, so macOS blocks it the first time you open it. You only need to allow it once.
+             - **macOS 15 and later**: open the app and click **Done** in the window saying it was blocked. In **System Settings › Privacy & Security**, under **Security**, click **Open Anyway**, then click **Open Anyway** again in the window that appears and confirm with your password.
+             - **macOS 13–14**: in Finder, Control-click (or right-click) the app and choose **Open**, then click **Open** again in the confirmation window.
+          3. You can also install from the terminal. A file downloaded with curl gets no quarantine attribute, so the windows above don't appear; check first that the SHA-256 matches the value below.
+
+             \`\`\`sh
+             curl -fL $repo_url/releases/latest/download/TokenCat.zip -o /tmp/TokenCat.zip \\
+               && shasum -a 256 /tmp/TokenCat.zip
+             \`\`\`
+
+             If it matches, unzip the new app first, then replace the existing one. If unzipping fails, the existing app isn't removed.
+
+             \`\`\`sh
+             rm -rf /tmp/TokenCat-new && ditto -x -k /tmp/TokenCat.zip /tmp/TokenCat-new \\
+               && { pkill -x TokenCat; rm -rf /Applications/TokenCat.app; } \\
+               && mv /tmp/TokenCat-new/TokenCat.app /Applications/ \\
+               && open /Applications/TokenCat.app
+             \`\`\`
+
+          If you already use 0.9.0 or later, you can install it right away with the **Update** button at the bottom of the dashboard.
+
+          > **On first launch, TokenCat changes client settings automatically.** To receive measurements, it adds local OTLP settings that send to this Mac (\`127.0.0.1:16493\`) to Codex \`~/.codex/config.toml\` and Claude Code \`~/.claude/settings.json\`, and to receive Claude usage limits, it wraps the Claude Code \`statusLine\` command with the TokenCat bridge (\`~/Library/Application Support/TokenCat/claude-statusline.sh\`). The bridge sends the status JSON only to \`127.0.0.1\` and runs the original command unchanged, so the status line output stays the same. The originals are backed up to \`~/Library/Application Support/TokenCat/telemetry-backups/\` first, and prompt and response text logging is turned off. To undo it, quit TokenCat and run \`/Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry\`. Even if automatic restore is refused because a config file changed after connecting, a status line that is still exactly the bridge command is restored. Don't delete \`~/Library/Application Support/TokenCat/\` while \`settings.json\` still points to \`claude-statusline.sh\`.
+
+          **TokenCat.zip** · universal (arm64 · x86_64) · ad-hoc signed · SHA-256 \`$SHA256\`
+
+          More in the [README]($repo_url#install).
+
+          ---
 
           ## 설치
 
@@ -185,7 +223,7 @@ jobs:
 
           **TokenCat.zip** · universal(arm64 · x86_64) · ad-hoc 서명 · SHA-256 \`$SHA256\`
 
-          자세한 내용은 [README]($repo_url#설치)에 있습니다.
+          자세한 내용은 [README]($repo_url/blob/main/README.ko.md#설치)에 있습니다.
           NOTES
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"

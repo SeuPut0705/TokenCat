@@ -502,14 +502,14 @@ enum Format {
         if value < 999_950 { return trimmed(Double(value) / 1_000, "k") }
         return trimmed(Double(value) / 1_000_000, "M")
     }
-    /// "3분 전" / "3m ago"; nil is "기록 없음" / "never".
-    static func age(_ date: Date?, now: Date) -> String {
+    /// "3분 전" / "3m ago" ("3 minutes ago" `spoken`); nil is "기록 없음" / "never".
+    static func age(_ date: Date?, now: Date, spoken: Bool = false) -> String {
         guard let date else { return loc("기록 없음", "never") }
         let seconds = max(0, Int(now.timeIntervalSince(date)))
-        if seconds < 60 { return ago(span(seconds, .second)) }
-        if seconds < 3600 { return ago(span(seconds / 60, .minute)) }
-        if seconds < 86_400 { return ago(span(seconds / 3600, .hour)) }
-        return ago(span(seconds / 86_400, .day))
+        if seconds < 60 { return ago(span(seconds, .second, spoken: spoken)) }
+        if seconds < 3600 { return ago(span(seconds / 60, .minute, spoken: spoken)) }
+        if seconds < 86_400 { return ago(span(seconds / 3600, .hour, spoken: spoken)) }
+        return ago(span(seconds / 86_400, .day, spoken: spoken))
     }
     static func power(_ snapshot: SystemSnapshot) -> String {
         if snapshot.isCharging == true { return loc("충전 중", "Charging") }

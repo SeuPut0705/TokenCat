@@ -224,11 +224,11 @@ struct UsageLimitSummary: Equatable {
     func isOld(now: Date) -> Bool { now.timeIntervalSince(recordedAt) > 600 }
     private var waitingText: String { loc("초기화됨 · 다음 \(source.title) 기록 대기", "Reset · waiting for a \(source.title) record") }
     /// Help and VoiceOver wording.
-    func detail(now: Date) -> String {
+    func detail(now: Date, spoken: Bool = false) -> String {
         if expired(now: now) { return waitingText }
-        let age = SessionPresentation.helpAge(recordedAt, now: now)
+        let age = SessionPresentation.helpAge(recordedAt, now: now, spoken: spoken)
         guard let resetsAt else { return loc("\(age) 기록 기준", "As of \(age)") }
-        let reset = SessionPresentation.countdown(to: resetsAt, now: now)
+        let reset = SessionPresentation.countdown(to: resetsAt, now: now, spoken: spoken)
         return loc("\(reset) 후 초기화 · \(age) 기록 기준", "Resets in \(reset) · as of \(age)")
     }
     /// On-screen variants, widest first; the reset countdown is never the part that is dropped.
@@ -241,17 +241,17 @@ struct UsageLimitSummary: Equatable {
         return [reset + " · " + loc("\(age) 기록", "recorded \(age)"), reset]
     }
     /// "주간 한도 31% 사용 · 3일 4시간 후 초기화" while the other window has not reset.
-    func otherText(now: Date) -> String? {
+    func otherText(now: Date, spoken: Bool = false) -> String? {
         guard let other, other.resetsAt > now else { return nil }
         let window = SessionPresentation.windowLabel(other.windowMinutes), percent = Int(other.usedPercent.rounded())
-        let reset = SessionPresentation.countdown(to: other.resetsAt, now: now)
+        let reset = SessionPresentation.countdown(to: other.resetsAt, now: now, spoken: spoken)
         return loc("\(window) 한도 \(percent)% 사용 · \(reset) 후 초기화",
                    "\(window.prefix(1).uppercased() + window.dropFirst()) limit \(percent)% used · resets in \(reset)")
     }
     func spoken(now: Date) -> String {
         let main = expired(now: now) ? waitingText.replacingOccurrences(of: " · ", with: ", ")
-            : loc("\(percentText)퍼센트 사용", "\(percentText) percent used") + ", " + detail(now: now).replacingOccurrences(of: " · ", with: ", ")
-        return main + (otherText(now: now).map { ", " + $0.replacingOccurrences(of: "%", with: loc("퍼센트", " percent")).replacingOccurrences(of: " · ", with: ", ") } ?? "")
+            : loc("\(percentText)퍼센트 사용", "\(percentText) percent used") + ", " + detail(now: now, spoken: true).replacingOccurrences(of: " · ", with: ", ")
+        return main + (otherText(now: now, spoken: true).map { ", " + $0.replacingOccurrences(of: "%", with: loc("퍼센트", " percent")).replacingOccurrences(of: " · ", with: ", ") } ?? "")
     }
     func help(now: Date) -> String {
         let basis = source == .codex ? loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
@@ -460,13 +460,13 @@ enum SessionPresentation {
     }
 
     /// "재시도 2/10 · 4초 후" / "Retry 2/10 · in 4s"; `api` starts it "API 재시도" / "API retry".
-    static func retryText(_ retry: TokenRetryState, now: Date, api: Bool = false) -> String {
+    static func retryText(_ retry: TokenRetryState, now: Date, api: Bool = false, spoken: Bool = false) -> String {
         let attempts = retry.maxAttempts.map { "\(retry.attempt)/\($0)" } ?? loc("\(retry.attempt)회째", "#\(retry.attempt)")
         let head = (api ? loc("API 재시도", "API retry") : loc("재시도", "Retry")) + " \(attempts) · "
         if retry.networkDown { return head + loc("네트워크 끊김", "network down") }
         guard let at = retry.retryAt, at > now else { return head + loc("재요청 중", "retrying now") }
         let seconds = Int(ceil(at.timeIntervalSince(now)))
-        return head + Format.later(seconds >= 60 ? Format.span(seconds / 60, .minute) : Format.span(seconds, .second))
+        return head + Format.later(seconds >= 60 ? Format.span(seconds / 60, .minute, spoken: spoken) : Format.span(seconds, .second, spoken: spoken))
     }
 
     /// Shared with the views, which mark a record this fresh.
@@ -475,11 +475,11 @@ enum SessionPresentation {
     static var lastRecordCaption: String { loc("마지막 기록", "Last record") }
 
     /// Output ages on rows and the flow card: "방금" / "just now" under 10 s, then 10 s steps, then `Format.age`.
-    static func recordAge(_ date: Date, now: Date) -> String {
+    static func recordAge(_ date: Date, now: Date, spoken: Bool = false) -> String {
         let seconds = max(0, Int(now.timeIntervalSince(date)))
         if seconds < 10 { return justNow }
-        if seconds < 60 { return Format.ago(Format.span(seconds / 10 * 10, .second)) }
-        return Format.age(date, now: now)
+        if seconds < 60 { return Format.ago(Format.span(seconds / 10 * 10, .second, spoken: spoken)) }
+        return Format.age(date, now: now, spoken: spoken)
     }
 
     /// The current turn's last output record for a row's third line; nil when it belongs to an earlier turn.
@@ -541,20 +541,20 @@ enum SessionPresentation {
     }
 
     /// Minute-granular age for help text, so tooltips do not change every second.
-    static func helpAge(_ date: Date?, now: Date) -> String {
-        guard let date, now.timeIntervalSince(date) < 60 else { return Format.age(date, now: now) }
-        return loc("1분 이내", "<1m ago")
+    static func helpAge(_ date: Date?, now: Date, spoken: Bool = false) -> String {
+        guard let date, now.timeIntervalSince(date) < 60 else { return Format.age(date, now: now, spoken: spoken) }
+        return loc("1분 이내", spoken ? "less than a minute ago" : "<1m ago")
     }
 
     /// Time left, minute-granular: "2시간 13분" / "2h 13m", "5일 11시간" / "5d 11h", "1분 이내" / "<1m".
-    static func countdown(to date: Date, now: Date) -> String {
+    static func countdown(to date: Date, now: Date, spoken: Bool = false) -> String {
         let minutes = max(0, Int(date.timeIntervalSince(now)) / 60)
         func pair(_ big: Int, _ bigUnit: Format.TimeUnit, _ small: Int, _ smallUnit: Format.TimeUnit) -> String {
-            Format.span(big, bigUnit) + (small > 0 ? " " + Format.span(small, smallUnit) : "")
+            Format.span(big, bigUnit, spoken: spoken) + (small > 0 ? " " + Format.span(small, smallUnit, spoken: spoken) : "")
         }
         if minutes >= 1_440 { return pair(minutes / 1_440, .day, minutes % 1_440 / 60, .hour) }
         if minutes >= 60 { return pair(minutes / 60, .hour, minutes % 60, .minute) }
-        return minutes > 0 ? Format.span(minutes, .minute) : loc("1분 이내", "<1m")
+        return minutes > 0 ? Format.span(minutes, .minute, spoken: spoken) : loc("1분 이내", spoken ? "less than a minute" : "<1m")
     }
 
     static func windowLabel(_ minutes: Int?) -> String {
@@ -704,7 +704,8 @@ enum SessionPresentation {
 
     /// The header sentence (H-2) and head echo (H-3) from the shared counts.
     /// `quietSince` is the menu-bar cat's quiet reference (`RunnerDirector.quietSince`); without it the newest activity is used.
-    static func headerStatus(counts: SessionCounts, loading: Bool, now: Date, quietSince: Date? = nil) -> HeaderStatus {
+    /// `spoken` spells English spans out for VoiceOver.
+    static func headerStatus(counts: SessionCounts, loading: Bool, now: Date, quietSince: Date? = nil, spoken: Bool = false) -> HeaderStatus {
         if loading {
             return HeaderStatus(sentence: loc("기록 확인 중", "Reading records"), suffix: "", glyph: nil, muted: true,
                                 help: loc("Codex·Claude Code 기록을 읽고 있습니다", "Reading Codex and Claude Code records"))
@@ -727,7 +728,7 @@ enum SessionPresentation {
         }
         if counts.retrying > 0 {
             return HeaderStatus(sentence: loc("API 재시도 \(counts.retrying)개", "\(plural(counts.retrying, "session")) retrying"),
-                                suffix: counts.retry.map { " · " + retryText($0, now: now) } ?? "",
+                                suffix: counts.retry.map { " · " + retryText($0, now: now, spoken: spoken) } ?? "",
                                 glyph: .retry, help: loc("API 재시도 기록 · 오류 내용은 저장하지 않습니다", "API retry recorded · error details aren't stored") + breakdown)
         }
         if counts.tool + counts.working > 0 {
@@ -742,18 +743,18 @@ enum SessionPresentation {
         if counts.waiting > 0 {
             let minutes = counts.waitingSince.map { max(1, Int(now.timeIntervalSince($0)) / 60) } ?? 1
             return HeaderStatus(sentence: loc("로그 대기 \(counts.waiting)개", "\(plural(counts.waiting, "session")) waiting for log"),
-                                suffix: loc(" · \(minutes)분째 새 기록 없음", " · no record for \(Format.span(minutes, .minute))"), glyph: .waiting,
+                                suffix: loc(" · \(minutes)분째 새 기록 없음", " · no record for \(Format.span(minutes, .minute, spoken: spoken))"), glyph: .waiting,
                                 help: loc("턴이 열려 있지만 새 기록이 없습니다. 도구나 모델 응답을 기다리는 중일 수 있습니다",
                                           "The turn is open but nothing new has been recorded. It may be waiting for a tool or the model"))
         }
         let quiet = (quietSince ?? counts.newestActivity).map { now.timeIntervalSince($0) >= sleepAfter } ?? true
         return HeaderStatus(sentence: loc("진행 중인 세션 없음", "No active sessions"),
-                            suffix: counts.newestActivity.map { loc(" · 마지막 활동 ", " · last activity ") + helpAge($0, now: now) } ?? "",
+                            suffix: counts.newestActivity.map { loc(" · 마지막 활동 ", " · last activity ") + helpAge($0, now: now, spoken: spoken) } ?? "",
                             glyph: nil, head: quiet ? .sleep : .normal, help: loc("진행 중인 Codex·Claude Code 세션이 없습니다", "No active Codex or Claude Code sessions"))
     }
 
     /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record.
-    static func flowCaption(counts: SessionCounts, last: Date?, now: Date) -> FlowCaption {
+    static func flowCaption(counts: SessionCounts, last: Date?, now: Date, spoken: Bool = false) -> FlowCaption {
         let base = FlowCaption(text: lastRecordCaption, help: loc("최근 5분 안에 로그에 기록된 마지막 출력입니다", "The latest output recorded in the logs within the last 5 min"))
         guard counts.liveGroups > 0 else { return base }
         if let last, now.timeIntervalSince(last) <= 30 { return base }
@@ -765,7 +766,7 @@ enum SessionPresentation {
                                glyph: .input, emphasized: true, help: help)
         }
         if counts.retrying > 0 {
-            let text = counts.retry.map { $0.networkDown ? loc("API 재시도 · 네트워크 끊김", "API retry · network down") : retryText($0, now: now, api: true) }
+            let text = counts.retry.map { $0.networkDown ? loc("API 재시도 · 네트워크 끊김", "API retry · network down") : retryText($0, now: now, api: true, spoken: spoken) }
                 ?? loc("API 재시도", "API retry")
             return FlowCaption(text: text, glyph: .retry, emphasized: true, help: help)
         }
@@ -775,7 +776,7 @@ enum SessionPresentation {
         }
         if counts.working > 0 { return FlowCaption(text: loc("진행 중 · 응답 후 기록", "Working · records after reply"), help: help) }
         let minutes = counts.waitingSince.map { max(1, Int(now.timeIntervalSince($0)) / 60) } ?? 1
-        return FlowCaption(text: loc("로그 대기 · \(minutes)분째 기록 없음", "Waiting for log · no record for \(Format.span(minutes, .minute))"), help: help)
+        return FlowCaption(text: loc("로그 대기 · \(minutes)분째 기록 없음", "Waiting for log · no record for \(Format.span(minutes, .minute, spoken: spoken))"), help: help)
     }
 
     /// Cause-specific copy from the collector state, the setup note and pending or expired restarts.
@@ -968,7 +969,7 @@ struct SessionBlock: Identifiable {
     var runningChildren = 0, waitingChildren = 0
     /// Children waiting for a log left out of the collapsed list; running children are never cut.
     var moreCount = 0
-    var moreText = ""
+    var moreText = "", moreSpoken = ""
     /// Expanded list only: the date section of an unpinned block; captions are drawn where it changes.
     var section: String?
     var older: Bool { section == SessionPresentation.olderSection }
@@ -1217,8 +1218,10 @@ struct SessionListModel {
             block.moreCount = cut.count
             if !cut.isEmpty {
                 let newest = cut.compactMap { SessionPresentation.liveAt($0.reading) }.max()
-                block.moreText = loc("+\(cut.count) 하위 \(SessionDisplayState.waiting.title)", "+\(plural(cut.count, "subagent")) waiting for log")
-                    + (newest.map { loc(" · 마지막 \(Format.age($0, now: now))", " · last record \(Format.age($0, now: now))") } ?? "")
+                let more = { (spoken: Bool) in loc("+\(cut.count) 하위 \(SessionDisplayState.waiting.title)", "+\(plural(cut.count, "subagent")) waiting for log")
+                    + (newest.map { loc(" · 마지막 ", " · last record ") + Format.age($0, now: now, spoken: spoken) } ?? "") }
+                block.moreText = more(false)
+                block.moreSpoken = more(true)
             }
             if expanded && !pinned.contains(group.id) {
                 block.section = SessionPresentation.daySection(group.lastActivity, now: now, calendar: calendar)

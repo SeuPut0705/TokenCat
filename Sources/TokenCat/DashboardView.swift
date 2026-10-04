@@ -309,8 +309,7 @@ struct DashboardHeader: View {
     @Environment(\.tokenCatHighContrast) private var high
 
     var body: some View {
-        let status = SessionPresentation.headerStatus(counts: model.sessions.counts, loading: model.tokensSampledAt == nil, now: model.now,
-                                                      quietSince: model.runnerQuietSince)
+        let status = header(spoken: false)
         HStack(spacing: 0) {
             Image(nsImage: Runner.headImage(blinking ? .blink : status.head))
                 .resizable().interpolation(.none).aspectRatio(contentMode: .fit)
@@ -323,7 +322,7 @@ struct DashboardHeader: View {
             .help(status.help)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(loc("세션 상태", "Session status"))
-            .accessibilityValue(status.spoken)
+            .accessibilityValue(header(spoken: true).spoken)
             .accessibilityAddTraits(.updatesFrequently)
             Spacer(minLength: 8)
             Button(action: actions.settings) { Image(systemName: "gearshape").font(.system(size: 14)).frame(width: 24, height: 24) }
@@ -335,6 +334,11 @@ struct DashboardHeader: View {
         .onAppear(perform: scheduleBlink)
         .onChange(of: model.popoverShownAt) { _ in scheduleBlink() }
         .onDisappear { blink?.cancel(); blinking = false }
+    }
+
+    private func header(spoken: Bool) -> HeaderStatus {
+        SessionPresentation.headerStatus(counts: model.sessions.counts, loading: model.tokensSampledAt == nil, now: model.now,
+                                         quietSince: model.runnerQuietSince, spoken: spoken)
     }
 
     private func sentence(_ status: HeaderStatus) -> Text {
@@ -673,10 +677,11 @@ struct FlowCard: View {
         if loading { return loc("기록 확인 중", "Reading records") }
         var parts = [loc("\(total.formatted()) 토큰", plural(total, "token"))]
         if let last = flow.last {
-            let age = SessionPresentation.recordAge(last.at, now: now)
+            let age = SessionPresentation.recordAge(last.at, now: now, spoken: true)
             parts.append(loc("마지막 기록 \(last.tokens.formatted()) 토큰, \(age)", "Last record \(plural(last.tokens, "token")), \(age)"))
         }
         else { parts.append(loc("최근 5분 동안 출력 기록 없음", "No output recorded in the last 5 min")) }
+        let caption = SessionPresentation.flowCaption(counts: counts, last: flow.last?.at, now: now, spoken: true)
         if caption.glyph != nil || caption.text != SessionPresentation.lastRecordCaption { parts.append(caption.text) }
         parts.append(loc("로그 기록 시점 기준이며 속도가 아닙니다", "Based on log record times, not a speed"))
         return parts.joined(separator: ". ")
@@ -1298,7 +1303,7 @@ struct SessionBlockView: View {
                           "Shows every running subagent. Subagents waiting for log appear only when none are running, up to \(SessionListModel.collapsedChildren)"))
                 .accessibilityAddTraits(context.selectedID == block.moreID ? .isSelected : [])
                 .accessibilityLabel(loc("하위 에이전트 \(block.moreCount)개 더 보기", "Show \(plural(block.moreCount, "more subagent"))"))
-                .accessibilityValue(block.moreText)
+                .accessibilityValue(block.moreSpoken)
             }
         }
         // Behind the rows, so a fresh-record dot in the glyph column draws over the line.
@@ -1513,7 +1518,7 @@ struct LiveSessionRow: View {
     private func spokenValue(_ contextSlot: ContextSlot?, _ speed: SpeedSlot) -> String {
         var state: String?
         if item.state == .input { state = SessionPresentation.inputTitle(reading) }
-        if item.state == .retrying { state = reading.retry.map { SessionPresentation.retryText($0, now: now, api: true) } }
+        if item.state == .retrying { state = reading.retry.map { SessionPresentation.retryText($0, now: now, api: true, spoken: true) } }
         return [state, SessionPresentation.effortLabel(reading).map { loc("추론 \($0)", "Reasoning \($0)") },
                 SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { loc("턴 경과 \($0)", "Turn elapsed \($0)") },
                 RowText.output(reading), RowText.children(childCount), contextSlot?.spoken,
@@ -1626,7 +1631,7 @@ struct IdleSessionRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: state))
-        .accessibilityValue([loc("마지막 활동 \(age)", "Last activity \(age)"), followsGroup ? trailing : nil, RowText.children(childCount), SessionPresentation.lastTurnSummary(reading),
+        .accessibilityValue([loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now, spoken: true), followsGroup ? trailing : nil, RowText.children(childCount), SessionPresentation.lastTurnSummary(reading),
                              SessionPresentation.speed(reading, now: now).spoken].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAction { context.tap(item.id) }
         .rowActions(reading)
@@ -1695,7 +1700,7 @@ struct ChildSessionRow: View {
         .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: item.state))
         .accessibilityValue([SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { loc("턴 경과 \($0)", "Turn elapsed \($0)") },
-                             live ? RowText.output(reading) : loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now),
+                             live ? RowText.output(reading) : loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now, spoken: true),
                              SessionPresentation.context(reading, now: now)?.spoken, SessionPresentation.speed(reading, now: now).spoken,
                              SessionPresentation.roleLabel(reading.agentRole).map { loc("역할 \($0)", "Role \($0)") }, "ID \(SessionPresentation.agentLabel(reading))"]
                                 .compactMap { $0 }.joined(separator: ", "))
@@ -1739,7 +1744,8 @@ struct MeasurementRow: View {
     var selected = false
     var body: some View {
         let speed = SessionPresentation.speed(reading, now: now)
-        let age = Format.age(reading.speedMeasurement?.at ?? reading.lastActivity, now: now)
+        let measuredAt = reading.speedMeasurement?.at ?? reading.lastActivity
+        let age = Format.age(measuredAt, now: now)
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             Image(systemName: "speedometer").font(TCFont.meta).toneSecondary().frame(width: 10)
                 .padding(.leading, DashboardLayout.glyphX)
@@ -1757,7 +1763,7 @@ struct MeasurementRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(selected ? .isSelected : [])
         .accessibilityLabel("\(reading.project ?? loc("모델 실측", "Model measurement")), \(reading.source.title) \(reading.model ?? loc("모델 미확인", "Unknown model"))")
-        .accessibilityValue(speed.spoken + loc(", 측정 ", ", measured ") + age)
+        .accessibilityValue(speed.spoken + loc(", 측정 ", ", measured ") + Format.age(measuredAt, now: now, spoken: true))
         .rowActions(reading)
     }
 }

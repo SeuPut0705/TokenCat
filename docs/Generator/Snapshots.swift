@@ -8,8 +8,8 @@ import Foundation
 func runSnapshot(_ binary: String, _ arguments: [String]) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: binary)
-    // The README images are Korean whatever this Mac's language is.
-    process.arguments = arguments + ["--language", "ko"]
+    // The image language, whatever this Mac's language is.
+    process.arguments = arguments + ["--language", language]
     let pipe = Pipe()
     process.standardOutput = pipe
     process.standardError = pipe
@@ -95,6 +95,7 @@ struct FixtureSheet {
 }
 
 /// `--snapshot-menubar --fixtures` matrix: 7 state rows × 4 columns (light, dark, light·open, dark·open) on grey.
+/// `stateNames` are the Korean row titles, used only as keys; drawn labels go through `loc`.
 struct MenuMatrix {
     static let stateNames = ["활동 없음", "진행", "도구 실행", "방금 기록", "로그 대기", "입력 필요", "세션 12개"]
     enum Column: Int { case light = 0, dark, lightOpen, darkOpen }

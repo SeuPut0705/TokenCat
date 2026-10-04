@@ -76,7 +76,7 @@ func hero(_ theme: Theme, popover sheet: FixtureSheet, menu: MenuMatrix, window:
     let mid = barHeight / 2
     var right = CGFloat(width) - 14 * u
     let clockSize = 13 * u
-    let clock = "10월 5일 (월) 오전 9:41"
+    let clock = loc("10월 5일 (월) 오전 9:41", "Mon Oct 5  9:41 AM")
     canvas.text(clock, x: right, baseline: mid + clockSize * 0.36, size: clockSize, color: look.menuGlyph, align: .right)
     right -= Canvas.measure(clock, size: clockSize) + 17 * u
     right -= controlCenterGlyph(canvas, right: right, mid: mid, u: u, look.menuGlyph) + 17 * u
@@ -199,9 +199,9 @@ func menubarLayouts(_ theme: Theme, minimal: MenuMatrix, twoLine: MenuMatrix, on
     let look = Look.of(theme)
     let state = MenuMatrix.stateNames.firstIndex(of: "도구 실행")!
     let entries: [(title: String, note: String, menu: MenuMatrix)] = [
-        ("최소", "고양이 · AI 상태 · 세션 수", minimal),
-        ("두 줄 · 기본", "시스템 지표와 AI를 두 줄로", twoLine),
-        ("한 줄", "모든 항목을 한 줄로", oneLine),
+        (loc("최소", "Minimal"), loc("고양이 · AI 상태 · 세션 수", "Cat · AI status · session count"), minimal),
+        (loc("두 줄 · 기본", "Two Lines · default"), loc("시스템 지표와 AI를 두 줄로", "System stats and AI on two lines"), twoLine),
+        (loc("한 줄", "One Line"), loc("모든 항목을 한 줄로", "Everything on one line"), oneLine),
     ]
     let slices = entries.map { $0.menu.slice(state, MenuMatrix.column(theme)) }
     let pad: CGFloat = 48, captionHeight: CGFloat = 40, rowGap: CGFloat = 30, sliceInset: CGFloat = 14
@@ -229,9 +229,13 @@ func menubarLayouts(_ theme: Theme, minimal: MenuMatrix, twoLine: MenuMatrix, on
 /// Legend: the minimal item in each AI state with its meaning.
 func menubarStates(_ theme: Theme, minimal: MenuMatrix) -> CGImage {
     let look = Look.of(theme)
-    let legend: [(state: String, note: String)] = [
-        ("진행", "보라 링 · 걷기"), ("도구 실행", "파란 사각 · 걷기"), ("방금 기록", "출력 기록 · 달리기"),
-        ("입력 필요", "노란 ? · 정면 앉기"), ("로그 대기", "회색 반원 · 앉기"), ("활동 없음", "흐린 0 · 잠"),
+    let legend: [(state: String, title: String, note: String)] = [
+        ("진행", "Working", loc("보라 링 · 걷기", "Purple ring · walk")),
+        ("도구 실행", "Running tool", loc("파란 사각 · 걷기", "Blue square · walk")),
+        ("방금 기록", "Just recorded", loc("출력 기록 · 달리기", "Output recorded · run")),
+        ("입력 필요", "Input needed", loc("노란 ? · 정면 앉기", "Yellow ? · sit facing you")),
+        ("로그 대기", "Waiting for log", loc("회색 반원 · 앉기", "Grey half circle · sit")),
+        ("활동 없음", "No activity", loc("흐린 0 · 잠", "Faint 0 · sleep")),
     ]
     let cell = minimal.cell(0, .light).size
     let pad: CGFloat = 48, gap: CGFloat = 48
@@ -243,7 +247,7 @@ func menubarStates(_ theme: Theme, minimal: MenuMatrix) -> CGImage {
         menuTile(canvas, minimal, state: MenuMatrix.stateNames.firstIndex(of: entry.state)!, theme: theme,
                  at: CGPoint(x: x, y: pad), look: look)
         let center = x + cell.width / 2
-        canvas.text(entry.state, x: center, baseline: pad + cell.height + 40, size: 23, bold: true, color: look.text, align: .center)
+        canvas.text(loc(entry.state, entry.title), x: center, baseline: pad + cell.height + 40, size: 23, bold: true, color: look.text, align: .center)
         canvas.text(entry.note, x: center, baseline: pad + cell.height + 72, size: 19, color: look.secondary, align: .center)
     }
     return roundCorners(canvas, radius: 28)
@@ -303,10 +307,11 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
     box(codeGroup, group, radius: 24)
     canvas.text("Codex · Claude Code", x: codeGroup.minX + 24, baseline: codeGroup.minY + 40, size: 21, bold: true,
                 color: look.secondary)
-    source(jsonl, "로컬 JSONL 기록", ["~/.codex/sessions", "~/.claude/projects"])
+    source(jsonl, loc("로컬 JSONL 기록", "Local JSONL logs"), ["~/.codex/sessions", "~/.claude/projects"])
     // Both reach the same loopback collector: OTLP for speeds, the Claude Code status line bridge for usage limits.
-    source(otlp, "OTLP 실측 · 상태 표시줄", ["HTTP/JSON · 속도 실측", "Claude Code 상태 표시줄 · 사용 한도"])
-    source(system, "macOS 시스템 지표", ["CPU · 메모리 · 저장 공간 · 배터리 · 네트워크"])
+    source(otlp, loc("OTLP 실측 · 상태 표시줄", "OTLP telemetry · status line"),
+           [loc("HTTP/JSON · 속도 실측", "HTTP/JSON · measured speed"), loc("Claude Code 상태 표시줄 · 사용 한도", "Claude Code status line · usage limits")])
+    source(system, loc("macOS 시스템 지표", "macOS system stats"), [loc("CPU · 메모리 · 저장 공간 · 배터리 · 네트워크", "CPU · memory · storage · battery · network")])
 
     // Menu bar item (the app's own render) shown inside the output card.
     let state = MenuMatrix.stateNames.firstIndex(of: "입력 필요")!
@@ -322,11 +327,11 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
     canvas.draw(downscale(readPNG(assets + "/app-icon-v2-1024.png"), to: Int(iconSize)),
                 CGRect(x: app.midX - iconSize / 2, y: app.minY + 14, width: iconSize, height: iconSize))
     canvas.text("TokenCat", x: app.midX, baseline: app.maxY - 58, size: 30, bold: true, color: look.text, align: .center)
-    canvas.text("이 Mac 안에서 처리", x: app.midX, baseline: app.maxY - 26, size: 20, color: look.secondary, align: .center)
+    canvas.text(loc("이 Mac 안에서 처리", "Processed on this Mac"), x: app.midX, baseline: app.maxY - 26, size: 20, color: look.secondary, align: .center)
 
     // Output.
     box(output, card, radius: 24)
-    canvas.text("메뉴 막대 · 상세 화면", x: output.minX + 24, baseline: output.minY + 44, size: 24, bold: true, color: look.text)
+    canvas.text(loc("메뉴 막대 · 상세 화면", "Menu bar · dashboard"), x: output.minX + 24, baseline: output.minY + 44, size: 24, bold: true, color: look.text)
     let bar = CGRect(x: output.minX + 24, y: output.minY + 66, width: output.width - 48, height: barHeight)
     canvas.clipped(canvas.rounded(bar, 12)) {
         canvas.fill(bar, color(menu.bar[theme]!))
@@ -334,11 +339,11 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
                                  height: barHeight), quality: .none)
     }
     canvas.stroke(canvas.rounded(bar.insetBy(dx: 0.5, dy: 0.5), 11.5), look.border, width: 1)
-    canvas.text("세션 상태 · 출력 토큰 · 사용 한도", x: output.minX + 24, baseline: bar.maxY + 42, size: 20, color: look.secondary)
-    canvas.text("알림은 켠 경우에만", x: output.minX + 24, baseline: bar.maxY + 72, size: 20, color: look.secondary)
+    canvas.text(loc("세션 상태 · 출력 토큰 · 사용 한도", "Sessions · output tokens · usage limits"), x: output.minX + 24, baseline: bar.maxY + 42, size: 20, color: look.secondary)
+    canvas.text(loc("알림은 켠 경우에만", "Notifications only if turned on"), x: output.minX + 24, baseline: bar.maxY + 72, size: 20, color: look.secondary)
 
     // Wires: each source lands on its own height of the TokenCat card.
-    wireTo(CGPoint(x: jsonl.maxX, y: jsonl.midY), CGPoint(x: app.minX, y: app.midY - 52), label: "파일 변경 감지 · 추가분만 읽기")
+    wireTo(CGPoint(x: jsonl.maxX, y: jsonl.midY), CGPoint(x: app.minX, y: app.midY - 52), label: loc("파일 변경 감지 · 추가분만 읽기", "File changes · new lines only"))
     wireTo(CGPoint(x: otlp.maxX, y: otlp.midY), CGPoint(x: app.minX, y: app.midY), label: "127.0.0.1:16493")
     wireTo(CGPoint(x: system.maxX, y: system.midY), CGPoint(x: app.minX, y: app.midY + 52))
     wireTo(CGPoint(x: app.maxX, y: app.midY), CGPoint(x: output.minX, y: output.midY))
@@ -389,8 +394,8 @@ func iconShowcase(_ theme: Theme, assets: String) -> CGImage {
         Item(image: small16, size: 16, label: "16", nearest: true),
     ]
     let zoomed = [
-        Item(image: small32, size: 192, label: "32 px · 6배", nearest: true),
-        Item(image: small16, size: 192, label: "16 px · 12배", nearest: true),
+        Item(image: small32, size: 192, label: "32 px · 6×", nearest: true),
+        Item(image: small16, size: 192, label: "16 px · 12×", nearest: true),
     ]
     let all = items + zoomed
     let pad: CGFloat = 64, gap: CGFloat = 52, separator: CGFloat = 96

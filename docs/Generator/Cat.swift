@@ -84,33 +84,34 @@ private func catColors(_ theme: Theme, bar: UInt32) -> (bar: CGColor, z: CGColor
 /// The run lasts as long as the app's output burst (`RunnerDirector.burst`, 1.2 s).
 func catAnimation(_ theme: Theme, runner: Runner, bar: UInt32) -> [(image: CGImage, seconds: Double)] {
     let colors = catColors(theme, bar: bar)
-    let states = ["진행·도구", "출력 기록", "입력 필요", "로그 대기", "활동 없음"]
+    let states = [loc("진행·도구", "Working"), loc("출력 기록", "Recorded"), loc("입력 필요", "Input"), loc("로그 대기", "Waiting"),
+                  loc("활동 없음", "Idle")]
     struct Shot { let state: Int, label: String, pose: String, frame: Int, fx: Int?, seconds: Double }
     var shots: [Shot] = []
 
     let walk = runner.pose("walk")
-    for _ in 0..<4 { for f in 0..<walk.frames { shots.append(Shot(state: 0, label: "걷기", pose: "walk", frame: f, fx: nil, seconds: walk.durations[f])) } }
+    for _ in 0..<4 { for f in 0..<walk.frames { shots.append(Shot(state: 0, label: loc("걷기", "Walk"), pose: "walk", frame: f, fx: nil, seconds: walk.durations[f])) } }
     let run = runner.pose("run")
     var running = 0.0, frame = 0
     while running < 1.2 - 1e-9 {
-        shots.append(Shot(state: 1, label: "달리기", pose: "run", frame: frame, fx: nil, seconds: run.durations[frame]))
+        shots.append(Shot(state: 1, label: loc("달리기", "Run"), pose: "run", frame: frame, fx: nil, seconds: run.durations[frame]))
         running += run.durations[frame]
         frame = (frame + 1) % run.frames
     }
     let alert = runner.pose("alert")
-    for f in 0..<alert.frames { shots.append(Shot(state: 2, label: "정면 앉기", pose: "alert", frame: f, fx: nil, seconds: alert.durations[f])) }
+    for f in 0..<alert.frames { shots.append(Shot(state: 2, label: loc("정면 앉기", "Sit facing you"), pose: "alert", frame: f, fx: nil, seconds: alert.durations[f])) }
     let sit = runner.pose("sit")
     let blink = sit.durations[1], gap = sit.doubleGap ?? 0.15
     for (frame, seconds) in [(0, 1.4), (1, blink), (0, 1.4), (1, blink), (0, gap), (1, blink), (0, 0.6)] {
-        shots.append(Shot(state: 3, label: "앉기 · 깜빡임", pose: "sit", frame: frame, fx: nil, seconds: seconds))
+        shots.append(Shot(state: 3, label: loc("앉기 · 깜빡임", "Sit · blink"), pose: "sit", frame: frame, fx: nil, seconds: seconds))
     }
     let sleep = runner.pose("sleep")
     let sleepSteps = (runner.manifest.fx.filter { $0.pose == "sleep" }.map(\.step).max() ?? 0) + 1
     for step in 0..<sleepSteps {
-        shots.append(Shot(state: 4, label: "잠", pose: "sleep", frame: step % sleep.frames, fx: step, seconds: sleep.durations[step % sleep.frames]))
+        shots.append(Shot(state: 4, label: loc("잠", "Sleep"), pose: "sleep", frame: step % sleep.frames, fx: step, seconds: sleep.durations[step % sleep.frames]))
     }
     let yawn = runner.pose("yawn")
-    shots.append(Shot(state: 0, label: "깨어날 때 하품", pose: "yawn", frame: 0, fx: nil, seconds: yawn.durations[0]))
+    shots.append(Shot(state: 0, label: loc("깨어날 때 하품", "Yawn on waking"), pose: "yawn", frame: 0, fx: nil, seconds: yawn.durations[0]))
 
     let width = 800, height = 400, scale = 10, top = 34
     let cell = runner.manifest.cell
@@ -146,13 +147,13 @@ func catAnimation(_ theme: Theme, runner: Runner, bar: UInt32) -> [(image: CGIma
 /// Static specimen of all seven poses on a light and a dark menu bar, on the theme's backdrop.
 func posesSheet(_ theme: Theme, runner: Runner, bars: [Theme: UInt32]) -> CGImage {
     let poses: [(pose: String, frame: Int, fx: Int?, name: String, state: String)] = [
-        ("walk", 1, nil, "걷기", "진행 · 도구 실행"),
-        ("run", 1, nil, "달리기", "출력 기록 직후"),
-        ("alert", 0, nil, "정면 앉기", "입력 필요"),
-        ("sit", 0, nil, "앉기", "로그 대기"),
-        ("sleep", 0, 2, "잠", "10분간 활동 없음"),
-        ("yawn", 0, nil, "하품", "깨어날 때 한 번"),
-        ("content", 0, nil, "만족", "턴 완료 때 한 번"),
+        ("walk", 1, nil, loc("걷기", "Walk"), loc("진행 · 도구 실행", "Working · tool")),
+        ("run", 1, nil, loc("달리기", "Run"), loc("출력 기록 직후", "Just recorded")),
+        ("alert", 0, nil, loc("정면 앉기", "Sit facing you"), loc("입력 필요", "Input needed")),
+        ("sit", 0, nil, loc("앉기", "Sit"), loc("로그 대기", "Waiting for log")),
+        ("sleep", 0, 2, loc("잠", "Sleep"), loc("10분간 활동 없음", "Idle 10 min")),
+        ("yawn", 0, nil, loc("하품", "Yawn"), loc("깨어날 때 한 번", "Once on waking")),
+        ("content", 0, nil, loc("만족", "Happy"), loc("턴 완료 때 한 번", "Once per finished turn")),
     ]
     let scale = 6, cell = runner.manifest.cell
     let tile = CGSize(width: cell.width * scale + 20, height: cell.height * scale + 20)
