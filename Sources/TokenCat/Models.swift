@@ -79,7 +79,6 @@ struct TokenReading: Codable, Identifiable {
     /// Full working directory, used only for the "Finder에서 보기" action; never displayed.
     var projectPath: String? = nil
     var model: String? = nil
-    var measurementModel: String? = nil
     var isSubagent: Bool = false
     /// Duration of the last completed turn as reported by the client (never divided into a rate).
     var lastTurnDurationSeconds: Double? = nil
@@ -107,25 +106,23 @@ struct TokenReading: Codable, Identifiable {
     /// Newest timestamp of any record in the log; liveness only, not shown as activity.
     var lastLogAt: Date? = nil
     var measurementAt: Date? = nil
-    var sessionCount: Int = 0
-    var status: String = "기록 대기"
+    /// Claude: request IDs of the responses in this log (at most 256), matched against telemetry; never shown.
+    var requestIDs: Set<String> = []
 
     init(source: TokenSource, id: String? = nil,
          sessionID: String? = nil, agentID: String? = nil, project: String? = nil,
-         model: String? = nil, measurementModel: String? = nil, isSubagent: Bool = false,
+         model: String? = nil, isSubagent: Bool = false,
          lastOutputTokens: Int? = nil,
          active: Bool = false, lastActivity: Date? = nil, measurementAt: Date? = nil,
          activityState: TokenActivityState = .idle, currentTurnStartedAt: Date? = nil,
          currentTurnOutputTokens: Int? = nil, lastOutputAt: Date? = nil,
-         lastOutputDelta: Int? = nil, sampledAt: Date? = nil,
-         sessionCount: Int = 0, status: String = "기록 대기") {
+         lastOutputDelta: Int? = nil, sampledAt: Date? = nil) {
         self.source = source
         self.id = id ?? source.rawValue
         self.sessionID = sessionID
         self.agentID = agentID
         self.project = project
         self.model = model
-        self.measurementModel = measurementModel
         self.isSubagent = isSubagent
         self.lastOutputTokens = lastOutputTokens
         self.active = active
@@ -137,7 +134,5 @@ struct TokenReading: Codable, Identifiable {
         self.sampledAt = sampledAt
         self.lastActivity = lastActivity
         self.measurementAt = measurementAt
-        self.sessionCount = sessionCount
-        self.status = status
     }
 }

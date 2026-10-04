@@ -190,7 +190,6 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var newestOutputAt: Date?
     /// The menu-bar cat's quiet reference, shared with the popover header so both fall asleep together.
     @Published var runnerQuietSince: Date?
-    @Published private(set) var telemetryReady = false
     /// The single clock for every age and elapsed value shown; views never read `Date()`.
     @Published private(set) var now = Date()
     @Published private(set) var flow = FlowSeries.empty
@@ -231,9 +230,6 @@ final class DashboardModel: ObservableObject {
     static let minimumTokenInterval: TimeInterval = 0.25
     private(set) var logEventCount = 0
     var onUpdate: (() -> Void)?
-    /// Set by the app shell, so views can open Settings at a section without knowing about windows.
-    var settingsRequest: ((SettingsFocus?) -> Void)?
-    func showSettings(_ focus: SettingsFocus? = nil) { settingsRequest?(focus) }
     /// Set by the app shell; nil in fixtures and verification commands, where the update buttons do nothing.
     var updateRequest: ((UpdateCommand) -> Void)?
     func requestUpdate(_ command: UpdateCommand) { updateRequest?(command) }
@@ -387,13 +383,12 @@ final class DashboardModel: ObservableObject {
             for measurement in measurements { received[measurement.provider] = max(received[measurement.provider] ?? measurement.at, measurement.at) }
             // Any batch from a restarted client clears its notice, even one TokenCat cannot decode yet.
             let batches = self.telemetryProvider == nil ? self.telemetry.lastBatchAt : [:]
-            let claudeLimits = self.telemetryProvider == nil ? self.telemetry.claudeLimits : ClaudeUsageLimits()
+            let claudeLimits = self.telemetryProvider == nil ? self.telemetry.claudeLimits.merged(self.desktopLimits()) : ClaudeUsageLimits()
             // Verification commands read the running app's collector, never this unstarted one.
             let probed = self.telemetryProbe?()
             let telemetryState = probed.map { $0 ? (measurements.isEmpty ? .waiting : .receiving) : .stopped } ?? self.telemetry.state
             let telemetryStatus = probed == false ? "실측 꺼짐 · 실행 중인 TokenCat 수집기 없음" : telemetryState.status
             let nextRetryAt = probed == nil ? self.telemetry.nextRetryAt : nil
-            let telemetryReady = probed ?? (self.telemetryProvider != nil || self.telemetry.isRunning)
             let measuredAt = Date()
             DispatchQueue.main.async {
                 self.tokensInFlight = false
@@ -403,7 +398,6 @@ final class DashboardModel: ObservableObject {
                 self.telemetryStatus = telemetryStatus
                 if self.telemetryState != telemetryState { self.telemetryState = telemetryState }
                 if self.telemetryNextRetryAt != nextRetryAt { self.telemetryNextRetryAt = nextRetryAt }
-                if self.telemetryReady != telemetryReady { self.telemetryReady = telemetryReady }
                 let lastReceived = self.telemetryLastReceived.merging(received) { max($0, $1) }
                 if lastReceived != self.telemetryLastReceived { self.telemetryLastReceived = lastReceived }
                 let mergedBatches = self.telemetryBatches.merging(batches) { max($0, $1) }
@@ -422,6 +416,23 @@ final class DashboardModel: ObservableObject {
                 }
             }
         }
+    }
+    /// The Claude desktop app runs no statusLine, so its own usage history is read too (token queue only): re-read only when
+    /// its size or modification time changes, and ignored above the collector's body limit.
+    private static let desktopHistoryPath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/Claude/plan-usage-history.json").path
+    private var desktopHistoryStamp: [Int] = []
+    private var desktopHistoryLimits = ClaudeUsageLimits()
+    private func desktopLimits() -> ClaudeUsageLimits {
+        var info = stat()
+        guard stat(Self.desktopHistoryPath, &info) == 0, Int(info.st_size) <= LocalTelemetryCollector.maximumBodyBytes else { return ClaudeUsageLimits() }
+        let stamp = [Int(info.st_size), info.st_mtimespec.tv_sec, info.st_mtimespec.tv_nsec]
+        if stamp != desktopHistoryStamp {
+            desktopHistoryStamp = stamp
+            desktopHistoryLimits = (try? Data(contentsOf: URL(fileURLWithPath: Self.desktopHistoryPath)))
+                .flatMap(ClaudeUsageLimits.decodeDesktopHistory) ?? ClaudeUsageLimits()
+        }
+        return desktopHistoryLimits
     }
     private func refreshSystem() {
         let currentGeneration = generation
@@ -460,10 +471,6 @@ final class DashboardModel: ObservableObject {
 
 enum Format {
     static func percent(_ value: Double?) -> String { value.map { String(format: "%.0f%%", $0) } ?? "—" }
-    static func bytes(_ value: UInt64?) -> String {
-        guard let value else { return "—" }
-        return ByteCountFormatter.string(fromByteCount: Int64(clamping: value), countStyle: .binary)
-    }
     static func tps(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "—" }
     static func ratio(_ used: UInt64?, _ total: UInt64?) -> Double? {
         guard let used, let total, total > 0 else { return nil }
@@ -510,10 +517,7 @@ enum Format {
         return loc("전원 상태 미확인", "Power source unknown")
     }
     static func elapsed(_ date: Date?, at now: Date) -> String {
-        guard let date else { return "—" }
-        let seconds = max(0, Int(now.timeIntervalSince(date)))
-        if seconds >= 3_600 { return String(format: "%d:%02d:%02d", seconds / 3_600, seconds / 60 % 60, seconds % 60) }
-        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+        date.map { SessionPresentation.clock(max(0, Int(now.timeIntervalSince($0)))) } ?? "—"
     }
 }
 
@@ -616,6 +620,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             button.addSubview(view)
             button.setAccessibilityLabel("TokenCat")
             button.setAccessibilityHelp("클릭하면 세션별 상세를 열고, 우클릭하면 빠른 메뉴를 엽니다.")
+            // VoiceOver has no right click. Deferred: the menu's tracking loop must not run inside the accessibility request.
+            button.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: loc("빠른 메뉴", "Quick menu")) { [weak self] in
+                DispatchQueue.main.async { self?.showQuickMenu() }
+                return true
+            }])
             statusView = view
         }
         popover.behavior = .transient
@@ -625,7 +634,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         notifier.onOpen = { [weak self] group in self?.openDashboard(focus: group) }
         notifier.activate()
         model.onUpdate = { [weak self] in self?.publish() }
-        model.settingsRequest = { [weak self] in self?.openSettings(focus: $0) }
         model.updateRequest = { [weak self] in self?.handleUpdate($0) }
         updater.onChange = { [weak self] state in
             guard let self else { return }
@@ -763,7 +771,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard preferences.showRunner else { return }
         animator.apply(director.plan(preferences.animationSource, activity: activity, now: Date(),
                                      reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion))
-        if settingsWindow != nil, settingsState.runnerPose != animator.plan.pose { settingsState.runnerPose = animator.plan.pose }
+        // Only the Menu Bar tab draws the pose; publishing it elsewhere re-renders tabs that never read it.
+        if settingsTabs?.pane == .menubar, settingsState.runnerPose != animator.plan.pose { settingsState.runnerPose = animator.plan.pose }
     }
 
     func updateStatus() {
@@ -1155,7 +1164,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         menu.addItem(quit)
         // A temporary menu keeps the left click on the popover.
         statusItem.menu = menu
+        // performClick returns when the menu closes; the content view draws the selection plate only when told.
+        statusView?.highlighted = true
         statusItem.button?.performClick(nil)
+        statusView?.highlighted = false
         statusItem.menu = nil
     }
 
@@ -1248,6 +1260,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     private func connectTelemetryAutomatically() {
         guard !telemetrySetupInFlight else { return }
+        // `--disconnect-telemetry` opted out; only `--connect-telemetry` opts back in.
+        if UserDefaults.standard.bool(forKey: TelemetrySetup.optOutKey) {
+            model.claudeBridged = false
+            return
+        }
         if !model.telemetry.isRunning {
             model.telemetrySetupNote = "수집기가 실행되지 않아 연결할 수 없습니다."
             model.telemetrySetupFailure = .unavailable

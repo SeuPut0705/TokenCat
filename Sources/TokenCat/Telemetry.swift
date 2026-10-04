@@ -21,11 +21,13 @@ struct TelemetryReading: Codable {
     var serverInferenceMs: Double?
 }
 
-/// One Claude usage-limit window as Claude Code last piped it to its status line: the percentage and times only.
+/// One Claude usage-limit window: the percentage and times only, as Claude Code last piped it to its status line or
+/// the Claude desktop app last recorded it.
 struct ClaudeLimitWindow: Codable, Equatable {
     var usedPercent: Double
-    var resetsAt: Date
-    /// When TokenCat received it; the status line JSON carries no record time of its own.
+    /// Nil from the desktop app, which records no reset time; the window then counts as reset one window after the record.
+    var resetsAt: Date?
+    /// When TokenCat received it (the status line JSON carries no record time of its own), or the desktop app's record time.
     var receivedAt: Date
 }
 
@@ -49,14 +51,15 @@ struct ClaudeUsageLimits: Codable, Equatable {
         return ClaudeUsageLimits(fiveHour: newer(fiveHour, other.fiveHour), sevenDay: newer(sevenDay, other.sevenDay))
     }
 
+    private static func number(_ value: Any?) -> Double? {
+        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite else { return nil }
+        return number.doubleValue
+    }
+
     /// Nil when the body is not a JSON object. A window needs a 0–100 `used_percentage` and `resets_at` in Unix seconds.
     static func decode(_ data: Data, receivedAt: Date) -> ClaudeUsageLimits? {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return nil }
         let limits = root["rate_limits"] as? [String: Any]
-        func number(_ value: Any?) -> Double? {
-            guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite else { return nil }
-            return number.doubleValue
-        }
         func window(_ key: String) -> ClaudeLimitWindow? {
             guard let value = limits?[key] as? [String: Any],
                   let used = number(value["used_percentage"]), (0...100).contains(used),
@@ -64,6 +67,20 @@ struct ClaudeUsageLimits: Codable, Equatable {
             return ClaudeLimitWindow(usedPercent: used, resetsAt: Date(timeIntervalSince1970: reset), receivedAt: receivedAt)
         }
         return ClaudeUsageLimits(fiveHour: window("five_hour"), sevenDay: window("seven_day"))
+    }
+
+    /// The Claude desktop app runs no statusLine; it records its own usage about every 15 min in
+    /// `~/Library/Application Support/Claude/plan-usage-history.json` (`{"version":2,"samples":[{"t":ms,"org":…,"u":{"fh":%,"sd":%}}]}`).
+    /// Only the last sample's time and the 5-hour (`fh`) and 7-day (`sd`) percentages are kept; nil for any other shape.
+    static func decodeDesktopHistory(_ data: Data) -> ClaudeUsageLimits? {
+        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], number(root["version"]) == 2,
+              let sample = (root["samples"] as? [Any])?.last as? [String: Any], let usage = sample["u"] as? [String: Any],
+              let time = number(sample["t"]), (1e12...1e13).contains(time) else { return nil }
+        let recorded = Date(timeIntervalSince1970: time / 1_000)
+        func window(_ key: String) -> ClaudeLimitWindow? {
+            number(usage[key]).flatMap { (0...100).contains($0) ? ClaudeLimitWindow(usedPercent: $0, resetsAt: nil, receivedAt: recorded) : nil }
+        }
+        return ClaudeUsageLimits(fiveHour: window("fh"), sevenDay: window("sd"))
     }
 
     static func load(from defaults: UserDefaults) -> ClaudeUsageLimits {
@@ -122,7 +139,6 @@ struct TelemetryDiagnostics: Codable {
 
 final class LocalTelemetryCollector {
     static let port: UInt16 = 16493
-    static let boundHost = "127.0.0.1"
     static let maximumBodyBytes = 2_097_152
     /// Claude Code's status line JSON, forwarded by TokenCat's statusLine bridge; it is a few kilobytes.
     static let claudeStatusPath = "/v1/claude/status"
@@ -317,17 +333,17 @@ final class LocalTelemetryCollector {
     }
 
     func stop() {
-        if DispatchQueue.getSpecific(key: queueKey) != nil { stopOnQueue(updateStatus: true) }
-        else { queue.sync { stopOnQueue(updateStatus: true) } }
+        if DispatchQueue.getSpecific(key: queueKey) != nil { stopOnQueue() }
+        else { queue.sync { stopOnQueue() } }
     }
 
-    private func stopOnQueue(updateStatus: Bool) {
+    private func stopOnQueue() {
         running = false
         readyCallback = nil
         generation += 1
         closeListener()
         lock.withLock { retryAt = nil }
-        if updateStatus { setState(.stopped) }
+        setState(.stopped)
     }
 
     private func closeListener() {

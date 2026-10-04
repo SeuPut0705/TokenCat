@@ -104,14 +104,19 @@ enum UpdateFailure: Error, Equatable {
         case .rateLimited(let until): return "GitHub 요청 한도에 걸렸습니다. \(Self.clock(until)) 이후에 다시 확인할 수 있습니다."
         case .invalidResponse: return "GitHub 응답을 읽지 못했습니다."
         case .notNewer: return "설치할 새 버전이 없습니다."
-        case .noAsset: return "릴리스에 \(UpdateRelease.assetName) 파일이 없습니다. 릴리스 페이지에서 직접 내려받으세요."
-        case .noDigest: return "릴리스 파일의 SHA-256 값이 없어 설치하지 않았습니다. 릴리스 페이지에서 직접 내려받으세요."
+        // A copy opened while this one runs only shows this one's panel and quits, so the manual paths say to quit first.
+        case .noAsset: return loc("릴리스에 \(UpdateRelease.assetName) 파일이 없습니다. 릴리스 페이지에서 직접 내려받은 뒤 TokenCat을 종료하고 새 앱을 여세요.",
+                                  "The release has no \(UpdateRelease.assetName) file. Download it from the release page, then quit TokenCat and open the new copy.")
+        case .noDigest: return loc("릴리스 파일의 SHA-256 값이 없어 설치하지 않았습니다. 릴리스 페이지에서 직접 내려받은 뒤 TokenCat을 종료하고 새 앱을 여세요.",
+                                   "The release file has no SHA-256 value, so it wasn't installed. Download it from the release page, then quit TokenCat and open the new copy.")
         case .sizeMismatch, .digestMismatch: return "내려받은 파일이 릴리스 정보와 달라 설치하지 않았습니다. 기존 앱은 그대로입니다."
         case .extractFailed: return "내려받은 파일의 압축을 풀지 못했습니다. 기존 앱은 그대로입니다."
         case .invalidBundle(let reason): return "새 앱을 확인하지 못해 설치하지 않았습니다: \(reason)."
         case .notBundle: return "앱 번들(.app)로 실행하지 않아 업데이트할 수 없습니다."
-        case .translocated: return "macOS가 TokenCat을 임시 위치에서 실행하고 있어 업데이트할 수 없습니다. Finder에서 TokenCat을 응용 프로그램 폴더로 옮긴 뒤 다시 여세요."
-        case .notWritable: return "TokenCat이 있는 폴더에 쓸 권한이 없어 업데이트할 수 없습니다. 릴리스 페이지에서 직접 내려받으세요."
+        case .translocated: return loc("macOS가 TokenCat을 임시 위치에서 실행하고 있어 업데이트할 수 없습니다. TokenCat을 종료하고 Finder에서 응용 프로그램 폴더로 옮긴 뒤 다시 여세요.",
+                                       "macOS is running TokenCat from a temporary location, so it can't update. Quit TokenCat, move it to the Applications folder in Finder, then open it again.")
+        case .notWritable: return loc("TokenCat이 있는 폴더에 쓸 권한이 없어 업데이트할 수 없습니다. 릴리스 페이지에서 직접 내려받은 뒤 TokenCat을 종료하고 새 앱을 여세요.",
+                                      "TokenCat can't write to its folder, so it can't update. Download it from the release page, then quit TokenCat and open the new copy.")
         case .replaceFailed: return "새 앱으로 바꾸지 못했습니다. 기존 앱은 그대로입니다."
         case .relaunchFailed: return "새 버전을 설치했지만 다시 열지 못했습니다. TokenCat을 종료한 뒤 다시 여세요."
         }
@@ -670,8 +675,14 @@ final class Updater {
         fetch { [weak self] result in
             guard let self, case .downloading = self.state.install else { return }
             do {
-                let latest = try result.get()
-                self.apply(latest: latest)
+                // While GitHub's API is rate-limited, the release already read is enough: the download host is not limited,
+                // and size and digest are still checked. The check state keeps showing the limit.
+                let latest: UpdateRelease?
+                if case .failure(.rateLimited) = result, let cached = self.state.available { latest = cached }
+                else {
+                    latest = try result.get()
+                    self.apply(latest: latest)
+                }
                 guard let release = self.newer(latest) else { throw UpdateFailure.notNewer }
                 let (asset, sha256) = try release.installable()
                 let installation = try UpdateInstallation(release: release, asset: asset, sha256: sha256, bundleURL: self.bundleURL,

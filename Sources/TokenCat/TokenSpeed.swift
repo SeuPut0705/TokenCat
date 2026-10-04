@@ -82,12 +82,19 @@ enum TokenSpeed {
     static func apply(_ readings: [TokenReading], measurements: [TelemetryReading]) -> [TokenReading] {
         var result = readings
         var latest: [String: TelemetryReading] = [:]
+        // Claude also sends unlogged side requests on the session's model right after a turn (a few tokens each); a request
+        // missing from a log that has its session and agent is one of them. Dropped before the newest-per-identity pick below,
+        // which would otherwise let it replace the real response.
+        let logged = Set(readings.filter { $0.source == .claude && !$0.requestIDs.isEmpty }.map { "\($0.sessionID ?? "")|\($0.agentID ?? "")" })
+        let known = Set(readings.flatMap(\.requestIDs))
         for var measurement in measurements {
             if (measurement.serverTokenIntervalSampleCount ?? 1) > 1 {
                 measurement.sessionID = nil
                 measurement.agentID = nil
                 measurement.requestID = nil
             }
+            if measurement.provider == .claude, let request = measurement.requestID, !known.contains(request),
+               logged.contains("\(measurement.sessionID ?? "")|\(measurement.agentID ?? "")") { continue }
             let key = [measurement.provider.rawValue, measurement.sessionID ?? "", measurement.agentID ?? "", measurement.model ?? ""].joined(separator: "\u{1f}")
             if let prior = latest[key] {
                 let priorHasRate = TokenSpeedMeasurement(prior).tokensPerSecond != nil
@@ -99,7 +106,8 @@ enum TokenSpeed {
         }
         for measurement in latest.values.sorted(by: { $0.at < $1.at }) {
             let speed = TokenSpeedMeasurement(measurement)
-            let sessionMatches = result.indices.filter { index in
+            // Logs only: a telemetry row appended earlier in this loop must not capture a later measurement.
+            let sessionMatches = readings.indices.filter { index in
                 let reading = result[index]
                 guard let session = measurement.sessionID, reading.source == measurement.provider,
                       reading.sessionID == session else { return false }
@@ -130,8 +138,7 @@ enum TokenSpeed {
                     sessionID: measurement.sessionID, agentID: measurement.agentID,
                     project: measurement.sessionID == nil ? "모델 실측" : "요청 실측",
                     model: measurement.model,
-                    lastActivity: measurement.at, activityState: .complete,
-                    status: measurement.sessionID == nil ? "세션 식별자가 없는 모델 실측" : "세션 로그와 정확한 식별자 연결 대기")
+                    lastActivity: measurement.at, activityState: .complete)
                 reading.speedMeasurement = speed
                 result.append(reading)
             }

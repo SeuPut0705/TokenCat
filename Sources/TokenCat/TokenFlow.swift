@@ -20,7 +20,6 @@ struct FlowSeries: Equatable {
     var last: TokenOutputEvent?
 
     var total: Int { hero.reduce(0, +) }
-    var peak: Int { hero.max() ?? 0 }
 
     static let empty = FlowSeries(newest: .distantPast, hero: Array(repeating: 0, count: heroCount),
                                   fresh: Array(repeating: false, count: heroCount), byProvider: [:], last: nil)

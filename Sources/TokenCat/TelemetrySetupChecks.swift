@@ -38,6 +38,13 @@ func runTelemetrySetupChecks() -> [String] {
         data(home, relative).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
     }
     func statusLine(_ home: URL) -> [String: Any]? { object(home, ".claude/settings.json")?["statusLine"] as? [String: Any] }
+    func backupFiles(_ home: URL, prefix: String) -> [String] {
+        let root = support + "/telemetry-backups"
+        return ((try? files.contentsOfDirectory(atPath: home.appendingPathComponent(root).path)) ?? []).flatMap { folder in
+            ((try? files.contentsOfDirectory(atPath: home.appendingPathComponent(root + "/" + folder).path)) ?? [])
+                .filter { $0.hasPrefix(prefix) }.map { root + "/" + folder + "/" + $0 }
+        }
+    }
 
     do {
         let originalCodex = """
@@ -146,8 +153,8 @@ func runTelemetrySetupChecks() -> [String] {
               && (try? Data(contentsOf: linkedTarget)) == Data(originalCodex.utf8)
               && data(symlinkHome, ".claude/settings.json") == Data(originalClaude.utf8), "Configuration symlink was replaced or caused a partial connection")
 
-        // A Codex edit (Codex writes trust levels itself) refuses both whole-file restores; only the status line TokenCat
-        // added goes, and an unchanged Claude entry stays restorable once the Codex edit is undone.
+        // A Codex edit when the original had its own [otel] table (TokenCat's keys are mixed into it) refuses the restore;
+        // only the status line TokenCat added goes, and an unchanged Claude entry stays restorable once the edit is undone.
         let editedHome = try fixture("user-edit", codex: originalCodex, claude: originalClaude)
         let editedSetup = TelemetrySetup(home: editedHome)
         _ = try editedSetup.connect()
@@ -160,19 +167,64 @@ func runTelemetrySetupChecks() -> [String] {
         var withoutLine = (try JSONSerialization.jsonObject(with: connectedClaude) as? [String: Any]) ?? [:]
         withoutLine["statusLine"] = nil
         let afterRefusal = data(editedHome, ".claude/settings.json")
-        check(codexRefusal.hasPrefix("연결 후 Codex 설정이 수정됐습니다") && codexRefusal.contains("TokenCat이 추가한 Claude Code 상태 표시줄은 지웠습니다")
+        check(codexRefusal.hasPrefix("연결 후 Codex 설정이 수정돼 TokenCat 항목만 따로 되돌릴 수 없습니다") && codexRefusal.contains("TokenCat이 추가한 Claude Code 상태 표시줄은 지웠습니다")
               && data(editedHome, ".codex/config.toml") == userEdit
               && afterRefusal.flatMap { try? JSONSerialization.jsonObject(with: $0) as? NSDictionary }?.isEqual(to: withoutLine) == true
               && data(editedHome, script) == nil, "A Codex edit overwrote the edit, touched more than the status line, or left the bridge named")
-        let restoreBackups = (try? files.contentsOfDirectory(atPath: editedHome.appendingPathComponent(support + "/telemetry-backups").path))?
-            .flatMap { folder in ((try? files.contentsOfDirectory(atPath: editedHome.appendingPathComponent(support + "/telemetry-backups/" + folder).path)) ?? [])
-                .filter { $0.hasPrefix("claude-settings-before-statusline-restore-") }.map { support + "/telemetry-backups/" + folder + "/" + $0 } } ?? []
+        let restoreBackups = backupFiles(editedHome, prefix: "claude-settings-before-statusline-restore-")
         check(restoreBackups.count == 1 && data(editedHome, restoreBackups[0]) == connectedClaude && mode(editedHome, restoreBackups[0]) == 0o600,
               "The settings were not backed up privately before the status line was put back")
         try connectedCodex.write(to: editedHome.appendingPathComponent(".codex/config.toml"))
         _ = try editedSetup.disconnect()
         check(data(editedHome, ".codex/config.toml") == Data(originalCodex.utf8) && data(editedHome, ".claude/settings.json") == Data(originalClaude.utf8),
               "After the Codex edit was undone, disconnect did not restore both exact originals")
+
+        // The usual case: both clients rewrote their files after the connection (a Codex trust level, a Claude plugin).
+        // Only TokenCat's lines and keys go, every later change stays, a content-logging switch gets its value back, and
+        // the edited bytes are backed up first.
+        let plainCodex = "model = \"existing-model\"\n"
+        let trust = "\n[projects.\"/work/sample\"]\ntrust_level = \"trusted\"\n"
+        let keyHome = try fixture("key-level", codex: plainCodex, claude: originalClaude)
+        _ = try TelemetrySetup(home: keyHome).connect()
+        try (data(keyHome, ".codex/config.toml")! + Data(trust.utf8)).write(to: keyHome.appendingPathComponent(".codex/config.toml"))
+        var keySettings = object(keyHome, ".claude/settings.json") ?? [:]
+        keySettings["enabledPlugins"] = ["sample@market": true]
+        try JSONSerialization.data(withJSONObject: keySettings).write(to: keyHome.appendingPathComponent(".claude/settings.json"))
+        let keyResult = try TelemetrySetup(home: keyHome).disconnect()
+        let originalEnv = (try JSONSerialization.jsonObject(with: Data(originalClaude.utf8)) as? [String: Any])?["env"] as? [String: Any] ?? [:]
+        check(keyResult.changedFiles.count == 2 && keyResult.message.contains("연결 후 바뀐 다른 설정은 그대로 두었습니다")
+              && data(keyHome, ".codex/config.toml") == Data((plainCodex + trust).utf8)
+              && (object(keyHome, ".claude/settings.json")?["env"] as? NSDictionary)?.isEqual(to: originalEnv) == true
+              && object(keyHome, ".claude/settings.json")?["enabledPlugins"] != nil && statusLine(keyHome) == nil
+              && data(keyHome, support + "/telemetry-connection.json") == nil && data(keyHome, script) == nil
+              && backupFiles(keyHome, prefix: "before-disconnect-").map { mode(keyHome, $0) } == [0o600, 0o600],
+              "Disconnecting edited files did not take out exactly TokenCat's lines and keys, or did not back them up first")
+        // A TokenCat key the person set to another value refuses the restore; only the status line TokenCat added goes.
+        let refusedHome = try fixture("key-level-refused", codex: plainCodex, claude: originalClaude)
+        _ = try TelemetrySetup(home: refusedHome).connect()
+        let refusedCodex = data(refusedHome, ".codex/config.toml")
+        var refusedSettings = object(refusedHome, ".claude/settings.json") ?? [:]
+        refusedSettings["env"] = (refusedSettings["env"] as? [String: Any] ?? [:]).merging(["OTEL_LOGS_EXPORTER": "none"]) { $1 }
+        try JSONSerialization.data(withJSONObject: refusedSettings).write(to: refusedHome.appendingPathComponent(".claude/settings.json"))
+        var keyRefusal = ""
+        do { _ = try TelemetrySetup(home: refusedHome).disconnect() } catch { keyRefusal = error.localizedDescription }
+        check(keyRefusal.hasPrefix("연결 후 Claude Code 설정이 수정돼") && data(refusedHome, ".codex/config.toml") == refusedCodex
+              && (object(refusedHome, ".claude/settings.json")?["env"] as? [String: Any])?["OTEL_LOGS_EXPORTER"] as? String == "none"
+              && statusLine(refusedHome) == nil && data(refusedHome, support + "/telemetry-connection.json") != nil,
+              "A TokenCat key the person changed was reverted, or the refusal touched more than the status line")
+        // An edited file whose status line could not go back (here an unreadable record) still runs the bridge: the
+        // connection record stays for another try instead of being deleted under it.
+        let stuckHome = try fixture("key-level-stuck", codex: plainCodex, claude: originalClaude)
+        _ = try TelemetrySetup(home: stuckHome).connect()
+        try (data(stuckHome, ".claude/settings.json")!.dropLast(2) + Data(#","theme":"dark"}"#.utf8)).write(to: stuckHome.appendingPathComponent(".claude/settings.json"))
+        var stuckRecord = object(stuckHome, support + "/telemetry-connection.json") ?? [:]
+        stuckRecord["statusLine"] = ["original": "unreadable"]
+        try JSONSerialization.data(withJSONObject: stuckRecord).write(to: stuckHome.appendingPathComponent(support + "/telemetry-connection.json"))
+        var stuck = ""
+        do { _ = try TelemetrySetup(home: stuckHome).disconnect() } catch { stuck = error.localizedDescription }
+        check(stuck.contains("상태 표시줄은 되돌리지 못했습니다") && statusLine(stuckHome)?["command"] as? String == TelemetrySetup.statusLineCommand
+              && data(stuckHome, support + "/telemetry-connection.json") != nil && data(stuckHome, script) != nil,
+              "A status line that could not go back lost its connection record")
 
         let failedHome = try fixture("write-failure", codex: originalCodex, claude: originalClaude)
         let restricted = failedHome.appendingPathComponent(".claude")
@@ -244,7 +296,7 @@ func runTelemetrySetupChecks() -> [String] {
                   "An unexpected status line shape was changed or blocked the connection")
         }
 
-        // A status line the person changed after the bridge is theirs: no restore over it, no second wrap.
+        // A status line the person changed after the bridge is theirs: it stays, and only TokenCat's env goes.
         let changedHome = try fixture("statusline-user", codex: originalCodex, claude: lineClaude)
         let changedSetup = TelemetrySetup(home: changedHome)
         _ = try changedSetup.connect()
@@ -252,16 +304,15 @@ func runTelemetrySetupChecks() -> [String] {
         changedSettings["statusLine"] = ["type": "command", "command": "echo mine"]
         let userLine = try JSONSerialization.data(withJSONObject: changedSettings, options: [.sortedKeys])
         try userLine.write(to: changedHome.appendingPathComponent(".claude/settings.json"))
-        var said = false
-        do { _ = try changedSetup.disconnect() } catch { said = error.localizedDescription.contains("상태 표시줄도 지금 설정 그대로 두었습니다") }
-        let changedAgain = try changedSetup.connect()
-        check(said && data(changedHome, ".claude/settings.json") == userLine && changedAgain.changedFiles.isEmpty
-              && statusLine(changedHome)?["command"] as? String == "echo mine",
-              "A status line changed by the person was restored over, wrapped again, or not reported")
+        let changedResult = try changedSetup.disconnect()
+        check(changedResult.message.contains("상태 표시줄도 지금 설정 그대로 두었습니다") && statusLine(changedHome)?["command"] as? String == "echo mine"
+              && object(changedHome, ".claude/settings.json")?["env"] == nil && object(changedHome, ".claude/settings.json")?["theme"] as? String == "dark"
+              && data(changedHome, ".codex/config.toml") == Data(originalCodex.utf8) && data(changedHome, script) == nil,
+              "A status line changed by the person was restored over, TokenCat's env stayed, or the change was not reported")
 
-        // Settings Claude Code rewrote after the connection (its own formatting, a new key): the whole-file restore is
-        // refused, yet the status line still running the bridge goes back to the original command, byte for byte, with
-        // the env and the new key kept, the bridge removed, and no second wrap at the next launch.
+        // Settings Claude Code rewrote after the connection (its own formatting, a new key): the status line still running
+        // the bridge goes back to the original command, byte for byte (that file is backed up), then TokenCat's env goes
+        // with every other key kept, and the bridge is removed.
         func literal(_ string: String) -> String {
             String(decoding: (try? JSONSerialization.data(withJSONObject: string, options: [.fragmentsAllowed, .withoutEscapingSlashes])) ?? Data(), as: UTF8.self)
         }
@@ -276,16 +327,17 @@ func runTelemetrySetupChecks() -> [String] {
         rewritten["enabledPlugins"] = ["sample@market": true]
         let claudeEdit = try javaScriptStyle(rewritten, prefix: "  \"someFloat\": 0.1,\n")
         try claudeEdit.write(to: ownHome.appendingPathComponent(".claude/settings.json"))
-        var ownRefusal = ""
-        do { _ = try ownSetup.disconnect() } catch { ownRefusal = error.localizedDescription }
+        let ownResult = try ownSetup.disconnect()
         let putBack = String(decoding: claudeEdit, as: UTF8.self).replacingOccurrences(of: literal(TelemetrySetup.statusLineCommand), with: literal(originalCommand))
-        check(ownRefusal.hasPrefix("연결 후 Claude Code 설정이 수정됐습니다") && ownRefusal.contains("Claude Code 상태 표시줄은 원래 명령으로 되돌렸습니다")
-              && data(ownHome, ".claude/settings.json") == Data(putBack.utf8) && (object(ownHome, ".claude/settings.json")?["env"] as? [String: Any])?["OTEL_LOGS_EXPORTER"] as? String == "otlp"
+        let ownBackup = backupFiles(ownHome, prefix: "before-disconnect-")
+        let ownAfter = object(ownHome, ".claude/settings.json")
+        check(ownResult.message.contains("Claude Code 상태 표시줄은 원래 명령으로 되돌렸습니다") && ownResult.restartRequired == [.codex, .claude]
+              && ownBackup.count == 1 && data(ownHome, ownBackup[0]) == Data(putBack.utf8)
+              && statusLine(ownHome)?["command"] as? String == originalCommand && statusLine(ownHome)?["padding"] as? Int == 0
+              && ownAfter?["env"] == nil && ownAfter?["enabledPlugins"] != nil && ownAfter?["someFloat"] as? Double == 0.1
+              && data(ownHome, ".codex/config.toml") == Data(originalCodex.utf8)
               && data(ownHome, script) == nil && data(ownHome, sidecar) == nil,
-              "An edited file kept the bridge, changed more than the status line command, or left the bridge behind")
-        let ownAgain = try ownSetup.connect()
-        check(ownAgain.changedFiles.isEmpty && data(ownHome, ".claude/settings.json") == Data(putBack.utf8) && data(ownHome, script) == nil,
-              "The next launch wrapped a restored status line again")
+              "An edited file kept TokenCat's env or the bridge, lost a key the client added, or the status line step was not exact")
 
         // A bridge without its original command: recreated from the record when the sidecar went missing; settings copied
         // from another Mac (bridge named, nothing recorded here) or another spelling of the bridge are reported, never wrapped.
@@ -356,9 +408,8 @@ func runTelemetrySetupChecks() -> [String] {
         check(data(oldHome, ".claude/settings.json") == Data(lineClaude.utf8) && data(oldHome, ".codex/config.toml") == Data(originalCodex.utf8)
               && data(oldHome, script) == nil && data(oldHome, sidecar) == nil,
               "A migrated connection did not restore the exact pre-connection settings and status line")
-        // Edited after the 0.8.0 connection (the user's case; that whole-file restore already refuses): the file is backed
-        // up as it is, only the command literal changes (its formatting and `0.1` stay), and disconnect puts those exact
-        // pre-bridge bytes back while refusing the whole-file restore.
+        // Edited after the 0.8.0 connection: the migration backs the file up as it is and changes only the command literal
+        // (its formatting and `0.1` stay); disconnect puts those exact pre-bridge bytes back, then takes out TokenCat's env.
         let editedOldHome = try legacy("legacy-edited")
         var edited = object(editedOldHome, ".claude/settings.json") ?? [:]
         edited["theme"] = "light"
@@ -370,11 +421,13 @@ func runTelemetrySetupChecks() -> [String] {
         let editedPreBridge = data(editedOldHome, support + "/telemetry-backups/\(backupFolder)/" + TelemetrySetup.preBridgeBackupName)
         check(data(editedOldHome, ".claude/settings.json") == Data(editedBridged.utf8) && editedPreBridge == editedBytes,
               "The bridge migration reformatted an edited file or did not back it up first")
-        var oldRefusal = ""
-        do { _ = try TelemetrySetup(home: editedOldHome).disconnect() } catch { oldRefusal = error.localizedDescription }
-        check(oldRefusal.contains("Claude Code 상태 표시줄은 원래 명령으로 되돌렸습니다") && data(editedOldHome, ".claude/settings.json") == editedBytes
+        let oldResult = try TelemetrySetup(home: editedOldHome).disconnect()
+        let oldBackup = backupFiles(editedOldHome, prefix: "before-disconnect-")
+        check(oldResult.message.contains("Claude Code 상태 표시줄은 원래 명령으로 되돌렸습니다") && oldBackup.count == 1
+              && data(editedOldHome, oldBackup[0]) == editedBytes && object(editedOldHome, ".claude/settings.json")?["env"] == nil
+              && object(editedOldHome, ".claude/settings.json")?["theme"] as? String == "light" && statusLine(editedOldHome)?["command"] as? String == originalCommand
               && data(editedOldHome, script) == nil && data(editedOldHome, sidecar) == nil,
-              "An edited 0.8.0 connection did not get its exact pre-bridge settings back or kept the bridge")
+              "An edited 0.8.0 connection did not get its exact pre-bridge settings back first, kept TokenCat's env, or kept the bridge")
         // Without a Claude entry (its env was already there), the pre-bridge file becomes the entry's exact backup.
         let entrylessHome = try legacy("legacy-entryless", claudeEntry: false)
         let preBridge = data(entrylessHome, ".claude/settings.json")

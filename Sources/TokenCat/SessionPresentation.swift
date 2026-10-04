@@ -93,16 +93,6 @@ struct SessionCounts: Equatable {
     var phase: TokenActivityState = .idle
 
     var runningGroups: Int { input + retrying + tool + working }
-    func count(_ state: SessionDisplayState) -> Int {
-        switch state {
-        case .input: return input
-        case .retrying: return retrying
-        case .tool: return tool
-        case .working: return working
-        case .waiting: return waiting
-        default: return 0
-        }
-    }
     var liveGroups: Int { runningGroups + waiting }
 
     init() {}
@@ -198,7 +188,7 @@ struct ContextSlot: Equatable {
 }
 
 /// An account usage-limit window as last recorded: Codex from its logs, Claude from Claude Code's status line
-/// (`recordedAt` is then TokenCat's receipt). Never projected forward.
+/// (`recordedAt` is then TokenCat's receipt) or the Claude desktop app's usage history (no reset time). Never projected forward.
 struct UsageLimitSummary: Equatable {
     var usedPercent: Double
     var windowMinutes: Int?
@@ -258,7 +248,8 @@ struct UsageLimitSummary: Equatable {
     }
     func help(now: Date) -> String {
         let basis = source == .codex ? "Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다."
-            : "Claude Code가 상태 표시줄로 마지막으로 보낸 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude Code를 사용할 때만 갱신됩니다."
+            : loc("Claude Code가 상태 표시줄로 보냈거나 Claude 데스크톱 앱이 기록한 마지막 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude를 사용할 때만 갱신됩니다.",
+                  "The last Claude account usage Claude Code sent to its status line or the Claude desktop app recorded. It isn't a live balance and updates only while you use Claude.")
         return basis + " 소진 시점을 예측하지 않습니다." + (otherText(now: now).map { "\n" + $0 } ?? "")
     }
 }
@@ -582,11 +573,13 @@ enum SessionPresentation {
     /// longer window), the other one named in help; when both have reset, the latest reset reads "초기화됨" for a day.
     static func claudeUsageLimit(_ limits: ClaudeUsageLimits, now: Date) -> UsageLimitSummary? {
         let windows = [(limits.fiveHour, 300), (limits.sevenDay, 10_080)].compactMap { window, minutes in window.map { ($0, minutes) } }
-        let live = windows.filter { $0.0.resetsAt > now }
-        let top = live.max { ($0.0.usedPercent, $0.1) < ($1.0.usedPercent, $1.1) } ?? windows.max { $0.0.resetsAt < $1.0.resetsAt }
+        // Without a reset time (the desktop app), one full window after the record, as `UsageLimitSummary.resetDate`.
+        func reset(_ window: (ClaudeLimitWindow, Int)) -> Date { window.0.resetsAt ?? window.0.receivedAt.addingTimeInterval(Double(window.1) * 60) }
+        let live = windows.filter { reset($0) > now }
+        let top = live.max { ($0.0.usedPercent, $0.1) < ($1.0.usedPercent, $1.1) } ?? windows.max { reset($0) < reset($1) }
         guard let top else { return nil }
-        let other = live.first { $0.1 != top.1 }.map {
-            UsageLimitSummary.OtherWindow(usedPercent: $0.0.usedPercent, windowMinutes: $0.1, resetsAt: $0.0.resetsAt)
+        let other = live.first { $0.1 != top.1 }.flatMap { window in
+            window.0.resetsAt.map { UsageLimitSummary.OtherWindow(usedPercent: window.0.usedPercent, windowMinutes: window.1, resetsAt: $0) }
         }
         return UsageLimitSummary(usedPercent: top.0.usedPercent, windowMinutes: top.1, resetsAt: top.0.resetsAt,
                                  recordedAt: top.0.receivedAt, source: .claude, other: other)

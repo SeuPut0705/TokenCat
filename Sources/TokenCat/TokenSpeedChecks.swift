@@ -57,6 +57,18 @@ func runTokenSpeedChecks() -> [String] {
     let sideOnly = TokenSpeed.apply([claudeMain], measurements: [sideRequest])
     check("a different-model rate is kept when it is the only match", sideOnly.count == 1
           && sideOnly[0].speedMeasurement?.model == "side-model")
+    var loggedMain = claudeMain
+    loggedMain.requestIDs = ["req-main"]
+    var loggedRequest = mainRequest
+    loggedRequest.requestID = "req-main"
+    let unloggedSide = reading(["provider": "claude", "sessionID": "c", "model": "main-model", "at": "2026-10-04T10:00:05Z",
+                                "requestID": "req-side", "outputTokens": 8, "requestDurationMs": 2_773])
+    let filtered = TokenSpeed.apply([loggedMain], measurements: [loggedRequest, unloggedSide])
+    check("a same-model side request missing from the log does not replace the logged response",
+          filtered.count == 1 && filtered[0].speedMeasurement?.requestID == "req-main")
+    let logless = TokenSpeed.apply([], measurements: [sideRequest, mainRequest])
+    check("a session without a log keeps one telemetry row per model", logless.count == 2
+          && Set(logless.compactMap { $0.speedMeasurement?.model }) == ["main-model", "side-model"])
     var agent = server
     agent.agentID = "worker"
     let identified = TokenSpeed.apply([a, child], measurements: [agent])

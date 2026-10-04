@@ -38,6 +38,8 @@ enum TokenCatMain {
         }
         if CommandLine.arguments.contains("--connect-telemetry") || CommandLine.arguments.contains("--disconnect-telemetry") {
             let connect = CommandLine.arguments.contains("--connect-telemetry")
+            // The app's automatic connection follows the last command, a refused disconnect included: the intent is the same.
+            UserDefaults.standard.set(!connect, forKey: TelemetrySetup.optOutKey)
             if connect, !LocalTelemetryCollector.isOwnCollectorRunning() {
                 print("실행 중인 TokenCat 로컬 수집기가 없습니다. 앱을 먼저 실행하세요.")
                 exit(1)

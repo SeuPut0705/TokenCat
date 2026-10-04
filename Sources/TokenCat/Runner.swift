@@ -33,12 +33,8 @@ enum Runner {
     static let size = NSSize(width: 32, height: 20)
     static let headSize = NSSize(width: 12, height: 11)
     static let expectedFrames: [RunnerPose: Int] = [.sit: 2, .sleep: 2, .walk: 4, .run: 6, .alert: 2, .yawn: 1, .content: 2]
-    /// Run-only API kept for callers that predate poses.
-    static let frameCount = 6
     private static let cell = (width: 30, height: 18)
     private static let cache = ArtworkCache()
-
-    static func image(frame: Int) -> NSImage { image(pose: .run, frame: frame) }
 
     static func frames(_ pose: RunnerPose) -> Int { expectedFrames[pose] ?? 1 }
 
@@ -54,31 +50,15 @@ enum Runner {
 
     /// Effect layer for `pose` at animation `step` (the sleep z): a template mask, alpha 0/255, in the same 32 × 20 pt
     /// frame as `image(pose:frame:)`. Draw it at the sprite's snapped origin filled with `secondaryLabelColor`
-    /// (Increase Contrast `labelColor`, highlighted the selected text colour): AppKit through `drawFX`, SwiftUI as
-    /// `Image(nsImage:)` with `.renderingMode(.template)` and `.interpolation(.none)` over the sprite. nil draws nothing.
-    /// Sleep cycles `fxSteps(.sleep)` = 3 steps (K-3): 0 = body frame 0 without z, 1 = frame 1 + zS, 2 = frame 0 + zL.
+    /// (Increase Contrast `labelColor`, highlighted the selected text colour) in its own transparency layer with a
+    /// `sourceIn` fill (the menu bar's `drawRunner`), SwiftUI as `Image(nsImage:)` with `.renderingMode(.template)` and
+    /// `.interpolation(.none)` over the sprite. nil draws nothing. The sprite has no z since K-2, so every place that shows
+    /// a sleeping cat draws this after the sprite.
+    /// Sleep cycles 3 steps (K-3): 0 = body frame 0 without z, 1 = frame 1 + zS, 2 = frame 0 + zL.
     /// Steps wrap; the still and deep-sleep frame use the last step (zL).
     static func fxMask(pose: RunnerPose, step: Int) -> NSImage? {
         guard let masks = cache.fx[pose], !masks.isEmpty else { return nil }
         return masks[((step % masks.count) + masks.count) % masks.count]
-    }
-
-    /// Steps in `pose`'s effect cycle; 0 when the pose has no effect layer.
-    static func fxSteps(_ pose: RunnerPose) -> Int { cache.fx[pose]?.count ?? 0 }
-
-    /// Fills `fxMask(pose:step:)` with `color` in `rect`, the rect the sprite frame was just drawn in (same snapped
-    /// origin, 32 × 20 pt), without interpolation. The fill stays inside its own layer, so sprite pixels keep their colours.
-    /// The sprite has no z since K-2, so every place that shows a sleeping cat must call this after the sprite.
-    static func drawFX(pose: RunnerPose, step: Int, in rect: NSRect, color: NSColor) {
-        guard let mask = fxMask(pose: pose, step: step), let context = NSGraphicsContext.current else { return }
-        context.saveGraphicsState()
-        defer { context.restoreGraphicsState() }
-        context.imageInterpolation = .none
-        context.cgContext.beginTransparencyLayer(in: rect, auxiliaryInfo: nil)
-        mask.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-        color.setFill()
-        rect.fill(using: .sourceIn)
-        context.cgContext.endTransparencyLayer()
     }
 
     /// Frame timing for `pose` from the manifest (`durations`, `holdSequence`, `doubleEvery`, `doubleGap`).

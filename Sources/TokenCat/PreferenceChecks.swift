@@ -509,7 +509,9 @@ func runShellChecks() -> [String] {
           && limits([], true, at.addingTimeInterval(-180)) == (.received, "최근 수신 3분 전", nil)
           && limits([.originalRecreated], true, at.addingTimeInterval(-50)) == (.received, "최근 수신 1분 이내", "원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다")
           && limits([], true, nil) == (.waiting, "아직 받지 못함 · Claude Code를 새로 실행하면 표시", nil)
-          && limits([], false, nil).text == "연결 안 함" && limits([], nil, nil).row == .info,
+          && limits([], false, nil).text == "연결 안 함" && limits([], nil, nil).row == .info
+          && TelemetryStatusRow.claudeLimits(notes: [], bridged: false, received: at.addingTimeInterval(-720), desktop: true, now: at)
+              == (.received, "Claude 데스크톱 앱 기록 · 12분 전", nil),
           "Claude limit row is not checked empty status line → skipped → received → waiting → none")
     print("Shell checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures

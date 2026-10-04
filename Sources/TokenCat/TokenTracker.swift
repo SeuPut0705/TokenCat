@@ -43,7 +43,8 @@ final class TokenTracker {
             discover(now: now)
             lastDiscovery = now
         }
-        for file in files.values { file.read(tailLimit: initialTailBytes) }
+        // One pool per file: a cold start parses MBs of tails, and without it every temporary lives until the sample ends.
+        for file in files.values { autoreleasepool { file.read(tailLimit: initialTailBytes) } }
         return files.values.compactMap { file -> TokenReading? in
             let parser = file.parser
             guard parser.lastActivity != nil else { return nil }
@@ -69,7 +70,6 @@ final class TokenTracker {
             reading.rateLimit = parser.rateLimit
             reading.context = parser.context
             reading.model = parser.model ?? completion?.model
-            reading.measurementModel = completion?.model
             reading.lastActivity = parser.lastActivity
             reading.lastLogAt = parser.lastLogAt
             reading.measurementAt = completion?.finishedAt ?? parser.lastActivity
@@ -79,15 +79,14 @@ final class TokenTracker {
             reading.currentTurnOutputTokens = parser.currentTurnOutputTokens
             reading.lastOutputAt = parser.lastOutputAt
             reading.lastOutputDelta = parser.lastOutputDelta
+            reading.requestIDs = parser.requestIDs
             reading.recentOutputs = parser.recentOutputs.filter {
                 let age = now.timeIntervalSince($0.at)
                 return age >= -5 && age <= Self.recentOutputWindow
             }
             reading.sampledAt = now
-            reading.sessionCount = 1
             // Output of the last fully observed completed turn; its duration is a separate field.
             reading.lastOutputTokens = completion?.output
-            reading.status = running ? "진행 중" : completion == nil ? "출력 기록" : "완료된 턴"
             return reading
         }.sorted {
             if $0.active != $1.active { return $0.active }
@@ -212,9 +211,11 @@ private final class TokenFileCursor {
     }
 
     func read(tailLimit: Int) {
-        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
-              let size = (attributes[.size] as? NSNumber)?.uint64Value else { return }
-        let currentIdentity = "\(attributes[.systemNumber] ?? 0)-\(attributes[.systemFileNumber] ?? 0)"
+        // stat(2), not attributesOfItem: this runs for every tracked log on every tick, and the latter also reads xattrs.
+        var info = stat()
+        guard stat(url.path, &info) == 0 else { return }
+        let size = UInt64(info.st_size)
+        let currentIdentity = "\(info.st_dev)-\(info.st_ino)"
         if initialized && (identity != currentIdentity || size < offset) {
             offset = 0
             initialized = false
@@ -321,9 +322,6 @@ private final class TokenFileCursor {
 
     private func restoreCodexMetadata(handle: FileHandle, size: UInt64) {
         let lowerBound = size > 16_777_216 ? size - 16_777_216 : 0
-        var end = size
-        var partial = Data()
-        var dropping = true // A not-yet-terminated last record cannot supply metadata.
         var lifecycle: CodexMetadataCheckpoint?
         var opener: CodexMetadataCheckpoint?
         var contexts: [CodexMetadataCheckpoint] = []
@@ -354,35 +352,11 @@ private final class TokenFileCursor {
             } else if contexts.count < 16 { contexts.append(checkpoint) }
         }
         do {
-            while end > lowerBound && !metadataReady() {
-                let start = max(lowerBound, end > 65_536 ? end - 65_536 : 0)
-                try handle.seek(toOffset: start)
-                let chunk = try handle.read(upToCount: Int(end - start)) ?? Data()
-                guard !chunk.isEmpty else { break }
-                var cursor = chunk.endIndex
-                while cursor > chunk.startIndex {
-                    let newline = chunk[..<cursor].lastIndex(of: 10)
-                    let lineStart = newline.map { chunk.index(after: $0) } ?? chunk.startIndex
-                    if !dropping {
-                        if partial.count + chunk.distance(from: lineStart, to: cursor) <= 65_536 {
-                            var assembled = Data(chunk[lineStart..<cursor])
-                            assembled.append(partial)
-                            partial = assembled
-                        } else {
-                            partial.removeAll(keepingCapacity: true)
-                            dropping = true
-                        }
-                    }
-                    guard let newline else { break }
-                    if !dropping { inspect(partial) }
-                    partial.removeAll(keepingCapacity: true)
-                    dropping = false
-                    cursor = newline
-                    if metadataReady() { break }
-                }
-                end = start
+            // A not-yet-terminated last record cannot supply metadata; the scanner skips it.
+            try scanLinesBackward(handle: handle, size: size, lowerBound: lowerBound) { line, _ in
+                inspect(line)
+                return metadataReady()
             }
-            if end == 0 && !dropping && !partial.isEmpty { inspect(partial) }
             parser.restoreCodexMetadata(context: matchingContext(), lifecycle: lifecycle, opener: opener, usage: latestUsage)
         } catch { return }
     }
@@ -496,6 +470,8 @@ final class TokenLogParser {
     /// later records continue it, e.g. a blocking Stop hook. Subagents write no stop markers.
     private var softClosed = false
     private var seenRecords = Set<String>()
+    /// Claude: request IDs of logged responses, so telemetry for an unlogged side request is not taken as this log's.
+    private(set) var requestIDs = Set<String>()
     private var outputMessageID: String?
     private static let fractionalDate: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
@@ -1005,7 +981,9 @@ final class TokenLogParser {
         sessionID = record["sessionId"] as? String ?? sessionID
         let message = record["message"] as? [String: Any] ?? [:]
         if type == "user" {
-            guard record["isMeta"] as? Bool != true, record["isCompactSummary"] as? Bool != true else { return }
+            // A peer-session message is marked isMeta but carries `origin`, and starts a turn like a prompt.
+            guard record["isMeta"] as? Bool != true || record["origin"] is [String: Any],
+                  record["isCompactSummary"] as? Bool != true else { return }
             switch Self.claudeInput(record, message: message) {
             case .human:
                 begin(id: record["uuid"] as? String, date: date)
@@ -1026,6 +1004,10 @@ final class TokenLogParser {
             case .none: break
             }
         } else if type == "assistant" {
+            if let request = record["requestId"] as? String {
+                if requestIDs.count >= 256 { requestIDs.removeAll(keepingCapacity: true) }
+                requestIDs.insert(request)
+            }
             guard let usage = message["usage"] as? [String: Any],
                   let count = Self.integer(usage["output_tokens"]),
                   let id = message["id"] as? String, !previousMessages.contains(id) else { return }
@@ -1159,7 +1141,8 @@ final class TokenLogParser {
             let ends = ["turn_duration", "stop_hook_summary", "turn_aborted", "task_aborted", "interrupted"]
             return ends.contains(record["subtype"] as? String ?? "") ? .end : nil
         case "user":
-            guard record["isMeta"] as? Bool != true, record["isCompactSummary"] as? Bool != true else { return nil }
+            guard record["isMeta"] as? Bool != true || record["origin"] is [String: Any],
+                  record["isCompactSummary"] as? Bool != true else { return nil }
             if record["toolEndsTurn"] as? Bool == true { return .end }
             switch Self.claudeInput(record, message: record["message"] as? [String: Any] ?? [:]) {
             case .human: return .start

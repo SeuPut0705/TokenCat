@@ -118,7 +118,8 @@ enum StatusBarContent {
             case .battery:
                 guard system.batteryPresent else { return nil }
                 let value = percentage(system.batteryPercent)
-                return StatusBarMetric(id: id, label: "BAT", value: value, symbol: "battery.75percent",
+                // "battery.N", not "battery.Npercent": the latter names exist from macOS 14, the former alias them there.
+                return StatusBarMetric(id: id, label: "BAT", value: value, symbol: "battery.\(Int(((system.batteryPercent ?? 100) / 25).rounded()) * 25)",
                                        detail: "배터리 \(value) · \(Format.power(system))")
             case .network:
                 return StatusBarMetric(id: id, label: "NET", value: "↑\(upload)\n↓\(download)", symbol: "network",
@@ -785,8 +786,8 @@ func runStatusBarChecks() -> [String] {
     preferences.order = [.ai, .cpu, .network, .memory, .disk, .battery]
     preferences.visible = [.ai, .cpu]
     let tokens = [
-        TokenReading(source: .codex, id: "active-codex", model: "current-codex", measurementModel: "previous-codex", active: true),
-        TokenReading(source: .claude, id: "active-claude", model: "current-claude", measurementModel: "previous-claude", active: true),
+        TokenReading(source: .codex, id: "active-codex", model: "current-codex", active: true),
+        TokenReading(source: .claude, id: "active-claude", model: "current-claude", active: true),
         TokenReading(source: .codex, id: "inactive-codex", active: false)
     ]
     let selected = metrics(system, tokens)

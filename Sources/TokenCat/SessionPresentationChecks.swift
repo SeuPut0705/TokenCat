@@ -462,6 +462,19 @@ func runSessionPresentationChecks() -> [String] {
     check(claudeSummary?.isOld(now: now) == false && SessionPresentation.claudeUsageLimit(
             ClaudeUsageLimits(sevenDay: claudeWindow(31, resetsIn: day, received: -900)), now: now)?.isOld(now: now) == true,
           "a Claude limit received over 10 minutes ago reads weaker")
+    // The Claude desktop app's usage history: the last sample only, no reset time (none is shown), reset one window after it.
+    let desktopAt = Date(timeIntervalSince1970: 1_790_000_000)
+    func desktop(_ version: Int, recorded: TimeInterval) -> ClaudeUsageLimits? {
+        let t = Int(desktopAt.addingTimeInterval(recorded).timeIntervalSince1970 * 1_000)
+        return ClaudeUsageLimits.decodeDesktopHistory(Data(#"{"version":\#(version),"samples":[{"t":1789000000000,"org":"x","u":{"fh":90,"sd":90}},{"t":\#(t),"org":"x","u":{"fh":17,"sd":5}}]}"#.utf8))
+    }
+    let desktopLive = desktop(2, recorded: -720)
+    let desktopSummary = desktopLive.flatMap { SessionPresentation.claudeUsageLimit($0, now: desktopAt) }
+    let desktopOld = desktop(2, recorded: -6 * 3_600).flatMap { SessionPresentation.claudeUsageLimit($0, now: desktopAt) }
+    check(desktop(1, recorded: -720) == nil && desktopLive?.fiveHour == ClaudeLimitWindow(usedPercent: 17, resetsAt: nil, receivedAt: desktopAt.addingTimeInterval(-720))
+          && desktopSummary?.value(now: desktopAt) == "17% 사용" && desktopSummary?.details(now: desktopAt) == ["12분 전 기록"]
+          && desktopSummary?.other == nil && desktopOld?.title == "Claude 주간 한도" && desktopOld?.usedPercent == 5,
+          "Claude desktop usage: last sample only, no invented reset time, a 5-hour value gone after five hours")
     // Receipts merge per window (newer wins, a missing window is kept) and persist as numbers and times only.
     let newer = ClaudeUsageLimits(fiveHour: claudeWindow(44, resetsIn: 7_000, received: -5))
     let merged = bothLive.merged(newer).merged(ClaudeUsageLimits(fiveHour: claudeWindow(10, resetsIn: 7_000, received: -500)))

@@ -63,7 +63,27 @@ extension TelemetrySetupError {
 
 /// Owns only the opt-in, loopback telemetry settings. It does not restart either client.
 final class TelemetrySetup {
-    static let port = 16493
+    static let port = Int(LocalTelemetryCollector.port)
+    /// Set by `--disconnect-telemetry` (even when it refuses) and cleared by `--connect-telemetry`; the app does not
+    /// connect automatically while it is set.
+    static let optOutKey = "telemetryDisconnected"
+    /// The Claude Code env values TokenCat sets. Disconnecting an edited file reverts only keys that still hold them.
+    private static let claudeEnv: [String: String] = {
+        let endpoint = "http://127.0.0.1:\(port)"
+        return ["CLAUDE_CODE_ENABLE_TELEMETRY": "1", "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
+                "OTEL_LOGS_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/json",
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "\(endpoint)/v1/logs", "OTEL_LOGS_EXPORT_INTERVAL": "1000",
+                "OTEL_TRACES_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/json",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "\(endpoint)/v1/traces", "OTEL_TRACES_EXPORT_INTERVAL": "1000"]
+    }()
+    /// Content-logging switches; TokenCat sets an enabled one to "0".
+    private static let claudeLogKeys = ["OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_DETAILS",
+                                        "OTEL_LOG_TOOL_CONTENT", "OTEL_LOG_RAW_API_BODIES"]
+    /// The Codex `[otel]` exporters TokenCat writes, in the order it appends them.
+    private static let codexExporters: [(key: String, value: String)] = [("exporter", "logs"), ("metrics_exporter", "metrics"),
+                                                                          ("trace_exporter", "traces")].map {
+        ($0.0, "{ otlp-http = { endpoint = \"http://127.0.0.1:\(port)/v1/\($0.1)\", protocol = \"json\" } }")
+    }
     private static let mutationLock = NSLock()
     private let home: URL
     private let files = FileManager.default
@@ -266,33 +286,48 @@ final class TelemetrySetup {
             throw TelemetrySetupError.invalid("실측 백업 정보가 올바르지 않아 설정을 변경하지 않았습니다.")
         }
         let directory = support.appendingPathComponent("telemetry-backups/\(manifest.backupDirectory)", isDirectory: true)
-        // Whole-file checks deliberately refuse to overwrite any intervening user edit, in either file. Only the status
-        // line is still put back then, since it runs a script from this folder.
-        var currents: [TokenSource: Data] = [:]
-        var edited: [TokenSource] = []
+        // A file unchanged since the connection gets its exact original bytes back. One edited since (Codex and Claude Code
+        // rewrite their own settings) loses only what TokenCat added; a TokenCat key that now holds another value refuses
+        // the whole restore, and then only the status line still goes back, since it runs a script from this folder.
+        var restored: [(entry: Manifest.Entry, current: Data, replacement: Data?)] = []
+        var refused: [TokenSource] = []
+        var statusLine: String?
         for entry in manifest.entries {
-            if let current = try read(configURL(entry.source)), hash(current) == entry.connectedSHA256 { currents[entry.source] = current }
-            else { edited.append(entry.source) }
-        }
-        guard edited.isEmpty else {
-            let statusLine = restoreStatusLine(manifest, directory: directory)
-            throw TelemetrySetupError.conflict("연결 후 \(edited.map(\.title).joined(separator: ", ")) 설정이 수정됐습니다. 사용자 변경을 보존하기 위해 자동 복구하지 않았습니다." + statusLine)
-        }
-        var restored: [(entry: Manifest.Entry, current: Data, original: Data?)] = []
-        for entry in manifest.entries {
-            guard let current = currents[entry.source] else { continue }
-            let original = entry.existed ? try read(backupURL(entry.source, directory: directory)) : nil
-            guard !entry.existed || original.map(hash) == entry.originalSHA256 else {
+            let url = configURL(entry.source)
+            let backup = entry.existed ? try read(backupURL(entry.source, directory: directory)) : nil
+            guard !entry.existed || backup.map(hash) == entry.originalSHA256 else {
                 throw TelemetrySetupError.invalid("원본 실측 백업이 없거나 변경돼 설정을 복구하지 않았습니다.")
             }
-            restored.append((entry, current, original))
+            if let current = try read(url), hash(current) == entry.connectedSHA256 {
+                restored.append((entry, current, backup))
+                continue
+            }
+            if entry.source == .claude { statusLine = restoreStatusLine(manifest, directory: directory) }
+            guard let current = try read(url) else { continue }
+            guard let reverted = entry.source == .claude ? revertClaude(current, backup: backup, bridged: manifest.statusLine != nil)
+                                                         : revertCodex(current, backup: backup) else {
+                refused.append(entry.source)
+                continue
+            }
+            if reverted != current { restored.append((entry, current, reverted)) }
         }
-        var completed: [(entry: Manifest.Entry, current: Data, original: Data?)] = []
+        guard refused.isEmpty else {
+            let names = refused.map(\.title).joined(separator: ", ")
+            throw TelemetrySetupError.conflict(loc("연결 후 \(names) 설정이 수정돼 TokenCat 항목만 따로 되돌릴 수 없습니다. 사용자 변경을 보존하기 위해 자동 복구하지 않았습니다.",
+                                                   "\(names) settings changed after the connection, and TokenCat's entries can't be reverted on their own. Nothing was restored automatically, to keep your changes.")
+                                               + (statusLine ?? restoreStatusLine(manifest, directory: directory)))
+        }
+        let stamp = Int(Date().timeIntervalSince1970 * 1_000)
+        var completed: [(entry: Manifest.Entry, current: Data, replacement: Data?)] = []
         do {
             for item in restored {
                 let url = configURL(item.entry.source)
                 guard try read(url) == item.current else { throw TelemetrySetupError.conflict("복구 중 설정이 변경됐습니다.") }
-                if let original = item.original { try atomicWrite(original, to: url, permissions: item.entry.permissions) }
+                if hash(item.current) != item.entry.connectedSHA256 {
+                    let name = "before-disconnect-\(stamp)-" + backupURL(item.entry.source, directory: directory).lastPathComponent
+                    try atomicWrite(item.current, to: directory.appendingPathComponent(name), permissions: 0o600)
+                }
+                if let replacement = item.replacement { try atomicWrite(replacement, to: url, permissions: item.entry.permissions) }
                 else { try files.removeItem(at: url) }
                 completed.append(item)
             }
@@ -302,7 +337,7 @@ final class TelemetrySetup {
             for item in completed.reversed() {
                 do {
                     let url = configURL(item.entry.source)
-                    guard try read(url) == item.original else { rolledBack = false; continue }
+                    guard try read(url) == item.replacement else { rolledBack = false; continue }
                     try atomicWrite(item.current, to: url, permissions: item.entry.permissions)
                 } catch { rolledBack = false }
             }
@@ -310,8 +345,59 @@ final class TelemetrySetup {
         }
         // The restored settings hold the original status line, so the bridge goes too unless something still names it.
         if manifest.statusLine != nil { removeBridgeIfUnused() }
+        // Any entry not put back whole (reverted by key, or with nothing of TokenCat's left) was edited.
+        let edited = restored.filter { hash($0.current) == $0.entry.connectedSHA256 }.count != manifest.entries.count
         return TelemetrySetupResult(changedFiles: restored.map { configURL($0.entry.source).path },
-            restartRequired: restored.map { $0.entry.source }, message: "TokenCat 실측 연결 전의 설정으로 복구했습니다. 클라이언트 재시작 후 적용됩니다.")
+            restartRequired: restored.map { $0.entry.source },
+            message: (edited ? loc("TokenCat이 추가한 실측 설정만 되돌리고 연결 후 바뀐 다른 설정은 그대로 두었습니다. 클라이언트 재시작 후 적용됩니다.",
+                                   "Removed only the telemetry settings TokenCat added and kept every other change made since. Restart the clients to apply.")
+                      : "TokenCat 실측 연결 전의 설정으로 복구했습니다. 클라이언트 재시작 후 적용됩니다.") + (statusLine ?? ""))
+    }
+
+    /// Edited Claude Code settings without TokenCat's env: a key still holding TokenCat's value gets the backup's value back
+    /// (or goes when the backup had none), and a content-logging switch TokenCat set to "0" gets its backed-up value back.
+    /// Every other key stays. Nil when one of TokenCat's keys now holds a value that is neither TokenCat's nor the backup's,
+    /// or when the status line TokenCat wrapped (`bridged`) still runs the bridge in any spelling: its record must outlive
+    /// this attempt.
+    private func revertClaude(_ current: Data, backup: Data?, bridged: Bool) -> Data? {
+        guard var settings = (try? JSONSerialization.jsonObject(with: current)) as? [String: Any],
+              !bridged || !(((settings["statusLine"] as? [String: Any])?["command"] as? String).map(Self.runsBridge) ?? false) else { return nil }
+        guard settings["env"] != nil else { return current }
+        guard var env = settings["env"] as? [String: Any] else { return nil }
+        let before = backup.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }?["env"] as? [String: Any]
+        for (key, value) in Self.claudeEnv where env[key] != nil {
+            if env[key] as? String == value { env[key] = before?[key] }
+            else if (env[key] as? NSObject) != (before?[key] as? NSObject) { return nil }
+        }
+        for key in Self.claudeLogKeys where env[key] as? String == "0" {
+            if let original = before?[key] { env[key] = original }
+        }
+        settings["env"] = env.isEmpty && before == nil ? nil : env
+        return try? settingsData(settings, original: current)
+    }
+
+    /// Edited Codex config without the `[otel]` table connect() appended: removed with its blank line when it is still
+    /// exactly as written and holds nothing else. The file as it is once TokenCat's lines are gone. Nil when the original
+    /// had its own `[otel]` table (TokenCat's keys are mixed into it) or TokenCat's lines changed.
+    private func revertCodex(_ current: Data, backup: Data?) -> Data? {
+        if current == backup { return current }
+        guard let text = String(data: current, encoding: .utf8) else { return nil }
+        let endpoint = "127.0.0.1:\(Self.port)"
+        let original = backup.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        guard !original.components(separatedBy: "\n").contains(where: { $0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("[otel]") })
+        else { return nil }
+        let suffix = text.contains("\r\n") ? "\r" : ""
+        let block = (["[otel]"] + Self.codexExporters.map { "\($0.key) = \($0.value)" }).map { $0 + suffix }
+        var lines = text.components(separatedBy: "\n")
+        guard let start = lines.indices.first(where: { lines[$0...].starts(with: block) }) else {
+            return text.contains(endpoint) ? nil : current
+        }
+        let end = start + block.count
+        let next = lines[end...].first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        guard next.map({ $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }) ?? true else { return nil }
+        lines.removeSubrange((start > 0 && lines[start - 1] == suffix ? start - 1 : start)..<end)
+        let reverted = lines.joined(separator: "\n")
+        return reverted.contains(endpoint) ? nil : Data(reverted.utf8)
     }
 
     private func validated(_ data: Data) -> Manifest? {
@@ -538,13 +624,7 @@ final class TelemetrySetup {
         }
         var env = object["env"] as? [String: Any] ?? [:]
         let endpoint = "http://127.0.0.1:\(Self.port)"
-        let requested: [String: String] = [
-            "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA": "1",
-            "OTEL_LOGS_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL": "http/json",
-            "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT": "\(endpoint)/v1/logs", "OTEL_LOGS_EXPORT_INTERVAL": "1000",
-            "OTEL_TRACES_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/json",
-            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": "\(endpoint)/v1/traces", "OTEL_TRACES_EXPORT_INTERVAL": "1000"
-        ]
+        let requested = Self.claudeEnv
         // A pre-existing global exporter endpoint/headers can redirect or authenticate every signal.
         for key in ["OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"] {
             guard let value = env[key] else { continue }
@@ -569,8 +649,7 @@ final class TelemetrySetup {
             }
         }
         for (key, value) in requested { env[key] = value }
-        for key in ["OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_DETAILS",
-                    "OTEL_LOG_TOOL_CONTENT", "OTEL_LOG_RAW_API_BODIES"] {
+        for key in Self.claudeLogKeys {
             guard let existing = env[key] else { continue }
             let value = (existing as? String ?? String(describing: existing)).lowercased().trimmingCharacters(in: .whitespaces)
             if !["", "0", "false", "no", "off"].contains(value) { env[key] = "0" }
@@ -624,10 +703,7 @@ final class TelemetrySetup {
         var multiline: String? = nil
         var replacements: [Int: String] = [:]
         var found = Set<String>()
-        let endpoint = "http://127.0.0.1:\(Self.port)/v1/"
-        let requested = ["exporter": "{ otlp-http = { endpoint = \"\(endpoint)logs\", protocol = \"json\" } }",
-                         "metrics_exporter": "{ otlp-http = { endpoint = \"\(endpoint)metrics\", protocol = \"json\" } }",
-                         "trace_exporter": "{ otlp-http = { endpoint = \"\(endpoint)traces\", protocol = \"json\" } }"]
+        let requested = Dictionary(uniqueKeysWithValues: Self.codexExporters.map { ($0.key, $0.value) })
         for index in lines.indices {
             let line = lines[index].hasSuffix("\r") ? String(lines[index].dropLast()) : lines[index]
             let wasMultiline = multiline != nil
@@ -685,7 +761,7 @@ final class TelemetrySetup {
         }
         guard multiline == nil else { throw TelemetrySetupError.invalid("Codex TOML 문자열이 닫히지 않아 변경하지 않았습니다.") }
         for (index, replacement) in replacements { lines[index] = replacement }
-        let missing = ["exporter", "metrics_exporter", "trace_exporter"].filter { !found.contains($0) }.map { "\($0) = \(requested[$0]!)\(suffix)" }
+        let missing = Self.codexExporters.filter { !found.contains($0.key) }.map { "\($0.key) = \($0.value)\(suffix)" }
         if sectionStart != nil {
             let insertion = sectionEnd == lines.count && lines.last == "" ? sectionEnd - 1 : sectionEnd
             lines.insert(contentsOf: missing, at: insertion)

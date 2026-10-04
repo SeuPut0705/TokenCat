@@ -41,11 +41,11 @@
   - `zL` 4 × 4: `####` · `..#.` · `.#..` · `####`
 - 배치(셀 좌표): `{"pose":"sleep","step":1,"glyph":"zS","x":22,"y":3}`, `{"pose":"sleep","step":2,"glyph":"zL","x":25,"y":0}`.
   - 스펙의 zS y 4는 오른쪽 귀 외곽선(25,8)과 대각선으로 닿아 1x에서 z가 귀에 붙어 보였다. 한 줄 올려 8방향 1 px 간격을 지킨다.
-- 잠 주기(`Runner.fxSteps(.sleep)` = 3, 단계는 순환): 0 = 몸 1번, z 없음 → 1 = 몸 2번 + zS → 2 = 몸 1번 + zL. 정지·깊은 잠 프레임은 마지막 단계(zL)다.
+- 잠 주기(3단계, 단계는 순환): 0 = 몸 1번, z 없음 → 1 = 몸 2번 + zS → 2 = 몸 1번 + zL. 정지·깊은 잠 프레임은 마지막 단계(zL)다.
 - 앱은 `Runner.fxMask(pose:step:)`로 32 × 20 pt 템플릿 마스크(알파 0/255)를 받아, 스프라이트와 같은 스냅 원점에 재샘플링 없이 `secondaryLabelColor`(대비 증가·메뉴 막대 항목이 열린 상태에서는 `labelColor`)로 채워 그린다. 마스크 픽셀은 검정 불투명이다.
-  - AppKit: 메뉴 막대(`StatusBarContentView`)는 검사에서 마스크를 주입할 수 있도록 같은 방식(자체 투명 레이어, `sourceIn` 채움, 보간 없음)을 직접 그리고, 다른 AppKit 그리기는 `Runner.drawFX(pose:step:in:color:)`를 쓴다. 스프라이트 색은 바뀌지 않는다. SwiftUI: 스프라이트 위에 `Image(nsImage: mask).renderingMode(.template).interpolation(.none)`를 겹친다.
+  - AppKit: 메뉴 막대(`StatusBarContentView.drawRunner`)는 검사에서 마스크를 주입할 수 있도록 자체 투명 레이어에 `sourceIn` 채움으로 보간 없이 직접 그린다. 스프라이트 색은 바뀌지 않는다. SwiftUI: 스프라이트 위에 `Image(nsImage: mask).renderingMode(.template).interpolation(.none)`를 겹친다.
   - z는 스프라이트에 없으므로 잠든 고양이를 보이는 모든 곳(메뉴 막대·`--snapshot-menubar --fixtures`·설정 범례·빈 화면)이 효과 레이어를 함께 그린다. 단계 번호는 매니페스트를 따른다(`RunnerAnimator.smallZ` = 1, `largeZ` = 2).
-  - 정지·깊은 잠 단계(`fxSteps(.sleep) - 1`)의 zL은 32 × 20 pt 이미지의 x 26–29, y 1–4에 10 px(@2x 40 px)로 놓인다.
+  - 정지·깊은 잠 단계(마지막 단계)의 zL은 32 × 20 pt 이미지의 x 26–29, y 1–4에 10 px(@2x 40 px)로 놓인다.
   - 대비 근사(위 미리보기 색 기준): 밝은 막대 3.9:1, 어두운 막대 5.9:1, 색이 비치는 막대(#6E86B8) 2.2:1. 같은 막대에서 `labelColor` 근사(85%)는 3.1:1이다. 실제 vibrancy 막대에서 3:1 미만이면 `labelColor`로 바꾼다(실기 미확인).
 
 ## 픽셀 머리 (B-3)
@@ -123,4 +123,4 @@
 - `work/runner-v2-contact-8x.png`: 8배 확대, 밝은·어두운 배경, 1 px 격자. 잠은 A·B·C 세 단계로, z는 라벨색 근사(밝은 막대 검정 50%, 어두운 막대 흰색 55%)로 그림.
 - `work/runner-v2-menubar.png`, `work/runner-v2-menubar-3x.png`: 밝은·어두운·색이 비치는 메뉴 막대에서 @1x와 @2x 실제 크기. 입력(정면 앉기)·걷기·앉기의 실루엣이 1x에서 구별되고, z는 획 사이가 메워지지 않으며 귀와 떨어져 있다.
 - `work/app-head-preview.png`: 네 머리를 1 pt/px, 2 pt/px @1x·@2x, 8배로 밝은·어두운 팝오버 배경에서 비교.
-- `TokenCat --snapshot-menubar --fixtures`(두 줄·한 줄·최소): 입력 필요 행이 정면 앉기로 진행 행과 구별된다. z 효과는 셸 트랙이 `drawRunner`에서 `drawFX`를 호출한 뒤에 스냅숏에 나타나며, 셸의 `runStatusBarChecks`가 잠 스냅숏의 zL 영역(x 26–29, y 1–4)을 검사한다.
+- `TokenCat --snapshot-menubar --fixtures`(두 줄·한 줄·최소): 입력 필요 행이 정면 앉기로 진행 행과 구별된다. z 효과는 `drawRunner`가 효과 레이어를 직접 그려 스냅숏에 나타나며, 셸의 `runStatusBarChecks`가 잠 스냅숏의 zL 영역(x 26–29, y 1–4)을 검사한다.

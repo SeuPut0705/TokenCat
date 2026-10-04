@@ -634,12 +634,13 @@ enum TelemetryStatusRow: Equatable {
 
     /// The usage-limit bridge, checked top to bottom: an empty status line, skipped, a reading, the bridge waiting for a
     /// relaunch, nothing connected. `bridged` is nil until a connection succeeds this run. A recreated original command
-    /// adds the second line.
-    static func claudeLimits(notes: [TelemetrySetupNote], bridged: Bool?, received: Date?, now: Date)
+    /// adds the second line. `desktop`: the newest reading is the Claude desktop app's own record, not a bridge receipt.
+    static func claudeLimits(notes: [TelemetrySetupNote], bridged: Bool?, received: Date?, desktop: Bool = false, now: Date)
         -> (row: TelemetryStatusRow, text: String, detail: String?) {
         if notes.contains(.originalUnknown) { return (.problem, "상태 표시줄이 비어 보일 수 있음", "settings.json의 statusLine을 직접 고쳐 주세요") }
         if notes.contains(.statusLineSkipped) { return (.info, "연결 안 함 · statusLine 형식이 달라 건너뜀", nil) }
         let detail = notes.contains(.originalRecreated) ? "원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다" : nil
+        if let at = received, desktop { return (.received, loc("Claude 데스크톱 앱 기록 · \(Format.age(at, now: now))", "Claude desktop app · recorded \(Format.age(at, now: now))"), detail) }
         if let at = received { return (.received, "최근 수신 " + (now.timeIntervalSince(at) < 60 ? "1분 이내" : Format.age(at, now: now)), detail) }
         if bridged == true { return (.waiting, "아직 받지 못함 · Claude Code를 새로 실행하면 표시", detail) }
         return (.info, bridged == nil ? "연결 확인 전" : "연결 안 함", nil)
@@ -663,14 +664,14 @@ private struct TelemetryPane: View {
                                                            batch: model.telemetryBatches[source], now: model.now)
                     LabeledContent(source.title) { statusLine(status.row, status.text, detail: status.detail) }
                 }
-                // Whether the status line bridge delivers; the newer of the two windows' receipts.
+                // Whether the status line bridge delivers; the newer of the two windows' receipts (no reset time: the desktop app).
+                let newest = [model.claudeLimits.fiveHour, model.claudeLimits.sevenDay].compactMap { $0 }.max { $0.receivedAt < $1.receivedAt }
                 let limits = TelemetryStatusRow.claudeLimits(notes: model.telemetryConnectNotes, bridged: model.claudeBridged,
-                                                             received: [model.claudeLimits.fiveHour?.receivedAt,
-                                                                        model.claudeLimits.sevenDay?.receivedAt].compactMap { $0 }.max(),
-                                                             now: model.now)
+                                                             received: newest?.receivedAt, desktop: newest?.resetsAt == nil, now: model.now)
                 LabeledContent("Claude 한도") { statusLine(limits.row, limits.text, detail: limits.detail) }
             } footer: {
-                settingsFooter("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON의 한도만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.")
+                settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.",
+                                   "Telemetry takes only numbers such as output tokens and request times; Claude limits take only the usage in the status line JSON and the Claude desktop app's usage history. Clients already running need a restart."))
             }
             if !files.isEmpty {
                 Section {

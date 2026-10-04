@@ -177,12 +177,12 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         center.removeDeliveredNotifications(withIdentifiers: [identifier])
     }
 
-    /// At launch: "입력 필요" notifications an earlier run delivered for groups no longer waiting go away.
     /// True when the sound toggle is on but macOS will not play it: the settings button is shown (P-5).
     static func soundBlocked(_ status: UNAuthorizationStatus?, _ sound: UNNotificationSetting?) -> Bool {
         status != nil && status != .notDetermined && (status == .denied || sound == .disabled || sound == .notSupported)
     }
 
+    /// At launch: "입력 필요" notifications an earlier run delivered for groups no longer waiting go away.
     func removeStaleInput(keeping: Set<String>) {
         center.getDeliveredNotifications { [weak self] delivered in
             let stale = delivered.map(\.request.identifier).filter { $0.hasPrefix(AttentionEvent.inputIdentifier("")) && !keeping.contains($0) }

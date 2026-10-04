@@ -563,8 +563,7 @@ func runTrackerChecks() -> [String] {
         try modelUpdate.write(contentsOf: line(codex("task_started", "2026-10-04T04:00:03Z", ["turn_id": "a-next"])))
         try modelUpdate.close()
         let switched = tracker.sample().first(where: { $0.sessionID == "session-a" })
-        check(switched?.model == "model-a-new" && switched?.measurementModel == "model-a"
-              && switched?.lastOutputTokens == 100,
+        check(switched?.model == "model-a-new" && switched?.lastOutputTokens == 100,
               "Changing the current model reassigned an earlier measurement to the new model")
         check(TokenTracker(homeDirectory: root.appendingPathComponent("empty"), now: { now }).sample().isEmpty,
               "An empty log directory fabricated provider rows")

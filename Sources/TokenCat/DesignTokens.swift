@@ -37,15 +37,8 @@ enum TCFont {
     static let bodyMediumMono = Font.system(size: 13, weight: .medium).monospacedDigit()
     static let caption = Font.system(size: 11, weight: .semibold)
 
-    /// AppKit equivalents for menus, the menu bar and AppKit-drawn glyphs.
+    /// AppKit: the font of the AppKit-drawn input glyph (the menu bar sets its own fonts).
     enum NS {
-        static let title = NSFont.systemFont(ofSize: 13, weight: .semibold)
-        static let body = NSFont.systemFont(ofSize: 13)
-        static let value = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
-        static let meta = NSFont.systemFont(ofSize: 11)
-        static let metaMedium = NSFont.systemFont(ofSize: 11, weight: .medium)
-        static let metaMono = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .regular)
-        static let micro = NSFont.systemFont(ofSize: 10, weight: .medium)
         /// The "?" inside the input glyph: the only heavy weight, 7/8 of the glyph box (7 pt in an 8 pt glyph).
         static func inputMark(glyphSide: CGFloat) -> NSFont { .systemFont(ofSize: glyphSide * 7 / 8, weight: .heavy) }
     }
@@ -493,8 +486,7 @@ func runDesignTokenChecks() -> [String] {
           && (rgba(TCColor.NS.pressed(contrast: false), dark: true).last ?? 0) > (rgba(TCColor.NS.hover(contrast: false), dark: true).last ?? 1)
           && abs((rgba(TCColor.NS.selection(keyWindow: true), dark: false).last ?? 0) - 0.16) < 0.01,
           "contrast variants are stronger; selection is accent 0.16")
-    check(TCFont.NS.title.pointSize == 13 && TCFont.NS.meta.pointSize == 11 && TCFont.NS.micro.pointSize == 10
-          && TCFont.NS.inputMark(glyphSide: 8).pointSize == 7, "AppKit type scale")
+    check(TCFont.NS.inputMark(glyphSide: 8).pointSize == 7, "AppKit type scale")
     print("Design token checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }
