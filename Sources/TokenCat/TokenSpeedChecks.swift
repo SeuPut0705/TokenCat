@@ -1,0 +1,64 @@
+import Foundation
+
+func runTokenSpeedChecks() -> [String] {
+    var failures: [String] = []
+    var checks = 0
+    func check(_ name: String, _ condition: Bool) {
+        checks += 1
+        if !condition { failures.append("Token speed \(name)") }
+    }
+    func reading(_ values: [String: Any]) -> TelemetryReading {
+        var data: [String: Any] = ["provider": "codex", "at": "2026-10-04T10:00:00Z", "model": "same-model", "requestDurationIncludesRetries": false]
+        data.merge(values) { _, new in new }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try! decoder.decode(TelemetryReading.self, from: JSONSerialization.data(withJSONObject: data))
+    }
+    let server = reading(["sessionID": "a", "serverTokenIntervalMs": 40, "serverTokenIntervalSampleCount": 1,
+                          "outputTokens": 200, "requestDurationMs": 1_000])
+    let serverSpeed = TokenSpeedMeasurement(server)
+    check("server interval gives generation rate, not request rate", serverSpeed.kind == .serverGeneration && serverSpeed.tokensPerSecond == 25)
+    let request = reading(["provider": "claude", "sessionID": "a", "outputTokens": 120, "requestDurationMs": 2_400])
+    let requestSpeed = TokenSpeedMeasurement(request)
+    check("exact request fields give distinct processing rate", requestSpeed.kind == .requestProcessing && requestSpeed.tokensPerSecond == 50)
+    let timingOnly = reading(["outputTokens": 1_000, "serverInferenceMs": 10, "ttftMs": 1])
+    check("inference or TTFT cannot substitute a matched duration", TokenSpeedMeasurement(timingOnly).tokensPerSecond == nil)
+    var invalid = server
+    invalid.serverTokenIntervalMs = .infinity
+    invalid.outputTokens = nil
+    invalid.requestDurationMs = nil
+    check("nonfinite fields produce no speed", TokenSpeedMeasurement(invalid).tokensPerSecond == nil)
+    let zeroDuration = reading(["outputTokens": 120, "requestDurationMs": 0, "serverTokenIntervalMs": 0])
+    check("zero time never produces invented speed", TokenSpeedMeasurement(zeroDuration).tokensPerSecond == nil)
+
+    let a = TokenReading(source: .codex, id: "a", sessionID: "a", model: "same-model", turnAverageTokensPerSecond: 999)
+    let b = TokenReading(source: .codex, id: "b", sessionID: "b", model: "same-model", turnAverageTokensPerSecond: 999)
+    let matched = TokenSpeed.apply([a, b], measurements: [server])
+    check("identical models do not mix sessions", matched.count == 2 && matched[0].speedMeasurement?.tokensPerSecond == 25 && matched[1].speedMeasurement == nil)
+    check("turn average never becomes measured speed", TokenSpeed.apply([a], measurements: []).first?.speedMeasurement == nil)
+    let wrongProvider = TokenSpeed.apply([a], measurements: [request])
+    check("providers cannot cross a shared session identifier", wrongProvider.count == 2 && wrongProvider[0].speedMeasurement == nil)
+    let child = TokenReading(source: .codex, id: "child", sessionID: "a", agentID: "worker", model: "same-model", isSubagent: true)
+    let ambiguous = TokenSpeed.apply([a, child], measurements: [server])
+    check("missing agent cannot select a parent among shared sessions", ambiguous.count == 3 && ambiguous[0].speedMeasurement == nil && ambiguous[1].speedMeasurement == nil)
+    var agent = server
+    agent.agentID = "worker"
+    let identified = TokenSpeed.apply([a, child], measurements: [agent])
+    check("known agent attaches only to exact identity", identified.count == 2 && identified[0].speedMeasurement == nil && identified[1].speedMeasurement?.tokensPerSecond == 25)
+    let modelOnly = reading(["serverTokenIntervalMs": 40])
+    let detached = TokenSpeed.apply([a, b], measurements: [modelOnly])
+    check("model-only observations stay independently identified", detached.count == 3 && detached.last?.project == "모델 실측" && detached[0].speedMeasurement == nil && detached[1].speedMeasurement == nil)
+    var aggregate = server
+    aggregate.serverTokenIntervalSampleCount = 4
+    let aggregates = TokenSpeed.apply([a], measurements: [aggregate])
+    check("aggregate metrics never attach to a session", aggregates.count == 2 && aggregates[0].speedMeasurement == nil && aggregates[1].sessionID == nil && aggregates[1].speedMeasurement?.kind == .serverAggregate)
+    var newerIncomplete = server
+    newerIncomplete.at = server.at.addingTimeInterval(1)
+    newerIncomplete.serverTokenIntervalMs = nil
+    newerIncomplete.outputTokens = nil
+    newerIncomplete.requestDurationMs = nil
+    let retained = TokenSpeed.apply([a], measurements: [server, newerIncomplete])
+    check("incomplete timing record does not erase latest measured rate", retained[0].speedMeasurement?.tokensPerSecond == 25 && retained[0].speedMeasurement?.at == server.at)
+    print("Token speed checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
+    return failures
+}
