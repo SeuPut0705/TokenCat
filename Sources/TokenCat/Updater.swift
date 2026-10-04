@@ -99,45 +99,49 @@ enum UpdateFailure: Error, Equatable {
 
     var text: String {
         switch self {
-        case .network: return "GitHub에 연결하지 못했습니다. 네트워크 연결을 확인하세요."
-        case .server(let status): return "GitHub가 HTTP \(status)로 응답했습니다. 잠시 뒤 다시 시도하세요."
-        case .rateLimited(let until): return "GitHub 요청 한도에 걸렸습니다. \(Self.clock(until)) 이후에 다시 확인할 수 있습니다."
-        case .invalidResponse: return "GitHub 응답을 읽지 못했습니다."
-        case .notNewer: return "설치할 새 버전이 없습니다."
+        case .network: return loc("GitHub에 연결하지 못했습니다. 네트워크 연결을 확인하세요.", "Couldn't connect to GitHub. Check your network connection.")
+        case .server(let status): return loc("GitHub가 HTTP \(status)로 응답했습니다. 잠시 뒤 다시 시도하세요.", "GitHub responded with HTTP \(status). Try again in a moment.")
+        case .rateLimited(let until): return loc("GitHub 요청 한도에 걸렸습니다. \(Self.clock(until)) 이후에 다시 확인할 수 있습니다.",
+                                                  "GitHub's rate limit was reached. You can check again after \(Self.clock(until)).")
+        case .invalidResponse: return loc("GitHub 응답을 읽지 못했습니다.", "Couldn't read GitHub's response.")
+        case .notNewer: return loc("설치할 새 버전이 없습니다.", "There's no new version to install.")
         // A copy opened while this one runs only shows this one's panel and quits, so the manual paths say to quit first.
         case .noAsset: return loc("릴리스에 \(UpdateRelease.assetName) 파일이 없습니다. 릴리스 페이지에서 직접 내려받은 뒤 TokenCat을 종료하고 새 앱을 여세요.",
                                   "The release has no \(UpdateRelease.assetName) file. Download it from the release page, then quit TokenCat and open the new copy.")
         case .noDigest: return loc("릴리스 파일의 SHA-256 값이 없어 설치하지 않았습니다. 릴리스 페이지에서 직접 내려받은 뒤 TokenCat을 종료하고 새 앱을 여세요.",
                                    "The release file has no SHA-256 value, so it wasn't installed. Download it from the release page, then quit TokenCat and open the new copy.")
-        case .sizeMismatch, .digestMismatch: return "내려받은 파일이 릴리스 정보와 달라 설치하지 않았습니다. 기존 앱은 그대로입니다."
-        case .extractFailed: return "내려받은 파일의 압축을 풀지 못했습니다. 기존 앱은 그대로입니다."
-        case .invalidBundle(let reason): return "새 앱을 확인하지 못해 설치하지 않았습니다: \(reason)."
-        case .notBundle: return "앱 번들(.app)로 실행하지 않아 업데이트할 수 없습니다."
+        case .sizeMismatch, .digestMismatch: return loc("내려받은 파일이 릴리스 정보와 달라 설치하지 않았습니다. 기존 앱은 그대로입니다.",
+                                                            "The downloaded file doesn't match the release, so it wasn't installed. The current app is unchanged.")
+        case .extractFailed: return loc("내려받은 파일의 압축을 풀지 못했습니다. 기존 앱은 그대로입니다.",
+                                       "Couldn't unzip the downloaded file. The current app is unchanged.")
+        case .invalidBundle(let reason): return loc("새 앱을 확인하지 못해 설치하지 않았습니다: \(reason).", "Couldn't verify the new app, so it wasn't installed: \(reason).")
+        case .notBundle: return loc("앱 번들(.app)로 실행하지 않아 업데이트할 수 없습니다.", "TokenCat isn't running as an app bundle (.app), so it can't update.")
         case .translocated: return loc("macOS가 TokenCat을 임시 위치에서 실행하고 있어 업데이트할 수 없습니다. TokenCat을 종료하고 Finder에서 응용 프로그램 폴더로 옮긴 뒤 다시 여세요.",
                                        "macOS is running TokenCat from a temporary location, so it can't update. Quit TokenCat, move it to the Applications folder in Finder, then open it again.")
         case .notWritable: return loc("TokenCat이 있는 폴더에 쓸 권한이 없어 업데이트할 수 없습니다. 릴리스 페이지에서 직접 내려받은 뒤 TokenCat을 종료하고 새 앱을 여세요.",
                                       "TokenCat can't write to its folder, so it can't update. Download it from the release page, then quit TokenCat and open the new copy.")
-        case .replaceFailed: return "새 앱으로 바꾸지 못했습니다. 기존 앱은 그대로입니다."
-        case .relaunchFailed: return "새 버전을 설치했지만 다시 열지 못했습니다. TokenCat을 종료한 뒤 다시 여세요."
+        case .replaceFailed: return loc("새 앱으로 바꾸지 못했습니다. 기존 앱은 그대로입니다.", "Couldn't replace the app with the new version. The current app is unchanged.")
+        case .relaunchFailed: return loc("새 버전을 설치했지만 다시 열지 못했습니다. TokenCat을 종료한 뒤 다시 여세요.",
+                                         "The new version is installed but couldn't reopen. Quit TokenCat, then open it again.")
         }
     }
 
     var short: String {
         switch self {
-        case .network: return "네트워크 오류"
-        case .server, .invalidResponse: return "GitHub 응답 오류"
-        case .rateLimited: return "요청 한도"
-        case .notNewer: return "새 버전 없음"
-        case .noAsset: return "설치 파일 없음"
-        case .noDigest: return "검증 정보 없음"
-        case .sizeMismatch, .digestMismatch: return "파일 검증 실패"
-        case .extractFailed: return "압축 해제 실패"
-        case .invalidBundle: return "앱 검증 실패"
-        case .notBundle: return "앱 번들 아님"
-        case .translocated: return "임시 위치에서 실행 중"
-        case .notWritable: return "쓰기 권한 없음"
-        case .replaceFailed: return "교체 실패"
-        case .relaunchFailed: return "다시 열기 실패"
+        case .network: return loc("네트워크 오류", "Network error")
+        case .server, .invalidResponse: return loc("GitHub 응답 오류", "GitHub response error")
+        case .rateLimited: return loc("요청 한도", "Rate limit")
+        case .notNewer: return loc("새 버전 없음", "No new version")
+        case .noAsset: return loc("설치 파일 없음", "No release file")
+        case .noDigest: return loc("검증 정보 없음", "No checksum")
+        case .sizeMismatch, .digestMismatch: return loc("파일 검증 실패", "File check failed")
+        case .extractFailed: return loc("압축 해제 실패", "Unzip failed")
+        case .invalidBundle: return loc("앱 검증 실패", "App check failed")
+        case .notBundle: return loc("앱 번들 아님", "Not an app bundle")
+        case .translocated: return loc("임시 위치에서 실행 중", "Running from a temporary location")
+        case .notWritable: return loc("쓰기 권한 없음", "No write permission")
+        case .replaceFailed: return loc("교체 실패", "Replace failed")
+        case .relaunchFailed: return loc("다시 열기 실패", "Reopen failed")
         }
     }
 
@@ -412,7 +416,8 @@ struct UpdateState: Equatable {
     }
     var quickMenuTitle: String? {
         guard let version = available?.version, let command = quickMenuCommand else { return nil }
-        return command == .install ? "업데이트 \(version) 설치…" : "업데이트 \(version) 릴리스 페이지…"
+        return command == .install ? loc("업데이트 \(version) 설치…", "Install Update \(version)…")
+            : loc("업데이트 \(version) 릴리스 페이지…", "Update \(version) Release Page…")
     }
 
     /// A check's newer release. One other than the failed install's clears that failure, so it can be installed.
@@ -421,11 +426,14 @@ struct UpdateState: Equatable {
         available = release
     }
 
-    static func progress(_ fraction: Double) -> String { "업데이트 내려받는 중 \(Int((min(1, max(0, fraction)) * 100).rounded(.down)))%" }
+    static func progress(_ fraction: Double) -> String {
+        let percent = Int((min(1, max(0, fraction)) * 100).rounded(.down))
+        return loc("업데이트 내려받는 중 \(percent)%", "Downloading update \(percent)%")
+    }
     /// "0.9.1로 업데이트했습니다"; "으로" after 0, 3 and 6 (영, 삼, 육), which end in a consonant other than ㄹ.
     static func updated(_ version: String) -> String {
         let last = version.last(where: \.isNumber)
-        return version + (last.map { "036".contains($0) } == true ? "으로" : "로") + " 업데이트했습니다"
+        return loc(version + (last.map { "036".contains($0) } == true ? "으로" : "로") + " 업데이트했습니다", "Updated to \(version)")
     }
 
     /// The footer's trailing item, most important first: progress, failure, a new version (unless closed with ✕ for that
@@ -434,18 +442,21 @@ struct UpdateState: Equatable {
         let version = available?.version ?? ""
         switch install {
         case .downloading(let fraction):
-            return UpdateNotice(kind: .downloading, text: Self.progress(fraction), help: "TokenCat \(version) 내려받는 중 · 설치가 끝나면 다시 엽니다", version: version)
+            return UpdateNotice(kind: .downloading, text: Self.progress(fraction), help: loc("TokenCat \(version) 내려받는 중 · 설치가 끝나면 다시 엽니다", "Downloading TokenCat \(version) · reopens when installed"), version: version)
         case .installing:
-            return UpdateNotice(kind: .installing, text: "설치 중…", help: "내려받은 앱을 확인하고 바꾸는 중 · 끝나면 TokenCat을 다시 엽니다", version: version)
+            return UpdateNotice(kind: .installing, text: loc("설치 중…", "Installing…"),
+                                help: loc("내려받은 앱을 확인하고 바꾸는 중 · 끝나면 TokenCat을 다시 엽니다", "Verifying and replacing the app · TokenCat reopens when done"),
+                                version: version)
         case .failed(let failure):
-            return UpdateNotice(kind: .failed(retryable: failure.retryable), text: "업데이트 실패", detail: failure.short, help: failure.text, version: version)
+            return UpdateNotice(kind: .failed(retryable: failure.retryable), text: loc("업데이트 실패", "Update failed"), detail: failure.short, help: failure.text, version: version)
         case .none:
             break
         }
         if let available, available.version != dismissed {
-            return UpdateNotice(kind: .available, text: "새 버전 \(available.version)", help: "내려받아 설치한 뒤 TokenCat을 다시 엽니다", version: available.version)
+            return UpdateNotice(kind: .available, text: loc("새 버전 \(available.version)", "New version \(available.version)"),
+                                help: loc("내려받아 설치한 뒤 TokenCat을 다시 엽니다", "Downloads and installs it, then reopens TokenCat"), version: available.version)
         }
-        if let updatedTo { return UpdateNotice(kind: .updated, text: Self.updated(updatedTo), help: "TokenCat \(updatedTo) 실행 중", version: updatedTo) }
+        if let updatedTo { return UpdateNotice(kind: .updated, text: Self.updated(updatedTo), help: loc("TokenCat \(updatedTo) 실행 중", "Running TokenCat \(updatedTo)"), version: updatedTo) }
         return nil
     }
 
@@ -455,23 +466,23 @@ struct UpdateState: Equatable {
         if let disabled { return (disabled, nil, false) }
         switch install {
         case .downloading(let fraction): return (Self.progress(fraction), nil, false)
-        case .installing: return ("설치 중…", nil, false)
-        case .failed(let failure): return ("업데이트 실패", failure.short, true)
+        case .installing: return (loc("설치 중…", "Installing…"), nil, false)
+        case .failed(let failure): return (loc("업데이트 실패", "Update failed"), failure.short, true)
         case .none: break
         }
-        if let available { return ("새 버전 \(available.version)", checkedAt.map { Self.checked($0, now: now) }, false) }
+        if let available { return (loc("새 버전 \(available.version)", "New version \(available.version)"), checkedAt.map { Self.checked($0, now: now) }, false) }
         switch check {
-        case .checking: return ("확인 중…", nil, false)
-        case .failed(let failure): return ("확인하지 못했습니다", failure.text, true)
+        case .checking: return (loc("확인 중…", "Checking…"), nil, false)
+        case .failed(let failure): return (loc("확인하지 못했습니다", "Couldn't check"), failure.text, true)
         case .idle, .done: break
         }
-        guard let checkedAt else { return ("아직 확인하지 않았습니다", nil, false) }
-        return ("최신 버전입니다 · " + Self.checked(checkedAt, now: now), nil, false)
+        guard let checkedAt else { return (loc("아직 확인하지 않았습니다", "Not checked yet"), nil, false) }
+        return (loc("최신 버전입니다 · ", "Up to date · ") + Self.checked(checkedAt, now: now), nil, false)
     }
 
     /// Minute-granular so the line does not tick: "방금 확인", "3분 전 확인".
     static func checked(_ date: Date, now: Date) -> String {
-        now.timeIntervalSince(date) < 60 ? "방금 확인" : Format.age(date, now: now) + " 확인"
+        now.timeIntervalSince(date) < 60 ? loc("방금 확인", "Checked just now") : loc(Format.age(date, now: now) + " 확인", "Checked " + Format.age(date, now: now))
     }
 }
 
@@ -527,8 +538,8 @@ final class Updater {
     func start(automatic: Bool) {
         guard !running else { return }
         running = true
-        if bundleURL.pathExtension != "app" { state.disabled = "앱 번들(.app)로 실행할 때만 업데이트를 확인합니다" }
-        else if current == nil { state.disabled = "버전 정보를 읽지 못해 업데이트를 확인하지 않습니다" }
+        if bundleURL.pathExtension != "app" { state.disabled = loc("앱 번들(.app)로 실행할 때만 업데이트를 확인합니다", "Checks for updates only when running as an app bundle (.app)") }
+        else if current == nil { state.disabled = loc("버전 정보를 읽지 못해 업데이트를 확인하지 않습니다", "Can't read the version, so updates aren't checked") }
         if state.disabled == nil {
             // A stored pause longer than any the throttle sets (written under a wrong clock) is dropped.
             if let paused = store.pausedUntil, paused.timeIntervalSinceNow > UpdateThrottle.maximumPause { store.pausedUntil = nil }
@@ -738,8 +749,9 @@ final class Updater {
 
     /// `--update-check`: one unconditional GET, printed. Never reads or writes the app's update state, never installs.
     static func commandLineCheck(bundleURL: URL = Bundle.main.bundleURL, version: String = AppInfo.version) -> Int32 {
-        print("현재 버전: \(version)" + (bundleURL.pathExtension == "app" ? "" : " (앱 번들 아님 · 앱에서는 업데이트를 확인하지 않음)"))
-        print("요청: GET \(UpdateClient.latest.absoluteString)")
+        print(loc("현재 버전: \(version)", "Current version: \(version)") + (bundleURL.pathExtension == "app" ? ""
+            : loc(" (앱 번들 아님 · 앱에서는 업데이트를 확인하지 않음)", " (not an app bundle · the app wouldn't check for updates)")))
+        print(loc("요청: GET \(UpdateClient.latest.absoluteString)", "Request: GET \(UpdateClient.latest.absoluteString)"))
         final class Box { var value: (UpdateResponse, HTTPURLResponse?)? }
         let box = Box()
         let done = DispatchSemaphore(value: 0)
@@ -749,47 +761,55 @@ final class Updater {
             done.signal()
         }
         guard done.wait(timeout: .now() + 20) == .success, let (response, http) = box.value else {
-            print("결과: 응답 없음 (시간 초과)")
+            print(loc("결과: 응답 없음 (시간 초과)", "Result: no response (timed out)"))
             return 1
         }
         if let http {
             let remaining = http.value(forHTTPHeaderField: "X-RateLimit-Remaining") ?? "?"
             let limit = http.value(forHTTPHeaderField: "X-RateLimit-Limit") ?? "?"
             let reset = http.value(forHTTPHeaderField: "X-RateLimit-Reset").flatMap { TimeInterval($0) }
-                .map { " · \(UpdateFailure.clock(Date(timeIntervalSince1970: $0))) 초기화" } ?? ""
-            print("HTTP \(http.statusCode) · GitHub 요청 한도 \(remaining)/\(limit) 남음\(reset)")
+                .map { UpdateFailure.clock(Date(timeIntervalSince1970: $0)) }.map { loc(" · \($0) 초기화", " · resets at \($0)") } ?? ""
+            print(loc("HTTP \(http.statusCode) · GitHub 요청 한도 \(remaining)/\(limit) 남음\(reset)",
+                      "HTTP \(http.statusCode) · GitHub rate limit \(remaining)/\(limit) left\(reset)"))
         }
         switch response {
         case .release(let release, _):
-            print("최신 릴리스: \(release.tag) · \(release.page.absoluteString)")
+            print(loc("최신 릴리스: \(release.tag) · \(release.page.absoluteString)", "Latest release: \(release.tag) · \(release.page.absoluteString)"))
             if let asset = release.asset {
-                print("자산: \(UpdateRelease.assetName) · \(asset.size) bytes · " + (asset.sha256.map { "sha256:\($0)" } ?? "SHA-256 digest 없음"))
+                print(loc("자산: ", "Asset: ") + "\(UpdateRelease.assetName) · \(asset.size) bytes · "
+                      + (asset.sha256.map { "sha256:\($0)" } ?? loc("SHA-256 digest 없음", "no SHA-256 digest")))
             } else {
-                print("자산: \(UpdateRelease.assetName) 없음")
+                print(loc("자산: \(UpdateRelease.assetName) 없음", "Asset: no \(UpdateRelease.assetName)"))
             }
             switch (AppVersion(version), AppVersion(release.version)) {
             case let (current?, latest?) where latest > current:
                 let installable: String
-                do { _ = try release.installable(); installable = "설치 조건 충족" } catch { installable = (error as? UpdateFailure)?.text ?? "설치 불가" }
-                print("결과: 업데이트 있음 (\(version) → \(release.version)) · \(installable)")
+                do { _ = try release.installable(); installable = loc("설치 조건 충족", "installable") } catch {
+                    installable = (error as? UpdateFailure)?.text ?? loc("설치 불가", "not installable")
+                }
+                print(loc("결과: 업데이트 있음 (\(version) → \(release.version)) · \(installable)",
+                          "Result: update available (\(version) → \(release.version)) · \(installable)"))
             case let (current?, latest?):
-                print(latest == current ? "결과: 최신 버전입니다" : "결과: 실행 중인 버전이 릴리스보다 새롭습니다 (\(version) > \(release.version))")
+                print(latest == current ? loc("결과: 최신 버전입니다", "Result: up to date")
+                      : loc("결과: 실행 중인 버전이 릴리스보다 새롭습니다 (\(version) > \(release.version))",
+                            "Result: the running version is newer than the release (\(version) > \(release.version))"))
             default:
-                print("결과: 현재 버전을 읽지 못해 비교하지 않았습니다")
+                print(loc("결과: 현재 버전을 읽지 못해 비교하지 않았습니다", "Result: couldn't read the current version, so nothing was compared"))
             }
             return 0
         case .none:
-            print("최신 릴리스: 없음 (GitHub에 공개된 릴리스가 없습니다)")
-            print("결과: 최신 버전입니다 (비교할 릴리스 없음)")
+            print(loc("최신 릴리스: 없음 (GitHub에 공개된 릴리스가 없습니다)", "Latest release: none (nothing published on GitHub)"))
+            print(loc("결과: 최신 버전입니다 (비교할 릴리스 없음)", "Result: up to date (no release to compare)"))
             return 0
         case .notModified:
-            print("결과: 예상하지 못한 304 응답")
+            print(loc("결과: 예상하지 못한 304 응답", "Result: unexpected 304 response"))
             return 1
         case .rateLimited(let until):
-            print("결과: 확인 실패 · GitHub 요청 한도 · \(UpdateFailure.clock(until)) 이후 다시 시도")
+            print(loc("결과: 확인 실패 · GitHub 요청 한도 · \(UpdateFailure.clock(until)) 이후 다시 시도",
+                      "Result: check failed · GitHub rate limit · try again after \(UpdateFailure.clock(until))"))
             return 1
         case .failed(let failure):
-            print("결과: 확인 실패 · \(failure.text)")
+            print(loc("결과: 확인 실패 · \(failure.text)", "Result: check failed · \(failure.text)"))
             return 1
         }
     }
@@ -956,25 +976,25 @@ enum UpdateInstaller {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         guard run("/usr/bin/ditto", ["-x", "-k", archive.path, folder.path]) == 0 else { throw UpdateFailure.extractFailed }
         let items = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).filter { !$0.hasPrefix(".") && $0 != "__MACOSX" }
-        guard items == ["TokenCat.app"] else { throw UpdateFailure.invalidBundle("압축 파일에 TokenCat.app 하나만 있어야 합니다") }
+        guard items == ["TokenCat.app"] else { throw UpdateFailure.invalidBundle(loc("압축 파일에 TokenCat.app 하나만 있어야 합니다", "the archive must hold only TokenCat.app")) }
         return folder.appendingPathComponent("TokenCat.app", isDirectory: true)
     }
 
     /// The release's identity and version, an executable for this Mac's CPU and macOS, and a signature that verifies.
     static func validate(_ app: URL, version: String) throws {
-        guard let bundle = Bundle(url: app), let info = bundle.infoDictionary else { throw UpdateFailure.invalidBundle("앱 정보를 읽지 못했습니다") }
-        guard info["CFBundleIdentifier"] as? String == UpdateRelease.bundleIdentifier else { throw UpdateFailure.invalidBundle("번들 ID가 다릅니다") }
+        guard let bundle = Bundle(url: app), let info = bundle.infoDictionary else { throw UpdateFailure.invalidBundle(loc("앱 정보를 읽지 못했습니다", "couldn't read the app's information")) }
+        guard info["CFBundleIdentifier"] as? String == UpdateRelease.bundleIdentifier else { throw UpdateFailure.invalidBundle(loc("번들 ID가 다릅니다", "the bundle ID doesn't match")) }
         guard let shipped = (info["CFBundleShortVersionString"] as? String).flatMap(AppVersion.init), shipped == AppVersion(version)
-        else { throw UpdateFailure.invalidBundle("앱 버전이 릴리스와 다릅니다") }
+        else { throw UpdateFailure.invalidBundle(loc("앱 버전이 릴리스와 다릅니다", "the app version doesn't match the release")) }
         guard bundle.executableArchitectures?.contains(where: { $0.intValue == runningArchitecture }) == true
-        else { throw UpdateFailure.invalidBundle("이 Mac의 CPU용 실행 파일이 없습니다") }
+        else { throw UpdateFailure.invalidBundle(loc("이 Mac의 CPU용 실행 파일이 없습니다", "there's no executable for this Mac's CPU")) }
         if let minimum = info["LSMinimumSystemVersion"] as? String {
             guard let parts = AppVersion(minimum)?.parts, ProcessInfo.processInfo.isOperatingSystemAtLeast(OperatingSystemVersion(
                 majorVersion: parts[0], minorVersion: parts.count > 1 ? parts[1] : 0, patchVersion: parts.count > 2 ? parts[2] : 0))
-            else { throw UpdateFailure.invalidBundle("macOS \(minimum) 이상이 필요합니다") }
+            else { throw UpdateFailure.invalidBundle(loc("macOS \(minimum) 이상이 필요합니다", "it requires macOS \(minimum) or later")) }
         }
         guard run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path]) == 0
-        else { throw UpdateFailure.invalidBundle("코드 서명을 확인하지 못했습니다") }
+        else { throw UpdateFailure.invalidBundle(loc("코드 서명을 확인하지 못했습니다", "couldn't verify the code signature")) }
     }
 
     /// Swaps the new bundle into place in one step; the running process keeps its already-open files. The swap can finish

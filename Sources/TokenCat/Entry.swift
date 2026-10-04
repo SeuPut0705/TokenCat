@@ -41,15 +41,16 @@ enum TokenCatMain {
             // The app's automatic connection follows the last command, a refused disconnect included: the intent is the same.
             UserDefaults.standard.set(!connect, forKey: TelemetrySetup.optOutKey)
             if connect, !LocalTelemetryCollector.isOwnCollectorRunning() {
-                print("실행 중인 TokenCat 로컬 수집기가 없습니다. 앱을 먼저 실행하세요.")
+                print(loc("실행 중인 TokenCat 로컬 수집기가 없습니다. 앱을 먼저 실행하세요.", "No TokenCat collector is running. Open the app first."))
                 exit(1)
             }
             do {
                 let result = try (connect ? TelemetrySetup().connect() : TelemetrySetup().disconnect())
                 print(result.message)
-                print("변경 파일 \(result.changedFiles.count)개 · 다음 실행부터 적용: \(result.restartRequired.map(\.title).joined(separator: ", "))")
+                let count = result.changedFiles.count, names = result.restartRequired.map(\.title).joined(separator: ", ")
+                print(loc("변경 파일 \(count)개 · 다음 실행부터 적용: \(names)", "\(plural(count, "file")) changed · applies from the next launch: \(names)"))
             } catch {
-                print("실측 연결: \(error.localizedDescription)")
+                print(loc("실측 연결: \(error.localizedDescription)", "Telemetry: \(error.localizedDescription)"))
                 exit(1)
             }
             return
@@ -89,7 +90,7 @@ enum TokenCatMain {
         }
         let resourceErrors = Runner.resourceErrors()
         guard resourceErrors.isEmpty else {
-            resourceErrors.forEach { print("이미지 리소스 오류: \($0)") }
+            resourceErrors.forEach { print(loc("이미지 리소스 오류: \($0)", "Image resource error: \($0)")) }
             exit(1)
         }
         if CommandLine.arguments.contains("--live-check") {
@@ -112,7 +113,7 @@ enum TokenCatMain {
             return
         }
         if handOffToRunningInstance() {
-            print("TokenCat이 이미 실행 중이어서 기존 앱의 패널을 열었습니다.")
+            print(loc("TokenCat이 이미 실행 중이어서 기존 앱의 패널을 열었습니다.", "TokenCat is already running, so its dashboard was opened."))
             return
         }
         let app = NSApplication.shared
@@ -214,7 +215,7 @@ enum TokenCatMain {
             report["alertStyle"] = settings.alertStyle == .banner ? "banner" : settings.alertStyle == .alert ? "alert" : "none"
             done.signal()
         }
-        guard done.wait(timeout: .now() + 5) == .success else { print("알림 상태를 읽지 못했습니다."); exit(1) }
+        guard done.wait(timeout: .now() + 5) == .success else { print(loc("알림 상태를 읽지 못했습니다.", "Couldn't read the notification status.")); exit(1) }
         if let data = try? JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]) {
             print(String(decoding: data, as: UTF8.self))
         }
@@ -286,10 +287,12 @@ enum TokenCatMain {
             return reading
         }
         let rows: [(String, [TokenReading])] = [
-            ("활동 없음", []), ("진행", [reading(0, .working)]), ("도구 실행", [reading(1, .tool)]),
+            (loc("활동 없음", "No activity"), []), (loc("진행", "Working"), [reading(0, .working)]),
+            (loc("도구 실행", "Running tool"), [reading(1, .tool)]),
             // A fresh record is an event: the cat runs while the mark stays 진행.
-            ("방금 기록", [reading(2, .output)]), ("로그 대기", [reading(3, .stale)]),
-            ("입력 필요", [reading(4, .input), reading(6, .input), reading(5, .working)]), ("세션 12개", (0..<12).map { reading($0, .tool) })
+            (loc("방금 기록", "Just recorded"), [reading(2, .output)]), (loc("로그 대기", "Waiting for log"), [reading(3, .stale)]),
+            (loc("입력 필요", "Input needed"), [reading(4, .input), reading(6, .input), reading(5, .working)]),
+            (loc("세션 12개", plural(12, "session")), (0..<12).map { reading($0, .tool) })
         ]
         var strips: [(String, [NSImage])] = []
         for (title, tokens) in rows {
@@ -318,19 +321,21 @@ enum TokenCatMain {
         }
         let cellWidth = (strips.first?.1.map(\.size.width).max() ?? 100) + 8
         let rowHeight: CGFloat = 34
-        let size = NSSize(width: 76 + cellWidth * 4, height: 22 + rowHeight * CGFloat(strips.count))
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white]
+        // The row label column: 76 pt, wider when a label (English) needs it.
+        let gutter = max(76, (strips.map { ($0.0 as NSString).size(withAttributes: attributes).width }.max() ?? 0) + 12).rounded(.up)
+        let size = NSSize(width: gutter + cellWidth * 4, height: 22 + rowHeight * CGFloat(strips.count))
         return NSImage(size: size, flipped: true) { rect in
             NSColor(white: 0.55, alpha: 1).setFill()
             rect.fill()
-            let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white]
-            for (index, title) in ["라이트", "다크", "라이트 · 열림", "다크 · 열림"].enumerated() {
-                (title as NSString).draw(at: NSPoint(x: 76 + cellWidth * CGFloat(index), y: 4), withAttributes: attributes)
+            for (index, title) in [loc("라이트", "Light"), loc("다크", "Dark"), loc("라이트 · 열림", "Light · open"), loc("다크 · 열림", "Dark · open")].enumerated() {
+                (title as NSString).draw(at: NSPoint(x: gutter + cellWidth * CGFloat(index), y: 4), withAttributes: attributes)
             }
             for (row, strip) in strips.enumerated() {
                 let y = 22 + rowHeight * CGFloat(row)
                 (strip.0 as NSString).draw(at: NSPoint(x: 6, y: y + 8), withAttributes: attributes)
                 for (column, image) in strip.1.enumerated() {
-                    image.draw(in: NSRect(x: 76 + cellWidth * CGFloat(column), y: y, width: image.size.width, height: image.size.height),
+                    image.draw(in: NSRect(x: gutter + cellWidth * CGFloat(column), y: y, width: image.size.width, height: image.size.height),
                                from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
                 }
             }
@@ -377,7 +382,7 @@ enum TokenCatMain {
             model.telemetryNextRetryAt = model.now.addingTimeInterval(25)
             model.telemetryRestartNeeded = [.codex]
             let failures: [String: UpdateFailure] = ["network": .network, "translocated": .translocated, "not-writable": .notWritable,
-                                                     "no-digest": .noDigest, "invalid-bundle": .invalidBundle("코드 서명을 확인하지 못했습니다")]
+                                                     "no-digest": .noDigest, "invalid-bundle": .invalidBundle(loc("코드 서명을 확인하지 못했습니다", "couldn't verify the code signature"))]
             model.update = SnapshotFixtures.update(option("--update-failure", failures).map { .failed($0) } ?? .none, now: model.now)
             let received = model.now.addingTimeInterval(-50)
             model.claudeLimits = ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: 42, resetsAt: model.now.addingTimeInterval(7_980), receivedAt: received),

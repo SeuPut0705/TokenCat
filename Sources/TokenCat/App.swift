@@ -8,11 +8,11 @@ enum MetricID: String, CaseIterable, Codable, Identifiable {
     var title: String {
         switch self {
         case .cpu: return "CPU"
-        case .memory: return "메모리"
-        case .disk: return "저장 공간"
-        case .battery: return "배터리"
-        case .network: return "네트워크"
-        case .ai: return "AI 세션"
+        case .memory: return loc("메모리", "Memory")
+        case .disk: return loc("저장 공간", "Storage")
+        case .battery: return loc("배터리", "Battery")
+        case .network: return loc("네트워크", "Network")
+        case .ai: return loc("AI 세션", "AI sessions")
         }
     }
 }
@@ -124,7 +124,7 @@ final class Preferences: ObservableObject {
         notifyInputSound = snapshot.notifyInputSound
         notifyUpdate = snapshot.notifyUpdate
         undoManager?.registerUndo(withTarget: self) { $0.restore(previous, undoManager: undoManager) }
-        undoManager?.setActionName("기본값으로 되돌리기")
+        undoManager?.setActionName(loc("기본값으로 되돌리기", "Restore Defaults"))
     }
     /// Display, cat and notification choices only; login item, automatic update checks and notification permission are untouched.
     func reset(undoManager: UndoManager? = nil) { restore(Self.defaultSnapshot, undoManager: undoManager) }
@@ -159,7 +159,7 @@ final class DashboardModel: ObservableObject {
     @Published var cpuHistory: [Double] = []
     @Published var hasSample = false
     @Published var tokensSampledAt: Date?
-    @Published var telemetryStatus = "실측 수신 대기"
+    @Published var telemetryStatus = loc("실측 수신 대기", "Waiting for telemetry")
     /// Collector lifecycle from the in-process collector, or from the probe on the verification path
     /// (`.stopped` when no running TokenCat answers). Fixtures may pin it.
     @Published var telemetryState = TelemetryCollectorState.waiting
@@ -387,7 +387,8 @@ final class DashboardModel: ObservableObject {
             // Verification commands read the running app's collector, never this unstarted one.
             let probed = self.telemetryProbe?()
             let telemetryState = probed.map { $0 ? (measurements.isEmpty ? .waiting : .receiving) : .stopped } ?? self.telemetry.state
-            let telemetryStatus = probed == false ? "실측 꺼짐 · 실행 중인 TokenCat 수집기 없음" : telemetryState.status
+            let telemetryStatus = probed == false
+                ? loc("실측 꺼짐 · 실행 중인 TokenCat 수집기 없음", "Telemetry off · no TokenCat collector running") : telemetryState.status
             let nextRetryAt = probed == nil ? self.telemetry.nextRetryAt : nil
             let measuredAt = Date()
             DispatchQueue.main.async {
@@ -619,7 +620,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             view.autoresizingMask = [.width, .height]
             button.addSubview(view)
             button.setAccessibilityLabel("TokenCat")
-            button.setAccessibilityHelp("클릭하면 세션별 상세를 열고, 우클릭하면 빠른 메뉴를 엽니다.")
+            button.setAccessibilityHelp(loc("클릭하면 세션별 상세를 열고, 우클릭하면 빠른 메뉴를 엽니다.", "Click to open the dashboard. Right-click for the quick menu."))
             // VoiceOver has no right click. Deferred: the menu's tracking loop must not run inside the accessibility request.
             button.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: loc("빠른 메뉴", "Quick menu")) { [weak self] in
                 DispatchQueue.main.async { self?.showQuickMenu() }
@@ -812,7 +813,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         for event in attention.update(signals) {
             switch event {
             case .input:
-                announce("TokenCat 세션 입력 필요", priority: .high)
+                announce(loc("TokenCat 세션 입력 필요", "A TokenCat session needs input"), priority: .high)
                 guard model.preferences.notifyInput, !dashboardVisible else { continue }
                 notifier.post(event, sound: model.preferences.notifyInputSound)
             case .finished(let signal):
@@ -820,7 +821,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                     guard let self, self.latestSignals[signal.id]?.live != true else { return }
                     self.turnEnded(signal)
-                    self.announce(signal.ended == .interrupted ? "턴 중단" : "턴 완료", priority: .medium)
+                    self.announce(signal.ended == .interrupted ? loc("턴 중단", "Turn interrupted") : loc("턴 완료", "Turn complete"), priority: .medium)
                     guard self.model.preferences.notifyTurnComplete, !self.dashboardVisible else { return }
                     self.notifier.post(event)
                 }
@@ -1107,15 +1108,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     /// Invisible for an accessory app, but gives the popover, Settings and the panel ⌘, ⌘Q ⌘W, copy and undo.
     private func installMainMenu() {
         let main = NSMenu()
-        let quit = NSMenuItem(title: "TokenCat 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
-        main.addItem(submenu("TokenCat", [menuItem("TokenCat 정보", #selector(showAbout)), .separator(),
-                                          menuItem("설정…", #selector(openSettingsAction), key: ","), .separator(), quit]))
-        let redo = NSMenuItem(title: "실행 복귀", action: Selector(("redo:")), keyEquivalent: "z")
+        let quit = NSMenuItem(title: loc("TokenCat 종료", "Quit TokenCat"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        main.addItem(submenu("TokenCat", [menuItem(loc("TokenCat 정보", "About TokenCat"), #selector(showAbout)), .separator(),
+                                          menuItem(loc("설정…", "Settings…"), #selector(openSettingsAction), key: ","), .separator(), quit]))
+        let redo = NSMenuItem(title: loc("실행 복귀", "Redo"), action: Selector(("redo:")), keyEquivalent: "z")
         redo.keyEquivalentModifierMask = [.command, .shift]
-        main.addItem(submenu("편집", [NSMenuItem(title: "실행 취소", action: Selector(("undo:")), keyEquivalent: "z"), redo, .separator(),
-                                     NSMenuItem(title: "복사", action: #selector(NSText.copy(_:)), keyEquivalent: "c"),
-                                     NSMenuItem(title: "모두 선택", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")]))
-        main.addItem(submenu("윈도우", [NSMenuItem(title: "닫기", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")]))
+        main.addItem(submenu(loc("편집", "Edit"), [
+            NSMenuItem(title: loc("실행 취소", "Undo"), action: Selector(("undo:")), keyEquivalent: "z"), redo, .separator(),
+            NSMenuItem(title: loc("복사", "Copy"), action: #selector(NSText.copy(_:)), keyEquivalent: "c"),
+            NSMenuItem(title: loc("모두 선택", "Select All"), action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")]))
+        main.addItem(submenu(loc("윈도우", "Window"),
+                             [NSMenuItem(title: loc("닫기", "Close"), action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")]))
         main.items.forEach { $0.submenu?.autoenablesItems = true }
         NSApp.mainMenu = main
     }
@@ -1137,29 +1140,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             menu.addItem(item)
         }
         menu.addItem(.separator())
-        let open = menuItem("열기", #selector(openDashboardAction))
+        let open = menuItem(loc("열기", "Open"), #selector(openDashboardAction))
         open.keyEquivalentModifierMask = []
-        let asPanel = menuItem("패널로 열기", #selector(openPanel))
+        let asPanel = menuItem(loc("패널로 열기", "Open as Panel"), #selector(openPanel))
         asPanel.keyEquivalentModifierMask = [.option]
         asPanel.isAlternate = true
         menu.addItem(open)
         menu.addItem(asPanel)
         menu.addItem(.separator())
-        menu.addItem(submenu("표시 방식", StatusBarLayout.allCases.map {
+        menu.addItem(submenu(loc("표시 방식", "Layout"), StatusBarLayout.allCases.map {
             menuItem($0.title, #selector(selectLayout(_:)), value: $0.rawValue, checked: preferences.statusBarLayout == $0)
         }))
-        menu.addItem(menuItem("고양이 표시", #selector(toggleRunner), checked: preferences.showRunner,
+        menu.addItem(menuItem(loc("고양이 표시", "Show Cat"), #selector(toggleRunner), checked: preferences.showRunner,
                               enabled: !preferences.showRunner || preferences.canHideRunner))
-        menu.addItem(submenu("움직임 기준", RunnerMotion.allCases.map {
+        menu.addItem(submenu(loc("움직임 기준", "Motion Source"), RunnerMotion.allCases.map {
             menuItem($0.title, #selector(selectMotion(_:)), value: $0.rawValue, checked: preferences.animationSource == $0)
         }))
         menu.addItem(.separator())
         if let title = model.update.quickMenuTitle { menu.addItem(menuItem(title, #selector(quickMenuUpdateAction))) }
-        menu.addItem(menuItem("설정…", #selector(openSettingsAction), key: ","))
-        menu.addItem(menuItem("활성 상태 보기", #selector(openActivityMonitor)))
-        menu.addItem(menuItem("TokenCat 정보", #selector(showAbout)))
+        menu.addItem(menuItem(loc("설정…", "Settings…"), #selector(openSettingsAction), key: ","))
+        menu.addItem(menuItem(loc("활성 상태 보기", "Activity Monitor"), #selector(openActivityMonitor)))
+        menu.addItem(menuItem(loc("TokenCat 정보", "About TokenCat"), #selector(showAbout)))
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "TokenCat 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let quit = NSMenuItem(title: loc("TokenCat 종료", "Quit TokenCat"), action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
         menu.addItem(quit)
         // A temporary menu keeps the left click on the popover.
@@ -1255,7 +1258,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                     try png.write(to: url.deletingPathExtension().appendingPathExtension("png"))
                 }
             }
-        } catch { print("메뉴 막대 확인 파일 저장 실패: \(error.localizedDescription)") }
+        } catch {
+            print(loc("메뉴 막대 확인 파일 저장 실패: \(error.localizedDescription)", "Couldn't save the menu bar readback: \(error.localizedDescription)"))
+        }
     }
 
     private func connectTelemetryAutomatically() {
@@ -1266,7 +1271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             return
         }
         if !model.telemetry.isRunning {
-            model.telemetrySetupNote = "수집기가 실행되지 않아 연결할 수 없습니다."
+            model.telemetrySetupNote = loc("수집기가 실행되지 않아 연결할 수 없습니다.", "Can't connect because the collector isn't running.")
             model.telemetrySetupFailure = .unavailable
             return
         }

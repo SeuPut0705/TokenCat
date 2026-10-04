@@ -3,7 +3,11 @@ import Foundation
 enum TokenRateKind: String, Codable {
     case serverGeneration, serverAggregate, requestProcessing
     var title: String {
-        switch self { case .serverGeneration: return "생성 tok/s"; case .serverAggregate: return "모델 tok/s"; case .requestProcessing: return "요청 tok/s" }
+        switch self {
+        case .serverGeneration: return loc("생성 tok/s", "generation tok/s")
+        case .serverAggregate: return loc("모델 tok/s", "model tok/s")
+        case .requestProcessing: return loc("요청 tok/s", "request tok/s")
+        }
     }
 }
 
@@ -59,20 +63,26 @@ struct TokenSpeedMeasurement: Codable {
     var details: String {
         var lines: [String] = []
         if (kind == .serverGeneration || kind == .serverAggregate), let interval = serverTokenIntervalMs {
-            lines.append(String(format: "서버 실측 토큰 간 시간 %.3f ms", interval))
-            if kind == .serverAggregate, let count = serverTokenIntervalSampleCount { lines.append("모델 지표 평균 · 실측 \(count)회") }
-            if let start = metricWindowStartedAt { lines.append("실측 구간 시작 \(start.formatted(date: .numeric, time: .standard))") }
+            lines.append(String(format: loc("서버 실측 토큰 간 시간 %.3f ms", "Measured server time between tokens %.3f ms"), interval))
+            if kind == .serverAggregate, let count = serverTokenIntervalSampleCount {
+                lines.append(loc("모델 지표 평균 · 실측 \(count)회", "Model metric average · \(plural(count, "measurement"))"))
+            }
+            if let start = metricWindowStartedAt {
+                let time = start.formatted(Date.FormatStyle(date: .numeric, time: .standard, locale: AppLanguage.current.locale))
+                lines.append(loc("실측 구간 시작 \(time)", "Measurement window started \(time)"))
+            }
             if let metric = serverTokenIntervalMetric { lines.append(metric) }
         } else if kind == .requestProcessing, let output = outputTokens, let duration = requestDurationMs {
-            lines.append(String(format: "요청 실측: %d 출력 토큰 / %.0f ms", output, duration))
-            lines.append(requestDurationIncludesRetries ? "재시도를 포함한 요청 처리율" : "성공 요청 처리율 · 첫 응답 대기·추론 포함")
-        } else { lines.append("속도 미측정") }
-        if let ttft = ttftMs, ttft.isFinite, ttft >= 0 { lines.append(String(format: "첫 토큰 %.0f ms", ttft)) }
+            lines.append(String(format: loc("요청 실측: %d 출력 토큰 / %.0f ms", "Request measurement: %d output tokens / %.0f ms"), output, duration))
+            lines.append(requestDurationIncludesRetries ? loc("재시도를 포함한 요청 처리율", "Request processing rate, retries included")
+                : loc("성공 요청 처리율 · 첫 응답 대기·추론 포함", "Successful request processing rate · first-response wait and reasoning included"))
+        } else { lines.append(loc("속도 미측정", "Speed not measured")) }
+        if let ttft = ttftMs, ttft.isFinite, ttft >= 0 { lines.append(String(format: loc("첫 토큰 %.0f ms", "First token %.0f ms"), ttft)) }
         if let inference = serverInferenceMs, inference.isFinite, inference > 0 {
-            lines.append(String(format: "서버 inference %.0f ms", inference))
+            lines.append(String(format: loc("서버 inference %.0f ms", "Server inference %.0f ms"), inference))
         }
-        if let model { lines.append("측정 모델 \(model)") }
-        if let requestID { lines.append("요청 \(requestID)") }
+        if let model { lines.append(loc("측정 모델 \(model)", "Measured model \(model)")) }
+        if let requestID { lines.append(loc("요청 \(requestID)", "Request \(requestID)")) }
         return lines.joined(separator: "\n")
     }
 }
@@ -136,7 +146,7 @@ enum TokenSpeed {
                 let key = [measurement.provider.rawValue, measurement.sessionID ?? "model", measurement.agentID ?? "", measurement.model ?? ""].joined(separator: ":")
                 var reading = TokenReading(source: measurement.provider, id: "telemetry:\(key)",
                     sessionID: measurement.sessionID, agentID: measurement.agentID,
-                    project: measurement.sessionID == nil ? "모델 실측" : "요청 실측",
+                    project: measurement.sessionID == nil ? loc("모델 실측", "Model measurement") : loc("요청 실측", "Request measurement"),
                     model: measurement.model,
                     lastActivity: measurement.at, activityState: .complete)
                 reading.speedMeasurement = speed

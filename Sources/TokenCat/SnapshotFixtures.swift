@@ -67,8 +67,11 @@ enum SnapshotFixtures {
         let down = SessionPresentation.telemetryNotice(state: .busyOtherApp, note: nil, restart: [])
         let outcomes: [OnboardingCard.Outcome] = [
             .added(bridged: true),
-            OnboardingCard.outcome(notice: nil, note: "실측 연결: Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.", failure: .conflict, state: .waiting),
-            OnboardingCard.outcome(notice: nil, note: "실측 연결: 설정 파일을 저장하지 못했습니다.", failure: .writeFailed(restored: true), state: .waiting),
+            OnboardingCard.outcome(notice: nil, note: OnboardingCard.notePrefix + loc("Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.",
+                                                                                      "Claude Code already has an OTLP destination, so it wasn't overwritten."),
+                                   failure: .conflict, state: .waiting),
+            OnboardingCard.outcome(notice: nil, note: OnboardingCard.notePrefix + loc("설정 파일을 저장하지 못했습니다.", "Couldn't save the settings file."),
+                                   failure: .writeFailed(restored: true), state: .waiting),
             OnboardingCard.outcome(notice: down, note: nil, failure: nil, state: .busyOtherApp),
             OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .starting)
         ]
@@ -347,7 +350,9 @@ enum SnapshotFixtures {
         // 7–11. Empty, loading and collector states.
         let empty = Fixture(name: "empty")
         let noFolders = Fixture(name: "empty-no-folders",
-                                note: "실측 연결: Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.", failure: .conflict, foldersFound: false)
+                                note: OnboardingCard.notePrefix + loc("Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.",
+                                                                      "Claude Code already has an OTLP destination, so it wasn't overwritten."),
+                                failure: .conflict, foldersFound: false)
         let loading = Fixture(name: "loading", sampled: false, telemetry: .starting)
         var waitingSpeed = reading("rs01", .claude, project: "TokenCat", model: "claude-opus-5-5", state: .working, last: -3,
                                    output: 1_024, outputs: [-50: 1_024])

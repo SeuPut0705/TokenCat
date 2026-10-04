@@ -215,14 +215,14 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// The sound toggle's caption, from the setting macOS reports (P-5). An earlier alert-only grant is not asked again,
     /// so the sound can stay `.disabled` / `.notSupported` until the user changes it in System Settings.
     static func describeSound(_ status: UNAuthorizationStatus?, _ sound: UNNotificationSetting?, on: Bool) -> String {
-        guard on else { return loc("꺼짐 · 입력 필요 알림을 소리 없이 보냅니다", "Off · Input needed alerts are silent") }
+        guard on else { return loc("꺼짐 · 입력 필요 알림을 소리 없이 보냅니다", "Off · input needed alerts are silent") }
         switch (status, sound) {
         case (.denied?, _): return loc("알림이 꺼져 있어 소리도 나지 않습니다", "Notifications are off, so no sound plays")
-        case (_, .enabled?): return loc("켜짐 · 입력 필요 알림에 기본 소리를 냅니다", "On · Input needed alerts play the default sound")
-        case (.notDetermined?, _): return loc("알림 권한을 허용하면 소리가 납니다", "Plays once you allow notifications")
+        case (_, .enabled?): return loc("켜짐 · 입력 필요 알림에 기본 소리를 냅니다", "On · input needed alerts play the default sound")
+        case (.notDetermined?, _): return loc("알림 권한을 허용하면 소리가 납니다", "Plays after you allow notifications")
         case (_, .disabled?): return loc("시스템 설정에서 TokenCat 알림 소리가 꺼져 있습니다", "TokenCat sounds are off in System Settings")
         case (_, .notSupported?): return loc("macOS가 TokenCat 알림 소리를 허용하지 않았습니다 · 시스템 설정 › 알림에서 확인하세요",
-                                             "macOS hasn't allowed TokenCat sounds · Check System Settings › Notifications")
+                                             "macOS hasn't allowed TokenCat sounds · check System Settings › Notifications")
         default: return loc("알림 소리 설정을 확인하는 중", "Checking the sound setting")
         }
     }

@@ -87,6 +87,13 @@ func runTokenSpeedChecks() -> [String] {
     newerIncomplete.requestDurationMs = nil
     let retained = TokenSpeed.apply([a], measurements: [server, newerIncomplete])
     check("incomplete timing record does not erase latest measured rate", retained[0].speedMeasurement?.tokensPerSecond == 25 && retained[0].speedMeasurement?.at == server.at)
+    AppLanguage.with(.en) {
+        check("English kinds, details with a plural count, or project labels",
+              TokenRateKind.serverGeneration.title == "generation tok/s"
+              && TokenSpeedMeasurement(aggregate).details.hasPrefix("Measured server time between tokens 40.000 ms\nModel metric average · 4 measurements\n")
+              && requestSpeed.details.hasPrefix("Request measurement: 120 output tokens / 2400 ms\nSuccessful request processing rate")
+              && TokenSpeed.apply([], measurements: [modelOnly]).first?.project == "Model measurement")
+    }
     print("Token speed checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

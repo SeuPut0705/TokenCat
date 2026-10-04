@@ -23,9 +23,12 @@ enum TelemetrySetupNote: Equatable {
 
     var text: String {
         switch self {
-        case .statusLineSkipped: return "Claude Code statusLine 형식이 예상과 달라 사용량 한도 연결은 건너뛰었습니다."
-        case .originalUnknown: return "Claude Code 상태 표시줄이 TokenCat 브리지를 가리키지만 원래 명령을 찾을 수 없어 상태 표시줄이 비어 보입니다. settings.json의 statusLine을 직접 고쳐 주세요."
-        case .originalRecreated: return "Claude Code 상태 표시줄의 원래 명령을 백업 기록에서 다시 만들었습니다."
+        case .statusLineSkipped: return loc("Claude Code statusLine 형식이 예상과 달라 사용량 한도 연결은 건너뛰었습니다.",
+                                            "Claude Code's statusLine isn't in the expected format, so the usage limit connection was skipped.")
+        case .originalUnknown: return loc("Claude Code 상태 표시줄이 TokenCat 브리지를 가리키지만 원래 명령을 찾을 수 없어 상태 표시줄이 비어 보입니다. settings.json의 statusLine을 직접 고쳐 주세요.",
+                                          "The Claude Code status line runs the TokenCat bridge, but its original command can't be found, so the status line shows nothing. Edit statusLine in settings.json to fix it.")
+        case .originalRecreated: return loc("Claude Code 상태 표시줄의 원래 명령을 백업 기록에서 다시 만들었습니다.",
+                                            "Recreated the Claude Code status line's original command from the backup record.")
         }
     }
 }
@@ -45,8 +48,9 @@ enum TelemetrySetupError: LocalizedError {
         switch self {
         case .conflict(let reason), .invalid(let reason): return reason
         case .writeFailed(let restored):
-            return restored ? "설정 저장에 실패하여 원래 설정으로 복구했습니다."
-                : "설정 저장 중 일부 파일이 변경됐습니다. 사용자 변경을 보존했으며 백업에서 개별 확인이 필요합니다."
+            return restored ? loc("설정 저장에 실패하여 원래 설정으로 복구했습니다.", "Couldn't save the settings, so the original settings were restored.")
+                : loc("설정 저장 중 일부 파일이 변경됐습니다. 사용자 변경을 보존했으며 백업에서 개별 확인이 필요합니다.",
+                      "Some files changed while the settings were being saved. Your changes were kept; check each file against its backup.")
         }
     }
 }
@@ -185,13 +189,15 @@ final class TelemetrySetup {
         guard !changes.isEmpty else {
             // A bridge in use is kept current; a failed refresh leaves the working one.
             if plan.bridged { try? writeBridgeScript() }
-            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "로컬 실측 연결 설정이 이미 적용돼 있습니다." + note,
+            return TelemetrySetupResult(changedFiles: [], restartRequired: [],
+                                        message: loc("로컬 실측 연결 설정이 이미 적용돼 있습니다.", "Local telemetry is already connected.") + note,
                                         notes: notes, bridged: plan.bridged)
         }
         if connected {
             // A connection made before the status line bridge existed gets only the bridge, under the same backups.
             guard let manifest, let claude, plan.wraps, codexAfter == codex, plan.envOnly == claude else {
-                throw TelemetrySetupError.conflict("연결 이후 실측 설정이 변경됐습니다. 기존 백업을 보존하기 위해 다시 덮어쓰지 않았습니다.")
+                throw TelemetrySetupError.conflict(loc("연결 이후 실측 설정이 변경됐습니다. 기존 백업을 보존하기 위해 다시 덮어쓰지 않았습니다.",
+                                                       "The telemetry settings changed after they were connected. TokenCat didn't overwrite them, to keep the existing backup."))
             }
             return try addStatusLineBridge(to: manifest, claude: claude, plan: plan)
         }
@@ -218,7 +224,8 @@ final class TelemetrySetup {
         do {
             for change in changes {
                 guard try read(change.url) == change.original else {
-                    throw TelemetrySetupError.conflict("설정이 다른 프로그램에서 변경돼 연결을 중단했습니다.")
+                    throw TelemetrySetupError.conflict(loc("설정이 다른 프로그램에서 변경돼 연결을 중단했습니다.",
+                                                           "Another program changed the settings, so TokenCat stopped connecting."))
                 }
                 try atomicWrite(change.replacement, to: change.url, permissions: change.permissions)
                 written.append(change)
@@ -232,7 +239,8 @@ final class TelemetrySetup {
             throw TelemetrySetupError.writeFailed(restored: restored)
         }
         return TelemetrySetupResult(changedFiles: changes.map { $0.url.path }, restartRequired: changes.map(\.source),
-            message: "로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다." + note, notes: notes, bridged: plan.bridged)
+            message: loc("로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다.",
+                         "Connected local telemetry. Restart running clients to apply it.") + note, notes: notes, bridged: plan.bridged)
     }
 
     /// Migration for a connection without the bridge (env already connected, status line untouched). The current file is
@@ -259,7 +267,10 @@ final class TelemetrySetup {
         let record = directory.appendingPathComponent("manifest.json")
         let previousRecord = try read(record)
         do {
-            guard try read(url) == claude else { throw TelemetrySetupError.conflict("설정이 다른 프로그램에서 변경돼 연결을 중단했습니다.") }
+            guard try read(url) == claude else {
+                throw TelemetrySetupError.conflict(loc("설정이 다른 프로그램에서 변경돼 연결을 중단했습니다.",
+                                                       "Another program changed the settings, so TokenCat stopped connecting."))
+            }
             try atomicWrite(plan.data, to: url, permissions: mode)
             try atomicWrite(manifestData, to: record, permissions: 0o600)
             try atomicWrite(manifestData, to: activeManifest, permissions: 0o600)
@@ -273,17 +284,20 @@ final class TelemetrySetup {
         // The OTLP connection is unchanged, so no restart notice: until a running Claude Code reloads its settings,
         // its limits are simply not shown yet.
         return TelemetrySetupResult(changedFiles: [url.path], restartRequired: [],
-            message: "Claude Code 상태 표시줄에 사용량 한도 연결을 추가했습니다. 기존 상태 표시줄 출력은 그대로입니다.", bridged: true)
+            message: loc("Claude Code 상태 표시줄에 사용량 한도 연결을 추가했습니다. 기존 상태 표시줄 출력은 그대로입니다.",
+                         "Added the usage limit connection to the Claude Code status line. Its output stays the same."), bridged: true)
     }
 
     func disconnect() throws -> TelemetrySetupResult {
         Self.mutationLock.lock()
         defer { Self.mutationLock.unlock() }
         guard let data = try read(activeManifest) else {
-            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "복구할 TokenCat 실측 연결이 없습니다.")
+            return TelemetrySetupResult(changedFiles: [], restartRequired: [],
+                                        message: loc("복구할 TokenCat 실측 연결이 없습니다.", "There's no TokenCat telemetry connection to remove."))
         }
         guard let manifest = validated(data) else {
-            throw TelemetrySetupError.invalid("실측 백업 정보가 올바르지 않아 설정을 변경하지 않았습니다.")
+            throw TelemetrySetupError.invalid(loc("실측 백업 정보가 올바르지 않아 설정을 변경하지 않았습니다.",
+                                                  "The telemetry backup record isn't valid, so the settings weren't changed."))
         }
         let directory = support.appendingPathComponent("telemetry-backups/\(manifest.backupDirectory)", isDirectory: true)
         // A file unchanged since the connection gets its exact original bytes back. One edited since (Codex and Claude Code
@@ -296,7 +310,8 @@ final class TelemetrySetup {
             let url = configURL(entry.source)
             let backup = entry.existed ? try read(backupURL(entry.source, directory: directory)) : nil
             guard !entry.existed || backup.map(hash) == entry.originalSHA256 else {
-                throw TelemetrySetupError.invalid("원본 실측 백업이 없거나 변경돼 설정을 복구하지 않았습니다.")
+                throw TelemetrySetupError.invalid(loc("원본 실측 백업이 없거나 변경돼 설정을 복구하지 않았습니다.",
+                                                      "The original telemetry backup is missing or changed, so the settings weren't restored."))
             }
             if let current = try read(url), hash(current) == entry.connectedSHA256 {
                 restored.append((entry, current, backup))
@@ -322,7 +337,9 @@ final class TelemetrySetup {
         do {
             for item in restored {
                 let url = configURL(item.entry.source)
-                guard try read(url) == item.current else { throw TelemetrySetupError.conflict("복구 중 설정이 변경됐습니다.") }
+                guard try read(url) == item.current else {
+                    throw TelemetrySetupError.conflict(loc("복구 중 설정이 변경됐습니다.", "The settings changed during the restore."))
+                }
                 if hash(item.current) != item.entry.connectedSHA256 {
                     let name = "before-disconnect-\(stamp)-" + backupURL(item.entry.source, directory: directory).lastPathComponent
                     try atomicWrite(item.current, to: directory.appendingPathComponent(name), permissions: 0o600)
@@ -351,7 +368,8 @@ final class TelemetrySetup {
             restartRequired: restored.map { $0.entry.source },
             message: (edited ? loc("TokenCat이 추가한 실측 설정만 되돌리고 연결 후 바뀐 다른 설정은 그대로 두었습니다. 클라이언트 재시작 후 적용됩니다.",
                                    "Removed only the telemetry settings TokenCat added and kept every other change made since. Restart the clients to apply.")
-                      : "TokenCat 실측 연결 전의 설정으로 복구했습니다. 클라이언트 재시작 후 적용됩니다.") + (statusLine ?? ""))
+                      : loc("TokenCat 실측 연결 전의 설정으로 복구했습니다. 클라이언트 재시작 후 적용됩니다.",
+                            "Restored the settings from before the TokenCat telemetry connection. Restart the clients to apply.")) + (statusLine ?? ""))
     }
 
     /// Edited Claude Code settings without TokenCat's env: a key still holding TokenCat's value gets the backup's value back
@@ -416,9 +434,10 @@ final class TelemetrySetup {
     private func restoreStatusLine(_ manifest: Manifest, directory: URL) -> String {
         guard let record = manifest.statusLine else { return "" }
         let url = configURL(.claude)
-        let kept = " 상태 표시줄도 지금 설정 그대로 두었습니다."
-        let failed = " Claude Code 상태 표시줄은 되돌리지 못했습니다."
-            + (files.fileExists(atPath: bridgeOriginal.path) ? " 원래 명령은 ~/Library/Application Support/TokenCat/\(Self.statusLineOriginalName)에 있습니다." : "")
+        let kept = loc(" 상태 표시줄도 지금 설정 그대로 두었습니다.", " The status line was also left as it is.")
+        let failed = loc(" Claude Code 상태 표시줄은 되돌리지 못했습니다.", " Couldn't restore the Claude Code status line.")
+            + (files.fileExists(atPath: bridgeOriginal.path) ? loc(" 원래 명령은 ~/Library/Application Support/TokenCat/\(Self.statusLineOriginalName)에 있습니다.",
+                                                                   " The original command is in ~/Library/Application Support/TokenCat/\(Self.statusLineOriginalName).") : "")
         guard let current = try? read(url),
               let settings = try? JSONSerialization.jsonObject(with: current) as? [String: Any] else { return kept }
         guard (settings["statusLine"] as? [String: Any])?["command"] as? String == Self.statusLineCommand else {
@@ -458,7 +477,8 @@ final class TelemetrySetup {
         }
         removeBridgeIfUnused()
         let restoredLine = (try? JSONSerialization.jsonObject(with: replacement) as? [String: Any])?["statusLine"] != nil
-        return restoredLine ? " Claude Code 상태 표시줄은 원래 명령으로 되돌렸습니다." : " TokenCat이 추가한 Claude Code 상태 표시줄은 지웠습니다."
+        return restoredLine ? loc(" Claude Code 상태 표시줄은 원래 명령으로 되돌렸습니다.", " Restored the Claude Code status line to its original command.")
+            : loc(" TokenCat이 추가한 Claude Code 상태 표시줄은 지웠습니다.", " Removed the Claude Code status line TokenCat added.")
     }
 
     /// Settings already run the bridge but this connection did not wrap them now. A missing sidecar is recreated from the
@@ -553,7 +573,8 @@ final class TelemetrySetup {
         guard files.fileExists(atPath: url.path) else { return nil }
         let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true else {
-            throw TelemetrySetupError.invalid("설정 경로가 일반 파일이 아니어서 변경하지 않았습니다: \(url.lastPathComponent)")
+            throw TelemetrySetupError.invalid(loc("설정 경로가 일반 파일이 아니어서 변경하지 않았습니다: \(url.lastPathComponent)",
+                                                  "A settings path isn't a regular file, so it wasn't changed: \(url.lastPathComponent)"))
         }
         return try Data(contentsOf: url)
     }
@@ -615,12 +636,14 @@ final class TelemetrySetup {
         var object: [String: Any] = [:]
         if let original {
             guard let decoded = try? JSONSerialization.jsonObject(with: original), let dictionary = decoded as? [String: Any] else {
-                throw TelemetrySetupError.invalid("Claude Code settings.json 형식이 올바르지 않아 변경하지 않았습니다.")
+                throw TelemetrySetupError.invalid(loc("Claude Code settings.json 형식이 올바르지 않아 변경하지 않았습니다.",
+                                                      "Claude Code settings.json isn't in a valid format, so it wasn't changed."))
             }
             object = dictionary
         }
         guard object["env"] == nil || object["env"] is [String: Any] else {
-            throw TelemetrySetupError.invalid("Claude Code env 설정이 객체가 아니어서 변경하지 않았습니다.")
+            throw TelemetrySetupError.invalid(loc("Claude Code env 설정이 객체가 아니어서 변경하지 않았습니다.",
+                                                  "The Claude Code env setting isn't an object, so it wasn't changed."))
         }
         var env = object["env"] as? [String: Any] ?? [:]
         let endpoint = "http://127.0.0.1:\(Self.port)"
@@ -630,22 +653,26 @@ final class TelemetrySetup {
             guard let value = env[key] else { continue }
             let expected = key == "OTEL_EXPORTER_OTLP_ENDPOINT" ? endpoint : requested[key]!
             guard value as? String == expected else {
-                throw TelemetrySetupError.conflict("Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.")
+                throw TelemetrySetupError.conflict(loc("Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.",
+                                                       "Claude Code already has an OTLP destination, so it wasn't overwritten."))
             }
         }
         for key in ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"] {
             if let value = env[key], value as? String != "" {
-                throw TelemetrySetupError.conflict("Claude Code에 기존 OTLP 인증 헤더가 있어 덮어쓰지 않았습니다.")
+                throw TelemetrySetupError.conflict(loc("Claude Code에 기존 OTLP 인증 헤더가 있어 덮어쓰지 않았습니다.",
+                                                       "Claude Code already has OTLP auth headers, so they weren't overwritten."))
             }
         }
         for key in ["OTEL_LOGS_EXPORTER", "OTEL_TRACES_EXPORTER"] {
             if let value = env[key], !["none", "otlp", ""].contains(value as? String ?? "invalid") {
-                throw TelemetrySetupError.conflict("Claude Code에 기존 실측 exporter가 있어 덮어쓰지 않았습니다.")
+                throw TelemetrySetupError.conflict(loc("Claude Code에 기존 실측 exporter가 있어 덮어쓰지 않았습니다.",
+                                                       "Claude Code already has a telemetry exporter, so it wasn't overwritten."))
             }
             let signal = key == "OTEL_LOGS_EXPORTER" ? "LOGS" : "TRACES"
             if env[key] as? String == "otlp", env["OTEL_EXPORTER_OTLP_\(signal)_ENDPOINT"] == nil,
                env["OTEL_EXPORTER_OTLP_ENDPOINT"] as? String != endpoint {
-                throw TelemetrySetupError.conflict("Claude Code가 기존 OTLP 기본 대상에 연결돼 있어 덮어쓰지 않았습니다.")
+                throw TelemetrySetupError.conflict(loc("Claude Code가 기존 OTLP 기본 대상에 연결돼 있어 덮어쓰지 않았습니다.",
+                                                       "Claude Code already sends to a default OTLP destination, so it wasn't overwritten."))
             }
         }
         for (key, value) in requested { env[key] = value }
@@ -693,7 +720,8 @@ final class TelemetrySetup {
 
     private func codexConfiguration(_ original: Data?) throws -> Data {
         guard let text = original.flatMap({ String(data: $0, encoding: .utf8) }) ?? (original == nil ? "" : nil) else {
-            throw TelemetrySetupError.invalid("Codex config.toml이 UTF-8 형식이 아니어서 변경하지 않았습니다.")
+            throw TelemetrySetupError.invalid(loc("Codex config.toml이 UTF-8 형식이 아니어서 변경하지 않았습니다.",
+                                                  "Codex config.toml isn't UTF-8, so it wasn't changed."))
         }
         let suffix = text.contains("\r\n") ? "\r" : ""
         var lines = text.components(separatedBy: "\n")
@@ -711,36 +739,43 @@ final class TelemetrySetup {
             if wasMultiline { continue }
             let trimmed = visible.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("[") {
-                guard trimmed.hasSuffix("]") else { throw TelemetrySetupError.invalid("Codex TOML 테이블 형식이 올바르지 않습니다.") }
+                guard trimmed.hasSuffix("]") else {
+                    throw TelemetrySetupError.invalid(loc("Codex TOML 테이블 형식이 올바르지 않습니다.", "A Codex TOML table header isn't valid."))
+                }
                 let raw = String(trimmed.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
                 let normalized = compactTOML(raw).replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
                 if section == "otel" { sectionEnd = index }
                 section = normalized
                 if normalized == "otel" {
                     guard raw == "otel", sectionStart == nil else {
-                        throw TelemetrySetupError.conflict("Codex otel 테이블이 중복되거나 복잡한 형식이어서 덮어쓰지 않았습니다.")
+                        throw TelemetrySetupError.conflict(loc("Codex otel 테이블이 중복되거나 복잡한 형식이어서 덮어쓰지 않았습니다.",
+                                                               "The Codex otel table is repeated or too complex, so it wasn't overwritten."))
                     }
                     sectionStart = index
                 } else if normalized.hasPrefix("otel.") || normalized.hasPrefix("[otel") {
-                    throw TelemetrySetupError.conflict("Codex에 기존 중첩 OTLP 설정이 있어 덮어쓰지 않았습니다.")
+                    throw TelemetrySetupError.conflict(loc("Codex에 기존 중첩 OTLP 설정이 있어 덮어쓰지 않았습니다.",
+                                                           "Codex already has nested OTLP settings, so they weren't overwritten."))
                 }
                 continue
             }
             if let equals = visible.firstIndex(of: "=") {
                 let rootKey = compactTOML(String(visible[..<equals])).replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
                 if rootKey.hasPrefix("otel.") || (section == nil && rootKey == "otel") {
-                    throw TelemetrySetupError.conflict("Codex에 기존 dotted 또는 inline otel 설정이 있어 덮어쓰지 않았습니다.")
+                    throw TelemetrySetupError.conflict(loc("Codex에 기존 dotted 또는 inline otel 설정이 있어 덮어쓰지 않았습니다.",
+                                                           "Codex already has dotted or inline otel settings, so they weren't overwritten."))
                 }
             }
             guard section == "otel", let equals = visible.firstIndex(of: "=") else { continue }
             let key = String(visible[..<equals]).trimmingCharacters(in: .whitespaces)
             let bareKey = compactTOML(key).replacingOccurrences(of: "\"", with: "").replacingOccurrences(of: "'", with: "")
             if bareKey.contains(".") && ["exporter.", "metrics_exporter.", "trace_exporter."].contains(where: bareKey.hasPrefix) {
-                throw TelemetrySetupError.conflict("Codex에 기존 dotted OTLP 설정이 있어 덮어쓰지 않았습니다.")
+                throw TelemetrySetupError.conflict(loc("Codex에 기존 dotted OTLP 설정이 있어 덮어쓰지 않았습니다.",
+                                                       "Codex already has dotted OTLP settings, so they weren't overwritten."))
             }
             guard requested[bareKey] != nil || ["log_user_prompt", "log_agent_responses"].contains(bareKey) else { continue }
             guard key == bareKey, !found.contains(bareKey), multiline == nil else {
-                throw TelemetrySetupError.conflict("Codex otel 키가 중복되거나 여러 줄 형식이어서 변경하지 않았습니다.")
+                throw TelemetrySetupError.conflict(loc("Codex otel 키가 중복되거나 여러 줄 형식이어서 변경하지 않았습니다.",
+                                                       "A Codex otel key is repeated or spans several lines, so it wasn't changed."))
             }
             found.insert(bareKey)
             let value = String(visible[visible.index(after: equals)...]).trimmingCharacters(in: .whitespaces)
@@ -748,18 +783,22 @@ final class TelemetrySetup {
             if let desired = requested[bareKey] {
                 let allowed = bareKey == "metrics_exporter" ? ["\"none\"", "'none'", "\"statsig\"", "'statsig'"] : ["\"none\"", "'none'"]
                 guard allowed.contains(value) || compactTOML(value) == compactTOML(desired) else {
-                    throw TelemetrySetupError.conflict("Codex에 기존 \(bareKey) 전송 설정이 있어 덮어쓰지 않았습니다.")
+                    throw TelemetrySetupError.conflict(loc("Codex에 기존 \(bareKey) 전송 설정이 있어 덮어쓰지 않았습니다.",
+                                                           "Codex already has a \(bareKey) setting, so it wasn't overwritten."))
                 }
                 after = desired
             } else {
-                guard ["true", "false"].contains(value) else { throw TelemetrySetupError.invalid("Codex 실측 개인정보 옵션이 올바르지 않습니다.") }
+                guard ["true", "false"].contains(value) else {
+                    throw TelemetrySetupError.invalid(loc("Codex 실측 개인정보 옵션이 올바르지 않습니다.", "A Codex telemetry privacy option isn't valid."))
+                }
                 after = "false"
             }
             let prefix = String(line[...equals])
             let comment = line.dropFirst(visible.count).trimmingCharacters(in: .whitespaces)
             replacements[index] = prefix + " " + after + (comment.isEmpty ? "" : " " + comment) + suffix
         }
-        guard multiline == nil else { throw TelemetrySetupError.invalid("Codex TOML 문자열이 닫히지 않아 변경하지 않았습니다.") }
+        guard multiline == nil else { throw TelemetrySetupError.invalid(loc("Codex TOML 문자열이 닫히지 않아 변경하지 않았습니다.",
+                                                                            "A Codex TOML string isn't closed, so it wasn't changed.")) }
         for (index, replacement) in replacements { lines[index] = replacement }
         let missing = Self.codexExporters.filter { !found.contains($0.key) }.map { "\($0.key) = \($0.value)\(suffix)" }
         if sectionStart != nil {

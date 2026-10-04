@@ -347,6 +347,11 @@ func runTelemetryChecks() -> [String] {
           "A successful export did not update connection freshness")
     check(LocalTelemetryCollector().state == .waiting && TelemetryCollectorState.busyTokenCat.status != TelemetryCollectorState.busyOtherApp.status,
           "Collector states did not separate another TokenCat from another app")
+    AppLanguage.with(.en) {
+        check(collector.status == "Receiving telemetry"
+              && TelemetryCollectorState.busyOtherApp.status == "Telemetry off · another app is using port \(LocalTelemetryCollector.port)",
+              "English collector states changed")
+    }
     // Claude Code status line JSON from the bridge: only rate_limits survive; nothing else is kept or counted as an export.
     let status = LocalTelemetryCollector()
     let statusBody = json(["session_id": "status-session", "cwd": "/Users/example/private-project", "transcript_path": "/Users/example/t.jsonl",

@@ -32,16 +32,16 @@ enum SessionDisplayState: String, CaseIterable {
 
     var title: String {
         switch self {
-        case .input: return "입력 필요"
-        case .retrying: return "API 재시도"
-        case .tool: return "도구 실행"
-        case .working: return "진행"
-        case .waiting: return "로그 대기"
-        case .complete: return "완료"
-        case .interrupted: return "중단"
-        case .unfinished: return "종료 기록 없음"
-        case .idle: return "최근 활동 없음"
-        case .measurement: return "실측"
+        case .input: return loc("입력 필요", "Input needed")
+        case .retrying: return loc("API 재시도", "API retry")
+        case .tool: return loc("도구 실행", "Running tool")
+        case .working: return loc("진행", "Working")
+        case .waiting: return loc("로그 대기", "Waiting for log")
+        case .complete: return loc("완료", "Complete")
+        case .interrupted: return loc("중단", "Interrupted")
+        case .unfinished: return loc("종료 기록 없음", "No end record")
+        case .idle: return loc("최근 활동 없음", "No recent activity")
+        case .measurement: return loc("실측", "Measured")
         }
     }
 
@@ -213,44 +213,52 @@ struct UsageLimitSummary: Equatable {
     /// A reset window stays on screen for one day to say "초기화됨", then the row goes away.
     func isShown(now: Date) -> Bool { !expired(now: now) || now.timeIntervalSince(resetDate ?? .distantPast) < 86_400 }
     /// "Claude", not "Claude Code": the window belongs to the Claude account, whichever app used it.
-    var title: String { "\(source == .codex ? "Codex" : "Claude") \(SessionPresentation.windowLabel(windowMinutes)) 한도" }
+    var title: String {
+        let name = source == .codex ? "Codex" : "Claude", window = SessionPresentation.windowLabel(windowMinutes)
+        return loc("\(name) \(window) 한도", "\(name) \(window) limit")
+    }
     /// The number alone ("28"); "%" and " 사용" are drawn smaller beside it. "사용" because Codex's own UI counts what is left.
     var percentText: String { "\(Int(usedPercent.rounded()))" }
-    func value(now: Date) -> String { expired(now: now) ? "—" : "\(percentText)% 사용" }
+    func value(now: Date) -> String { expired(now: now) ? "—" : loc("\(percentText)% 사용", "\(percentText)% used") }
     /// More than 10 minutes since the client reported it: the value is shown weaker.
     func isOld(now: Date) -> Bool { now.timeIntervalSince(recordedAt) > 600 }
-    private var waitingText: String { "초기화됨 · 다음 \(source.title) 기록 대기" }
+    private var waitingText: String { loc("초기화됨 · 다음 \(source.title) 기록 대기", "Reset · waiting for a \(source.title) record") }
     /// Help and VoiceOver wording.
     func detail(now: Date) -> String {
         if expired(now: now) { return waitingText }
-        let basis = "\(SessionPresentation.helpAge(recordedAt, now: now)) 기록 기준"
-        guard let resetsAt else { return basis }
-        return "\(SessionPresentation.countdown(to: resetsAt, now: now)) 후 초기화 · \(basis)"
+        let age = SessionPresentation.helpAge(recordedAt, now: now)
+        guard let resetsAt else { return loc("\(age) 기록 기준", "As of \(age)") }
+        let reset = SessionPresentation.countdown(to: resetsAt, now: now)
+        return loc("\(reset) 후 초기화 · \(age) 기록 기준", "Resets in \(reset) · as of \(age)")
     }
     /// On-screen variants, widest first; the reset countdown is never the part that is dropped.
     func details(now: Date) -> [String] {
         if expired(now: now) { return [waitingText] }
-        let basis = "\(SessionPresentation.helpAge(recordedAt, now: now)) 기록"
-        guard let resetsAt else { return [basis] }
-        let reset = "\(SessionPresentation.countdown(to: resetsAt, now: now)) 후 초기화"
-        return [reset + " · " + basis, reset]
+        let age = SessionPresentation.helpAge(recordedAt, now: now)
+        guard let resetsAt else { return [loc("\(age) 기록", "Recorded \(age)")] }
+        let countdown = SessionPresentation.countdown(to: resetsAt, now: now)
+        let reset = loc("\(countdown) 후 초기화", "Resets in \(countdown)")
+        return [reset + " · " + loc("\(age) 기록", "recorded \(age)"), reset]
     }
     /// "주간 한도 31% 사용 · 3일 4시간 후 초기화" while the other window has not reset.
     func otherText(now: Date) -> String? {
         guard let other, other.resetsAt > now else { return nil }
-        return "\(SessionPresentation.windowLabel(other.windowMinutes)) 한도 \(Int(other.usedPercent.rounded()))% 사용 · "
-            + "\(SessionPresentation.countdown(to: other.resetsAt, now: now)) 후 초기화"
+        let window = SessionPresentation.windowLabel(other.windowMinutes), percent = Int(other.usedPercent.rounded())
+        let reset = SessionPresentation.countdown(to: other.resetsAt, now: now)
+        return loc("\(window) 한도 \(percent)% 사용 · \(reset) 후 초기화",
+                   "\(window.prefix(1).uppercased() + window.dropFirst()) limit \(percent)% used · resets in \(reset)")
     }
     func spoken(now: Date) -> String {
         let main = expired(now: now) ? waitingText.replacingOccurrences(of: " · ", with: ", ")
-            : "\(percentText)퍼센트 사용, \(detail(now: now).replacingOccurrences(of: " · ", with: ", "))"
-        return main + (otherText(now: now).map { ", " + $0.replacingOccurrences(of: "%", with: "퍼센트").replacingOccurrences(of: " · ", with: ", ") } ?? "")
+            : loc("\(percentText)퍼센트 사용", "\(percentText) percent used") + ", " + detail(now: now).replacingOccurrences(of: " · ", with: ", ")
+        return main + (otherText(now: now).map { ", " + $0.replacingOccurrences(of: "%", with: loc("퍼센트", " percent")).replacingOccurrences(of: " · ", with: ", ") } ?? "")
     }
     func help(now: Date) -> String {
-        let basis = source == .codex ? "Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다."
+        let basis = source == .codex ? loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
+                                           "The last account usage recorded in the Codex logs. It isn't a live balance and updates only while you use Codex.")
             : loc("Claude Code가 상태 표시줄로 보냈거나 Claude 데스크톱 앱이 기록한 마지막 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude를 사용할 때만 갱신됩니다.",
-                  "The last Claude account usage Claude Code sent to its status line or the Claude desktop app recorded. It isn't a live balance and updates only while you use Claude.")
-        return basis + " 소진 시점을 예측하지 않습니다." + (otherText(now: now).map { "\n" + $0 } ?? "")
+                  "The last Claude account usage sent by Claude Code to its status line or recorded by the Claude desktop app. It isn't a live balance and updates only while you use Claude.")
+        return basis + loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.") + (otherText(now: now).map { "\n" + $0 } ?? "")
     }
 }
 
@@ -364,7 +372,7 @@ enum SessionPresentation {
     /// The client's role name for help and VoiceOver; only known internal names are translated.
     static func roleLabel(_ role: String?) -> String? {
         guard let role = role?.trimmingCharacters(in: .whitespaces), !role.isEmpty else { return nil }
-        return ["guardian", "guardian_review"].contains(role) ? "자동 검토" : role
+        return ["guardian", "guardian_review"].contains(role) ? loc("자동 검토", "Auto review") : role
     }
 
     /// Roles nearly every Claude Code subagent shares; as a title they would hide the only distinguishing ID.
@@ -397,7 +405,7 @@ enum SessionPresentation {
 
     /// A live row's second line, one text with one separator: "Claude Code · claude-opus-5-5 · xhigh".
     static func clientLine(_ reading: TokenReading) -> String {
-        [reading.source.title, reading.model ?? "모델 기록 대기", effortLabel(reading)].compactMap { $0 }.joined(separator: " · ")
+        [reading.source.title, reading.model ?? loc("모델 기록 대기", "waiting for model"), effortLabel(reading)].compactMap { $0 }.joined(separator: " · ")
     }
 
     /// Raw client value, lowercased and never translated.
@@ -408,13 +416,13 @@ enum SessionPresentation {
 
     static func toolTitle(_ category: ToolCategory?) -> String {
         switch category {
-        case .command: return "명령 실행"
-        case .file: return "파일 작업"
-        case .web: return "웹 조회"
-        case .agent: return "하위 에이전트 대기"
-        case .mcp: return "MCP 도구"
-        case .question: return "입력 요청"
-        case .other, nil: return "도구 실행"
+        case .command: return loc("명령 실행", "Running command")
+        case .file: return loc("파일 작업", "File operation")
+        case .web: return loc("웹 조회", "Web lookup")
+        case .agent: return loc("하위 에이전트 대기", "Waiting for subagent")
+        case .mcp: return loc("MCP 도구", "MCP tool")
+        case .question: return loc("입력 요청", "Input request")
+        case .other, nil: return loc("도구 실행", "Running tool")
         }
     }
 
@@ -430,22 +438,25 @@ enum SessionPresentation {
 
     static func isPlanApproval(_ reading: TokenReading) -> Bool { reading.toolName == "ExitPlanMode" }
 
-    static func inputTitle(_ reading: TokenReading) -> String { isPlanApproval(reading) ? "계획 승인 대기" : "질문 답변 대기" }
+    static func inputTitle(_ reading: TokenReading) -> String {
+        isPlanApproval(reading) ? loc("계획 승인 대기", "Waiting for plan approval") : loc("질문 답변 대기", "Waiting for an answer")
+    }
 
     /// An idle lead row standing in for its live children.
     static func childGroupText(_ state: SessionDisplayState, count: Int) -> String {
+        let children = plural(count, "subagent")
         switch state {
-        case .input: return "하위 \(count)개 입력 필요"
-        case .retrying: return "하위 \(count)개 API 재시도"
-        default: return "하위 \(count)개 \(state.isRunning ? "진행 중" : "로그 대기")"
+        case .input: return loc("하위 \(count)개 입력 필요", "\(children) \(count == 1 ? "needs" : "need") input")
+        case .retrying: return loc("하위 \(count)개 API 재시도", "\(children) in API retry")
+        default: return loc("하위 \(count)개 \(state.isRunning ? "진행 중" : "로그 대기")", "\(children) \(state.isRunning ? "working" : "waiting for log")")
         }
     }
 
     /// VoiceOver row label (P-3): "<상태>, <프로젝트>, <클라이언트> <모델>"; subagents "하위 에이전트 <제목>, <상태>".
     static func spokenLabel(_ reading: TokenReading, state: SessionDisplayState) -> String {
         let word = stateTitle(state, reading)
-        if reading.isSubagent { return "하위 에이전트 \(childTitle(reading).title), \(word)" }
-        return "\(word), \(reading.project ?? "프로젝트 미확인"), \(reading.source.title) \(reading.model ?? "모델 미확인")"
+        if reading.isSubagent { return loc("하위 에이전트 \(childTitle(reading).title), \(word)", "Subagent \(childTitle(reading).title), \(word)") }
+        return "\(word), \(reading.project ?? loc("프로젝트 미확인", "Unknown project")), \(reading.source.title) \(reading.model ?? loc("모델 미확인", "unknown model"))"
     }
 
     /// "재시도 2/10 · 4초 후" / "Retry 2/10 · in 4s"; `api` starts it "API 재시도" / "API retry".
@@ -492,21 +503,23 @@ enum SessionPresentation {
         let slot: (text: String, short: String, fraction: Double?, warning: Bool, spoken: String)
         if let window = context.windowTokens, window > 0 {
             let percent = Int((Double(context.usedTokens) / Double(window) * 100).rounded())
-            slot = ("컨텍스트 \(percent)% 사용", "\(percent)%", min(1, Double(context.usedTokens) / Double(window)), percent >= 85,
-                    "컨텍스트 \(percent)퍼센트 사용")
-            help = "마지막 요청 입력 \(Format.tokens(context.usedTokens)) / 모델 컨텍스트 \(Format.tokens(window)) tok (\(source) 기록)"
+            slot = (loc("컨텍스트 \(percent)% 사용", "Context \(percent)% used"), "\(percent)%", min(1, Double(context.usedTokens) / Double(window)),
+                    percent >= 85, loc("컨텍스트 \(percent)퍼센트 사용", "Context \(percent) percent used"))
+            help = loc("마지막 요청 입력 \(Format.tokens(context.usedTokens)) / 모델 컨텍스트 \(Format.tokens(window)) tok (\(source) 기록)",
+                       "Last request input \(Format.tokens(context.usedTokens)) / model context \(Format.tokens(window)) tok (recorded by \(source))")
         } else {
             let used = context.usedTokens
             let short = used < 1_000 ? String(used) : (used < 999_500 ? "\(Int((Double(used) / 1_000).rounded()))k" : Format.compactTokens(used))
-            slot = ("컨텍스트 \(short)", short, nil, false, "컨텍스트 \(used) 토큰")
-            help = "마지막 요청 입력 \(Format.tokens(context.usedTokens)) tok (입력·캐시 합계)\n\(source)는 컨텍스트 창 크기를 기록하지 않아 비율을 표시하지 않습니다"
+            slot = (loc("컨텍스트 \(short)", "Context \(short)"), short, nil, false, loc("컨텍스트 \(used) 토큰", "Context \(used) tokens"))
+            help = loc("마지막 요청 입력 \(Format.tokens(context.usedTokens)) tok (입력·캐시 합계)\n\(source)는 컨텍스트 창 크기를 기록하지 않아 비율을 표시하지 않습니다",
+                       "Last request input \(Format.tokens(context.usedTokens)) tok (input and cache)\n\(source) doesn't record the context window size, so no percentage is shown")
         }
-        help += "\n출력 토큰 제외 · \(helpAge(context.recordedAt, now: now)) 기록"
+        help += loc("\n출력 토큰 제외 · \(helpAge(context.recordedAt, now: now)) 기록", "\nExcludes output tokens · recorded \(helpAge(context.recordedAt, now: now))")
         var compacted: String?
         if let at = context.compactedAt {
-            help += "\n압축 완료 기록 \(helpAge(at, now: now))"
+            help += loc("\n압축 완료 기록 \(helpAge(at, now: now))", "\nCompaction recorded \(helpAge(at, now: now))")
             let age = now.timeIntervalSince(at)
-            if age >= -FlowSeries.futureTolerance && age < compactionWindow { compacted = "압축 \(Format.age(at, now: now))" }
+            if age >= -FlowSeries.futureTolerance && age < compactionWindow { compacted = loc("압축 \(Format.age(at, now: now))", "Compacted \(Format.age(at, now: now))") }
         }
         return ContextSlot(text: slot.text, short: slot.short, fraction: slot.fraction, warning: slot.warning, compacted: compacted,
                            help: help, spoken: slot.spoken)
@@ -516,9 +529,10 @@ enum SessionPresentation {
     static func lastTurnSummary(_ reading: TokenReading) -> String? {
         guard let output = reading.lastOutputTokens else { return nil }
         guard let seconds = reading.lastTurnDurationSeconds, seconds.isFinite, seconds >= 0 else {
-            return "마지막 출력 기록 \(Format.tokens(output)) tok"
+            return loc("마지막 출력 기록 \(Format.tokens(output)) tok", "Last output record: \(Format.tokens(output)) tok")
         }
-        return "마지막 완료 턴 출력 \(Format.tokens(output)) tok · 소요 \(clock(Int(seconds.rounded())))"
+        let took = clock(Int(seconds.rounded()))
+        return loc("마지막 완료 턴 출력 \(Format.tokens(output)) tok · 소요 \(took)", "Last completed turn: \(Format.tokens(output)) tok · took \(took)")
     }
 
     static func clock(_ seconds: Int) -> String {
@@ -544,14 +558,14 @@ enum SessionPresentation {
     }
 
     static func windowLabel(_ minutes: Int?) -> String {
-        guard let minutes, minutes > 0 else { return "사용" }
+        guard let minutes, minutes > 0 else { return loc("사용", "usage") }
         switch minutes {
-        case 300: return "5시간"
-        case 10_080: return "주간"
-        case 43_200, 43_800: return "월간"
+        case 300: return loc("5시간", "5-hour")
+        case 10_080: return loc("주간", "weekly")
+        case 43_200, 43_800: return loc("월간", "monthly")
         default:
-            if minutes % 1_440 == 0 { return "\(minutes / 1_440)일" }
-            return minutes % 60 == 0 ? "\(minutes / 60)시간" : "\(minutes)분"
+            if minutes % 1_440 == 0 { return loc("\(minutes / 1_440)일", "\(minutes / 1_440)-day") }
+            return minutes % 60 == 0 ? loc("\(minutes / 60)시간", "\(minutes / 60)-hour") : loc("\(minutes)분", "\(minutes)-minute")
         }
     }
 
@@ -614,43 +628,50 @@ enum SessionPresentation {
                 let age = now.timeIntervalSince(measurement.at)
                 return age >= -5 && age < 120 ? measurement : nil
             }.max { $0.at < $1.at }
-            let reason = previous.map { "최근 실측은 이전 모델\($0.model.map { "(\($0))" } ?? "") 기준이라 지금 속도로 쓰지 않습니다" }
-                ?? "진행 중인 세션의 최근 2분 실측 없음 · 로그 시각으로 추정하지 않습니다"
-            let help = waiting.count == sources.count ? "실측 연결됨 · \(names)를 새로 실행하면 속도가 표시됩니다"
-                : reason + (waiting.isEmpty ? "" : "\n\(names)를 새로 실행하면 속도가 표시됩니다")
-            return SpeedHeadline(value: "—", kind: nil, project: nil, help: help, spoken: "속도 실측 없음")
+            let reason = previous.map { measurement in
+                loc("최근 실측은 이전 모델\(measurement.model.map { "(\($0))" } ?? "") 기준이라 지금 속도로 쓰지 않습니다",
+                    "The latest measurement is from the previous model\(measurement.model.map { " (\($0))" } ?? ""), so it isn't used as the current speed")
+            } ?? loc("진행 중인 세션의 최근 2분 실측 없음 · 로그 시각으로 추정하지 않습니다",
+                     "No measurement from active sessions in the last 2 min · not estimated from log times")
+            let help = waiting.count == sources.count ? loc("실측 연결됨 · \(names)를 새로 실행하면 속도가 표시됩니다", "Telemetry connected · restart \(names) to show speed")
+                : reason + (waiting.isEmpty ? "" : loc("\n\(names)를 새로 실행하면 속도가 표시됩니다", "\nRestart \(names) to show speed"))
+            return SpeedHeadline(value: "—", kind: nil, project: nil, help: help, spoken: loc("속도 실측 없음", "No measured speed"))
         }
         let reading = newest.row.reading
-        let project = reading.project ?? "프로젝트 미확인"
-        let session = [project, reading.isSubagent ? "하위 " + childTitle(reading).title : nil,
+        let project = reading.project ?? loc("프로젝트 미확인", "Unknown project")
+        let session = [project, reading.isSubagent ? loc("하위 ", "subagent ") + childTitle(reading).title : nil,
                        reading.source.title + (reading.model.map { " " + $0 } ?? "")].compactMap { $0 }.joined(separator: " · ")
-        let value = Format.tps(newest.rate)
+        let value = Format.tps(newest.rate), age = helpAge(newest.measurement.at, now: now)
         return SpeedHeadline(value: value, kind: newest.measurement.kind?.title ?? "tok/s", project: project,
-                             help: "\(session) · 측정 \(helpAge(newest.measurement.at, now: now))\n\(newest.measurement.details)\n가장 최근 실측 한 건이며 세션끼리 합치거나 평균내지 않습니다",
-                             spoken: "\(spokenKind(newest.measurement.kind)) 초당 \(value) 토큰, \(project)")
+                             help: loc("\(session) · 측정 \(age)\n\(newest.measurement.details)\n가장 최근 실측 한 건이며 세션끼리 합치거나 평균내지 않습니다",
+                                       "\(session) · measured \(age)\n\(newest.measurement.details)\nThe single latest measurement; sessions are never summed or averaged"),
+                             spoken: loc("\(spokenKind(newest.measurement.kind)) 초당 \(value) 토큰, \(project)",
+                                         "\(spokenKind(newest.measurement.kind)) \(value) tokens per second, \(project)"))
     }
 
     static func spokenKind(_ kind: TokenRateKind?) -> String {
         switch kind {
-        case .serverGeneration: return "생성 속도"
-        case .serverAggregate: return "모델 평균 속도"
-        default: return "요청 처리 속도"
+        case .serverGeneration: return loc("생성 속도", "Generation speed")
+        case .serverAggregate: return loc("모델 평균 속도", "Model average speed")
+        default: return loc("요청 처리 속도", "Request processing rate")
         }
     }
 
     /// Only exact-identity telemetry; never a speed derived from log timing.
     static func speed(_ reading: TokenReading, now: Date, restartNeeded: Bool = false) -> SpeedSlot {
         guard let measurement = reading.speedMeasurement, let rate = measurement.tokensPerSecond else {
-            let help = restartNeeded ? "실측 연결됨 · \(reading.source.title)를 새로 실행하면 속도가 표시됩니다"
-                : "실측 속도 없음 · 로그 시각으로 추정하지 않습니다"
-            return SpeedSlot(prefix: nil, value: "—", kind: nil, recent: false, help: help, spoken: "속도 실측 없음")
+            let help = restartNeeded ? loc("실측 연결됨 · \(reading.source.title)를 새로 실행하면 속도가 표시됩니다",
+                                           "Telemetry connected · restart \(reading.source.title) to show speed")
+                : loc("실측 속도 없음 · 로그 시각으로 추정하지 않습니다", "No measured speed · not estimated from log times")
+            return SpeedSlot(prefix: nil, value: "—", kind: nil, recent: false, help: help, spoken: loc("속도 실측 없음", "No measured speed"))
         }
         let kind = measurement.kind?.title ?? "tok/s"
-        let spoken = "\(spokenKind(measurement.kind)) 초당 \(Format.tps(rate)) 토큰"
+        let spoken = loc("\(spokenKind(measurement.kind)) 초당 \(Format.tps(rate)) 토큰", "\(spokenKind(measurement.kind)) \(Format.tps(rate)) tokens per second")
         if measurement.model != reading.model {
-            return SpeedSlot(prefix: "이전", value: Format.tps(rate), kind: kind, recent: false,
-                             help: "이전 실측 모델 \(measurement.model ?? "미확인") · 측정 \(helpAge(measurement.at, now: now))",
-                             spoken: "이전 모델 " + spoken)
+            let model = measurement.model ?? loc("미확인", "unknown"), age = helpAge(measurement.at, now: now)
+            return SpeedSlot(prefix: loc("이전", "previous"), value: Format.tps(rate), kind: kind, recent: false,
+                             help: loc("이전 실측 모델 \(model) · 측정 \(age)", "Previously measured model \(model) · measured \(age)"),
+                             spoken: loc("이전 모델 ", "Previous model, ") + spoken)
         }
         let age = now.timeIntervalSince(measurement.at)
         return SpeedSlot(prefix: nil, value: Format.tps(rate), kind: kind, recent: age >= -5 && age < 120,
@@ -684,107 +705,134 @@ enum SessionPresentation {
     /// The header sentence (H-2) and head echo (H-3) from the shared counts.
     /// `quietSince` is the menu-bar cat's quiet reference (`RunnerDirector.quietSince`); without it the newest activity is used.
     static func headerStatus(counts: SessionCounts, loading: Bool, now: Date, quietSince: Date? = nil) -> HeaderStatus {
-        if loading { return HeaderStatus(sentence: "기록 확인 중", suffix: "", glyph: nil, muted: true, help: "Codex·Claude Code 기록을 읽고 있습니다") }
+        if loading {
+            return HeaderStatus(sentence: loc("기록 확인 중", "Reading records"), suffix: "", glyph: nil, muted: true,
+                                help: loc("Codex·Claude Code 기록을 읽고 있습니다", "Reading Codex and Claude Code records"))
+        }
         let tools = [ToolCategory.command, .file, .web, .agent, .mcp, .question, .other].compactMap { category -> String? in
             guard let n = counts.toolCategories[category], n > 0 else { return nil }
             return "\(toolTitle(category)) \(n)"
         }
-        let breakdown = tools.isEmpty ? "" : "\n하위 에이전트 포함 " + tools.joined(separator: " · ")
+        let breakdown = tools.isEmpty ? "" : loc("\n하위 에이전트 포함 ", "\nIncluding subagents: ") + tools.joined(separator: " · ")
         let others = counts.runningGroups - counts.input
         if counts.input > 0 {
-            let plans = counts.inputPlansOnly
-            return HeaderStatus(sentence: (plans ? "계획 승인 대기 " : "입력 필요 ") + "\(counts.input)개",
-                                suffix: others > 0 ? " · 진행 \(others)개" : (plans ? " · 승인하면 계속됩니다" : " · 답변하면 계속됩니다"),
+            let plans = counts.inputPlansOnly, n = counts.input
+            return HeaderStatus(sentence: loc((plans ? "계획 승인 대기 " : "입력 필요 ") + "\(n)개",
+                                              plans ? "\(plural(n, "plan")) awaiting approval" : "\(plural(n, "session")) \(n == 1 ? "needs" : "need") input"),
+                                suffix: others > 0 ? loc(" · 진행 \(others)개", " · \(others) working")
+                                    : (plans ? loc(" · 승인하면 계속됩니다", " · approve to continue") : loc(" · 답변하면 계속됩니다", " · reply to continue")),
                                 glyph: .input, head: .alert,
-                                help: "질문이나 계획 승인을 기다립니다. 권한 확인 요청은 로그에 남지 않아 표시하지 않습니다" + breakdown)
+                                help: loc("질문이나 계획 승인을 기다립니다. 권한 확인 요청은 로그에 남지 않아 표시하지 않습니다",
+                                          "Waiting for an answer or plan approval. Permission prompts aren't logged, so they aren't shown") + breakdown)
         }
         if counts.retrying > 0 {
-            return HeaderStatus(sentence: "API 재시도 \(counts.retrying)개", suffix: counts.retry.map { " · " + retryText($0, now: now) } ?? "",
-                                glyph: .retry, help: "API 재시도 기록 · 오류 내용은 저장하지 않습니다" + breakdown)
+            return HeaderStatus(sentence: loc("API 재시도 \(counts.retrying)개", "\(plural(counts.retrying, "session")) retrying"),
+                                suffix: counts.retry.map { " · " + retryText($0, now: now) } ?? "",
+                                glyph: .retry, help: loc("API 재시도 기록 · 오류 내용은 저장하지 않습니다", "API retry recorded · error details aren't stored") + breakdown)
         }
         if counts.tool + counts.working > 0 {
-            let parts = [counts.toolMembers > 0 ? "도구 실행 \(counts.toolMembers)" : nil,
-                         counts.runningSubagents > 0 ? "하위 \(counts.runningSubagents)" : nil].compactMap { $0 }
-            return HeaderStatus(sentence: "세션 \(counts.runningGroups)개 진행 중", suffix: parts.map { " · " + $0 }.joined(),
+            let parts = [counts.toolMembers > 0 ? loc("도구 실행 \(counts.toolMembers)", plural(counts.toolMembers, "tool")) : nil,
+                         counts.runningSubagents > 0 ? loc("하위 \(counts.runningSubagents)", plural(counts.runningSubagents, "subagent")) : nil].compactMap { $0 }
+            return HeaderStatus(sentence: loc("세션 \(counts.runningGroups)개 진행 중", "\(plural(counts.runningGroups, "session")) working"),
+                                suffix: parts.map { " · " + $0 }.joined(),
                                 glyph: counts.tool > 0 ? .tool : .working,
-                                help: "진행 중인 세션 \(counts.runningGroups)개 · 하위 에이전트 \(counts.runningSubagents)개 실행 중" + breakdown)
+                                help: loc("진행 중인 세션 \(counts.runningGroups)개 · 하위 에이전트 \(counts.runningSubagents)개 실행 중",
+                                          "\(plural(counts.runningGroups, "active session")) · \(plural(counts.runningSubagents, "subagent")) running") + breakdown)
         }
         if counts.waiting > 0 {
             let minutes = counts.waitingSince.map { max(1, Int(now.timeIntervalSince($0)) / 60) } ?? 1
-            return HeaderStatus(sentence: "로그 대기 \(counts.waiting)개", suffix: " · \(minutes)분째 새 기록 없음", glyph: .waiting,
-                                help: "턴이 열려 있지만 새 기록이 없습니다. 도구나 모델 응답을 기다리는 중일 수 있습니다")
+            return HeaderStatus(sentence: loc("로그 대기 \(counts.waiting)개", "\(plural(counts.waiting, "session")) waiting for log"),
+                                suffix: loc(" · \(minutes)분째 새 기록 없음", " · no record for \(Format.span(minutes, .minute))"), glyph: .waiting,
+                                help: loc("턴이 열려 있지만 새 기록이 없습니다. 도구나 모델 응답을 기다리는 중일 수 있습니다",
+                                          "The turn is open but nothing new has been recorded. It may be waiting for a tool or the model"))
         }
         let quiet = (quietSince ?? counts.newestActivity).map { now.timeIntervalSince($0) >= sleepAfter } ?? true
-        return HeaderStatus(sentence: "진행 중인 세션 없음", suffix: counts.newestActivity.map { " · 마지막 활동 " + helpAge($0, now: now) } ?? "",
-                            glyph: nil, head: quiet ? .sleep : .normal, help: "진행 중인 Codex·Claude Code 세션이 없습니다")
+        return HeaderStatus(sentence: loc("진행 중인 세션 없음", "No active sessions"),
+                            suffix: counts.newestActivity.map { loc(" · 마지막 활동 ", " · last activity ") + helpAge($0, now: now) } ?? "",
+                            glyph: nil, head: quiet ? .sleep : .normal, help: loc("진행 중인 Codex·Claude Code 세션이 없습니다", "No active Codex or Claude Code sessions"))
     }
 
     /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record.
     static func flowCaption(counts: SessionCounts, last: Date?, now: Date) -> FlowCaption {
-        let base = FlowCaption(text: lastRecordCaption, help: "최근 5분 안에 로그에 기록된 마지막 출력입니다")
+        let base = FlowCaption(text: lastRecordCaption, help: loc("최근 5분 안에 로그에 기록된 마지막 출력입니다", "The latest output recorded in the logs within the last 5 min"))
         guard counts.liveGroups > 0 else { return base }
         if let last, now.timeIntervalSince(last) <= 30 { return base }
-        let help = "응답이 끝나면 토큰이 기록됩니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다"
+        let help = loc("응답이 끝나면 토큰이 기록됩니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다",
+                       "Tokens are recorded when a response ends. Codex records at the end of a response and Claude Code at the end of a message, so tokens still being generated aren't included yet")
         if counts.input > 0 {
-            return FlowCaption(text: counts.inputPlansOnly ? "계획 승인 대기 · 승인하면 계속 기록" : "입력 대기 · 답변하면 계속 기록",
+            return FlowCaption(text: counts.inputPlansOnly ? loc("계획 승인 대기 · 승인하면 계속 기록", "Plan approval · approve to resume")
+                                   : loc("입력 대기 · 답변하면 계속 기록", "Waiting for input · reply to resume"),
                                glyph: .input, emphasized: true, help: help)
         }
         if counts.retrying > 0 {
-            let text = counts.retry.map { $0.networkDown ? "API 재시도 · 네트워크 끊김" : retryText($0, now: now, api: true) } ?? "API 재시도"
+            let text = counts.retry.map { $0.networkDown ? loc("API 재시도 · 네트워크 끊김", "API retry · network down") : retryText($0, now: now, api: true) }
+                ?? loc("API 재시도", "API retry")
             return FlowCaption(text: text, glyph: .retry, emphasized: true, help: help)
         }
-        if counts.tool > 0 { return FlowCaption(text: "\(toolTitle(counts.leadingToolCategory)) 중 · 응답 후 기록", help: help) }
-        if counts.working > 0 { return FlowCaption(text: "진행 중 · 응답 후 기록", help: help) }
+        if counts.tool > 0 {
+            let tool = toolTitle(counts.leadingToolCategory)
+            return FlowCaption(text: loc("\(tool) 중 · 응답 후 기록", "\(tool) · records after reply"), help: help)
+        }
+        if counts.working > 0 { return FlowCaption(text: loc("진행 중 · 응답 후 기록", "Working · records after reply"), help: help) }
         let minutes = counts.waitingSince.map { max(1, Int(now.timeIntervalSince($0)) / 60) } ?? 1
-        return FlowCaption(text: "로그 대기 · \(minutes)분째 기록 없음", help: help)
+        return FlowCaption(text: loc("로그 대기 · \(minutes)분째 기록 없음", "Waiting for log · no record for \(Format.span(minutes, .minute))"), help: help)
     }
 
     /// Cause-specific copy from the collector state, the setup note and pending or expired restarts.
     /// `status` is the collector's own sentence, used only as help text.
     static func telemetryNotice(state: TelemetryCollectorState, status: String? = nil, note: String?, failure: TelemetrySetupFailure? = nil,
                                 restart: Set<TokenSource>, expired: Set<TokenSource> = []) -> TelemetryNotice? {
-        let open = "\n누르면 설정을 엽니다"
+        let open = loc("\n누르면 설정을 엽니다", "\nClick to open Settings")
         func names(_ sources: Set<TokenSource>) -> String { TokenSource.allCases.filter(sources.contains).map(\.title).joined(separator: " · ") }
         switch state {
         case .busyTokenCat:
-            return TelemetryNotice(kind: .busy, text: "실측 꺼짐 · 다른 TokenCat",
-                                   help: "다른 TokenCat이 이미 실측을 수집하고 있어 이 TokenCat은 실측을 받지 않습니다. 하나만 실행하세요." + open)
+            return TelemetryNotice(kind: .busy, text: loc("실측 꺼짐 · 다른 TokenCat", "Telemetry off · another TokenCat"),
+                                   help: loc("다른 TokenCat이 이미 실측을 수집하고 있어 이 TokenCat은 실측을 받지 않습니다. 하나만 실행하세요.",
+                                             "Another TokenCat is already collecting telemetry, so this one doesn't receive it. Run only one.") + open)
         case .busyOtherApp:
-            return TelemetryNotice(kind: .portBusy, text: "실측 꺼짐 · 포트 사용 중",
-                                   help: "로컬 실측 수집기가 127.0.0.1:\(TelemetrySetup.port) 포트를 열지 못했습니다. 다른 앱이 포트를 쓰고 있을 수 있습니다." + open)
+            return TelemetryNotice(kind: .portBusy, text: loc("실측 꺼짐 · 포트 사용 중", "Telemetry off · port in use"),
+                                   help: loc("로컬 실측 수집기가 127.0.0.1:\(TelemetrySetup.port) 포트를 열지 못했습니다. 다른 앱이 포트를 쓰고 있을 수 있습니다.",
+                                             "The local telemetry collector couldn't open port 127.0.0.1:\(TelemetrySetup.port). Another app may be using it.") + open)
         case .failed:
-            return TelemetryNotice(kind: .collector, text: "실측 꺼짐 · 수집기 오류", help: (status ?? state.status) + open)
+            return TelemetryNotice(kind: .collector, text: loc("실측 꺼짐 · 수집기 오류", "Telemetry off · collector error"), help: (status ?? state.status) + open)
         case .stopped:
-            return TelemetryNotice(kind: .off, text: "실측 꺼짐", help: (status ?? state.status) + open)
+            return TelemetryNotice(kind: .off, text: loc("실측 꺼짐", "Telemetry off"), help: (status ?? state.status) + open)
         case .starting, .waiting, .receiving:
             break
         }
         if let note {
             let conflict = failure == .conflict
-            return TelemetryNotice(kind: conflict ? .conflict : .failed, text: conflict ? "실측 꺼짐 · 설정 충돌" : "실측 꺼짐 · 연결 실패",
+            return TelemetryNotice(kind: conflict ? .conflict : .failed,
+                                   text: conflict ? loc("실측 꺼짐 · 설정 충돌", "Telemetry off · config conflict") : loc("실측 꺼짐 · 연결 실패", "Telemetry off · connection failed"),
                                    help: note + open)
         }
         if !expired.isEmpty {
-            return TelemetryNotice(kind: .expired, text: "실측 미수신 · 확인 필요",
-                                   help: "\(names(expired)): 이 버전에서 실측을 받지 못했습니다. 새로 실행한 뒤에도 그대로면 설정에서 연결 상태를 확인하세요." + open)
+            return TelemetryNotice(kind: .expired, text: loc("실측 미수신 · 확인 필요", "No telemetry · check needed"),
+                                   help: loc("\(names(expired)): 이 버전에서 실측을 받지 못했습니다. 새로 실행한 뒤에도 그대로면 설정에서 연결 상태를 확인하세요.",
+                                             "\(names(expired)): no telemetry received with this version. If it's still missing after a restart, check the connection in Settings.") + open)
         }
         guard !restart.isEmpty else { return nil }
-        return TelemetryNotice(kind: .restart, text: "재시작 후 실측 표시",
-                               help: "\(names(restart))를 새로 실행하면 속도가 표시됩니다. 진행 중인 작업은 재시작하지 않습니다." + open)
+        return TelemetryNotice(kind: .restart, text: loc("재시작 후 실측 표시", "Telemetry after restart"),
+                               help: loc("\(names(restart))를 새로 실행하면 속도가 표시됩니다. 진행 중인 작업은 재시작하지 않습니다.",
+                                         "Restart \(names(restart)) to show speed. TokenCat doesn't restart running work.") + open)
     }
 
     /// One footer item: collection delay first, then the telemetry notice, then "실시간".
     static func footerStatus(loading: Bool, tokenDelay: Int, systemDelay: Int, notice: TelemetryNotice?) -> FooterStatus {
-        if loading { return FooterStatus(kind: .loading, text: "준비 중") }
-        if tokenDelay > 3 { return FooterStatus(kind: .aiDelay, text: "AI 수집 지연 \(tokenDelay)초") }
-        if systemDelay > 3 { return FooterStatus(kind: .systemDelay, text: "시스템 수집 지연 \(systemDelay)초") }
+        if loading { return FooterStatus(kind: .loading, text: loc("준비 중", "Preparing")) }
+        if tokenDelay > 3 {
+            return FooterStatus(kind: .aiDelay, text: loc("AI 수집 지연 \(tokenDelay)초", "AI collection delayed \(Format.span(tokenDelay, .second))"))
+        }
+        if systemDelay > 3 {
+            return FooterStatus(kind: .systemDelay, text: loc("시스템 수집 지연 \(systemDelay)초", "System collection delayed \(Format.span(systemDelay, .second))"))
+        }
         if let notice { return FooterStatus(kind: .notice, text: notice.text) }
-        return FooterStatus(kind: .live, text: "실시간")
+        return FooterStatus(kind: .live, text: loc("실시간", "Live"))
     }
 
     /// "실측 수신: Codex 기록 없음 · Claude Code 2분 전", minute-granular for a stable tooltip.
     static func telemetryReceipt(_ lastReceived: [TokenSource: Date], now: Date) -> String {
-        "실측 수신: " + TokenSource.allCases.map { "\($0.title) \(helpAge(lastReceived[$0], now: now))" }.joined(separator: " · ")
+        loc("실측 수신: ", "Telemetry received: ") + TokenSource.allCases.map { "\($0.title) \(helpAge(lastReceived[$0], now: now))" }.joined(separator: " · ")
     }
 
     /// Newest measurement per client from the readings, for a model that does not track receipts itself.
@@ -797,12 +845,12 @@ enum SessionPresentation {
 
     /// Expanded-list date captions from the model clock.
     static func daySection(_ date: Date, now: Date, calendar: Calendar) -> String {
-        if calendar.isDate(date, inSameDayAs: now) || date > now { return "오늘" }
-        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { return "어제" }
-        if calendar.isDate(date, equalTo: now, toGranularity: .weekOfYear) { return "이번 주" }
+        if calendar.isDate(date, inSameDayAs: now) || date > now { return loc("오늘", "Today") }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { return loc("어제", "Yesterday") }
+        if calendar.isDate(date, equalTo: now, toGranularity: .weekOfYear) { return loc("이번 주", "This week") }
         return olderSection
     }
-    static let olderSection = "이전"
+    static var olderSection: String { loc("이전", "Earlier") }
 
     // MARK: Detail and row actions
 
@@ -816,17 +864,21 @@ enum SessionPresentation {
 
     /// The inline detail under a clicked row (S-6). Metadata only; nothing from the conversation.
     static func detailItems(_ reading: TokenReading, state: SessionDisplayState) -> [DetailItem] {
-        var items = [DetailItem(label: "세션 ID", value: reading.sessionID ?? "미확인", copy: reading.sessionID)]
-        if reading.isSubagent { items.append(DetailItem(label: "에이전트", value: reading.agentID ?? "미확인", copy: reading.agentID)) }
-        if let model = reading.model { items.append(DetailItem(label: "모델", value: model + (effortLabel(reading).map { " · \($0)" } ?? ""))) }
+        let unknown = loc("미확인", "Unknown")
+        var items = [DetailItem(label: loc("세션 ID", "Session ID"), value: reading.sessionID ?? unknown, copy: reading.sessionID)]
+        if reading.isSubagent { items.append(DetailItem(label: loc("에이전트", "Agent"), value: reading.agentID ?? unknown, copy: reading.agentID)) }
+        if let model = reading.model { items.append(DetailItem(label: loc("모델", "Model"), value: model + (effortLabel(reading).map { " · \($0)" } ?? ""))) }
         if state == .tool {
-            items.append(DetailItem(label: "도구", value: toolTitle(reading.toolCategory) + (reading.toolName.map { " · \($0)" } ?? "")))
+            items.append(DetailItem(label: loc("도구", "Tool"), value: toolTitle(reading.toolCategory) + (reading.toolName.map { " · \($0)" } ?? "")))
         }
         if let output = reading.lastOutputTokens {
             let seconds = reading.lastTurnDurationSeconds.flatMap { $0.isFinite && $0 >= 0 ? Int($0.rounded()) : nil }
-            items.append(DetailItem(label: "마지막 완료 턴", value: "\(Format.tokens(output)) tok" + (seconds.map { " · \(clock($0))" } ?? "")))
+            items.append(DetailItem(label: loc("마지막 완료 턴", "Last turn"), value: "\(Format.tokens(output)) tok" + (seconds.map { " · \(clock($0))" } ?? "")))
         }
-        items.append(DetailItem(label: "기록 시점", value: "\(reading.source.title)는 \(reading.source == .codex ? "응답" : "메시지") 완료 시 기록"))
+        let codex = reading.source == .codex
+        items.append(DetailItem(label: loc("기록 시점", "Recorded"),
+                                value: loc("\(reading.source.title)는 \(codex ? "응답" : "메시지") 완료 시 기록",
+                                           "When a \(reading.source.title) \(codex ? "response" : "message") ends")))
         return items
     }
 
@@ -869,14 +921,21 @@ enum SessionPresentation {
     /// Copy and reveal only; file contents are never opened. Copies first, then Finder reveals.
     static func rowActions(_ reading: TokenReading, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [RowAction] {
         var actions: [RowAction] = []
-        if let session = reading.sessionID, !session.isEmpty { actions.append(RowAction(title: "세션 ID 복사", symbol: "doc.on.doc", kind: .copy(session))) }
-        if let agent = reading.agentID, !agent.isEmpty { actions.append(RowAction(title: "에이전트 ID 복사", symbol: "doc.on.doc", kind: .copy(agent))) }
-        if let command = resumeCommand(reading) { actions.append(RowAction(title: "재개 명령 복사", symbol: "terminal", kind: .copy(command))) }
+        if let session = reading.sessionID, !session.isEmpty {
+            actions.append(RowAction(title: loc("세션 ID 복사", "Copy Session ID"), symbol: "doc.on.doc", kind: .copy(session)))
+        }
+        if let agent = reading.agentID, !agent.isEmpty {
+            actions.append(RowAction(title: loc("에이전트 ID 복사", "Copy Agent ID"), symbol: "doc.on.doc", kind: .copy(agent)))
+        }
+        if let command = resumeCommand(reading) {
+            actions.append(RowAction(title: loc("재개 명령 복사", "Copy Resume Command"), symbol: "terminal", kind: .copy(command)))
+        }
         if let path = reading.projectPath, path.hasPrefix("/") {
-            actions.append(RowAction(title: "프로젝트 폴더 Finder에서 보기", symbol: "folder", kind: .reveal(URL(fileURLWithPath: path, isDirectory: true))))
+            actions.append(RowAction(title: loc("프로젝트 폴더 Finder에서 보기", "Show Project Folder in Finder"), symbol: "folder",
+                                     kind: .reveal(URL(fileURLWithPath: path, isDirectory: true))))
         }
         if let log = logFileURL(reading, home: home) {
-            actions.append(RowAction(title: "기록 파일 Finder에서 보기", symbol: "doc.text.magnifyingglass", kind: .reveal(log)))
+            actions.append(RowAction(title: loc("기록 파일 Finder에서 보기", "Show Log File in Finder"), symbol: "doc.text.magnifyingglass", kind: .reveal(log)))
         }
         return actions
     }
@@ -1158,8 +1217,8 @@ struct SessionListModel {
             block.moreCount = cut.count
             if !cut.isEmpty {
                 let newest = cut.compactMap { SessionPresentation.liveAt($0.reading) }.max()
-                block.moreText = "+\(cut.count) 하위 \(SessionDisplayState.waiting.title)"
-                    + (newest.map { " · 마지막 \(Format.age($0, now: now))" } ?? "")
+                block.moreText = loc("+\(cut.count) 하위 \(SessionDisplayState.waiting.title)", "+\(plural(cut.count, "subagent")) waiting for log")
+                    + (newest.map { loc(" · 마지막 \(Format.age($0, now: now))", " · last record \(Format.age($0, now: now))") } ?? "")
             }
             if expanded && !pinned.contains(group.id) {
                 block.section = SessionPresentation.daySection(group.lastActivity, now: now, calendar: calendar)

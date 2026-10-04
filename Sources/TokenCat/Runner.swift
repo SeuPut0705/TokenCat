@@ -113,33 +113,37 @@ enum Runner {
             guard let url = Bundle.main.url(forResource: "runner-v2", withExtension: "json"),
                   let data = try? Data(contentsOf: url),
                   let manifest = try? JSONDecoder().decode(Manifest.self, from: data) else {
-                errors.append("runner-v2.json: 앱 번들에 없거나 v3 형식으로 읽을 수 없습니다.")
+                errors.append(loc("runner-v2.json: 앱 번들에 없거나 v3 형식으로 읽을 수 없습니다.", "runner-v2.json: missing from the app bundle or not readable as v3."))
                 return
             }
             guard manifest.cell.width == Runner.cell.width, manifest.cell.height == Runner.cell.height else {
-                errors.append("runner-v2.json: 프레임 크기는 \(Runner.cell.width)×\(Runner.cell.height)이어야 합니다.")
+                errors.append(loc("runner-v2.json: 프레임 크기는 \(Runner.cell.width)×\(Runner.cell.height)이어야 합니다.",
+                                  "runner-v2.json: the frame size must be \(Runner.cell.width)×\(Runner.cell.height)."))
                 return
             }
             var rows: [RunnerPose: Manifest.Pose] = [:]
             for entry in manifest.poses {
                 guard let pose = RunnerPose(rawValue: entry.pose), rows[pose] == nil else {
-                    errors.append("runner-v2.json: 알 수 없거나 중복된 자세 \(entry.pose)")
+                    errors.append(loc("runner-v2.json: 알 수 없거나 중복된 자세 \(entry.pose)", "runner-v2.json: unknown or duplicate pose \(entry.pose)"))
                     continue
                 }
                 if entry.frames != Runner.frames(pose) {
-                    errors.append("runner-v2.json: \(pose.rawValue) 프레임 \(entry.frames)개, 필요한 수 \(Runner.frames(pose))개")
+                    errors.append(loc("runner-v2.json: \(pose.rawValue) 프레임 \(entry.frames)개, 필요한 수 \(Runner.frames(pose))개",
+                                      "runner-v2.json: \(pose.rawValue) has \(plural(entry.frames, "frame")), needs \(Runner.frames(pose))"))
                 }
                 if entry.durations.count != entry.frames || entry.durations.contains(where: { !($0 > 0) })
                     || (entry.holdSequence ?? []).contains(where: { !($0 > 0) }) || (entry.doubleEvery.map { $0 < 1 } ?? false) {
-                    errors.append("runner-v2.json: \(pose.rawValue) 프레임 시간이 프레임 수와 맞지 않거나 양수가 아닙니다.")
+                    errors.append(loc("runner-v2.json: \(pose.rawValue) 프레임 시간이 프레임 수와 맞지 않거나 양수가 아닙니다.",
+                                      "runner-v2.json: \(pose.rawValue) frame times don't match the frame count or aren't positive."))
                 }
                 if (entry.doubleEvery == nil) != (entry.doubleGap == nil) || (entry.doubleGap.map { !($0 > 0) } ?? false) {
-                    errors.append("runner-v2.json: \(pose.rawValue) doubleGap은 양수이고 doubleEvery와 함께 있어야 합니다.")
+                    errors.append(loc("runner-v2.json: \(pose.rawValue) doubleGap은 양수이고 doubleEvery와 함께 있어야 합니다.",
+                                      "runner-v2.json: \(pose.rawValue) doubleGap must be positive and come with doubleEvery."))
                 }
                 rows[pose] = entry
             }
             for pose in RunnerPose.allCases where rows[pose] == nil {
-                errors.append("runner-v2.json: \(pose.rawValue) 자세가 없습니다.")
+                errors.append(loc("runner-v2.json: \(pose.rawValue) 자세가 없습니다.", "runner-v2.json: the \(pose.rawValue) pose is missing."))
             }
             guard errors.isEmpty,
                   let low = Self.load(manifest.sheets["1"], errors: &errors),
@@ -147,26 +151,32 @@ enum Runner {
 
             let columns = low.width / Runner.cell.width, rowCount = low.height / Runner.cell.height
             guard low.width == columns * Runner.cell.width, low.height == rowCount * Runner.cell.height else {
-                errors.append("runner-v2 시트: @1x는 30×18 셀의 배수여야 합니다.")
+                errors.append(loc("runner-v2 시트: @1x는 30×18 셀의 배수여야 합니다.", "runner-v2 sheet: @1x must be a multiple of 30×18 cells."))
                 return
             }
-            guard Self.checkPair(low, high, "runner-v2 시트", errors: &errors) else { return }
+            guard Self.checkPair(low, high, loc("runner-v2 시트", "runner-v2 sheet"), errors: &errors) else { return }
 
             for (pose, entry) in rows {
                 guard entry.row >= 0, entry.row < rowCount, entry.frames <= columns else {
-                    errors.append("runner-v2 시트: \(pose.rawValue) 행이 시트 밖에 있습니다.")
+                    errors.append(loc("runner-v2 시트: \(pose.rawValue) 행이 시트 밖에 있습니다.", "runner-v2 sheet: the \(pose.rawValue) row is outside the sheet."))
                     continue
                 }
                 var cells: [[UInt8]] = []
                 for column in 0..<columns {
                     let cellPixels = Self.cell(low, column: column, row: entry.row, scale: 1)
                     let opaque = stride(from: 3, to: cellPixels.count, by: 4).contains { cellPixels[$0] != 0 }
-                    if column < entry.frames && !opaque { errors.append("runner-v2 시트: \(pose.rawValue) \(column + 1)번 프레임이 비었습니다.") }
-                    if column >= entry.frames && opaque { errors.append("runner-v2 시트: \(pose.rawValue) 행에 매니페스트보다 많은 프레임이 있습니다.") }
+                    if column < entry.frames && !opaque {
+                        errors.append(loc("runner-v2 시트: \(pose.rawValue) \(column + 1)번 프레임이 비었습니다.", "runner-v2 sheet: \(pose.rawValue) frame \(column + 1) is empty."))
+                    }
+                    if column >= entry.frames && opaque {
+                        errors.append(loc("runner-v2 시트: \(pose.rawValue) 행에 매니페스트보다 많은 프레임이 있습니다.",
+                                          "runner-v2 sheet: the \(pose.rawValue) row has more frames than the manifest."))
+                    }
                     if column < entry.frames { cells.append(cellPixels) }
                 }
                 for index in cells.indices where cells.count > 1 && cells[index] == cells[(index + 1) % cells.count] {
-                    errors.append("runner-v2 시트: \(pose.rawValue) \(index + 1)번과 다음 프레임이 같습니다.")
+                    errors.append(loc("runner-v2 시트: \(pose.rawValue) \(index + 1)번과 다음 프레임이 같습니다.",
+                                      "runner-v2 sheet: \(pose.rawValue) frame \(index + 1) is the same as the next one."))
                 }
                 frames[pose] = (0..<entry.frames).map { Self.frameImage(low: low, high: high, column: $0, row: entry.row) }
                 timings[pose] = RunnerTiming(durations: entry.durations, holdSequence: entry.holdSequence ?? [],
@@ -179,26 +189,26 @@ enum Runner {
         private mutating func loadEffects(_ manifest: Manifest, rows: [RunnerPose: Manifest.Pose], sprite: Pixels) {
             guard let low = Self.load(manifest.fxSheets["1"], errors: &errors),
                   let high = Self.load(manifest.fxSheets["2"], errors: &errors),
-                  Self.checkPair(low, high, "runner-v2-fx 시트", errors: &errors) else { return }
+                  Self.checkPair(low, high, loc("runner-v2-fx 시트", "runner-v2-fx sheet"), errors: &errors) else { return }
             var steps: [RunnerPose: [Int: [(glyph: Manifest.Glyph, x: Int, y: Int)]]] = [:]
             for effect in manifest.fx {
                 let name = "runner-v2.json: fx \(effect.pose) \(effect.step) \(effect.glyph)"
                 guard let pose = RunnerPose(rawValue: effect.pose), let entry = rows[pose], effect.step >= 0,
                       let glyph = manifest.glyphs[effect.glyph] else {
-                    errors.append("\(name): 자세나 글리프를 찾을 수 없습니다.")
+                    errors.append(loc("\(name): 자세나 글리프를 찾을 수 없습니다.", "\(name): pose or glyph not found."))
                     continue
                 }
                 guard glyph.x >= 0, glyph.y >= 0, glyph.width > 0, glyph.height > 0,
                       glyph.x + glyph.width <= low.width, glyph.y + glyph.height <= low.height,
                       effect.x >= 0, effect.y >= 0, effect.x + glyph.width <= Runner.cell.width, effect.y + glyph.height <= Runner.cell.height else {
-                    errors.append("\(name): 글리프가 fx 시트나 셀 밖에 있습니다.")
+                    errors.append(loc("\(name): 글리프가 fx 시트나 셀 밖에 있습니다.", "\(name): the glyph is outside the fx sheet or the cell."))
                     continue
                 }
                 var pixels: [(x: Int, y: Int)] = []
                 for gy in 0..<glyph.height { for gx in 0..<glyph.width where low.alpha(glyph.x + gx, glyph.y + gy) != 0 {
                     pixels.append((effect.x + gx, effect.y + gy))
                 }}
-                if pixels.isEmpty { errors.append("\(name): 글리프가 비었습니다.") }
+                if pixels.isEmpty { errors.append(loc("\(name): 글리프가 비었습니다.", "\(name): the glyph is empty.")) }
                 // At least one clear pixel (8 neighbours) between the effect and every frame of the pose.
                 let touches = (0..<entry.frames).contains { column in
                     pixels.contains { p in (-1...1).contains { dy in (-1...1).contains { dx in
@@ -207,7 +217,7 @@ enum Runner {
                             && sprite.alpha(column * Runner.cell.width + x, entry.row * Runner.cell.height + y) != 0
                     }}}
                 }
-                if touches { errors.append("\(name): 스프라이트와 1 px 간격이 없습니다.") }
+                if touches { errors.append(loc("\(name): 스프라이트와 1 px 간격이 없습니다.", "\(name): no 1 px gap from the sprite.")) }
                 steps[pose, default: [:]][effect.step, default: []].append((glyph, effect.x, effect.y))
             }
             for (pose, placed) in steps {
@@ -223,7 +233,7 @@ enum Runner {
                 guard let low = Self.load(name + "@1x.png", errors: &errors),
                       let high = Self.load(name + "@2x.png", errors: &errors) else { continue }
                 guard low.width == Int(Runner.headSize.width), low.height == Int(Runner.headSize.height), low.opaque else {
-                    errors.append("\(name): 12×11 px이고 비어 있지 않아야 합니다.")
+                    errors.append(loc("\(name): 12×11 px이고 비어 있지 않아야 합니다.", "\(name): must be 12×11 px and not empty."))
                     continue
                 }
                 guard Self.checkPair(low, high, name, errors: &errors) else { continue }
@@ -233,13 +243,13 @@ enum Runner {
 
         private static func load(_ file: String?, errors: inout [String]) -> Pixels? {
             guard let file, let url = Bundle.main.url(forResource: (file as NSString).deletingPathExtension, withExtension: "png") else {
-                errors.append("\(file ?? "runner-v2 시트"): 앱 번들에 이미지가 없습니다.")
+                errors.append(loc("\(file ?? "runner-v2 시트"): 앱 번들에 이미지가 없습니다.", "\(file ?? "runner-v2 sheet"): image missing from the app bundle."))
                 return nil
             }
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
                   let pixels = pixels(image) else {
-                errors.append("\(file): 이미지를 디코딩하지 못했습니다.")
+                errors.append(loc("\(file): 이미지를 디코딩하지 못했습니다.", "\(file): couldn't decode the image."))
                 return nil
             }
             return pixels
@@ -248,7 +258,7 @@ enum Runner {
         /// @2x is exactly twice @1x, both use alpha 0/255 only, and @2x equals the nearest-neighbour enlargement.
         private static func checkPair(_ low: Pixels, _ high: Pixels, _ name: String, errors: inout [String]) -> Bool {
             guard high.width == low.width * 2, high.height == low.height * 2 else {
-                errors.append("\(name): @2x는 @1x의 정확히 두 배여야 합니다.")
+                errors.append(loc("\(name): @2x는 @1x의 정확히 두 배여야 합니다.", "\(name): @2x must be exactly twice @1x."))
                 return false
             }
             var binary = true, nearest = true
@@ -260,9 +270,9 @@ enum Runner {
                 }
             }
             if !binary || low.bytes.enumerated().contains(where: { $0.offset % 4 == 3 && $0.element != 0 && $0.element != 255 }) {
-                errors.append("\(name): 알파는 0 또는 255만 허용됩니다.")
+                errors.append(loc("\(name): 알파는 0 또는 255만 허용됩니다.", "\(name): alpha must be 0 or 255."))
             }
-            if !nearest { errors.append("\(name): @2x가 @1x의 최근접 확대와 다릅니다.") }
+            if !nearest { errors.append(loc("\(name): @2x가 @1x의 최근접 확대와 다릅니다.", "\(name): @2x differs from the nearest-neighbour enlargement of @1x.")) }
             return binary && nearest
         }
 

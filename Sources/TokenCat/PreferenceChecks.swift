@@ -410,7 +410,7 @@ func runShellChecks() -> [String] {
               && finished.first?.title == "Turn complete · TokenCat" && finished.first?.body == "12,480 tok · 4m 12s"
               && interrupted?.title == "Turn interrupted · Unknown project" && AttentionEvent.duration(3_725) == "1h 2m"
               && Notifier.describe(.denied) == "TokenCat notifications are off in System Settings"
-              && Notifier.describeSound(.authorized, .enabled, on: true) == "On · Input needed alerts play the default sound"
+              && Notifier.describeSound(.authorized, .enabled, on: true) == "On · input needed alerts play the default sound"
               && LoginItem.describe(.requiresApproval) == "Needs approval in System Settings > General > Login Items",
               "English notifications or login item captions are wrong")
     }
@@ -513,6 +513,17 @@ func runShellChecks() -> [String] {
           && TelemetryStatusRow.claudeLimits(notes: [], bridged: false, received: at.addingTimeInterval(-720), desktop: true, now: at)
               == (.received, "Claude 데스크톱 앱 기록 · 12분 전", nil),
           "Claude limit row is not checked empty status line → skipped → received → waiting → none")
+    AppLanguage.with(.en) {
+        check(SettingsPane.allCases.map(\.title) == ["General", "Menu Bar", "Cat", "Telemetry", "About"]
+              && TelemetryStatusRow.collector(.busyOtherApp).text == "Off · another app is using port 16493"
+              && client(false, false, at.addingTimeInterval(-30), at).text == "Last received <1m ago"
+              && limits([], true, at.addingTimeInterval(-180)).text == "Last received 3m ago"
+              && TelemetryStatusRow.claudeLimits(notes: [], bridged: false, received: at.addingTimeInterval(-720), desktop: true, now: at).text
+                  == "Claude desktop app · recorded 12m ago"
+              && RunnerLegend.entries(.measured).map(\.caption) == ["Not measured", "Under 40 tok/s", "40 or more"]
+              && RunnerLegend.entries(.activity).map(\.name).last == "Sleep" && RunnerMotion.measured.title == "Measured AI Speed",
+              "English settings tabs, telemetry rows, cat legend or motion titles are wrong")
+    }
     print("Shell checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

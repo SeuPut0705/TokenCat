@@ -4,13 +4,17 @@ enum StatusBarLayout: String, CaseIterable, Identifiable {
     case minimal, compact, inline
     var id: String { rawValue }
     var title: String {
-        switch self { case .minimal: return "최소"; case .compact: return "두 줄"; case .inline: return "한 줄" }
+        switch self {
+        case .minimal: return loc("최소", "Minimal")
+        case .compact: return loc("두 줄", "Two Lines")
+        case .inline: return loc("한 줄", "One Line")
+        }
     }
     var summary: String {
         switch self {
-        case .minimal: return "고양이와 AI 상태·세션 수만 표시합니다"
-        case .compact: return "지표 이름 아래에 값을 표시합니다"
-        case .inline: return "아이콘 옆에 값을 한 줄로 표시합니다"
+        case .minimal: return loc("고양이와 AI 상태·세션 수만 표시합니다", "Shows only the cat, AI status and session count")
+        case .compact: return loc("지표 이름 아래에 값을 표시합니다", "Shows each value under its name")
+        case .inline: return loc("아이콘 옆에 값을 한 줄로 표시합니다", "Shows values on one line beside their icons")
         }
     }
 }
@@ -48,11 +52,11 @@ struct StatusAISummary: Equatable {
 
     static func phaseTitle(_ phase: TokenActivityState) -> String {
         switch phase {
-        case .input: return "입력 필요"
-        case .tool: return "도구 실행"
-        case .working: return "진행"
-        case .stale: return "로그 대기"
-        default: return "활동 없음"
+        case .input: return loc("입력 필요", "Input needed")
+        case .tool: return loc("도구 실행", "Running tool")
+        case .working: return loc("진행", "Working")
+        case .stale: return loc("로그 대기", "Waiting for log")
+        default: return loc("활동 없음", "No activity")
         }
     }
 }
@@ -106,34 +110,37 @@ enum StatusBarContent {
             case .cpu:
                 let value = percentage(system.cpuPercent)
                 return StatusBarMetric(id: id, label: "CPU", value: value, symbol: "cpu",
-                                       detail: "CPU 사용률 \(value)")
+                                       detail: loc("CPU 사용률 \(value)", "CPU usage \(value)"))
             case .memory:
                 let value = percentage(Format.ratio(system.memoryUsedBytes, system.memoryTotalBytes))
                 return StatusBarMetric(id: id, label: "RAM", value: value, symbol: "memorychip",
-                                       detail: "메모리 \(value) · \(Format.capacity(system.memoryUsedBytes, system.memoryTotalBytes))")
+                                       detail: loc("메모리 ", "Memory ") + "\(value) · \(Format.capacity(system.memoryUsedBytes, system.memoryTotalBytes))")
             case .disk:
                 let value = percentage(Format.ratio(system.diskUsedBytes, system.diskTotalBytes))
                 return StatusBarMetric(id: id, label: "DISK", value: value, symbol: "internaldrive",
-                                       detail: "저장 공간 \(value) · \(Format.capacity(system.diskUsedBytes, system.diskTotalBytes))")
+                                       detail: loc("저장 공간 ", "Storage ") + "\(value) · \(Format.capacity(system.diskUsedBytes, system.diskTotalBytes))")
             case .battery:
                 guard system.batteryPresent else { return nil }
                 let value = percentage(system.batteryPercent)
                 // "battery.N", not "battery.Npercent": the latter names exist from macOS 14, the former alias them there.
                 return StatusBarMetric(id: id, label: "BAT", value: value, symbol: "battery.\(Int(((system.batteryPercent ?? 100) / 25).rounded()) * 25)",
-                                       detail: "배터리 \(value) · \(Format.power(system))")
+                                       detail: loc("배터리 ", "Battery ") + "\(value) · \(Format.power(system))")
             case .network:
                 return StatusBarMetric(id: id, label: "NET", value: "↑\(upload)\n↓\(download)", symbol: "network",
-                                       detail: "업로드 \(upload) · 다운로드 \(download)")
+                                       detail: loc("업로드 \(upload) · 다운로드 \(download)", "Upload \(upload) · Download \(download)"))
             case .ai:
                 // Running groups with their phase mark; with none running, the log-wait groups (secondary, half disc);
                 // otherwise a tertiary "0" without a mark (M-2).
                 let waitingOnly = ai.running == 0 && ai.waiting > 0
                 let value = hasTokenSample ? String(waitingOnly ? ai.waiting : ai.running) : "—"
                 let state: TokenActivityState = !hasTokenSample ? .idle : ai.running > 0 ? ai.phase : waitingOnly ? .stale : .idle
-                let headline = waitingOnly ? "AI 로그 대기 \(ai.waiting)개" : "AI \(StatusAISummary.phaseTitle(ai.running > 0 ? ai.phase : .idle))"
+                let phase = StatusAISummary.phaseTitle(ai.running > 0 ? ai.phase : .idle)
+                let headline = waitingOnly ? loc("AI 로그 대기 \(ai.waiting)개", "AI: \(ai.waiting) waiting for log") : loc("AI \(phase)", "AI: \(phase)")
                 let detail = hasTokenSample
-                    ? "\(headline) · \(aiCountLine(counts, ai))\n최근 5분 출력 기록 \(Format.tokens(recorded)) tok · Codex \(counts.running[.codex] ?? 0), Claude Code \(counts.running[.claude] ?? 0)"
-                    : "AI 기록 확인 중"
+                    ? "\(headline) · \(aiCountLine(counts, ai))\n"
+                        + loc("최근 5분 출력 기록 \(Format.tokens(recorded)) tok", "Output in the last 5 min: \(Format.tokens(recorded)) tok")
+                        + " · Codex \(counts.running[.codex] ?? 0), Claude Code \(counts.running[.claude] ?? 0)"
+                    : loc("AI 기록 확인 중", "Reading AI records")
                 return StatusBarMetric(id: id, label: "AI", value: value, symbol: "", detail: detail,
                                        isActive: hasTokenSample && ai.running > 0, activityState: state)
             }
@@ -141,8 +148,9 @@ enum StatusBarContent {
     }
 
     private static func aiCountLine(_ counts: SessionCounts, _ ai: StatusAISummary) -> String {
-        "진행 중 \(ai.running)개 · 도구 실행 \(counts.toolMembers) · 하위 에이전트 \(counts.runningSubagents) · 로그 대기 \(counts.waiting)"
-            + (ai.input > 0 ? " · 입력 필요 \(ai.input)" : "")
+        loc("진행 중 \(ai.running)개 · 도구 실행 \(counts.toolMembers) · 하위 에이전트 \(counts.runningSubagents) · 로그 대기 \(counts.waiting)",
+            "Working \(ai.running) · Running tool \(counts.toolMembers) · Subagents \(counts.runningSubagents) · Waiting for log \(counts.waiting)")
+            + (ai.input > 0 ? loc(" · 입력 필요 \(ai.input)", " · Input needed \(ai.input)") : "")
     }
 
     /// Tooltip holds only slow-changing context the bar does not show; live values stay in the AX value.
@@ -157,12 +165,12 @@ enum StatusBarContent {
         }
         var lines = ["TokenCat"]
         if hasSample {
-            let parts = [capacity(system.memoryUsedBytes, system.memoryTotalBytes).map { "메모리 \($0)" },
-                         capacity(system.diskUsedBytes, system.diskTotalBytes).map { "저장 공간 \($0)" }].compactMap { $0 }
+            let parts = [capacity(system.memoryUsedBytes, system.memoryTotalBytes).map { loc("메모리 ", "Memory ") + $0 },
+                         capacity(system.diskUsedBytes, system.diskTotalBytes).map { loc("저장 공간 ", "Storage ") + $0 }].compactMap { $0 }
             if !parts.isEmpty { lines.append(parts.joined(separator: " · ")) }
         }
-        lines.append(hasTokenSample ? "AI " + aiCountLine(counts, ai) : "AI 기록 확인 중")
-        lines.append("클릭: 세션 상세 · 우클릭: 빠른 메뉴")
+        lines.append(hasTokenSample ? loc("AI ", "AI: ") + aiCountLine(counts, ai) : loc("AI 기록 확인 중", "Reading AI records"))
+        lines.append(loc("클릭: 세션 상세 · 우클릭: 빠른 메뉴", "Click: details · Right-click: quick menu"))
         return lines.joined(separator: "\n")
     }
 }
@@ -180,8 +188,9 @@ struct QuickMenuSummary: Equatable {
     var rows: [Row] = []
 
     static func make(groups: [SessionGroup], counts: SessionCounts, hasTokenSample: Bool, now: Date) -> QuickMenuSummary {
-        guard hasTokenSample else { return QuickMenuSummary(headline: "AI 기록 확인 중") }
-        let parts = [("입력", counts.input), ("재시도", counts.retrying), ("도구", counts.tool), ("진행", counts.working), ("로그 대기", counts.waiting)]
+        guard hasTokenSample else { return QuickMenuSummary(headline: loc("AI 기록 확인 중", "Reading AI records")) }
+        let parts = [(loc("입력", "Input"), counts.input), (loc("재시도", "Retry"), counts.retrying), (loc("도구", "Tool"), counts.tool),
+                     (loc("진행", "Working"), counts.working), (loc("로그 대기", "Waiting for log"), counts.waiting)]
             .filter { $0.1 > 0 }.map { "\($0.0) \($0.1)" }
         let live = groups.filter { $0.state.isLive && $0.state != .measurement }.sorted {
             let a = SessionDisplayState.liveOrder.firstIndex(of: $0.state) ?? 99, b = SessionDisplayState.liveOrder.firstIndex(of: $1.state) ?? 99
@@ -189,34 +198,36 @@ struct QuickMenuSummary: Equatable {
         }
         let rows = live.prefix(3).compactMap { group -> Row? in
             guard let kind = StateGlyph.Kind(group.state) else { return nil }
-            var project = group.lead.reading.project.flatMap { $0.isEmpty ? nil : $0 } ?? "프로젝트 미확인"
+            var project = group.lead.reading.project.flatMap { $0.isEmpty ? nil : $0 } ?? loc("프로젝트 미확인", "Unknown project")
             if project.count > 28 { project = String(project.prefix(27)) + "…" }
             return Row(id: group.id, kind: kind, title: "\(project) — \(detail(group, now: now))")
         }
-        return QuickMenuSummary(headline: parts.isEmpty ? "진행 중인 세션 없음" : (["AI 세션"] + parts).joined(separator: " · "), rows: rows)
+        return QuickMenuSummary(headline: parts.isEmpty ? loc("진행 중인 세션 없음", "No active sessions")
+                                    : ([loc("AI 세션", "AI sessions")] + parts).joined(separator: " · "), rows: rows)
     }
 
     /// "입력 대기 3분", "명령 실행 · 턴 7분", "로그 대기 · 3분째 기록 없음": minutes only, never seconds.
     static func detail(_ group: SessionGroup, now: Date) -> String {
         let member = group.members.first { $0.state == group.state }?.reading ?? group.lead.reading
-        let turn = group.members.compactMap(\.reading.currentTurnStartedAt).min().map { " · 턴 " + minutes(now.timeIntervalSince($0)) } ?? ""
+        let turn = group.members.compactMap(\.reading.currentTurnStartedAt).min().map { loc(" · 턴 ", " · turn ") + minutes(now.timeIntervalSince($0)) } ?? ""
         switch group.state {
         case .input:
-            let since = member.lastActivity.map { " " + minutes(now.timeIntervalSince($0)) } ?? ""
-            return (SessionPresentation.isPlanApproval(member) ? "계획 승인 대기" : "입력 대기") + since
-        case .retrying: return "API 재시도" + turn
+            let since = member.lastActivity.map { loc(" ", " · ") + minutes(now.timeIntervalSince($0)) } ?? ""
+            return (SessionPresentation.isPlanApproval(member) ? loc("계획 승인 대기", "Waiting for plan approval") : loc("입력 대기", "Waiting for input")) + since
+        case .retrying: return loc("API 재시도", "API retry") + turn
         case .tool: return SessionPresentation.toolTitle(member.toolCategory) + turn
-        case .working: return "진행" + turn
+        case .working: return loc("진행", "Working") + turn
         default:
-            guard let at = SessionPresentation.liveAt(member), now.timeIntervalSince(at) >= 60 else { return "로그 대기" }
-            return "로그 대기 · \(minutes(now.timeIntervalSince(at)))째 기록 없음"
+            guard let at = SessionPresentation.liveAt(member), now.timeIntervalSince(at) >= 60 else { return loc("로그 대기", "Waiting for log") }
+            let quiet = minutes(now.timeIntervalSince(at))
+            return loc("로그 대기 · \(quiet)째 기록 없음", "Waiting for log · no record for \(quiet)")
         }
     }
 
     static func minutes(_ seconds: TimeInterval) -> String {
         let total = max(0, Int(seconds)) / 60
-        if total < 1 { return "1분 미만" }
-        return total >= 60 ? "\(total / 60)시간 \(total % 60)분" : "\(total)분"
+        if total < 1 { return loc("1분 미만", "<1m") }
+        return total >= 60 ? Format.span(total / 60, .hour) + " " + Format.span(total % 60, .minute) : Format.span(total, .minute)
     }
 }
 
@@ -1050,6 +1061,18 @@ func runStatusBarChecks() -> [String] {
             == QuickMenuSummary(headline: "AI 기록 확인 중")
           && QuickMenuSummary.make(groups: waitingOnly, counts: SessionCounts(waitingOnly), hasTokenSample: true, now: at).rows.first?.title
             == "프로젝트 미확인 — 로그 대기 · 3분째 기록 없음")
+    AppLanguage.with(.en) {
+        let quick = QuickMenuSummary.make(groups: menuGroups, counts: SessionCounts(menuGroups), hasTokenSample: true, now: at)
+        let tip = StatusBarContent.tooltip(system: busy, counts: busyCounts, ai: busyAI, hasSample: true, hasTokenSample: true)
+        check("English quick menu, tooltip and AI value: \(quick.headline) / \(quick.rows.map(\.title)) / \(tip)",
+              quick.headline == "AI sessions · Input 1 · Tool 1 · Working 2 · Waiting for log 1"
+              && quick.rows.first?.title == "TokenCat — Waiting for input · 3m" && quick.rows.last?.title == "web — Working · turn <1m"
+              && QuickMenuSummary.minutes(3_900) == "1h 5m"
+              && QuickMenuSummary.make(groups: waitingOnly, counts: SessionCounts(waitingOnly), hasTokenSample: true, now: at).rows.first?.title
+                == "Unknown project — Waiting for log · no record for 3m"
+              && tip.hasSuffix("AI: Working 2 · Running tool 1 · Subagents 0 · Waiting for log 0 · Input needed 1\nClick: details · Right-click: quick menu")
+              && tip.contains("Memory 18 / 24 GB") && ai([stale])?.detail.hasPrefix("AI: 1 waiting for log · Working 0 ·") == true)
+    }
 
     // Settings preview memo (T-5): preferences and pose rebuild at once, values at most once a second.
     let cache = MenuBarPreviewCache()

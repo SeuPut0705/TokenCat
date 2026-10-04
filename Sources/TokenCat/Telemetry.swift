@@ -120,13 +120,14 @@ enum TelemetryCollectorState: String, Codable {
     case starting, waiting, receiving, busyTokenCat, busyOtherApp, failed, stopped
     var status: String {
         switch self {
-        case .starting: return "실측 준비 중"
-        case .waiting: return "실측 수신 대기"
-        case .receiving: return "실측 수신 중"
-        case .busyTokenCat: return "실측 꺼짐 · 다른 TokenCat이 수집 중"
-        case .busyOtherApp: return "실측 꺼짐 · 다른 앱이 포트 \(LocalTelemetryCollector.port) 사용 중"
-        case .failed: return "실측 꺼짐 · 수집기를 시작하지 못함"
-        case .stopped: return "실측 꺼짐"
+        case .starting: return loc("실측 준비 중", "Preparing telemetry")
+        case .waiting: return loc("실측 수신 대기", "Waiting for telemetry")
+        case .receiving: return loc("실측 수신 중", "Receiving telemetry")
+        case .busyTokenCat: return loc("실측 꺼짐 · 다른 TokenCat이 수집 중", "Telemetry off · another TokenCat is collecting")
+        case .busyOtherApp: return loc("실측 꺼짐 · 다른 앱이 포트 \(LocalTelemetryCollector.port) 사용 중",
+                                       "Telemetry off · another app is using port \(LocalTelemetryCollector.port)")
+        case .failed: return loc("실측 꺼짐 · 수집기를 시작하지 못함", "Telemetry off · couldn't start the collector")
+        case .stopped: return loc("실측 꺼짐", "Telemetry off")
         }
     }
 }

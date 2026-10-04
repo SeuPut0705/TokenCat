@@ -208,6 +208,21 @@ func runUpdaterChecks() -> [String] {
     check(UpdateFailure.rateLimited(until: Calendar.current.date(bySettingHour: 14, minute: 5, second: 0, of: at)!).text.contains("14:05")
           && [UpdateFailure.network, .noAsset, .noDigest, .digestMismatch, .notWritable, .translocated, .invalidBundle("x")].allSatisfy { !$0.text.isEmpty && !$0.short.isEmpty },
           "failure texts")
+    AppLanguage.with(.en) {
+        var english = UpdateState(check: .done, checkedAt: at.addingTimeInterval(-180), available: latest)
+        let available = english.status(now: at) == ("New version 0.9.1", "Checked 3m ago", false)
+            && english.notice(dismissed: nil)?.text == "New version 0.9.1" && english.quickMenuTitle == "Install Update 0.9.1…"
+        english.install = .downloading(0.456)
+        let progress = english.notice(dismissed: nil)?.text == "Downloading update 45%"
+        english.install = .failed(.translocated)
+        let blocked = english.notice(dismissed: nil).map { [$0.text, $0.detail ?? ""] } == ["Update failed", "Running from a temporary location"]
+            && english.quickMenuTitle == "Update 0.9.1 Release Page…"
+        check(available && progress && blocked
+              && UpdateState(checkedAt: at.addingTimeInterval(-20)).status(now: at).title == "Up to date · Checked just now"
+              && UpdateState(updatedTo: "0.9.10").notice(dismissed: nil)?.text == "Updated to 0.9.10"
+              && UpdateFailure.invalidBundle("x").text == "Couldn't verify the new app, so it wasn't installed: x.",
+              "English status lines, notices and quick menu items")
+    }
 
     // Install guards, before any download.
     let writable: (String) -> Bool = { _ in true }

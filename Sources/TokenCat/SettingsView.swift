@@ -13,11 +13,14 @@ enum AppInfo {
     static var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—" }
     static var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—" }
     static var title: String { "TokenCat \(version) (\(build))" }
-    static let privacy = "로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인과, 업데이트를 누를 때의 내려받기뿐입니다."
+    static var privacy: String {
+        loc("로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인과, 업데이트를 누를 때의 내려받기뿐입니다.",
+            "TokenCat reads only metadata from local logs and local telemetry. It never stores or shows prompts or responses, never calls a model and never signs in to an account. It goes online only to check GitHub for updates and to download one when you click Update.")
+    }
     static let copyright = "Copyright © 2026 TokenCat contributors · MIT License"
     static func license() -> String {
         Bundle.main.url(forResource: "LICENSE", withExtension: nil).flatMap { try? String(contentsOf: $0, encoding: .utf8) }
-            ?? "앱 번들에서 LICENSE 파일을 찾지 못했습니다."
+            ?? loc("앱 번들에서 LICENSE 파일을 찾지 못했습니다.", "Couldn't find the LICENSE file in the app bundle.")
     }
     static var aboutOptions: [NSApplication.AboutPanelOptionKey: Any] {
         let paragraph = NSMutableParagraphStyle()
@@ -38,11 +41,11 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String {
         switch self {
-        case .general: return "일반"
-        case .menubar: return "메뉴 막대"
-        case .cat: return "고양이"
-        case .telemetry: return "실측"
-        case .about: return "정보"
+        case .general: return loc("일반", "General")
+        case .menubar: return loc("메뉴 막대", "Menu Bar")
+        case .cat: return loc("고양이", "Cat")
+        case .telemetry: return loc("실측", "Telemetry")
+        case .about: return loc("정보", "About")
         }
     }
     var symbol: String {
@@ -107,7 +110,7 @@ final class SettingsState: ObservableObject {
             try LoginItem.set(enabled)
             loginError = nil
         } catch {
-            loginError = "로그인 항목을 바꾸지 못했습니다: \(error.localizedDescription)"
+            loginError = loc("로그인 항목을 바꾸지 못했습니다: \(error.localizedDescription)", "Couldn't change the login item: \(error.localizedDescription)")
         }
         loginStatus = LoginItem.status
     }
@@ -122,7 +125,7 @@ final class SettingsState: ObservableObject {
             guard status == .notDetermined || sound else { return }
             self.notifier.requestAuthorization(sound: sound) { status, error in
                 self.notificationStatus = status
-                self.notificationError = error.map { "알림 권한 요청 실패: \($0)" }
+                self.notificationError = error.map { loc("알림 권한 요청 실패: \($0)", "Notification permission request failed: \($0)") }
                 self.notifier.settings { self.notificationStatus = $0; self.soundSetting = $1 }
             }
         }
@@ -279,38 +282,43 @@ private struct GeneralPane: View {
         Form {
             Section {
                 Toggle(isOn: Binding(get: { LoginItem.isOn(state.loginStatus) }, set: { state.setLogin($0) })) {
-                    SettingsLabel(title: "로그인 시 TokenCat 열기", subtitle: LoginItem.describe(state.loginStatus))
+                    SettingsLabel(title: loc("로그인 시 TokenCat 열기", "Open TokenCat at login"), subtitle: LoginItem.describe(state.loginStatus))
                 }
-                .help("켜면 macOS 로그인 항목에 등록하고, 끄면 해제합니다. 켜기 전에는 등록하지 않습니다.")
+                .help(loc("켜면 macOS 로그인 항목에 등록하고, 끄면 해제합니다. 켜기 전에는 등록하지 않습니다.",
+                           "When on, TokenCat is added to Login Items in macOS; when off, it's removed. Nothing is registered until you turn this on."))
                 if let error = state.loginError { settingsCaption(error, color: .red) }
                 if state.loginStatus == .requiresApproval {
-                    Button("로그인 항목 설정 열기") { LoginItem.openSystemSettings() }
+                    Button(loc("로그인 항목 설정 열기", "Open Login Items Settings")) { LoginItem.openSystemSettings() }
                 }
             } header: {
-                Text("시작")
+                Text(loc("시작", "Startup"))
             } footer: {
                 if !LoginItem.isInApplications {
-                    settingsFooter("앱을 /Applications로 옮긴 뒤 켜는 것을 권장합니다. 다른 위치의 앱을 다시 빌드하거나 옮기면 등록이 풀릴 수 있습니다.")
+                    settingsFooter(loc("앱을 /Applications로 옮긴 뒤 켜는 것을 권장합니다. 다른 위치의 앱을 다시 빌드하거나 옮기면 등록이 풀릴 수 있습니다.",
+                                       "Move the app to /Applications before turning this on. A copy elsewhere can lose its registration when it's rebuilt or moved."))
                 }
             }
 
             Section {
                 Toggle(isOn: notificationBinding(\.notifyTurnComplete)) {
-                    SettingsLabel(title: "턴 완료", subtitle: "최상위 세션의 턴이 끝나거나 중단되면 알립니다")
+                    SettingsLabel(title: loc("턴 완료", "Turn complete"),
+                                  subtitle: loc("최상위 세션의 턴이 끝나거나 중단되면 알립니다", "Notifies when a top-level session's turn ends or is interrupted"))
                 }
                 Toggle(isOn: notificationBinding(\.notifyInput)) {
-                    SettingsLabel(title: "입력 필요", subtitle: "질문·계획 승인을 기다리면 알립니다. 권한 확인 창은 로그에 남지 않아 알 수 없습니다")
+                    SettingsLabel(title: loc("입력 필요", "Input needed"),
+                                  subtitle: loc("질문·계획 승인을 기다리면 알립니다. 권한 확인 창은 로그에 남지 않아 알 수 없습니다",
+                                                "Notifies when a question or plan approval is waiting. Permission prompts aren't logged, so TokenCat can't see them"))
                 }
                 Toggle(isOn: Binding(get: { preferences.notifyInputSound }, set: { on in
                     preferences.notifyInputSound = on
                     if on { state.notificationToggleEnabled(sound: true) }
                 })) {
-                    SettingsLabel(title: "입력 필요 알림에 소리",
+                    SettingsLabel(title: loc("입력 필요 알림에 소리", "Sound for input needed alerts"),
                                   subtitle: Notifier.describeSound(state.notificationStatus, state.soundSetting, on: preferences.notifyInputSound))
                 }
                 .disabled(!preferences.notifyInput)
                 // The way to System Settings sits in this row when macOS blocks alerts or the sound.
-                LabeledContent("권한") {
+                LabeledContent(loc("권한", "Permission")) {
                     VStack(alignment: .trailing, spacing: 6) {
                         Text(Notifier.describe(state.notificationStatus)).font(.system(size: 11)).multilineTextAlignment(.trailing)
                             .foregroundStyle(state.notificationStatus == .denied
@@ -319,28 +327,30 @@ private struct GeneralPane: View {
                             .fixedSize(horizontal: false, vertical: true)
                         if state.notificationStatus == .denied
                             || (preferences.notifyInput && preferences.notifyInputSound && Notifier.soundBlocked(state.notificationStatus, state.soundSetting)) {
-                            Button("알림 설정 열기", action: openNotificationSettings).controlSize(.small)
+                            Button(loc("알림 설정 열기", "Open Notification Settings"), action: openNotificationSettings).controlSize(.small)
                         }
                     }
                 }
                 if let error = state.notificationError { settingsCaption(error, color: .red) }
             } header: {
-                Text("알림")
+                Text(loc("알림", "Notifications"))
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
-                    settingsFooter("기본값은 꺼짐입니다. 팝오버나 패널이 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.")
+                    settingsFooter(loc("기본값은 꺼짐입니다. 팝오버나 패널이 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.",
+                                       "Off by default, and never sent while the popover or panel is visible. They include only the project, model, token count and duration, never questions or responses."))
                     HStack {
                         Spacer()
-                        Button("기본값으로 되돌리기…") { confirmsReset = true }
+                        Button(loc("기본값으로 되돌리기…", "Restore Defaults…")) { confirmsReset = true }
                     }
                 }
             }
         }
-        .alert("메뉴 막대·고양이·알림 설정을 기본값으로 되돌릴까요?", isPresented: $confirmsReset) {
-            Button("되돌리기", role: .destructive) { preferences.reset(undoManager: undoManager) }
-            Button("취소", role: .cancel) {}
+        .alert(loc("메뉴 막대·고양이·알림 설정을 기본값으로 되돌릴까요?", "Restore the menu bar, cat and notification settings to their defaults?"), isPresented: $confirmsReset) {
+            Button(loc("되돌리기", "Restore"), role: .destructive) { preferences.reset(undoManager: undoManager) }
+            Button(loc("취소", "Cancel"), role: .cancel) {}
         } message: {
-            Text("항목 순서와 표시, 표시 방식, 고양이, 알림 선택이 바뀝니다. 로그인 항목, 새 버전 자동 확인과 macOS 알림 권한은 그대로입니다.")
+            Text(loc("항목 순서와 표시, 표시 방식, 고양이, 알림 선택이 바뀝니다. 로그인 항목, 새 버전 자동 확인과 macOS 알림 권한은 그대로입니다.",
+                      "This resets item order and visibility, the layout, and the cat and notification choices. The login item, automatic update checks and macOS notification permission stay as they are."))
         }
     }
 
@@ -364,9 +374,10 @@ private struct UpdateSection: View {
         let status = update.status(now: model.now)
         let failure = update.installFailure
         Section {
-            Toggle("새 버전 자동 확인", isOn: $preferences.autoCheckUpdates)
+            Toggle(loc("새 버전 자동 확인", "Check for updates automatically"), isOn: $preferences.autoCheckUpdates)
                 .disabled(update.disabled != nil)
-                .help("실행 직후, 15분마다, 잠자기에서 깨어난 뒤 GitHub 최신 릴리스를 확인합니다")
+                .help(loc("실행 직후, 15분마다, 잠자기에서 깨어난 뒤 GitHub 최신 릴리스를 확인합니다",
+                           "Checks GitHub for the latest release at launch, every 15 minutes and after waking from sleep"))
             // One row: the full failure sentence spans the width under the status and its buttons; it replaces the short
             // reason, and only the title carries the warning mark.
             VStack(alignment: .leading, spacing: 6) {
@@ -382,8 +393,8 @@ private struct UpdateSection: View {
             let denied = preferences.notifyUpdate && state.notificationStatus == .denied
             LabeledContent {
                 HStack(spacing: 8) {
-                    if denied { Button("알림 설정 열기", action: openNotificationSettings).controlSize(.small) }
-                    Toggle("새 버전 알림", isOn: Binding(get: { preferences.notifyUpdate }, set: { on in
+                    if denied { Button(loc("알림 설정 열기", "Open Notification Settings"), action: openNotificationSettings).controlSize(.small) }
+                    Toggle(loc("새 버전 알림", "Notify about new versions"), isOn: Binding(get: { preferences.notifyUpdate }, set: { on in
                         preferences.notifyUpdate = on
                         if on { state.notificationToggleEnabled() }
                     }))
@@ -391,13 +402,14 @@ private struct UpdateSection: View {
                     .disabled(update.disabled != nil)
                 }
             } label: {
-                SettingsLabel(title: "새 버전 알림",
-                              subtitle: denied ? "macOS 알림 권한이 꺼져 있어 보내지 않습니다" : "새 버전을 찾으면 소리 없이 한 번 알립니다",
+                SettingsLabel(title: loc("새 버전 알림", "Notify about new versions"),
+                              subtitle: denied ? loc("macOS 알림 권한이 꺼져 있어 보내지 않습니다", "Not sent because macOS notification permission is off")
+                                  : loc("새 버전을 찾으면 소리 없이 한 번 알립니다", "Notifies once, without sound, when a new version is found"),
                               subtitleColor: denied ? TCColor.warning : .secondary)
             }
             if preferences.notifyUpdate, let error = state.notificationError { settingsCaption(error, color: .red) }
         } header: {
-            Text("업데이트")
+            Text(loc("업데이트", "Updates"))
         }
     }
 
@@ -408,25 +420,25 @@ private struct UpdateSection: View {
         if let failure {
             if failure.retryable {
                 if update.canInstall {
-                    Button("다시 시도") { model.requestUpdate(.install) }
-                        .help("릴리스 정보를 다시 확인하고 내려받습니다")
+                    Button(loc("다시 시도", "Try Again")) { model.requestUpdate(.install) }
+                        .help(loc("릴리스 정보를 다시 확인하고 내려받습니다", "Checks the release again and downloads it"))
                 }
-                Button("릴리스 페이지 열기") { model.requestUpdate(.openReleasePage) }
+                Button(loc("릴리스 페이지 열기", "Open Release Page")) { model.requestUpdate(.openReleasePage) }
             } else {
                 if failure == .translocated {
-                    Button("응용 프로그램 폴더 열기") { NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications", isDirectory: true)) }
-                        .help("Finder에서 TokenCat을 이 폴더로 옮긴 뒤 다시 여세요")
+                    Button(loc("응용 프로그램 폴더 열기", "Open Applications Folder")) { NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications", isDirectory: true)) }
+                        .help(loc("Finder에서 TokenCat을 이 폴더로 옮긴 뒤 다시 여세요", "Move TokenCat to this folder in Finder, then open it again"))
                 } else {
-                    Button("릴리스 페이지 열기") { model.requestUpdate(.openReleasePage) }
+                    Button(loc("릴리스 페이지 열기", "Open Release Page")) { model.requestUpdate(.openReleasePage) }
                 }
-                Button("지금 확인") { model.requestUpdate(.check) }.disabled(!update.canCheck)
+                Button(loc("지금 확인", "Check Now")) { model.requestUpdate(.check) }.disabled(!update.canCheck)
             }
         } else {
             if update.canInstall {
-                Button("업데이트") { model.requestUpdate(.install) }
-                    .help("내려받아 설치한 뒤 TokenCat을 다시 엽니다")
+                Button(loc("업데이트", "Update")) { model.requestUpdate(.install) }
+                    .help(loc("내려받아 설치한 뒤 TokenCat을 다시 엽니다", "Downloads and installs the update, then reopens TokenCat"))
             }
-            Button("지금 확인") { model.requestUpdate(.check) }.disabled(!update.canCheck)
+            Button(loc("지금 확인", "Check Now")) { model.requestUpdate(.check) }.disabled(!update.canCheck)
         }
     }
 }
@@ -440,7 +452,7 @@ private struct MenuBarPane: View {
         Form {
             Section {
                 MenuBarPreview(model: model, preferences: preferences, pose: state.runnerPose)
-                Picker("표시 방식", selection: $preferences.statusBarLayout) {
+                Picker(loc("표시 방식", "Layout"), selection: $preferences.statusBarLayout) {
                     ForEach(StatusBarLayout.allCases) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented)
@@ -449,11 +461,13 @@ private struct MenuBarPane: View {
             Section {
                 MetricRows(preferences: preferences)
             } header: {
-                Text("항목")
+                Text(loc("항목", "Items"))
             } footer: {
                 settingsFooter(preferences.statusBarLayout == .minimal
-                               ? "최소 표시는 고양이와 AI 상태·세션 수만 보여 줍니다. 항목 목록은 두 줄·한 줄 표시에 적용됩니다."
-                               : "끌어서 순서를 바꿉니다. 고양이를 숨기면 마지막 항목은 숨길 수 없습니다.")
+                               ? loc("최소 표시는 고양이와 AI 상태·세션 수만 보여 줍니다. 항목 목록은 두 줄·한 줄 표시에 적용됩니다.",
+                                     "Minimal shows only the cat, AI status and session count. The item list applies to the Two Lines and One Line layouts.")
+                               : loc("끌어서 순서를 바꿉니다. 고양이를 숨기면 마지막 항목은 숨길 수 없습니다.",
+                                     "Drag to reorder. With the cat hidden, the last item can't be hidden."))
             }
         }
     }
@@ -466,18 +480,18 @@ private struct CatPane: View {
     var body: some View {
         Form {
             Section {
-                Toggle("메뉴 막대에 고양이 표시", isOn: Binding(get: { preferences.showRunner }, set: { preferences.setShowRunner($0) }))
+                Toggle(loc("메뉴 막대에 고양이 표시", "Show cat in menu bar"), isOn: Binding(get: { preferences.showRunner }, set: { preferences.setShowRunner($0) }))
                     .disabled(preferences.showRunner && !preferences.canHideRunner)
-                    .help(preferences.canHideRunner ? "" : "표시할 항목이 없어 고양이를 숨길 수 없습니다")
+                    .help(preferences.canHideRunner ? "" : loc("표시할 항목이 없어 고양이를 숨길 수 없습니다", "The cat can't be hidden because no other item is shown"))
                 Picker(selection: $preferences.animationSource) {
                     ForEach(RunnerMotion.allCases) { Text($0.title).tag($0) }
                 } label: {
-                    SettingsLabel(title: "움직임 기준", subtitle: preferences.animationSource.subtitle)
+                    SettingsLabel(title: loc("움직임 기준", "Motion source"), subtitle: preferences.animationSource.subtitle)
                 }
                 .help(preferences.animationSource.caption)
                 let entries = RunnerLegend.entries(preferences.animationSource)
                 if !entries.isEmpty { RunnerLegend(entries: entries, reduceMotion: state.reduceMotion) }
-                if state.reduceMotion { settingsCaption("macOS의 '동작 줄이기'가 켜져 있어 고양이는 자세만 바뀝니다.") }
+                if state.reduceMotion { settingsCaption(loc("macOS의 '동작 줄이기'가 켜져 있어 고양이는 자세만 바뀝니다.", "Reduce Motion is on in macOS, so the cat only changes poses.")) }
             }
         }
     }
@@ -497,15 +511,19 @@ struct RunnerLegend: View {
     static func entries(_ motion: RunnerMotion) -> [Entry] {
         switch motion {
         case .activity:
-            return [Entry(pose: .walk, name: "걷기", caption: "진행·도구 실행"), Entry(pose: .run, name: "달리기", caption: "출력 기록 직후"),
-                    Entry(pose: .alert, name: "정면 앉기", caption: "입력 필요"), Entry(pose: .sit, name: "앉기", caption: "대기·쉬는 중"),
-                    Entry(pose: .sleep, name: "잠", caption: "10분간 활동 없음")]
+            return [Entry(pose: .walk, name: loc("걷기", "Walk"), caption: loc("진행·도구 실행", "Working · tool")),
+                    Entry(pose: .run, name: loc("달리기", "Run"), caption: loc("출력 기록 직후", "Just recorded")),
+                    Entry(pose: .alert, name: loc("정면 앉기", "Sit facing you"), caption: loc("입력 필요", "Input needed")),
+                    Entry(pose: .sit, name: loc("앉기", "Sit"), caption: loc("대기·쉬는 중", "Waiting · idle")),
+                    Entry(pose: .sleep, name: loc("잠", "Sleep"), caption: loc("10분간 활동 없음", "Idle 10 min"))]
         case .cpu:
-            return [Entry(pose: .sit, name: "앉기", caption: "4% 미만"), Entry(pose: .walk, name: "걷기", caption: "20%까지"),
-                    Entry(pose: .run, name: "달리기", caption: "20% 넘음")]
+            return [Entry(pose: .sit, name: loc("앉기", "Sit"), caption: loc("4% 미만", "Under 4%")),
+                    Entry(pose: .walk, name: loc("걷기", "Walk"), caption: loc("20%까지", "Up to 20%")),
+                    Entry(pose: .run, name: loc("달리기", "Run"), caption: loc("20% 넘음", "Over 20%"))]
         case .measured:
-            return [Entry(pose: .sit, name: "앉기", caption: "실측 없음"), Entry(pose: .walk, name: "걷기", caption: "40 tok/s 미만"),
-                    Entry(pose: .run, name: "달리기", caption: "40 이상")]
+            return [Entry(pose: .sit, name: loc("앉기", "Sit"), caption: loc("실측 없음", "Not measured")),
+                    Entry(pose: .walk, name: loc("걷기", "Walk"), caption: loc("40 tok/s 미만", "Under 40 tok/s")),
+                    Entry(pose: .run, name: loc("달리기", "Run"), caption: loc("40 이상", "40 or more"))]
         case .still:
             return []
         }
@@ -610,26 +628,27 @@ enum TelemetryStatusRow: Equatable {
     static func collector(_ state: TelemetryCollectorState) -> (row: TelemetryStatusRow, text: String) {
         let address = "127.0.0.1:\(LocalTelemetryCollector.port)"
         switch state {
-        case .receiving: return (.receiving, "수신 중 · \(address)")
-        case .waiting: return (.waiting, "수신 대기 · \(address)")
-        case .starting: return (.starting, "준비 중")
-        case .busyTokenCat: return (.problem, "꺼짐 · 다른 TokenCat이 수집 중")
-        case .busyOtherApp: return (.problem, "꺼짐 · 다른 앱이 \(LocalTelemetryCollector.port) 포트 사용 중")
-        case .failed: return (.problem, "꺼짐 · 수집기를 시작하지 못함")
-        case .stopped: return (.problem, "꺼짐")
+        case .receiving: return (.receiving, loc("수신 중 · \(address)", "Receiving · \(address)"))
+        case .waiting: return (.waiting, loc("수신 대기 · \(address)", "Waiting · \(address)"))
+        case .starting: return (.starting, loc("준비 중", "Preparing"))
+        case .busyTokenCat: return (.problem, loc("꺼짐 · 다른 TokenCat이 수집 중", "Off · another TokenCat is collecting"))
+        case .busyOtherApp: return (.problem, loc("꺼짐 · 다른 앱이 \(LocalTelemetryCollector.port) 포트 사용 중", "Off · another app is using port \(LocalTelemetryCollector.port)"))
+        case .failed: return (.problem, loc("꺼짐 · 수집기를 시작하지 못함", "Off · couldn't start the collector"))
+        case .stopped: return (.problem, loc("꺼짐", "Off"))
         }
     }
 
     /// Checked top to bottom: restart needed, a day without a reading, a reading, an undecodable batch, nothing.
     static func client(restartNeeded: Bool, expired: Bool, lastReceived: Date?, batch: Date?, now: Date)
         -> (row: TelemetryStatusRow, text: String, detail: String?) {
-        if restartNeeded { return (.info, "새로 실행하면 실측이 표시됩니다", nil) }
-        if expired { return (.problem, "이 버전에서 실측을 받지 못했습니다", nil) }
-        if let at = lastReceived { return (.received, "최근 수신 " + (now.timeIntervalSince(at) < 60 ? "1분 이내" : Format.age(at, now: now)), nil) }
+        if restartNeeded { return (.info, loc("새로 실행하면 실측이 표시됩니다", "Restart to show telemetry"), nil) }
+        if expired { return (.problem, loc("이 버전에서 실측을 받지 못했습니다", "No telemetry from this version"), nil) }
+        if let at = lastReceived { return (.received, loc("최근 수신 ", "Last received ") + SessionPresentation.helpAge(at, now: now), nil) }
         if batch != nil {
-            return (.waiting, "기록 수신 중 · 속도 형식 없음", "받은 실측에서 요청별 생성 시간을 찾지 못해 속도를 표시하지 않습니다")
+            return (.waiting, loc("기록 수신 중 · 속도 형식 없음", "Receiving records · no speed data"),
+                    loc("받은 실측에서 요청별 생성 시간을 찾지 못해 속도를 표시하지 않습니다", "Received telemetry has no per-request generation time, so no speed is shown"))
         }
-        return (.waiting, "이번 실행에서 받은 실측 없음", nil)
+        return (.waiting, loc("이번 실행에서 받은 실측 없음", "No telemetry since launch"), nil)
     }
 
     /// The usage-limit bridge, checked top to bottom: an empty status line, skipped, a reading, the bridge waiting for a
@@ -637,13 +656,14 @@ enum TelemetryStatusRow: Equatable {
     /// adds the second line. `desktop`: the newest reading is the Claude desktop app's own record, not a bridge receipt.
     static func claudeLimits(notes: [TelemetrySetupNote], bridged: Bool?, received: Date?, desktop: Bool = false, now: Date)
         -> (row: TelemetryStatusRow, text: String, detail: String?) {
-        if notes.contains(.originalUnknown) { return (.problem, "상태 표시줄이 비어 보일 수 있음", "settings.json의 statusLine을 직접 고쳐 주세요") }
-        if notes.contains(.statusLineSkipped) { return (.info, "연결 안 함 · statusLine 형식이 달라 건너뜀", nil) }
-        let detail = notes.contains(.originalRecreated) ? "원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다" : nil
+        if notes.contains(.originalUnknown) { return (.problem, loc("상태 표시줄이 비어 보일 수 있음", "Status line may look empty"),
+                                                                 loc("settings.json의 statusLine을 직접 고쳐 주세요", "Fix statusLine in settings.json by hand")) }
+        if notes.contains(.statusLineSkipped) { return (.info, loc("연결 안 함 · statusLine 형식이 달라 건너뜀", "Not connected · unsupported statusLine format"), nil) }
+        let detail = notes.contains(.originalRecreated) ? loc("원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다", "Recreated the original status line command from backup") : nil
         if let at = received, desktop { return (.received, loc("Claude 데스크톱 앱 기록 · \(Format.age(at, now: now))", "Claude desktop app · recorded \(Format.age(at, now: now))"), detail) }
-        if let at = received { return (.received, "최근 수신 " + (now.timeIntervalSince(at) < 60 ? "1분 이내" : Format.age(at, now: now)), detail) }
-        if bridged == true { return (.waiting, "아직 받지 못함 · Claude Code를 새로 실행하면 표시", detail) }
-        return (.info, bridged == nil ? "연결 확인 전" : "연결 안 함", nil)
+        if let at = received { return (.received, loc("최근 수신 ", "Last received ") + SessionPresentation.helpAge(at, now: now), detail) }
+        if bridged == true { return (.waiting, loc("아직 받지 못함 · Claude Code를 새로 실행하면 표시", "Nothing yet · restart Claude Code to show"), detail) }
+        return (.info, bridged == nil ? loc("연결 확인 전", "Not checked yet") : loc("연결 안 함", "Not connected"), nil)
     }
 }
 
@@ -668,10 +688,10 @@ private struct TelemetryPane: View {
                 let newest = [model.claudeLimits.fiveHour, model.claudeLimits.sevenDay].compactMap { $0 }.max { $0.receivedAt < $1.receivedAt }
                 let limits = TelemetryStatusRow.claudeLimits(notes: model.telemetryConnectNotes, bridged: model.claudeBridged,
                                                              received: newest?.receivedAt, desktop: newest?.resetsAt == nil, now: model.now)
-                LabeledContent("Claude 한도") { statusLine(limits.row, limits.text, detail: limits.detail) }
+                LabeledContent(loc("Claude 한도", "Claude limits")) { statusLine(limits.row, limits.text, detail: limits.detail) }
             } footer: {
                 settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.",
-                                   "Telemetry takes only numbers such as output tokens and request times; Claude limits take only the usage in the status line JSON and the Claude desktop app's usage history. Clients already running need a restart."))
+                                   "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply."))
             }
             if !files.isEmpty {
                 Section {
@@ -680,7 +700,7 @@ private struct TelemetryPane: View {
                         VStack(alignment: .leading, spacing: 6) { fileButtons }
                     }
                 } footer: {
-                    settingsFooter("Finder에서 위치만 보여 주며 파일을 열거나 바꾸지 않습니다.")
+                    settingsFooter(loc("Finder에서 위치만 보여 주며 파일을 열거나 바꾸지 않습니다.", "Only shows where the files are in Finder; never opens or changes them."))
                 }
             }
         }
@@ -689,20 +709,20 @@ private struct TelemetryPane: View {
 
     private var collector: some View {
         let status = TelemetryStatusRow.collector(model.telemetryState)
-        return LabeledContent("수집기") {
+        return LabeledContent(loc("수집기", "Collector")) {
             VStack(alignment: .trailing, spacing: 4) {
                 statusLine(status.row, status.text, detail: nil)
                 if let next = model.telemetryNextRetryAt {
                     HStack(spacing: 6) {
-                        Text("다음 자동 재시도 " + SessionPresentation.clock(max(0, Int(ceil(next.timeIntervalSince(model.now))))))
+                        Text(loc("다음 자동 재시도 ", "Automatic retry in ") + SessionPresentation.clock(max(0, Int(ceil(next.timeIntervalSince(model.now))))))
                             .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
-                        Button("지금 다시 시도") { model.retryTelemetryNow() }
+                        Button(loc("지금 다시 시도", "Retry Now")) { model.retryTelemetryNow() }
                             .buttonStyle(.bordered).controlSize(.small)
                             .disabled(model.telemetryState == .starting)
                     }
                 }
                 if model.telemetryState == .busyTokenCat, let other = Self.otherTokenCat() {
-                    Button("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([other]) }
+                    Button(loc("Finder에서 보기", "Show in Finder")) { NSWorkspace.shared.activateFileViewerSelecting([other]) }
                         .buttonStyle(.bordered).controlSize(.small)
                         .help(other.path)
                 }
@@ -731,9 +751,9 @@ private struct TelemetryPane: View {
     }
 
     static func existingFiles(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [(title: String, url: URL)] {
-        [("백업 폴더 보기", home.appendingPathComponent("Library/Application Support/TokenCat/telemetry-backups", isDirectory: true)),
-         ("Codex 설정 파일 보기", home.appendingPathComponent(".codex/config.toml")),
-         ("Claude Code 설정 파일 보기", home.appendingPathComponent(".claude/settings.json"))]
+        [(loc("백업 폴더 보기", "Show Backup Folder"), home.appendingPathComponent("Library/Application Support/TokenCat/telemetry-backups", isDirectory: true)),
+         (loc("Codex 설정 파일 보기", "Show Codex Config"), home.appendingPathComponent(".codex/config.toml")),
+         (loc("Claude Code 설정 파일 보기", "Show Claude Code Config"), home.appendingPathComponent(".claude/settings.json"))]
             .filter { FileManager.default.fileExists(atPath: $0.1.path) }
     }
 
@@ -760,7 +780,7 @@ private struct AboutPane: View {
                     Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high).frame(width: 48, height: 48)
                         .accessibilityHidden(true)
                     Text("TokenCat").font(.system(size: 15, weight: .semibold))
-                    Text("버전 \(AppInfo.version) (\(AppInfo.build))").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                    Text(loc("버전 \(AppInfo.version) (\(AppInfo.build))", "Version \(AppInfo.version) (\(AppInfo.build))")).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
                         .textSelection(.enabled)
                     Text(AppInfo.privacy).font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true).padding(.top, 2)
@@ -768,9 +788,10 @@ private struct AboutPane: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 6)
                 HStack {
-                    Button("MIT 라이선스 보기") { showsLicense = true }
-                    Button("처음 안내 다시 보기", action: actions.reshowOnboarding)
-                        .help("처음 실행 안내(TokenCat이 하는 일)를 상세 화면에 다시 보입니다")
+                    Button(loc("MIT 라이선스 보기", "Show MIT License")) { showsLicense = true }
+                    Button(loc("처음 안내 다시 보기", "Show Welcome Again"), action: actions.reshowOnboarding)
+                        .help(loc("처음 실행 안내(TokenCat이 하는 일)를 상세 화면에 다시 보입니다",
+                                  "Shows the first-launch welcome (What TokenCat does) on the dashboard again"))
                     Spacer()
                 }
             }
@@ -810,17 +831,18 @@ private struct MetricRows: View {
                     VStack(alignment: .leading, spacing: 1) {
                         id.barLabel.map { Text(id.title) + Text(" · \($0)").font(.system(size: 11)).foregroundColor(.secondary) } ?? Text(id.title)
                         if missingBattery {
-                            Text("이 Mac에는 배터리가 없습니다").font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(loc("이 Mac에는 배터리가 없습니다", "This Mac has no battery")).font(.system(size: 11)).foregroundStyle(.secondary)
                         }
                     }
                 }
                 .toggleStyle(.checkbox)
                 .disabled(missingBattery || locked)
-                .accessibilityAction(named: "위로 이동") { preferences.move(id, by: -1) }
-                .accessibilityAction(named: "아래로 이동") { preferences.move(id, by: 1) }
+                .accessibilityAction(named: loc("위로 이동", "Move up")) { preferences.move(id, by: -1) }
+                .accessibilityAction(named: loc("아래로 이동", "Move down")) { preferences.move(id, by: 1) }
                 Spacer(minLength: 0)
             }
-            .help(locked ? "고양이를 숨긴 상태에서는 최소 한 항목을 표시해야 합니다" : "끌어서 순서를 바꿉니다")
+            .help(locked ? loc("고양이를 숨긴 상태에서는 최소 한 항목을 표시해야 합니다", "With the cat hidden, at least one item must stay visible")
+                  : loc("끌어서 순서를 바꿉니다", "Drag to reorder"))
             .contentShape(Rectangle())
             // The row itself moves while dragging; no dimming, since a drag cancelled outside never reports back.
             .onDrag {
@@ -834,8 +856,8 @@ private struct MetricRows: View {
             }
             .onDrop(of: [.tokenCatMetricRow], delegate: MetricDropDelegate(target: id, preferences: preferences, dragging: $dragging))
             .contextMenu {
-                Button("위로 이동") { preferences.move(id, by: -1) }.disabled(preferences.order.first == id)
-                Button("아래로 이동") { preferences.move(id, by: 1) }.disabled(preferences.order.last == id)
+                Button(loc("위로 이동", "Move Up")) { preferences.move(id, by: -1) }.disabled(preferences.order.first == id)
+                Button(loc("아래로 이동", "Move Down")) { preferences.move(id, by: 1) }.disabled(preferences.order.last == id)
             }
         }
     }
@@ -889,13 +911,15 @@ private struct MenuBarPreview: View {
                 }
                 .frame(height: image.size.height)
             }
-            Text(notch ? "메뉴 막대 폭 약 \(width)pt · 노치 Mac에서는 자리가 부족하면 가려질 수 있습니다" : "메뉴 막대 폭 약 \(width)pt")
+            Text(notch ? loc("메뉴 막대 폭 약 \(width)pt · 노치 Mac에서는 자리가 부족하면 가려질 수 있습니다",
+                              "About \(width) pt of menu bar · may hide behind the notch if space is short")
+                 : loc("메뉴 막대 폭 약 \(width)pt", "About \(width) pt of menu bar"))
                 .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("메뉴 막대 미리보기")
-        .accessibilityValue("폭 약 \(width)포인트")
+        .accessibilityLabel(loc("메뉴 막대 미리보기", "Menu bar preview"))
+        .accessibilityValue(loc("폭 약 \(width)포인트", "About \(width) points wide"))
     }
 }
 
@@ -911,7 +935,7 @@ private struct LicenseView: View {
             }
             HStack {
                 Spacer()
-                Button("닫기") { dismiss() }.keyboardShortcut(.defaultAction)
+                Button(loc("닫기", "Close")) { dismiss() }.keyboardShortcut(.defaultAction)
             }
         }
         .padding(16)

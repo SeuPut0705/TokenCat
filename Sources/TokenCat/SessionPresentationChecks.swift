@@ -743,6 +743,45 @@ func runSessionPresentationChecks() -> [String] {
     check(child?.value == "44.1" && child?.help.hasPrefix("Alpha · 하위 Explore · Claude Code m1") == true,
           "a visible live subagent's own measurement counts and is named")
 
+    // English: plurals, word order, spoken text and composed titles.
+    AppLanguage.with(.en) {
+        check(header(urgent).spoken == "1 session needs input · 2 working" && header(plans).spoken == "2 plans awaiting approval · 1 working"
+              && header(retryOnly).spoken == "1 session retrying · Retry 2/10 · in 4s"
+              && header(noticeCounts).spoken == "1 session waiting for log · no record for 3m"
+              && header(SessionCounts(SessionPresentation.groups([claudeParent, claudeChild, codexParent, codexChild], now: now))).spoken
+                == "2 sessions working · 1 tool · 2 subagents"
+              && caption(urgent, -40).text == "Waiting for input · reply to resume" && caption(plans, nil).text == "Plan approval · approve to resume"
+              && caption(retryOnly, -40).text == "API retry 2/10 · in 4s" && caption(noticeCounts, nil).text == "Waiting for log · no record for 3m",
+              "English header and flow caption")
+        check(SessionPresentation.childGroupText(.input, count: 1) == "1 subagent needs input"
+              && SessionPresentation.childGroupText(.waiting, count: 4) == "4 subagents waiting for log"
+              && SessionPresentation.spokenLabel(modelled, state: .input) == "Input needed, TokenCat, Claude Code claude-opus-5-5"
+              && SessionPresentation.spokenLabel(codexChild, state: .working) == "Subagent sample_runner, Working"
+              && make([floodParent] + flood).blocks.first?.moreText == "+9 subagents waiting for log · last record 1m ago",
+              "English subagent counts and VoiceOver labels")
+        check(usage?.title == "Codex weekly limit" && usage?.value(now: now) == "28% used"
+              && usage?.detail(now: now) == "Resets in 5d 11h · as of 1m ago"
+              && usage?.details(now: now) == ["Resets in 5d 11h · recorded 1m ago", "Resets in 5d 11h"]
+              && undated?.detail(now: now) == "As of 10m ago" && expired.detail(now: now) == "Reset · waiting for a Codex record"
+              && claudeSummary?.spoken(now: now) == "42 percent used, Resets in 2h 13m, as of 1m ago, Weekly limit 31 percent used, resets in 3d 4h"
+              && claudeSummary?.help(now: now).hasSuffix("\nWeekly limit 31% used · resets in 3d 4h") == true,
+              "English usage limit copy")
+        check(SessionPresentation.context(codexContext, now: now)?.text == "Context 61% used"
+              && SessionPresentation.context(codexContext, now: now)?.spoken == "Context 61 percent used"
+              && SessionPresentation.context(claudeContext, now: now)?.compacted == "Compacted 5m ago"
+              && headline([speedAlpha, speedBeta])?.spoken == "Generation speed 50.0 tokens per second, Beta"
+              && SessionPresentation.lastTurnSummary(finished) == "Last completed turn: 7,493 tok · took 4:12"
+              && SessionPresentation.footerStatus(loading: false, tokenDelay: 12, systemDelay: 0, notice: nil).text == "AI collection delayed 12s"
+              && SessionPresentation.telemetryNotice(state: .busyOtherApp, note: nil, restart: [])?.text == "Telemetry off · port in use",
+              "English context, speed, turn and footer copy")
+        let englishDates = make([beta] + dated, expanded: true)
+        check(englishDates.blocks.map(\.section) == [nil, "Today", "Yesterday", "Earlier", "Earlier"] && englishDates.olderCount == 2
+              && SessionPresentation.rowActions(located, home: home).map(\.title)
+                == ["Copy Session ID", "Copy Resume Command", "Show Project Folder in Finder", "Show Log File in Finder"]
+              && SessionPresentation.detailItems(detailed, state: .tool).last?.value == "When a Codex response ends",
+              "English day sections fold the older part; row actions use title case")
+    }
+
     // Fixture PNGs carry only visibly fake identifiers.
     let fixtureReadings = SnapshotFixtures.fixtures().flatMap(\.tokens)
     func synthetic(_ agent: String) -> Bool {

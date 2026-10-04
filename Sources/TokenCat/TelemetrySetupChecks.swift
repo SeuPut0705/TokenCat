@@ -225,6 +225,18 @@ func runTelemetrySetupChecks() -> [String] {
         check(stuck.contains("상태 표시줄은 되돌리지 못했습니다") && statusLine(stuckHome)?["command"] as? String == TelemetrySetup.statusLineCommand
               && data(stuckHome, support + "/telemetry-connection.json") != nil && data(stuckHome, script) != nil,
               "A status line that could not go back lost its connection record")
+        // English: the refused client starts the sentence and the status line sentence follows it.
+        let englishHome = try fixture("user-edit-en", codex: originalCodex, claude: originalClaude)
+        _ = try TelemetrySetup(home: englishHome).connect()
+        try (data(englishHome, ".codex/config.toml")! + Data(trust.utf8)).write(to: englishHome.appendingPathComponent(".codex/config.toml"))
+        let englishRefusal = AppLanguage.with(.en) { () -> String in
+            do { _ = try TelemetrySetup(home: englishHome).disconnect(); return "" } catch { return error.localizedDescription }
+        }
+        check(englishRefusal == "Codex settings changed after the connection, and TokenCat's entries can't be reverted on their own."
+              + " Nothing was restored automatically, to keep your changes. Removed the Claude Code status line TokenCat added."
+              && AppLanguage.with(.en) { TelemetrySetupNote.statusLineSkipped.text }
+                == "Claude Code's statusLine isn't in the expected format, so the usage limit connection was skipped.",
+              "English disconnect refusal or status line note changed")
 
         let failedHome = try fixture("write-failure", codex: originalCodex, claude: originalClaude)
         let restricted = failedHome.appendingPathComponent(".claude")

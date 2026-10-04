@@ -290,7 +290,8 @@ struct DashboardView: View {
     }
 
     private var footerHelp: String {
-        "시스템과 AI 기록을 1초마다, 로그 변경 시 즉시 확인합니다\n\(SessionPresentation.telemetryReceipt(model.telemetryLastReceived, now: model.now))\n\(model.telemetryStatus)"
+        loc("시스템과 AI 기록을 1초마다, 로그 변경 시 즉시 확인합니다", "Checks system and AI records every second, and right away when a log changes")
+            + "\n\(SessionPresentation.telemetryReceipt(model.telemetryLastReceived, now: model.now))\n\(model.telemetryStatus)"
     }
 }
 
@@ -321,13 +322,13 @@ struct DashboardHeader: View {
             .padding(.leading, 8)
             .help(status.help)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("세션 상태")
+            .accessibilityLabel(loc("세션 상태", "Session status"))
             .accessibilityValue(status.spoken)
             .accessibilityAddTraits(.updatesFrequently)
             Spacer(minLength: 8)
             Button(action: actions.settings) { Image(systemName: "gearshape").font(.system(size: 14)).frame(width: 24, height: 24) }
                 .buttonStyle(HoverButtonStyle(circle: true))
-                .help("설정 (⌘,)").accessibilityLabel("설정")
+                .help(loc("설정 (⌘,)", "Settings (⌘,)")).accessibilityLabel(loc("설정", "Settings"))
             menu.padding(.leading, 4)
         }
         .frame(height: 28)
@@ -346,16 +347,16 @@ struct DashboardHeader: View {
         let icon = Image(systemName: "ellipsis.circle").font(.system(size: 14))
         if interactive {
             Menu {
-                if presentation == .popover { Button("패널로 분리", action: actions.detach) }
-                Button("설정…", action: actions.settings).keyboardShortcut(",")
-                Button("활성 상태 보기", action: actions.activityMonitor)
-                Button("TokenCat 정보", action: actions.about)
+                if presentation == .popover { Button(loc("패널로 분리", "Detach as Panel"), action: actions.detach) }
+                Button(loc("설정…", "Settings…"), action: actions.settings).keyboardShortcut(",")
+                Button(loc("활성 상태 보기", "Activity Monitor"), action: actions.activityMonitor)
+                Button(loc("TokenCat 정보", "About TokenCat"), action: actions.about)
                 Divider()
-                Button("TokenCat 종료", action: actions.quit).keyboardShortcut("q")
+                Button(loc("TokenCat 종료", "Quit TokenCat"), action: actions.quit).keyboardShortcut("q")
             } label: { icon }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             .frame(width: 24, height: 24)
-            .help("더 보기").accessibilityLabel("더 보기")
+            .help(loc("더 보기", "More")).accessibilityLabel(loc("더 보기", "More"))
         } else {
             // ImageRenderer cannot draw an AppKit menu button.
             icon.frame(width: 24, height: 24).toneSecondary()
@@ -407,13 +408,18 @@ struct OnboardingCard: View {
     private var telemetry: (title: String, detail: String, tail: String?) {
         switch outcome {
         case .added(let bridged):
-            return ("실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했습니다",
-                    bridged ? "Claude Code 상태 표시줄도 한도만 읽도록 감쌌습니다(출력 그대로)" : "새로 실행할 때부터 적용됩니다",
-                    bridged ? "새로 실행할 때부터 적용" : nil)
-        case .skipped(let reason): return ("실측 연결을 건너뛰었습니다", reason, nil)
-        case .failed(let reason): return ("실측 연결을 완료하지 못했습니다", reason, nil)
-        case .collectorDown(let text): return ("실측 연결을 하지 않았습니다", text, nil)
-        case .preparing: return ("실측 수집기를 준비하고 있습니다", "준비되면 Codex·Claude Code 설정에 로컬 전송을 추가합니다", nil)
+            return (loc("실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했습니다",
+                        "Added local telemetry to Codex and Claude Code settings"),
+                    bridged ? loc("Claude Code 상태 표시줄도 한도만 읽도록 감쌌습니다(출력 그대로)",
+                                  "Also wrapped the Claude Code status line to read limits (output unchanged)")
+                        : loc("새로 실행할 때부터 적용됩니다", "Applies from the next launch"),
+                    bridged ? loc("새로 실행할 때부터 적용", "Applies from the next launch") : nil)
+        case .skipped(let reason): return (loc("실측 연결을 건너뛰었습니다", "Skipped connecting telemetry"), reason, nil)
+        case .failed(let reason): return (loc("실측 연결을 완료하지 못했습니다", "Couldn't finish connecting telemetry"), reason, nil)
+        case .collectorDown(let text): return (loc("실측 연결을 하지 않았습니다", "Didn't connect telemetry"), text, nil)
+        case .preparing: return (loc("실측 수집기를 준비하고 있습니다", "Preparing the telemetry collector"),
+                                 loc("준비되면 Codex·Claude Code 설정에 로컬 전송을 추가합니다",
+                                     "Adds local telemetry to Codex and Claude Code settings when it's ready"), nil)
         }
     }
 
@@ -432,16 +438,20 @@ struct OnboardingCard: View {
             HStack(spacing: 6) {
                 Image(nsImage: Runner.headImage(.normal)).resizable().interpolation(.none).aspectRatio(contentMode: .fit)
                     .frame(width: 12, height: 11).accessibilityHidden(true)
-                Text("TokenCat이 하는 일").font(TCFont.title).accessibilityAddTraits(.isHeader)
+                Text(loc("TokenCat이 하는 일", "What TokenCat does")).font(TCFont.title).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 6)
                 Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).frame(width: 18, height: 18) }
                     .buttonStyle(HoverButtonStyle(circle: true))
-                    .help("안내 닫기").accessibilityLabel("안내 닫기")
+                    .help(loc("안내 닫기", "Close welcome")).accessibilityLabel(loc("안내 닫기", "Close welcome"))
             }
             .frame(height: 18)
-            row("lock.shield", "대화 본문은 저장하지 않습니다", "모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 읽습니다")
+            row("lock.shield", loc("대화 본문은 저장하지 않습니다", "Doesn't store conversation text"),
+                loc("모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 읽습니다",
+                    "Reads only metadata such as models, token counts, tool types and project folders"))
             row("slider.horizontal.3", telemetry.title, telemetry.detail, tail: telemetry.tail, links: true)
-            row("hand.raised", "모델 호출·계정 로그인을 하지 않습니다", "인터넷 요청은 GitHub 새 버전 확인뿐입니다(설정 › 정보에서 끄기)")
+            row("hand.raised", loc("모델 호출·계정 로그인을 하지 않습니다", "Doesn't call models or sign in to accounts"),
+                loc("인터넷 요청은 GitHub 새 버전 확인뿐입니다(설정 › 정보에서 끄기)",
+                    "Only goes online to check GitHub for new versions (turn off in Settings › About)"))
         }
         .padding(12)
         .buttonStyle(.automatic)
@@ -480,12 +490,13 @@ struct OnboardingCard: View {
 
     @ViewBuilder private var linkButtons: some View {
         if added {
-            link("백업 보기", help: "원본 백업 \(Self.backupPath) · Finder에서 보여 주기만 합니다") {
+            link(loc("백업 보기", "Show backup"), help: loc("원본 백업 \(Self.backupPath) · Finder에서 보여 주기만 합니다",
+                                                 "Original backup \(Self.backupPath) · only shows it in Finder")) {
                 let url = URL(fileURLWithPath: (Self.backupPath as NSString).expandingTildeInPath, isDirectory: true)
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             }
         }
-        link("설정 열기", help: "설정의 실측 탭을 엽니다", emphasized: needsSettings, action: settings)
+        link(loc("설정 열기", "Open settings"), help: loc("설정의 실측 탭을 엽니다", "Opens the Telemetry tab in Settings"), emphasized: needsSettings, action: settings)
     }
 
     /// An underlined 11 pt medium text button; accent when it is the next step.
@@ -505,18 +516,20 @@ struct FlowChartDescriptor: AXChartDescriptorRepresentable {
     var values: [Int]
     func makeChartDescriptor() -> AXChartDescriptor {
         let span = Double(max(0, values.count - 1)) * FlowSeries.bucketSeconds
-        let x = AXNumericDataAxisDescriptor(title: "시간", range: -span...0, gridlinePositions: []) { value in
-            value >= 0 ? "지금" : "\(Int(-value))초 전"
+        let x = AXNumericDataAxisDescriptor(title: loc("시간", "Time"), range: -span...0, gridlinePositions: []) { value in
+            value >= 0 ? loc("지금", "Now") : Format.ago(Format.span(Int(-value), .second, spoken: true))
         }
-        let y = AXNumericDataAxisDescriptor(title: "출력 토큰", range: 0...Double(max(values.max() ?? 0, 1)), gridlinePositions: []) { value in
-            "\(Int(value)) 토큰"
+        let y = AXNumericDataAxisDescriptor(title: loc("출력 토큰", "Output tokens"), range: 0...Double(max(values.max() ?? 0, 1)), gridlinePositions: []) { value in
+            loc("\(Int(value)) 토큰", plural(Int(value), "token"))
         }
         let points = values.enumerated().map { index, value in
             AXDataPoint(x: Double(index - (values.count - 1)) * FlowSeries.bucketSeconds, y: Double(value))
         }
-        return AXChartDescriptor(title: "최근 5분 출력 토큰 기록", summary: "5초 동안 로그에 기록된 출력 토큰 수이며 속도가 아닙니다",
+        return AXChartDescriptor(title: loc("최근 5분 출력 토큰 기록", "Output tokens recorded in the last 5 min"),
+                                 summary: loc("5초 동안 로그에 기록된 출력 토큰 수이며 속도가 아닙니다",
+                                              "Output tokens recorded in the log per 5 s, not a speed"),
                                  xAxis: x, yAxis: y, additionalAxes: [],
-                                 series: [AXDataSeriesDescriptor(name: "5초 기록량", isContinuous: false, dataPoints: points)])
+                                 series: [AXDataSeriesDescriptor(name: loc("5초 기록량", "Recorded per 5 s"), isContinuous: false, dataPoints: points)])
     }
 }
 
@@ -531,7 +544,10 @@ struct FlowCard: View {
     var speed: SpeedHeadline? = nil
     @State private var showsHelp = false
     @Environment(\.tokenCatHighContrast) private var high
-    static let help = "막대 하나는 5초 동안 로그에 기록된 출력 토큰 수입니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다. 속도로 환산하지 않습니다."
+    static var help: String {
+        loc("막대 하나는 5초 동안 로그에 기록된 출력 토큰 수입니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다. 속도로 환산하지 않습니다.",
+            "Each bar is the number of output tokens recorded in the log over 5 seconds. Codex records them when a response ends and Claude Code when a message ends, so tokens still being generated aren't included yet. They're never converted into a speed.")
+    }
 
     private var total: Int { flow.total }
     private var caption: FlowCaption { SessionPresentation.flowCaption(counts: counts, last: flow.last?.at, now: now) }
@@ -553,12 +569,12 @@ struct FlowCard: View {
 
     private var collapsedRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("출력 토큰").font(TCFont.title).fixedSize().accessibilityAddTraits(.isHeader)
-            Text("최근 5분 기록 없음").font(TCFont.meta).toneSecondary().lineLimit(1)
+            Text(loc("출력 토큰", "Output tokens")).font(TCFont.title).fixedSize().accessibilityAddTraits(.isHeader)
+            Text(loc("최근 5분 기록 없음", "None in the last 5 min")).font(TCFont.meta).toneSecondary().lineLimit(1)
             Spacer(minLength: 8)
             // Without any output yet the row already says "기록 없음" once.
             if let newestOutputAt {
-                Text("마지막 출력 " + SessionPresentation.helpAge(newestOutputAt, now: now))
+                Text(loc("마지막 출력 ", "Last output ") + SessionPresentation.helpAge(newestOutputAt, now: now))
                     .font(TCFont.metaMono).toneSecondary().lineLimit(1).fixedSize()
             }
         }
@@ -574,7 +590,7 @@ struct FlowCard: View {
                 FlowChart(values: flow.hero, fresh: flow.fresh, loading: loading).frame(height: 61).padding(.top, 8)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("최근 5분 출력 토큰 기록")
+            .accessibilityLabel(loc("최근 5분 출력 토큰 기록", "Output tokens recorded in the last 5 min"))
             .accessibilityValue(accessibilityValue)
             .accessibilityHint(Self.help)
             .accessibilityChartDescriptor(FlowChartDescriptor(values: flow.hero))
@@ -595,13 +611,13 @@ struct FlowCard: View {
 
     private var titleRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text("출력 토큰").font(TCFont.title).fixedSize().accessibilityAddTraits(.isHeader)
-            Text("최근 5분 · 로그 기록 기준").font(TCFont.meta).toneSecondary().lineLimit(1)
+            Text(loc("출력 토큰", "Output tokens")).font(TCFont.title).fixedSize().accessibilityAddTraits(.isHeader)
+            Text(loc("최근 5분 · 로그 기록 기준", "Last 5 min · based on log records")).font(TCFont.meta).toneSecondary().lineLimit(1)
             Spacer(minLength: 4)
             Button { showsHelp.toggle() } label: { Image(systemName: "info.circle").font(TCFont.meta).frame(width: 20, height: 20) }
                 .buttonStyle(HoverButtonStyle(circle: true))
                 .popover(isPresented: $showsHelp, arrowEdge: .bottom) { FlowHelp() }
-                .help("출력 토큰 설명").accessibilityLabel("출력 토큰 설명")
+                .help(loc("출력 토큰 설명", "About output tokens")).accessibilityLabel(loc("출력 토큰 설명", "About output tokens"))
                 .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
         }
     }
@@ -629,7 +645,7 @@ struct FlowCard: View {
 
     @ViewBuilder private var lastValue: some View {
         if loading {
-            Text("+0,000 tok · 방금").font(TCFont.bodyMediumMono).redacted(reason: .placeholder)
+            Text(loc("+0,000 tok · 방금", "+0,000 tok · just now")).font(TCFont.bodyMediumMono).redacted(reason: .placeholder)
         } else if let last = flow.last {
             HStack(spacing: 4) {
                 if SessionPresentation.isFresh(last.at, now: now) { Circle().fill(TCColor.activity).frame(width: 6, height: 6) }
@@ -654,12 +670,15 @@ struct FlowCard: View {
     }
 
     private var accessibilityValue: String {
-        if loading { return "기록 확인 중" }
-        var parts = ["\(total.formatted()) 토큰"]
-        if let last = flow.last { parts.append("마지막 기록 \(last.tokens.formatted()) 토큰, \(SessionPresentation.recordAge(last.at, now: now))") }
-        else { parts.append("최근 5분 동안 출력 기록 없음") }
+        if loading { return loc("기록 확인 중", "Reading records") }
+        var parts = [loc("\(total.formatted()) 토큰", plural(total, "token"))]
+        if let last = flow.last {
+            let age = SessionPresentation.recordAge(last.at, now: now)
+            parts.append(loc("마지막 기록 \(last.tokens.formatted()) 토큰, \(age)", "Last record \(plural(last.tokens, "token")), \(age)"))
+        }
+        else { parts.append(loc("최근 5분 동안 출력 기록 없음", "No output recorded in the last 5 min")) }
         if caption.glyph != nil || caption.text != SessionPresentation.lastRecordCaption { parts.append(caption.text) }
-        parts.append("로그 기록 시점 기준이며 속도가 아닙니다")
+        parts.append(loc("로그 기록 시점 기준이며 속도가 아닙니다", "Based on log record times, not a speed"))
         return parts.joined(separator: ". ")
     }
 }
@@ -672,13 +691,13 @@ private struct SpeedHeadlineView: View {
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            labelled(headline.project.map { "지금 속도 · " + $0 } ?? "지금 속도")
-            labelled("지금 속도")
+            labelled(headline.project.map { loc("지금 속도 · ", "Speed now · ") + $0 } ?? loc("지금 속도", "Speed now"))
+            labelled(loc("지금 속도", "Speed now"))
             value
         }
         .help(headline.help)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("지금 속도")
+        .accessibilityLabel(loc("지금 속도", "Speed now"))
         .accessibilityValue(headline.spoken)
     }
 
@@ -702,8 +721,8 @@ private struct FlowHelp: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(FlowCard.help).font(TCFont.meta).fixedSize(horizontal: false, vertical: true)
-            legend(TCColor.neutral, "막대 하나 = 5초 동안 기록된 출력")
-            legend(TCColor.activity, "초록 = 최근 5초 안 기록")
+            legend(TCColor.neutral, loc("막대 하나 = 5초 동안 기록된 출력", "One bar = output recorded over 5 s"))
+            legend(TCColor.activity, loc("초록 = 최근 5초 안 기록", "Green = recorded in the last 5 s"))
         }
         .padding(12)
         .frame(width: 280, alignment: .leading)
@@ -752,9 +771,9 @@ struct FlowChart: View {
             .frame(height: 36)
             ticks.frame(height: 3)
             HStack(spacing: 0) {
-                Text("5분 전")
+                Text(Format.ago(Format.span(5, .minute)))
                 Spacer(minLength: 0)
-                Text("지금")
+                Text(loc("지금", "now"))
             }
             .font(TCFont.micro).toneSecondary().frame(height: 12)
         }
@@ -815,7 +834,7 @@ struct UsageLimitRow: View {
         if expired { return Text("—").font(TCFont.value).foregroundColor(TCColor.textTertiary(contrast: high)) }
         return Text(limit.percentText).font(TCFont.value).foregroundColor(limit.isOld(now: now) ? secondary : nil)
             + Text("%").font(TCFont.micro).foregroundColor(secondary)
-            + Text(" 사용").font(TCFont.meta).foregroundColor(secondary)
+            + Text(loc(" 사용", " used")).font(TCFont.meta).foregroundColor(secondary)
     }
 }
 
@@ -828,22 +847,28 @@ struct SessionsHeader: View {
         let list = model.sessions
         let expanded = model.sessionsExpanded
         HStack(spacing: 6) {
-            Text("세션").font(TCFont.title).accessibilityAddTraits(.isHeader)
-                .help("↑↓ 이동 · Return 상세 · ⌘C ID 복사" + (list.showsSpeedColumn ? "" : "\n속도 실측 없음 · 로그 시각으로 추정하지 않습니다"))
+            Text(loc("세션", "Sessions")).font(TCFont.title).accessibilityAddTraits(.isHeader)
+                .help(loc("↑↓ 이동 · Return 상세 · ⌘C ID 복사", "↑↓ move · Return details · ⌘C copy ID")
+                      + (list.showsSpeedColumn ? "" : loc("\n속도 실측 없음 · 로그 시각으로 추정하지 않습니다",
+                                                          "\nNo measured speed · not estimated from log times")))
             Spacer(minLength: 6)
             if list.hiddenGroups + list.hiddenChildren > 0 || expanded {
                 Button { model.sessionsExpanded.toggle() } label: {
                     HStack(spacing: 3) {
-                        Text(expanded ? "접기" : (list.hiddenGroups > 0 ? "\(list.counts.groups)개 모두 보기" : "하위 \(list.hiddenChildren)개 더 보기"))
+                        Text(expanded ? loc("접기", "Show less")
+                             : (list.hiddenGroups > 0 ? loc("\(list.counts.groups)개 모두 보기", "Show all \(list.counts.groups)")
+                                : loc("하위 \(list.hiddenChildren)개 더 보기", "Show \(plural(list.hiddenChildren, "more subagent"))")))
                         Image(systemName: expanded ? "chevron.up" : "chevron.down").imageScale(.small)
                     }
                     .font(TCFont.metaMedium).padding(.horizontal, 6).frame(height: 20)
                 }
                 .fixedSize()
                 .padding(.trailing, -6)
-                .help("하위 에이전트 포함 \(list.counts.readings)개 기록" + (expanded || list.hiddenGroups == 0 ? "" : " · 접힌 세션 \(list.hiddenGroups)개"))
-                .accessibilityLabel(expanded ? "세션 목록 접기" : (list.hiddenGroups > 0 ? "세션 목록 모두 보기" : "하위 에이전트 더 보기"))
-                .accessibilityValue(expanded ? "" : "\(list.hiddenGroups > 0 ? list.counts.groups : list.hiddenChildren)개")
+                .help(loc("하위 에이전트 포함 \(list.counts.readings)개 기록", "\(plural(list.counts.readings, "record")) including subagents")
+                      + (expanded || list.hiddenGroups == 0 ? "" : loc(" · 접힌 세션 \(list.hiddenGroups)개", " · \(plural(list.hiddenGroups, "collapsed session"))")))
+                .accessibilityLabel(expanded ? loc("세션 목록 접기", "Collapse session list")
+                                    : (list.hiddenGroups > 0 ? loc("세션 목록 모두 보기", "Show all sessions") : loc("하위 에이전트 더 보기", "Show more subagents")))
+                .accessibilityValue(expanded ? "" : "\(list.hiddenGroups > 0 ? list.counts.groups : list.hiddenChildren)" + loc("개", ""))
             }
         }
         .frame(height: 18)
@@ -1006,12 +1031,12 @@ struct SessionList: View {
 
     private func accessible<V: View>(_ view: V, _ list: SessionListModel) -> some View {
         view
-        .help("↑↓ 이동 · Return 상세 · ⌘C ID 복사")
+        .help(loc("↑↓ 이동 · Return 상세 · ⌘C ID 복사", "↑↓ move · Return details · ⌘C copy ID"))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("세션 목록")
-        .accessibilityHint("↑↓ 이동 · Return 상세 · ⌘C ID 복사")
-        .accessibilityRotor(Text("입력 필요 세션")) { rotorEntries(list.blocks.filter { $0.state == .input }) }
-        .accessibilityRotor(Text("진행 중 세션")) { rotorEntries(list.blocks.filter { $0.state.isRunning }) }
+        .accessibilityLabel(loc("세션 목록", "Session list"))
+        .accessibilityHint(loc("↑↓ 이동 · Return 상세 · ⌘C ID 복사", "↑↓ move · Return details · ⌘C copy ID"))
+        .accessibilityRotor(Text(loc("입력 필요 세션", "Sessions needing input"))) { rotorEntries(list.blocks.filter { $0.state == .input }) }
+        .accessibilityRotor(Text(loc("진행 중 세션", "Active sessions"))) { rotorEntries(list.blocks.filter { $0.state.isRunning }) }
     }
 
     private func rotorEntries(_ blocks: [SessionBlock]) -> some AccessibilityRotorContent {
@@ -1052,8 +1077,8 @@ struct SessionList: View {
     /// Return and Space while the list has keyboard focus; disabled otherwise so focused buttons keep their keys.
     private var keyboardShortcuts: some View {
         ZStack {
-            Button("상세") { activate() }.keyboardShortcut(.return, modifiers: [])
-            Button("상세") { activate() }.keyboardShortcut(.space, modifiers: [])
+            Button(loc("상세", "Details")) { activate() }.keyboardShortcut(.return, modifiers: [])
+            Button(loc("상세", "Details")) { activate() }.keyboardShortcut(.space, modifiers: [])
         }
         .disabled(!keyboardFocus || selectedID == nil)
         .opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
@@ -1171,7 +1196,7 @@ private struct OlderRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 3) {
-                Text("이전 기록 \(count)개 더 보기")
+                Text(loc("이전 기록 \(count)개 더 보기", "Show \(plural(count, "earlier record"))"))
                 Image(systemName: "chevron.down").imageScale(.small)
             }
             .font(TCFont.metaMedium).toneSecondary()
@@ -1181,7 +1206,7 @@ private struct OlderRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .accessibilityLabel("이전 기록 더 보기").accessibilityValue("\(count)개")
+        .accessibilityLabel(loc("이전 기록 더 보기", "Show earlier records")).accessibilityValue("\(count)" + loc("개", ""))
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }
@@ -1201,14 +1226,14 @@ private struct SkeletonRows: View {
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("세션 목록")
-        .accessibilityValue("기록 확인 중")
+        .accessibilityLabel(loc("세션 목록", "Session list"))
+        .accessibilityValue(loc("기록 확인 중", "Reading records"))
     }
 }
 
 /// No sessions yet, or no log folders (O-3). Folder existence comes from the model, never from the view body.
 private struct EmptySessions: View {
-    static let webNote = "Claude 웹·데스크톱 채팅은 수집하지 않습니다"
+    static var webNote: String { loc("Claude 웹·데스크톱 채팅은 수집하지 않습니다", "Claude web and desktop chats aren't collected") }
     var foldersFound: Bool
     var recheck: () -> Void
     var body: some View {
@@ -1221,11 +1246,12 @@ private struct EmptySessions: View {
             }
             .frame(width: Runner.size.width * 2, height: Runner.size.height * 2)
             .accessibilityHidden(true)
-            Text(foldersFound ? "아직 Codex·Claude Code 세션 기록이 없습니다" : "Codex·Claude Code 기록 폴더를 찾지 못했습니다")
+            Text(foldersFound ? loc("아직 Codex·Claude Code 세션 기록이 없습니다", "No Codex or Claude Code sessions yet")
+                 : loc("Codex·Claude Code 기록 폴더를 찾지 못했습니다", "Couldn't find Codex or Claude Code log folders"))
                 .font(TCFont.bodyMedium).multilineTextAlignment(.center).padding(.top, 8)
             VStack(spacing: 2) {
                 if foldersFound {
-                    Text("새 세션을 시작하면 여기에 표시됩니다")
+                    Text(loc("새 세션을 시작하면 여기에 표시됩니다", "New sessions appear here when you start them"))
                     Text(Self.webNote)
                 } else {
                     Text("~/.codex/sessions · ~/.claude/projects").font(TCFont.meta.monospaced())
@@ -1233,7 +1259,7 @@ private struct EmptySessions: View {
             }
             .font(TCFont.meta).toneSecondary().padding(.top, 4)
             if !foldersFound {
-                SmallBorderedButton(title: "다시 확인", action: recheck).padding(.top, 8)
+                SmallBorderedButton(title: loc("다시 확인", "Check Again"), action: recheck).padding(.top, 8)
                 Text(Self.webNote).font(TCFont.meta).toneSecondary().padding(.top, 8)
             }
         }
@@ -1268,9 +1294,10 @@ struct SessionBlockView: View {
                 }
                 .buttonStyle(.plain)
                 .id(block.moreID)
-                .help("실행 중인 하위 에이전트는 모두 보여주고, 로그 대기 하위는 실행 중인 하위가 없을 때만 \(SessionListModel.collapsedChildren)개까지 보여줍니다")
+                .help(loc("실행 중인 하위 에이전트는 모두 보여주고, 로그 대기 하위는 실행 중인 하위가 없을 때만 \(SessionListModel.collapsedChildren)개까지 보여줍니다",
+                          "Shows every running subagent. Subagents waiting for log appear only when none are running, up to \(SessionListModel.collapsedChildren)"))
                 .accessibilityAddTraits(context.selectedID == block.moreID ? .isSelected : [])
-                .accessibilityLabel("하위 에이전트 \(block.moreCount)개 더 보기")
+                .accessibilityLabel(loc("하위 에이전트 \(block.moreCount)개 더 보기", "Show \(plural(block.moreCount, "more subagent"))"))
                 .accessibilityValue(block.moreText)
             }
         }
@@ -1401,15 +1428,17 @@ struct ContextLabel: View {
 private enum RowText {
     /// One line of help; a client waiting for a restart adds why its speed is missing.
     static func help(_ reading: TokenReading, _ context: RowContext) -> String {
-        "클릭: 상세 · 우클릭: 메뉴" + (context.restart.contains(reading.source) ? "\n\(reading.source.title)를 새로 실행하면 속도가 표시됩니다" : "")
+        loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu")
+            + (context.restart.contains(reading.source)
+               ? loc("\n\(reading.source.title)를 새로 실행하면 속도가 표시됩니다", "\nRestart \(reading.source.title) to show speed") : "")
     }
 
     /// The fold-in count stays in VoiceOver after "하위 N" left the second line.
-    static func children(_ count: Int) -> String? { count > 0 ? "하위 에이전트 \(count)개 기록" : nil }
+    static func children(_ count: Int) -> String? { count > 0 ? loc("하위 에이전트 \(count)개 기록", plural(count, "subagent record")) : nil }
 
     static func output(_ reading: TokenReading) -> String {
-        guard let output = reading.currentTurnOutputTokens else { return "이번 턴 누적 미확인" }
-        return "이번 턴 출력 \(output.formatted()) 토큰"
+        guard let output = reading.currentTurnOutputTokens else { return loc("이번 턴 누적 미확인", "Output this turn unknown") }
+        return loc("이번 턴 출력 \(output.formatted()) 토큰", "\(plural(output, "output token")) this turn")
     }
 }
 
@@ -1424,10 +1453,10 @@ struct LiveSessionRow: View {
 
     private var trailing: String {
         switch item.state {
-        case .waiting: return "활동 \(Format.age(SessionPresentation.liveAt(reading), now: now))"
-        case .input: return "입력 대기 \(Format.elapsed(reading.lastActivity, at: now))"
+        case .waiting: return loc("활동 ", "Active ") + Format.age(SessionPresentation.liveAt(reading), now: now)
+        case .input: return loc("입력 대기 ", "Waiting for input ") + Format.elapsed(reading.lastActivity, at: now)
         case .retrying: return reading.retry.map { SessionPresentation.retryText($0, now: now) } ?? item.state.title
-        default: return "턴 \(Format.elapsed(reading.currentTurnStartedAt, at: now))"
+        default: return loc("턴 ", "Turn ") + Format.elapsed(reading.currentTurnStartedAt, at: now)
         }
     }
 
@@ -1439,7 +1468,7 @@ struct LiveSessionRow: View {
             HStack(alignment: .firstTextBaseline, spacing: 0) {
                 StateChip(kind: StateGlyph.Kind(item.state) ?? .working, text: SessionPresentation.chipText(item.state, reading))
                     .padding(.leading, DashboardLayout.glyphX - 4)
-                Text(reading.project ?? "프로젝트 미확인").font(TCFont.title).lineLimit(1).truncationMode(.tail).layoutPriority(2)
+                Text(reading.project ?? loc("프로젝트 미확인", "Unknown project")).font(TCFont.title).lineLimit(1).truncationMode(.tail).layoutPriority(2)
                     .padding(.leading, 8)
                 if context.showsID(reading) {
                     Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize().padding(.leading, 6)
@@ -1485,8 +1514,8 @@ struct LiveSessionRow: View {
         var state: String?
         if item.state == .input { state = SessionPresentation.inputTitle(reading) }
         if item.state == .retrying { state = reading.retry.map { SessionPresentation.retryText($0, now: now, api: true) } }
-        return [state, SessionPresentation.effortLabel(reading).map { "추론 \($0)" },
-                SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { "턴 경과 \($0)" },
+        return [state, SessionPresentation.effortLabel(reading).map { loc("추론 \($0)", "Reasoning \($0)") },
+                SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { loc("턴 경과 \($0)", "Turn elapsed \($0)") },
                 RowText.output(reading), RowText.children(childCount), contextSlot?.spoken,
                 speed.known || item.state.expectsSpeed ? speed.spoken : nil].compactMap { $0 }.joined(separator: ", ")
     }
@@ -1510,10 +1539,11 @@ struct LiveSessionRow: View {
                 .lineLimit(1).fixedSize()
                 .contentTransition(.numericText())
                 .animation(reduceMotion ? nil : .easeOut(duration: 0.25), value: output)
-                .help(output == 0 ? "현재 턴에서 아직 기록된 출력이 없습니다" : "현재 턴에서 기록된 출력 토큰")
+                .help(output == 0 ? loc("현재 턴에서 아직 기록된 출력이 없습니다", "No output recorded in this turn yet")
+                      : loc("현재 턴에서 기록된 출력 토큰", "Output tokens recorded in this turn"))
         } else {
             Text("—").font(TCFont.metric).toneTertiary()
-                .help("현재 턴 시작 부분을 읽지 못해 이번 턴 누적량을 알 수 없습니다")
+                .help(loc("현재 턴 시작 부분을 읽지 못해 이번 턴 누적량을 알 수 없습니다", "Couldn't read the start of this turn, so its total is unknown"))
         }
     }
 }
@@ -1535,7 +1565,7 @@ private struct LastRecordLabel: View {
                 + Text(age ? " · " + SessionPresentation.recordAge(record.at, now: now) : "").font(TCFont.metaMono).foregroundColor(secondary))
                 .lineLimit(1).fixedSize()
         }
-        .help("이번 턴의 마지막 출력 기록 · 로그 기록 시점 기준")
+        .help(loc("이번 턴의 마지막 출력 기록 · 로그 기록 시점 기준", "Last output record this turn · based on log record times"))
     }
 }
 
@@ -1557,8 +1587,8 @@ struct IdleSessionRow: View {
     private var stateWord: String? {
         guard !followsGroup else { return nil }
         switch item.state {
-        case .interrupted: return "중단"
-        case .unfinished: return "종료 기록 없음"
+        case .interrupted: return loc("중단", "Interrupted")
+        case .unfinished: return loc("종료 기록 없음", "No end record")
         default: return nil
         }
     }
@@ -1578,14 +1608,14 @@ struct IdleSessionRow: View {
             .layoutPriority(1)
             Spacer(minLength: 8)
             if !followsGroup, let last = reading.lastOutputTokens {
-                (Text("마지막 턴 ").font(TCFont.micro) + Text(Format.compactTokens(last)).font(TCFont.metaMono))
+                (Text(loc("마지막 턴 ", "Last turn ")).font(TCFont.micro) + Text(Format.compactTokens(last)).font(TCFont.metaMono))
                     .toneSecondary().lineLimit(1).fixedSize().padding(.trailing, 10)
                     .help(SessionPresentation.lastTurnSummary(reading) ?? "")
             }
             // A fixed 64 pt age column, so "마지막 턴" lines up across rows; the group's state text may be wider.
             Text(trailing).font(TCFont.metaMono).toneSecondary().lineLimit(1)
                 .frame(minWidth: 64, maxWidth: followsGroup ? .infinity : 64, alignment: .trailing).fixedSize()
-                .help("\(state.title) · 마지막 활동 \(SessionPresentation.helpAge(reading.lastActivity, now: now))")
+                .help(state.title + loc(" · 마지막 활동 ", " · last activity ") + SessionPresentation.helpAge(reading.lastActivity, now: now))
         }
         .padding(.trailing, DashboardLayout.inset)
         .frame(height: item.height)
@@ -1596,7 +1626,7 @@ struct IdleSessionRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: state))
-        .accessibilityValue(["마지막 활동 \(age)", followsGroup ? trailing : nil, RowText.children(childCount), SessionPresentation.lastTurnSummary(reading),
+        .accessibilityValue([loc("마지막 활동 \(age)", "Last activity \(age)"), followsGroup ? trailing : nil, RowText.children(childCount), SessionPresentation.lastTurnSummary(reading),
                              SessionPresentation.speed(reading, now: now).spoken].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAction { context.tap(item.id) }
         .rowActions(reading)
@@ -1604,7 +1634,7 @@ struct IdleSessionRow: View {
 
     private func names(client: Bool, id: Bool, word: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(reading.project ?? "프로젝트 미확인").font(TCFont.body).lineLimit(1).truncationMode(.tail).layoutPriority(2)
+            Text(reading.project ?? loc("프로젝트 미확인", "Unknown project")).font(TCFont.body).lineLimit(1).truncationMode(.tail).layoutPriority(2)
             if client { Text(reading.source.title).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
             if word, let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).fixedSize() }
             if id { Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
@@ -1664,10 +1694,10 @@ struct ChildSessionRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: item.state))
-        .accessibilityValue([SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { "턴 경과 \($0)" },
-                             live ? RowText.output(reading) : "마지막 활동 \(Format.age(reading.lastActivity, now: now))",
+        .accessibilityValue([SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { loc("턴 경과 \($0)", "Turn elapsed \($0)") },
+                             live ? RowText.output(reading) : loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now),
                              SessionPresentation.context(reading, now: now)?.spoken, SessionPresentation.speed(reading, now: now).spoken,
-                             SessionPresentation.roleLabel(reading.agentRole).map { "역할 \($0)" }, "ID \(SessionPresentation.agentLabel(reading))"]
+                             SessionPresentation.roleLabel(reading.agentRole).map { loc("역할 \($0)", "Role \($0)") }, "ID \(SessionPresentation.agentLabel(reading))"]
                                 .compactMap { $0 }.joined(separator: ", "))
         .accessibilityAction { context.tap(item.id) }
         .rowActions(reading)
@@ -1713,21 +1743,21 @@ struct MeasurementRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             Image(systemName: "speedometer").font(TCFont.meta).toneSecondary().frame(width: 10)
                 .padding(.leading, DashboardLayout.glyphX)
-            Text(reading.project ?? "모델 실측").font(TCFont.body).lineLimit(1).fixedSize().padding(.leading, 6)
-            Text(reading.model ?? "모델 미확인").font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.middle).padding(.leading, 6)
+            Text(reading.project ?? loc("모델 실측", "Model measurement")).font(TCFont.body).lineLimit(1).fixedSize().padding(.leading, 6)
+            Text(reading.model ?? loc("모델 미확인", "Unknown model")).font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.middle).padding(.leading, 6)
             Spacer(minLength: 8)
             SpeedLabel(slot: speed)
-            Text("측정 \(age)").font(TCFont.metaMono).toneSecondary().fixedSize().padding(.leading, 10)
+            Text(loc("측정 \(age)", "Measured \(age)")).font(TCFont.metaMono).toneSecondary().fixedSize().padding(.leading, 10)
         }
         .padding(.trailing, DashboardLayout.inset)
         .frame(height: 28)
         .rowChrome(selected: selected)
         .id(reading.id)
-        .help("클릭: 상세 · 우클릭: 메뉴")
+        .help(loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu"))
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel("\(reading.project ?? "모델 실측"), \(reading.source.title) \(reading.model ?? "모델 미확인")")
-        .accessibilityValue("\(speed.spoken), 측정 \(age)")
+        .accessibilityLabel("\(reading.project ?? loc("모델 실측", "Model measurement")), \(reading.source.title) \(reading.model ?? loc("모델 미확인", "Unknown model"))")
+        .accessibilityValue(speed.spoken + loc(", 측정 ", ", measured ") + age)
         .rowActions(reading)
     }
 }
@@ -1752,7 +1782,7 @@ struct SessionDetail: View {
                         if let copy = detail.copy {
                             Button { copyToPasteboard(copy) } label: { Image(systemName: "doc.on.doc").font(TCFont.meta).frame(width: 18, height: 15) }
                                 .buttonStyle(HoverButtonStyle(ring: false))
-                                .help("복사").accessibilityLabel("\(detail.label) 복사")
+                                .help(loc("복사", "Copy")).accessibilityLabel(loc("\(detail.label) 복사", "Copy \(detail.label)"))
                         }
                         Spacer(minLength: 0)
                     }
@@ -1763,7 +1793,7 @@ struct SessionDetail: View {
         }
         .frame(height: SessionPresentation.detailHeight(item.reading, state: item.state), alignment: .top)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("세션 상세")
+        .accessibilityLabel(loc("세션 상세", "Session details"))
     }
 }
 
@@ -1782,10 +1812,10 @@ enum MemoryPressure: Equatable {
     }
     var title: String {
         switch self {
-        case .normal: return "정상"
-        case .warning: return "경고"
-        case .critical: return "위험"
-        case .unknown: return "미확인"
+        case .normal: return loc("정상", "Normal")
+        case .warning: return loc("경고", "Warning")
+        case .critical: return loc("위험", "Critical")
+        case .unknown: return loc("미확인", "Unknown")
         }
     }
     var color: Color {
@@ -1831,10 +1861,10 @@ struct SystemArea: View {
             .onHover { hovering = $0 }
             .padding(.top, 4)
         }
-        .help("활성 상태 보기에서 자세히 보기")
+        .help(loc("활성 상태 보기에서 자세히 보기", "Show details in Activity Monitor"))
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("시스템")
-        .accessibilityAction(named: "활성 상태 보기", open)
+        .accessibilityLabel(loc("시스템", "System"))
+        .accessibilityAction(named: loc("활성 상태 보기", "Open Activity Monitor"), open)
     }
 
     /// Before the first sample a redacted "00%" (about 32 pt), so the skeleton has the value's width.
@@ -1861,8 +1891,9 @@ struct SystemArea: View {
     private var cpu: some View {
         let value = hasSample ? system.cpuPercent : nil
         let peak = hasSample ? cpuHistory.suffix(30).max() : nil
-        return cell("CPU", help: "CPU 전체 코어 사용률" + (peak.map { String(format: "\n최근 30초 최고 %.0f%%", $0) } ?? ""),
-                    spoken: Format.percent(value) + (peak.map { String(format: ", 최근 30초 최고 %.0f퍼센트", $0) } ?? "")) {
+        return cell("CPU", help: loc("CPU 전체 코어 사용률", "CPU usage across all cores")
+                        + (peak.map { String(format: loc("\n최근 30초 최고 %.0f%%", "\nPeak %.0f%% in the last 30 s"), $0) } ?? ""),
+                    spoken: Format.percent(value) + (peak.map { String(format: loc(", 최근 30초 최고 %.0f퍼센트", ", peak %.0f percent in the last 30 s"), $0) } ?? "")) {
             percentText(value)
         } aux: {
             GeometryReader { geometry in
@@ -1880,8 +1911,10 @@ struct SystemArea: View {
     private var memory: some View {
         let value = ratio(system.memoryUsedBytes, system.memoryTotalBytes)
         let pressure = MemoryPressure(hasSample ? system.memoryPressure : nil)
-        return cell("메모리", help: "메모리: 앱·유선·압축 사용량 / 실제 메모리\n막대 색은 메모리 압력 기준",
-                    spoken: "\(Format.percent(value)), \(Format.capacity(system.memoryUsedBytes, system.memoryTotalBytes)), 메모리 압력 \(pressure.title)") {
+        return cell(loc("메모리", "Memory"), help: loc("메모리: 앱·유선·압축 사용량 / 실제 메모리\n막대 색은 메모리 압력 기준",
+                                              "Memory: app, wired and compressed / physical memory\nBar color follows memory pressure"),
+                    spoken: "\(Format.percent(value)), \(Format.capacity(system.memoryUsedBytes, system.memoryTotalBytes)), "
+                        + loc("메모리 압력 \(pressure.title)", "memory pressure: \(pressure.title)")) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 percentText(value).fixedSize()
                 if pressure == .warning || pressure == .critical {
@@ -1897,7 +1930,8 @@ struct SystemArea: View {
 
     private var disk: some View {
         let value = ratio(system.diskUsedBytes, system.diskTotalBytes)
-        return cell("저장 공간", help: "저장 공간: 홈 폴더가 있는 볼륨의 사용량 / 전체 용량",
+        return cell(loc("저장 공간", "Storage"), help: loc("저장 공간: 홈 폴더가 있는 볼륨의 사용량 / 전체 용량",
+                                                "Storage: used / total capacity of the volume with your home folder"),
                     spoken: "\(Format.percent(value)), \(Format.capacity(system.diskUsedBytes, system.diskTotalBytes))") {
             percentText(value)
         } aux: {
@@ -1912,7 +1946,7 @@ struct SystemArea: View {
             guard let value, !charging else { return TCColor.neutral }
             return value <= 10 ? TCColor.critical : (value <= 20 ? TCColor.warning : TCColor.neutral)
         }()
-        return cell("배터리", help: "배터리 잔량 · \(Format.power(system))", spoken: "\(Format.percent(value)), \(Format.power(system))") {
+        return cell(loc("배터리", "Battery"), help: loc("배터리 잔량", "Battery level") + " · \(Format.power(system))", spoken: "\(Format.percent(value)), \(Format.power(system))") {
             HStack(alignment: .firstTextBaseline, spacing: 2) {
                 percentText(value).fixedSize()
                 if charging { Image(systemName: "bolt.fill").font(TCFont.value).imageScale(.small).toneSecondary() }
@@ -1929,8 +1963,10 @@ struct SystemArea: View {
         // The redacted skeleton before the first sample has a rate's width.
         let shownDown = hasSample ? download : (number: "0.0", unit: "kB/s")
         let shownUp = hasSample ? up : (number: "0.0", unit: "kB/s")
-        return cell("네트워크", help: "네트워크: Wi-Fi·Ethernet 합산, VPN·루프백 제외\n\(system.localIPs.isEmpty ? "IPv4 주소 미확인" : "IPv4 " + system.localIPs.joined(separator: " · "))",
-                    spoken: "다운로드 \(download.number)\(download.unit), 업로드 \(upload)") {
+        return cell(loc("네트워크", "Network"),
+                    help: loc("네트워크: Wi-Fi·Ethernet 합산, VPN·루프백 제외", "Network: Wi-Fi and Ethernet combined, excluding VPN and loopback")
+                        + "\n" + (system.localIPs.isEmpty ? loc("IPv4 주소 미확인", "IPv4 address unknown") : "IPv4 " + system.localIPs.joined(separator: " · ")),
+                    spoken: loc("다운로드 \(download.number)\(download.unit), 업로드 \(upload)", "Download \(download.number)\(download.unit), upload \(upload)")) {
             Text("↓ " + shownDown.number).font(TCFont.value)
                 + Text(shownDown.unit.isEmpty ? "" : " " + shownDown.unit).font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
         } aux: {
@@ -1965,7 +2001,7 @@ struct DashboardFooter: View {
         Group {
             switch status.kind {
             case .loading:
-                item(Circle().fill(TCColor.idle).frame(width: 6, height: 6), primary: false).help("첫 수집을 준비하고 있습니다")
+                item(Circle().fill(TCColor.idle).frame(width: 6, height: 6), primary: false).help(loc("첫 수집을 준비하고 있습니다", "Preparing the first sample"))
             case .aiDelay, .systemDelay:
                 item(Circle().fill(TCColor.warning).frame(width: 6, height: 6), primary: true).help(help)
             case .notice:
@@ -1978,12 +2014,12 @@ struct DashboardFooter: View {
                 }
                 .padding(.leading, -5)
                 .help(notice?.help ?? help)
-                .accessibilityHint("설정을 엽니다")
+                .accessibilityHint(loc("설정을 엽니다", "Opens Settings"))
             case .live:
                 Button(action: open) { item(Circle().fill(TCColor.activity).frame(width: 6, height: 6), primary: false).padding(.horizontal, 5) }
                     .padding(.leading, -5)
                     .help(help)
-                    .accessibilityHint("설정을 엽니다")
+                    .accessibilityHint(loc("설정을 엽니다", "Opens Settings"))
             }
         }
     }
@@ -2011,7 +2047,7 @@ struct UpdateFooterItem: View {
             row(detail: false)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("업데이트")
+        .accessibilityLabel(loc("업데이트", "Update"))
     }
 
     private func row(detail: Bool) -> some View {
@@ -2038,18 +2074,18 @@ struct UpdateFooterItem: View {
     @ViewBuilder private var buttons: some View {
         switch notice.kind {
         case .available:
-            textButton("업데이트", help: notice.help) { action(.install) }
-            close("이 버전 알림 숨기기")
+            textButton(loc("업데이트", "Update"), help: notice.help) { action(.install) }
+            close(loc("이 버전 알림 숨기기", "Hide notice for this version"))
         case .failed(let retryable):
-            if retryable { textButton("다시 시도", help: "릴리스 정보를 다시 확인하고 내려받습니다") { action(.install) } }
+            if retryable { textButton(loc("다시 시도", "Try Again"), help: loc("릴리스 정보를 다시 확인하고 내려받습니다", "Checks the release again and downloads it")) { action(.install) } }
             Button { action(.openReleasePage) } label: {
                 Image(systemName: "arrow.up.forward.square").font(TCFont.meta).frame(width: 18, height: 18)
             }
             .buttonStyle(HoverButtonStyle(circle: true))
-            .help("릴리스 페이지 열기").accessibilityLabel("릴리스 페이지 열기")
-            close("이 버전 알림 숨기기")
+            .help(loc("릴리스 페이지 열기", "Open release page")).accessibilityLabel(loc("릴리스 페이지 열기", "Open release page"))
+            close(loc("이 버전 알림 숨기기", "Hide notice for this version"))
         case .updated:
-            close("알림 닫기")
+            close(loc("알림 닫기", "Close notice"))
         case .downloading, .installing:
             EmptyView()
         }
