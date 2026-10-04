@@ -117,7 +117,10 @@ enum SnapshotFixtures {
         if !fixture.sampled { system.isCharging = nil }
         model.system = system
         model.hasSample = fixture.sampled
-        let history: [Double] = (0..<30).map { index in 10 + 6 * sin(Double(index) / 3) + Double(index % 4) }
+        let history: [Double] = (0..<30).map { index in
+            let wave: Double = sin(Double(index) / 3)
+            return 10 + 6 * wave + Double(index % 4)
+        }
         model.cpuHistory = fixture.sampled ? history : []
         model.telemetryStatus = fixture.telemetry.status
         model.telemetryState = fixture.telemetry

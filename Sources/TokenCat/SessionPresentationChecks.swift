@@ -238,7 +238,8 @@ func runSessionPresentationChecks() -> [String] {
           "running, waiting, measured, then recent idle; stable when activity changes")
     check(make(input + [question]).blocks.first?.id == "claude:q", "a turn waiting for input goes first")
     check(first.hiddenGroups == 6 && first.hiddenChildren == 0 && first.counts.groups == 12, "collapsed list fills to six rows")
-    check(first.contentHeight == 44 * 3 + 28 * 3 + 5, "quiet live rows fold to 44pt; heights stay deterministic")
+    let quietHeight: CGFloat = 44 * 3 + 28 * 3 + 5
+    check(first.contentHeight == quietHeight, "quiet live rows fold to 44pt; heights stay deterministic")
     // Line 3 holds the current turn's last record, context or a measured speed; anything else stays at 44 pt.
     var flowing = alpha
     flowing.currentTurnStartedAt = at(-60)
