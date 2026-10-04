@@ -89,15 +89,18 @@ struct FlowBars: Shape {
     var values: [Int]
     var scale: Double
     var mask: [Bool]? = nil
+    /// Narrow strips raise these so a single record reads as a bar rather than a speck.
+    var minHeight: CGFloat = 2
+    var minWidth: CGFloat = 1
 
     func path(in rect: CGRect) -> Path {
         var path = Path()
         guard !values.isEmpty, scale > 0, rect.width > 0, rect.height > 0 else { return path }
         let slot = rect.width / CGFloat(values.count)
-        let width = max(1, slot * 0.68)
+        let width = max(minWidth, slot * 0.68)
         for (index, value) in values.enumerated() where value > 0 {
             if let mask, !(mask.indices.contains(index) && mask[index]) { continue }
-            let height = min(rect.height, max(2, rect.height * CGFloat(Double(value) / scale)))
+            let height = min(rect.height, max(minHeight, rect.height * CGFloat(Double(value) / scale)))
             let x = ((rect.minX + slot * CGFloat(index) + (slot - width) / 2) * 2).rounded() / 2
             path.addRoundedRect(in: CGRect(x: x, y: rect.maxY - height, width: width, height: height),
                                 cornerSize: CGSize(width: 1, height: 1))

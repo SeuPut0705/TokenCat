@@ -61,7 +61,7 @@ struct TokenSpeedMeasurement: Codable {
         if (kind == .serverGeneration || kind == .serverAggregate), let interval = serverTokenIntervalMs {
             lines.append(String(format: "서버 실측 토큰 간 시간 %.3f ms", interval))
             if kind == .serverAggregate, let count = serverTokenIntervalSampleCount { lines.append("모델 지표 평균 · 실측 \(count)회") }
-            if let start = metricWindowStartedAt { lines.append("계측 구간 시작 \(start.formatted(date: .numeric, time: .standard))") }
+            if let start = metricWindowStartedAt { lines.append("실측 구간 시작 \(start.formatted(date: .numeric, time: .standard))") }
             if let metric = serverTokenIntervalMetric { lines.append(metric) }
         } else if kind == .requestProcessing, let output = outputTokens, let duration = requestDurationMs {
             lines.append(String(format: "요청 실측: %d 출력 토큰 / %.0f ms", output, duration))
@@ -131,7 +131,7 @@ enum TokenSpeed {
                     project: measurement.sessionID == nil ? "모델 실측" : "요청 실측",
                     model: measurement.model,
                     lastActivity: measurement.at, activityState: .complete,
-                    status: measurement.sessionID == nil ? "세션 식별자가 없는 모델 계측" : "세션 로그와 정확한 식별자 연결 대기")
+                    status: measurement.sessionID == nil ? "세션 식별자가 없는 모델 실측" : "세션 로그와 정확한 식별자 연결 대기")
                 reading.speedMeasurement = speed
                 result.append(reading)
             }

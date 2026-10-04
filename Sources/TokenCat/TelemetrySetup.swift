@@ -8,6 +8,12 @@ struct TelemetrySetupResult {
     var message: String
 }
 
+/// What the UI says about a failed automatic connection, without reading message text.
+enum TelemetrySetupFailure: Equatable {
+    case conflict, invalid, unavailable
+    case writeFailed(restored: Bool)
+}
+
 enum TelemetrySetupError: LocalizedError {
     case conflict(String)
     case invalid(String)
@@ -19,6 +25,16 @@ enum TelemetrySetupError: LocalizedError {
         case .writeFailed(let restored):
             return restored ? "설정 저장에 실패하여 원래 설정으로 복구했습니다."
                 : "설정 저장 중 일부 파일이 변경됐습니다. 사용자 변경을 보존했으며 백업에서 개별 확인이 필요합니다."
+        }
+    }
+}
+
+extension TelemetrySetupError {
+    var failure: TelemetrySetupFailure {
+        switch self {
+        case .conflict: return .conflict
+        case .invalid: return .invalid
+        case .writeFailed(let restored): return .writeFailed(restored: restored)
         }
     }
 }
@@ -71,10 +87,10 @@ final class TelemetrySetup {
                                  replacement: claudeAfter, permissions: try permissions(claudeURL))]
         let changes = candidates.filter { $0.original != $0.replacement }
         guard !changes.isEmpty else {
-            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "로컬 계측 연결 설정이 이미 적용돼 있습니다.")
+            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "로컬 실측 연결 설정이 이미 적용돼 있습니다.")
         }
         guard !files.fileExists(atPath: activeManifest.path) else {
-            throw TelemetrySetupError.conflict("연결 이후 계측 설정이 변경됐습니다. 기존 백업을 보존하기 위해 다시 덮어쓰지 않았습니다.")
+            throw TelemetrySetupError.conflict("연결 이후 실측 설정이 변경됐습니다. 기존 백업을 보존하기 위해 다시 덮어쓰지 않았습니다.")
         }
 
         let backupName = "\(Int(Date().timeIntervalSince1970 * 1_000))-\(UUID().uuidString)"
@@ -104,23 +120,25 @@ final class TelemetrySetup {
             try atomicWrite(manifestData, to: activeManifest, permissions: 0o600)
         } catch {
             let restored = rollback(written)
+            // A config changed by another program mid-write is a conflict once the rollback succeeded.
+            if restored, let setupError = error as? TelemetrySetupError, case .conflict = setupError { throw setupError }
             throw TelemetrySetupError.writeFailed(restored: restored)
         }
         return TelemetrySetupResult(changedFiles: changes.map { $0.url.path }, restartRequired: changes.map(\.source),
-            message: "로컬 계측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다.")
+            message: "로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다.")
     }
 
     func disconnect() throws -> TelemetrySetupResult {
         Self.mutationLock.lock()
         defer { Self.mutationLock.unlock() }
         guard let data = try read(activeManifest) else {
-            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "복구할 TokenCat 계측 연결이 없습니다.")
+            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "복구할 TokenCat 실측 연결이 없습니다.")
         }
         guard let manifest = try? JSONDecoder().decode(Manifest.self, from: data), manifest.version == 1,
               !manifest.entries.isEmpty, Set(manifest.entries.map(\.source)).count == manifest.entries.count,
               manifest.entries.allSatisfy({ (0...0o7777).contains($0.permissions) }),
               manifest.backupDirectory.range(of: #"^[0-9]+-[A-Fa-f0-9-]+$"#, options: .regularExpression) != nil else {
-            throw TelemetrySetupError.invalid("계측 백업 정보가 올바르지 않아 설정을 변경하지 않았습니다.")
+            throw TelemetrySetupError.invalid("실측 백업 정보가 올바르지 않아 설정을 변경하지 않았습니다.")
         }
         let directory = support.appendingPathComponent("telemetry-backups/\(manifest.backupDirectory)", isDirectory: true)
         var restored: [(entry: Manifest.Entry, current: Data, original: Data?)] = []
@@ -131,7 +149,7 @@ final class TelemetrySetup {
             }
             let original = entry.existed ? try read(backupURL(entry.source, directory: directory)) : nil
             guard !entry.existed || original.map(hash) == entry.originalSHA256 else {
-                throw TelemetrySetupError.invalid("원본 계측 백업이 없거나 변경돼 설정을 복구하지 않았습니다.")
+                throw TelemetrySetupError.invalid("원본 실측 백업이 없거나 변경돼 설정을 복구하지 않았습니다.")
             }
             restored.append((entry, current, original))
         }
@@ -157,7 +175,7 @@ final class TelemetrySetup {
             throw TelemetrySetupError.writeFailed(restored: rolledBack)
         }
         return TelemetrySetupResult(changedFiles: restored.map { configURL($0.entry.source).path },
-            restartRequired: restored.map { $0.entry.source }, message: "TokenCat 계측 연결 전의 설정으로 복구했습니다. 클라이언트 재시작 후 적용됩니다.")
+            restartRequired: restored.map { $0.entry.source }, message: "TokenCat 실측 연결 전의 설정으로 복구했습니다. 클라이언트 재시작 후 적용됩니다.")
     }
 
     private func configURL(_ source: TokenSource) -> URL {
@@ -250,7 +268,7 @@ final class TelemetrySetup {
         }
         for key in ["OTEL_LOGS_EXPORTER", "OTEL_TRACES_EXPORTER"] {
             if let value = env[key], !["none", "otlp", ""].contains(value as? String ?? "invalid") {
-                throw TelemetrySetupError.conflict("Claude Code에 기존 계측 exporter가 있어 덮어쓰지 않았습니다.")
+                throw TelemetrySetupError.conflict("Claude Code에 기존 실측 exporter가 있어 덮어쓰지 않았습니다.")
             }
             let signal = key == "OTEL_LOGS_EXPORTER" ? "LOGS" : "TRACES"
             if env[key] as? String == "otlp", env["OTEL_EXPORTER_OTLP_\(signal)_ENDPOINT"] == nil,
@@ -335,7 +353,7 @@ final class TelemetrySetup {
                 }
                 after = desired
             } else {
-                guard ["true", "false"].contains(value) else { throw TelemetrySetupError.invalid("Codex 계측 개인정보 옵션이 올바르지 않습니다.") }
+                guard ["true", "false"].contains(value) else { throw TelemetrySetupError.invalid("Codex 실측 개인정보 옵션이 올바르지 않습니다.") }
                 after = "false"
             }
             let prefix = String(line[...equals])

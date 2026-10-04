@@ -24,6 +24,7 @@ final class SystemSampler {
         var snapshot = SystemSnapshot()
         snapshot.cpuPercent = sampleCPU()
         sampleMemory(into: &snapshot)
+        snapshot.memoryPressure = Self.memoryPressure()
         sampleDisk(into: &snapshot)
         sampleNetwork(into: &snapshot)
         sampleBattery(into: &snapshot)
@@ -76,6 +77,15 @@ final class SystemSampler {
         let purgeablePages = UInt64(info.purgeable_count)
         let usedPages = occupiedPages > purgeablePages ? occupiedPages - purgeablePages : 0
         snapshot.memoryUsedBytes = min(total, usedPages * UInt64(pageSize))
+    }
+
+    /// The kernel's own pressure level (1 normal, 2 warning, 4 critical); anything else is unknown.
+    static func memoryPressure() -> Int? {
+        var level: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &size, nil, 0) == 0,
+              size == MemoryLayout<Int32>.size, [1, 2, 4].contains(level) else { return nil }
+        return Int(level)
     }
 
     private func sampleDisk(into snapshot: inout SystemSnapshot) {

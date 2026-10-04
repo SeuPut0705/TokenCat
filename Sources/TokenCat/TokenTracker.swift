@@ -56,7 +56,18 @@ final class TokenTracker {
             reading.parentSessionID = parser.parentSessionID
             reading.agentID = parser.agentID
             reading.project = parser.project
+            reading.projectPath = parser.projectPath
             reading.isSubagent = parser.isSubagent
+            reading.agentRole = file.sidecarRole ?? parser.agentRole
+            reading.effort = parser.effort
+            reading.lastTurnDurationSeconds = parser.lastTurnDuration
+            if let tool = parser.runningTool {
+                reading.toolName = tool.name
+                reading.toolCategory = tool.name.map(TokenLogParser.category) ?? .other
+            }
+            reading.retry = parser.retry
+            reading.rateLimit = parser.rateLimit
+            reading.context = parser.context
             reading.model = parser.model ?? completion?.model
             reading.measurementModel = completion?.model
             reading.lastActivity = parser.lastActivity
@@ -74,14 +85,9 @@ final class TokenTracker {
             }
             reading.sampledAt = now
             reading.sessionCount = 1
-            reading.turnAverageTokensPerSecond = completion?.rate
-            reading.lastOutputTokens = completion?.output ?? parser.latestOutput
-            reading.quality = completion?.quality ?? "턴 시간 미확인 · 속도 대기"
-            if running {
-                reading.status = completion == nil ? "최근 활동 · 속도 기록 대기" : "최근 활동 · 이전 완료값"
-            } else {
-                reading.status = completion == nil ? "출력 기록 · 턴 시간 미확인" : "완료된 턴"
-            }
+            // Output of the last fully observed completed turn; its duration is a separate field.
+            reading.lastOutputTokens = completion?.output
+            reading.status = running ? "진행 중" : completion == nil ? "출력 기록" : "완료된 턴"
             return reading
         }.sorted {
             if $0.active != $1.active { return $0.active }
@@ -176,10 +182,23 @@ private final class TokenFileCursor {
     private var pending = Data()
     private var droppingLine = false
     private let maximumLineBytes = 1_048_576
+    /// Claude subagent type from `<log>.meta.json`; only `agentType` is kept.
+    private(set) var sidecarRole: String?
 
     init(url: URL, source: TokenSource) {
         self.url = url
         parser = Self.parser(for: url, source: source)
+    }
+
+    /// The sidecar may be written after the log, so it is retried while the log grows.
+    /// Its other keys (task description, worktree path) are never kept.
+    private func readSidecar() {
+        guard sidecarRole == nil, parser.source == .claude, parser.isSubagent else { return }
+        let sidecar = url.deletingPathExtension().appendingPathExtension("meta.json")
+        guard let size = (try? FileManager.default.attributesOfItem(atPath: sidecar.path))?[.size] as? NSNumber,
+              size.intValue <= 16_384, let data = try? Data(contentsOf: sidecar),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return }
+        sidecarRole = TokenLogParser.label(object["agentType"])
     }
 
     /// Codex names each rollout after its own thread; a forked log also carries the parent's
@@ -205,6 +224,7 @@ private final class TokenFileCursor {
         }
         // Unchanged logs are polled every tick; avoid reopening them.
         if initialized && size == offset { return }
+        readSidecar()
         guard let handle = try? FileHandle(forReadingFrom: url) else { return }
         defer { try? handle.close() }
         if !initialized {
@@ -393,19 +413,19 @@ private final class TokenFileCursor {
     }
 }
 
+/// A fully observed completed turn. Output and the client-reported duration are never divided.
 struct TokenTurnCompletion {
     let output: Int
-    let seconds: TimeInterval
+    let durationSeconds: TimeInterval?
     let finishedAt: Date
     let model: String?
-    let quality: String
-    var rate: Double { Double(output) / seconds }
 }
 
 fileprivate struct CodexMetadataCheckpoint {
     let turnID: String?
     let model: String?
     let cwd: String?
+    var effort: String? = nil
     let opensTurn: Bool?
     let timestamp: Date?
     let isInherited: Bool
@@ -421,8 +441,19 @@ final class TokenLogParser {
     private(set) var parentSessionID: String?
     private(set) var agentID: String?
     private(set) var project: String?
+    private(set) var projectPath: String?
     private(set) var isSubagent: Bool
     private(set) var model: String?
+    private(set) var effort: String?
+    private(set) var agentRole: String?
+    /// Client-reported duration of the last completed turn (Codex duration_ms, Claude durationMs).
+    private(set) var lastTurnDuration: TimeInterval?
+    private(set) var retry: TokenRetryState?
+    private(set) var rateLimit: TokenRateLimit?
+    private var contextUsage: TokenContextUsage?
+    private var compactedAt: Date?
+    /// Codex: an own (non-inherited) turn has been observed, so usage snapshots are this thread's.
+    private var ownTurnSeen = false
     private(set) var lastActivity: Date?
     /// Newest record timestamp of any kind. Liveness only; content state uses lastActivity.
     private(set) var lastLogAt: Date?
@@ -444,12 +475,16 @@ final class TokenLogParser {
     private var ignoringInheritedTurn = false
     private var ignoredTurnID: String?
     private var inheritedTurnClosed = false
-    private var pendingContext: (id: String?, model: String, cwd: String?)?
+    private var pendingContext: (id: String?, model: String, cwd: String?, effort: String?)?
     private var metadataTurnOpen = false
     private var metadataTurnID: String?
     private var activityStartedAt: Date?
     private var observedState: TokenActivityState = .idle
-    private var pendingTools = Set<String>()
+    /// Outstanding tool calls in call order, id → name. Inputs are never read.
+    private var pendingTools: [(id: String, name: String?)] = []
+    /// Tools that wait for the person rather than run: Claude's question and plan approval, and
+    /// Codex's blocking request_user_input (plan mode). request_user_input_async is non-blocking.
+    private static let inputTools: Set<String> = ["AskUserQuestion", "ExitPlanMode", "request_user_input"]
     /// Codex writes token_usage_record right after each response, before the tool
     /// output that precedes the matching token_count. Once present it is authoritative.
     private var usageRecords = false
@@ -511,6 +546,10 @@ final class TokenLogParser {
                 let spawn = (subagent as? [String: Any])?["thread_spawn"] as? [String: Any]
                 let root = (payload["session_id"] as? String).flatMap { $0 != id ? $0 : nil }
                 parentSessionID = root ?? spawn?["parent_thread_id"] as? String ?? payload["parent_thread_id"] as? String
+                // Role, then nickname; automatic review threads carry only `subagent.other`.
+                agentRole = [spawn?["agent_role"], payload["agent_role"], payload["agent_nickname"],
+                             spawn?["agent_nickname"], (subagent as? [String: Any])?["other"]]
+                    .lazy.compactMap { Self.label($0) }.first
             }
         } else if source == .claude {
             sessionID = record["sessionId"] as? String ?? sessionID
@@ -518,7 +557,67 @@ final class TokenLogParser {
             cwd = record["cwd"] as? String
             if isSubagent { parentSessionID = sessionID }
         }
-        if let cwd, !cwd.isEmpty { project = URL(fileURLWithPath: cwd).lastPathComponent }
+        setProject(cwd)
+    }
+
+    private func setProject(_ cwd: String?) {
+        guard let cwd, !cwd.isEmpty else { return }
+        project = URL(fileURLWithPath: cwd).lastPathComponent
+        projectPath = cwd
+    }
+
+    /// A short client-defined name (role, nickname, effort); anything else is dropped.
+    static func label(_ value: Any?) -> String? {
+        guard let text = value as? String, (1...48).contains(text.count),
+              text.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || " _.:-".unicodeScalars.contains($0) })
+        else { return nil }
+        return text
+    }
+
+    /// Category from the tool name only. Names verified in local logs: Claude Bash/Read/Write/
+    /// Edit/WebFetch/WebSearch/Agent/Workflow/AskUserQuestion/mcp__*; Codex exec/js/spawn_agent/
+    /// wait_agent/send_message/followup_task/list_agents/request_user_input_async.
+    static func category(_ name: String) -> ToolCategory {
+        if name.hasPrefix("mcp__") { return .mcp }
+        switch name {
+        case "Bash", "BashOutput", "exec", "exec_command", "shell", "local_shell", "js", "unified_exec": return .command
+        case "Read", "Write", "Edit", "MultiEdit", "NotebookEdit", "Glob", "Grep", "apply_patch": return .file
+        case "WebFetch", "WebSearch", "web_search", "web_fetch": return .web
+        case "Task", "Agent", "Workflow", "SendMessage", "ListAgents", "spawn_agent", "wait_agent",
+             "send_message", "followup_task", "list_agents", "close_agent": return .agent
+        case "ListMcpResourcesTool", "ReadMcpResourceTool": return .mcp
+        case "AskUserQuestion", "ExitPlanMode", "request_user_input", "request_user_input_async": return .question
+        default: return .other
+        }
+    }
+
+    /// The outstanding tool that holds an open turn: one waiting for the person, else the newest.
+    var runningTool: (id: String, name: String?)? {
+        guard turnOpen else { return nil }
+        return pendingTools.last { Self.inputTools.contains($0.name ?? "") } ?? pendingTools.last
+    }
+
+    private var waitsForInput: Bool {
+        turnOpen && pendingTools.contains { Self.inputTools.contains($0.name ?? "") }
+    }
+
+    var context: TokenContextUsage? {
+        guard var usage = contextUsage else { return nil }
+        usage.compactedAt = compactedAt
+        return usage
+    }
+
+    private func addPendingTool(_ id: String, name: Any?) {
+        pendingTools.removeAll { $0.id == id }
+        pendingTools.append((id, name as? String))
+        if pendingTools.count > 256 { pendingTools.removeFirst(pendingTools.count - 256) }
+    }
+
+    @discardableResult
+    private func removePendingTool(_ id: String) -> Bool {
+        guard let index = pendingTools.firstIndex(where: { $0.id == id }) else { return false }
+        pendingTools.remove(at: index)
+        return true
     }
 
     private var turnOpen: Bool { (startedAt != nil || metadataTurnOpen) && !softClosed }
@@ -526,7 +625,10 @@ final class TokenLogParser {
 
     /// How long an open turn may stay silent and still count as running. Codex tools yield
     /// within 30 s; Claude tools (Bash, questions) can run for minutes; model waits reach ~8 min.
+    /// A question or plan approval waits for the person, so it never goes stale; a client
+    /// that was killed with the question open is capped at 24 hours.
     private var liveHorizon: TimeInterval {
+        if waitsForInput { return 86_400 }
         if pendingTools.isEmpty { return 600 }
         return source == .claude ? 900 : 120
     }
@@ -565,6 +667,7 @@ final class TokenLogParser {
 
     func activityState(at now: Date) -> TokenActivityState {
         guard turnOpen else { return observedState }
+        if waitsForInput { return isActive(at: now) ? .input : .unfinished }
         if isActive(at: now) { return observedState }
         guard let liveAt, now.timeIntervalSince(liveAt) <= 1_800 else { return .unfinished }
         return .stale
@@ -586,8 +689,8 @@ final class TokenLogParser {
         }
         if record["type"] as? String == "turn_context", let model = payload["model"] as? String {
             return CodexMetadataCheckpoint(turnID: id, model: model, cwd: payload["cwd"] as? String,
-                opensTurn: nil, timestamp: Self.date(record["timestamp"]), isInherited: false,
-                actualStart: nil, activityState: .idle)
+                effort: Self.codexEffort(payload), opensTurn: nil, timestamp: Self.date(record["timestamp"]),
+                isInherited: false, actualStart: nil, activityState: .idle)
         }
         guard record["type"] as? String == "event_msg",
               let event = payload["type"] as? String,
@@ -614,6 +717,7 @@ final class TokenLogParser {
             inheritedTurnClosed = lifecycle.opensTurn == false
             pendingContext = nil
             model = nil
+            effort = nil
             cumulativeOutput = nil
             metadataTurnOpen = false
             metadataTurnID = nil
@@ -623,8 +727,10 @@ final class TokenLogParser {
         }
         if let context {
             model = context.model ?? model
-            if let cwd = context.cwd { project = URL(fileURLWithPath: cwd).lastPathComponent }
+            effort = context.effort ?? effort
+            setProject(context.cwd)
         }
+        ownTurnSeen = true
         metadataTurnOpen = lifecycle.opensTurn == true
         metadataTurnID = metadataTurnOpen ? lifecycle.turnID : nil
         activityStartedAt = metadataTurnOpen ? opener.actualStart : nil
@@ -648,6 +754,7 @@ final class TokenLogParser {
         observedState = .working
         lastOutputAt = nil
         lastOutputDelta = nil
+        retry = nil
         pendingTools.removeAll(keepingCapacity: true)
         turnID = id
         turnUsage = nil
@@ -659,24 +766,23 @@ final class TokenLogParser {
         messages.removeAll(keepingCapacity: true)
     }
 
-    private func finish(at date: Date?, duration: TimeInterval?) {
-        let seconds = duration ?? date.flatMap { finished in startedAt.map { finished.timeIntervalSince($0) } }
-        let total = turnUsage.flatMap { $0.turnID == turnID ? $0.output : nil } ?? output
-        if startedAt != nil, accurate, hasUsage, total > 0,
-           let seconds, seconds.isFinite, seconds > 0, let date {
-            completion = TokenTurnCompletion(output: total, seconds: seconds, finishedAt: date,
-                model: model, quality: "완료된 턴 평균 · 도구·대기 포함")
+    /// The open turn's whole output when it is known: Codex's recorded turn total, or every
+    /// response of a turn observed from its start.
+    private var observedTurnOutput: Int? {
+        let id = turnID ?? metadataTurnID
+        if let turnUsage, turnUsage.turnID == id { return turnUsage.output }
+        return startedAt != nil && accurate && hasUsage ? output : nil
+    }
+
+    /// Records the last completed turn. An unknown output clears it rather than leaving an
+    /// earlier turn's value under the "last completed turn" label.
+    private func recordCompletion(at date: Date?, duration: TimeInterval?) {
+        lastTurnDuration = duration.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        if let total = observedTurnOutput, total > 0, let finished = date ?? lastLogAt {
+            completion = TokenTurnCompletion(output: total, durationSeconds: lastTurnDuration,
+                                             finishedAt: finished, model: model)
             latestOutput = total
-        }
-        startedAt = nil
-        turnID = nil
-        turnUsage = nil
-        softClosed = false
-        metadataTurnOpen = false
-        metadataTurnID = nil
-        activityStartedAt = nil
-        observedState = .complete
-        pendingTools.removeAll(keepingCapacity: true)
+        } else { completion = nil }
     }
 
     private func consumeCodex(_ record: [String: Any]) {
@@ -691,12 +797,19 @@ final class TokenLogParser {
             if let contextModel = payload["model"] as? String {
                 if !ignoringInheritedTurn {
                     model = contextModel
-                    if let cwd = payload["cwd"] as? String { project = URL(fileURLWithPath: cwd).lastPathComponent }
+                    effort = Self.codexEffort(payload) ?? effort
+                    setProject(payload["cwd"] as? String)
                 }
                 else if inheritedTurnClosed {
-                    pendingContext = (payload["turn_id"] as? String, contextModel, payload["cwd"] as? String)
+                    pendingContext = (payload["turn_id"] as? String, contextModel, payload["cwd"] as? String,
+                                      Self.codexEffort(payload))
                 }
             }
+            return
+        }
+        // A compaction finished at this time. Forked logs replay the parent's before any own turn.
+        if type == "compacted" {
+            if ownUsageSnapshot, let date = Self.date(record["timestamp"]) { compactedAt = max(compactedAt ?? date, date) }
             return
         }
         if type == "response_item", !ignoringInheritedTurn,
@@ -705,10 +818,10 @@ final class TokenLogParser {
             let phase: TokenActivityState?
             switch itemType {
             case "function_call", "custom_tool_call":
-                if let id = payload["call_id"] as? String { pendingTools.insert(id) }
+                if let id = payload["call_id"] as? String { addPendingTool(id, name: payload["name"]) }
                 phase = .tool
             case "function_call_output", "custom_tool_call_output":
-                if let id = payload["call_id"] as? String { pendingTools.remove(id) }
+                if let id = payload["call_id"] as? String { removePendingTool(id) }
                 phase = pendingTools.isEmpty ? .working : .tool
             case "reasoning": phase = pendingTools.isEmpty ? .working : .tool
             case "agent_message": phase = pendingTools.isEmpty ? .output : .tool
@@ -737,6 +850,7 @@ final class TokenLogParser {
                     inheritedTurnClosed = false
                     pendingContext = nil
                     model = nil
+                    effort = nil
                     cumulativeOutput = nil
                 }
                 return
@@ -748,14 +862,17 @@ final class TokenLogParser {
             inheritedTurnClosed = false
             if let pendingContext, pendingContext.id == nil || pendingContext.id == id {
                 model = pendingContext.model
-                if let cwd = pendingContext.cwd { project = URL(fileURLWithPath: cwd).lastPathComponent }
+                effort = pendingContext.effort ?? effort
+                setProject(pendingContext.cwd)
             }
             pendingContext = nil
             begin(id: id, date: start)
+            ownTurnSeen = true
             metadataTurnOpen = true
             metadataTurnID = id
             lastActivity = date ?? lastActivity
         case "token_count":
+            if ownUsageSnapshot, let date { consumeCodexSnapshot(payload, date: date) }
             // The matching token_usage_record already counted this response.
             if ignoringInheritedTurn || usageRecords { return }
             guard let info = payload["info"] as? [String: Any] else { return }
@@ -787,20 +904,10 @@ final class TokenLogParser {
                 inheritedTurnClosed = true
                 return
             }
-            if metadataTurnOpen && id == metadataTurnID {
-                metadataTurnOpen = false
-                metadataTurnID = nil
-                activityStartedAt = nil
-                observedState = .complete
-                pendingTools.removeAll(keepingCapacity: true)
-                lastActivity = date ?? lastActivity
-            }
-            guard turnID == id, startedAt != nil else { return }
-            let milliseconds = Self.number(payload["duration_ms"])
-            let duration = milliseconds.flatMap { $0 > 0 ? $0 / 1_000 : nil }
-            let finished = Self.date(payload["completed_at"]) ?? date
-            finish(at: finished, duration: duration)
-            lastActivity = date ?? lastActivity
+            // Only the open turn's own completion reports this thread's duration.
+            guard (metadataTurnOpen && id == metadataTurnID) || (startedAt != nil && turnID == id) else { return }
+            let duration = Self.number(payload["duration_ms"], max: Self.maxDurationMs).map { $0 / 1_000 }
+            closeTurn(.complete, at: date, duration: duration, finishedAt: Self.date(payload["completed_at"]))
             if let id {
                 closedTurnIDs.insert(id)
                 if closedTurnIDs.count > 256 { closedTurnIDs = [id] }
@@ -819,6 +926,40 @@ final class TokenLogParser {
             lastActivity = date ?? lastActivity
         default: break
         }
+    }
+
+    /// Codex usage snapshots belong to this thread only after its own turn: forked logs
+    /// replay the parent's records (with the child's write time) before the first own turn.
+    private var ownUsageSnapshot: Bool { source == .codex && ownTurnSeen && !ignoringInheritedTurn }
+
+    /// Account usage limit and context fill as the client wrote them; newest record wins.
+    private func consumeCodexSnapshot(_ payload: [String: Any], date: Date) {
+        // Accounts report one or two windows (e.g. 5-hour primary, weekly secondary); the most
+        // constrained one is kept, labelled by its own window length.
+        if let limits = payload["rate_limits"] as? [String: Any],
+           (limits["limit_id"] as? String).map({ $0 == "codex" }) ?? true,
+           rateLimit.map({ date >= $0.recordedAt }) ?? true,
+           let window = ["primary", "secondary"].compactMap({ key -> TokenRateLimit? in
+               guard let limit = limits[key] as? [String: Any], let used = Self.number(limit["used_percent"]),
+                     used >= 0, used <= 1_000 else { return nil }
+               return TokenRateLimit(usedPercent: used, windowMinutes: Self.integer(limit["window_minutes"]),
+                                     resetsAt: Self.date(limit["resets_at"]), recordedAt: date)
+           }).max(by: { ($0.usedPercent, $0.windowMinutes ?? 0) < ($1.usedPercent, $1.windowMinutes ?? 0) }) {
+            rateLimit = window
+        }
+        // input_tokens already includes cached input; the window comes from the same record.
+        if let info = payload["info"] as? [String: Any],
+           let last = info["last_token_usage"] as? [String: Any], let input = Self.integer(last["input_tokens"]),
+           contextUsage.map({ date >= $0.recordedAt }) ?? true {
+            contextUsage = TokenContextUsage(usedTokens: input,
+                windowTokens: Self.integer(info["model_context_window"]).flatMap { $0 > 0 ? $0 : nil },
+                recordedAt: date, compactedAt: nil)
+        }
+    }
+
+    private static func codexEffort(_ payload: [String: Any]) -> String? {
+        let settings = (payload["collaboration_mode"] as? [String: Any])?["settings"] as? [String: Any]
+        return label(payload["effort"]) ?? label(settings?["reasoning_effort"])
     }
 
     private func consumeCodexUsageRecord(_ payload: [String: Any], date: Date?) {
@@ -876,7 +1017,7 @@ final class TokenLogParser {
                 metadataTurnOpen = true
                 let blocks = message["content"] as? [[String: Any]] ?? []
                 for block in blocks where block["type"] as? String == "tool_result" {
-                    if let id = block["tool_use_id"] as? String { pendingTools.remove(id) }
+                    if let id = block["tool_use_id"] as? String { removePendingTool(id) }
                 }
                 observedState = pendingTools.isEmpty ? .working : .tool
                 if let date { lastActivity = max(lastActivity ?? date, date) }
@@ -889,7 +1030,17 @@ final class TokenLogParser {
                   let count = Self.integer(usage["output_tokens"]),
                   let id = message["id"] as? String, !previousMessages.contains(id) else { return }
             let errored = record["isApiErrorMessage"] as? Bool == true || message["model"] as? String == "<synthetic>"
-            if !errored { model = message["model"] as? String ?? model }
+            // A response (or the final failure) ends any API retry in progress.
+            retry = nil
+            if !errored {
+                model = message["model"] as? String ?? model
+                // Context occupied by this request: all input-side counts. Claude logs no window size.
+                if let date, let input = Self.integer(usage["input_tokens"]), contextUsage.map({ date >= $0.recordedAt }) ?? true {
+                    let cached = ["cache_creation_input_tokens", "cache_read_input_tokens"].compactMap { Self.integer(usage[$0]) }
+                    contextUsage = TokenContextUsage(usedTokens: cached.reduce(input, +), windowTokens: nil,
+                                                     recordedAt: date, compactedAt: nil)
+                }
+            }
             let prior = messages[id] ?? 0
             messages[id] = max(prior, count)
             if let date { lastActivity = max(lastActivity ?? date, date) }
@@ -898,7 +1049,7 @@ final class TokenLogParser {
             let usesTool = blocks.contains(where: { $0["type"] as? String == "tool_use" })
             if usesTool {
                 for block in blocks where block["type"] as? String == "tool_use" {
-                    if let id = block["id"] as? String { pendingTools.insert(id) }
+                    if let id = block["id"] as? String { addPendingTool(id, name: block["name"]) }
                 }
                 observedState = .tool
             } else if blocks.contains(where: { $0["type"] as? String == "text" }) {
@@ -924,16 +1075,26 @@ final class TokenLogParser {
                       ["end_turn", "stop_sequence"].contains(message["stop_reason"] as? String ?? "") {
                 softClosed = true
                 observedState = .complete
+                // Subagents write no stop marker; a later continuation records again.
+                if startedAt != nil { recordCompletion(at: date, duration: nil) }
             }
         } else if type == "system" {
+            let subtype = record["subtype"] as? String
+            // Compaction end time; the boundary itself does not change the turn.
+            if subtype == "compact_boundary", let date { compactedAt = max(compactedAt ?? date, date) }
             // A marker older than the current prompt belongs to an earlier turn.
             if let date, let startedAt, date < startedAt { return }
-            switch record["subtype"] as? String {
+            switch subtype {
             case "turn_duration":
-                if let milliseconds = Self.number(record["durationMs"]), milliseconds > 0, startedAt != nil {
-                    finish(at: date, duration: milliseconds / 1_000)
-                    lastActivity = date ?? lastActivity
-                } else { closeTurn(.complete, at: date) }
+                closeTurn(.complete, at: date, duration: Self.number(record["durationMs"], max: Self.maxDurationMs).map { $0 / 1_000 })
+            case "api_error":
+                // Counts, delay and the network flag only; error messages are never read.
+                guard turnOpen, let date, let attempt = Self.integer(record["retryAttempt"]) else { break }
+                let delay = Self.number(record["retryInMs"], max: 86_400_000)
+                retry = TokenRetryState(attempt: attempt, maxAttempts: Self.integer(record["maxRetries"]),
+                                        retryAt: delay.map { date.addingTimeInterval($0 / 1_000) },
+                                        networkDown: (record["error"] as? [String: Any])?["isNetworkDown"] as? Bool == true,
+                                        at: date)
             case "stop_hook_summary": closeTurn(.complete, at: nil)
             case "turn_aborted", "task_aborted", "interrupted": closeTurn(.interrupted, at: date)
             default: break
@@ -941,8 +1102,14 @@ final class TokenLogParser {
         }
     }
 
-    /// Ends the turn without a completion record: no measured duration is available.
-    private func closeTurn(_ state: TokenActivityState, at date: Date?) {
+    /// Ends the turn. `duration` is only ever the client's own report for this turn.
+    private func closeTurn(_ state: TokenActivityState, at date: Date?, duration: TimeInterval? = nil,
+                           finishedAt: Date? = nil) {
+        // A repeated stop marker after the turn already closed has no turn to complete.
+        if state == .complete, startedAt != nil || metadataTurnOpen {
+            recordCompletion(at: finishedAt ?? date, duration: duration)
+        }
+        retry = nil
         startedAt = nil
         turnID = nil
         turnUsage = nil
@@ -975,7 +1142,7 @@ final class TokenLogParser {
                   isSubagent || !text.contains("\"isSidechain\":true") else { return }
             id = value(after: "tool_use_id")
         }
-        guard let id, pendingTools.remove(id) != nil else { return }
+        guard let id, removePendingTool(id) else { return }
         if turnOpen { observedState = pendingTools.isEmpty ? .working : .tool }
     }
 
@@ -1032,6 +1199,12 @@ final class TokenLogParser {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
         let result = number.doubleValue
         return result.isFinite ? result : nil
+    }
+
+    /// A week in milliseconds: longer client durations are treated as corrupt rather than shown.
+    private static let maxDurationMs: Double = 604_800_000
+    private static func number(_ value: Any?, max limit: Double) -> Double? {
+        number(value).flatMap { $0 <= limit ? $0 : nil }
     }
 
     private static func date(_ value: Any?) -> Date? {

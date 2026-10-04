@@ -28,6 +28,35 @@ struct TelemetryDiagnosticEntry: Codable, Equatable {
     var unit: String?
     /// The service/name/unit are eligible; usable numeric points are counted separately.
     var recognized: Bool
+    /// Unrecognized services only: a span or event name and the attribute keys seen with it
+    /// (bounded ASCII, never values), so a mapping can be added from evidence later.
+    var name: String? = nil
+    var attributeKeys: [String]? = nil
+
+    func sameSlot(_ other: Self) -> Bool {
+        signal == other.signal && resourceServiceName == other.resourceServiceName && metricName == other.metricName
+            && unit == other.unit && recognized == other.recognized && name == other.name
+    }
+    mutating func absorb(_ other: Self) {
+        guard let keys = other.attributeKeys else { return }
+        attributeKeys = Array(Set(attributeKeys ?? []).union(keys).sorted().prefix(LocalTelemetryCollector.maximumDiagnosticKeys))
+    }
+}
+
+/// Collector lifecycle as shown to people. A busy port is told apart by asking its /health.
+enum TelemetryCollectorState: String, Codable {
+    case starting, waiting, receiving, busyTokenCat, busyOtherApp, failed, stopped
+    var status: String {
+        switch self {
+        case .starting: return "실측 준비 중"
+        case .waiting: return "실측 수신 대기"
+        case .receiving: return "실측 수신 중"
+        case .busyTokenCat: return "실측 꺼짐 · 다른 TokenCat이 수집 중"
+        case .busyOtherApp: return "실측 꺼짐 · 다른 앱이 포트 \(LocalTelemetryCollector.port) 사용 중"
+        case .failed: return "실측 꺼짐 · 수집기를 시작하지 못함"
+        case .stopped: return "실측 꺼짐"
+        }
+    }
 }
 
 struct TelemetryDiagnostics: Codable {
@@ -43,7 +72,13 @@ final class LocalTelemetryCollector {
     static let maximumHeaderBytes = 16_384
     static let maximumConnections = 16
     static let maximumReadings = 256
-    static let maximumDiagnostics = 32
+    /// Newest reading per (provider, session, agent, model), kept beside the recent window so
+    /// a burst of subagent requests cannot evict a quiet session's last measurement.
+    static let maximumLatest = 128
+    static let maximumDiagnostics = 64
+    static let maximumDiagnosticKeys = 48
+    /// Waits before retrying a listener that could not start (for example a busy port).
+    static let retryDelays: [TimeInterval] = [5, 30, 120]
     static let health: [String: Any] = ["owner": "TokenCat", "appIdentifier": "dev.seuput.TokenCat",
                                        "schema": 1, "port": Int(port)]
 
@@ -56,16 +91,23 @@ final class LocalTelemetryCollector {
     private var generation = 0
     private var readyCallback: (() -> Void)?
     private var stored: [String: TelemetryRecord] = [:]
+    private var latest: [String: (record: TelemetryRecord, touched: UInt64)] = [:]
+    private var touches: UInt64 = 0
     private var diagnosticCounts = ["logs": 0, "metrics": 0, "traces": 0]
     private var diagnosticReadingCounts = ["logs": 0, "metrics": 0, "traces": 0]
     private var diagnosticEntries: [TelemetryDiagnosticEntry] = []
-    private var storedStatus = "실측 수신 대기"
+    private var storedState = TelemetryCollectorState.waiting
+    private var retryAt: Date?
     private var receivedAt: Date?
+    private var batches: [TokenSource: Date] = [:]
     private var ready = false
+    private var attempt = 0
     private let listeningPort: UInt16
+    private let retryDelays: [TimeInterval]
 
-    init(port: UInt16 = LocalTelemetryCollector.port) {
+    init(port: UInt16 = LocalTelemetryCollector.port, retryDelays: [TimeInterval] = LocalTelemetryCollector.retryDelays) {
         listeningPort = port
+        self.retryDelays = retryDelays
         queue.setSpecific(key: queueKey, value: ())
     }
     deinit {
@@ -73,12 +115,23 @@ final class LocalTelemetryCollector {
         for request in connections.values { request.close() }
     }
 
-    var status: String { lock.withLock { storedStatus } }
+    var state: TelemetryCollectorState { lock.withLock { storedState } }
+    var status: String { state.status }
+    /// When the next automatic start attempt runs after a failure; nil when none is scheduled.
+    var nextRetryAt: Date? { lock.withLock { retryAt } }
     var lastReceivedAt: Date? { lock.withLock { receivedAt } }
+    /// Newest batch per client, decoded or not: proof that a restarted client exports here.
+    var lastBatchAt: [TokenSource: Date] { lock.withLock { batches } }
     var isRunning: Bool { lock.withLock { ready } }
     func snapshot() -> [TelemetryReading] {
         lock.withLock {
-            stored.sorted { a, b in a.value.reading.at == b.value.reading.at
+            var union = stored
+            for entry in latest.values {
+                // A request re-delivered after eviction keeps its measured version.
+                if let current = union[entry.record.key], current.hasRate || !entry.record.hasRate { continue }
+                union[entry.record.key] = entry.record
+            }
+            return union.sorted { a, b in a.value.reading.at == b.value.reading.at
                 ? a.key < b.key : a.value.reading.at > b.value.reading.at }.map { $0.value.reading }
         }
     }
@@ -96,10 +149,18 @@ final class LocalTelemetryCollector {
     private func startOnQueue(onReady: (() -> Void)?) {
         guard !running else { return }
         running = true
-        generation += 1
         readyCallback = onReady
+        attempt = 0
+        listen()
+    }
+
+    /// One listening attempt. The ready callback survives retries until a start succeeds.
+    private func listen() {
+        generation += 1
         let epoch = generation
-        setStatus("계측 연결 준비 중")
+        lock.withLock { retryAt = nil }
+        // Retries keep showing why the port is unavailable until a listener is ready.
+        if attempt == 0 { setState(.starting) }
         do {
             let parameters = NWParameters.tcp
             parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback),
@@ -113,14 +174,13 @@ final class LocalTelemetryCollector {
                 guard let self, self.running, self.generation == epoch else { return }
                 switch state {
                 case .ready:
+                    self.attempt = 0
                     self.lock.withLock { self.ready = true }
-                    self.setStatus("실측 수신 대기")
+                    self.setState(self.lastReceivedAt == nil ? .waiting : .receiving)
                     let callback = self.readyCallback
                     self.readyCallback = nil
                     callback?()
-                case .failed:
-                    self.setStatus("계측 연결 실패 · 포트 \(self.listeningPort)")
-                    self.stopOnQueue(updateStatus: false)
+                case .failed(let error): self.listenFailed(error, epoch: epoch)
                 default: break
                 }
             }
@@ -149,9 +209,35 @@ final class LocalTelemetryCollector {
                 request.start()
             }
             server.start(queue: queue)
-        } catch {
-            setStatus("계측 연결 실패 · 포트 \(listeningPort)")
-            stopOnQueue(updateStatus: false)
+        } catch { listenFailed(error, epoch: epoch) }
+    }
+
+    /// Releases the failed listener, asks the port's current owner who it is, and schedules
+    /// the next attempt (5 s, 30 s, then every 2 min until the port frees or stop() runs).
+    /// An empty delay list gives up at once; start() may then be called again.
+    private func listenFailed(_ error: Error, epoch: Int) {
+        closeListener()
+        let inUse: Bool
+        if case .posix(let code)? = error as? NWError { inUse = code == .EADDRINUSE } else { inUse = false }
+        let port = listeningPort
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let tokenCat = Self.verifiedHealth(port: port, deadline: Date().addingTimeInterval(1))
+            self?.queue.async {
+                guard let self, self.running, self.generation == epoch else { return }
+                self.setState(tokenCat ? .busyTokenCat : inUse ? .busyOtherApp : .failed)
+                guard !self.retryDelays.isEmpty else {
+                    self.running = false
+                    self.readyCallback = nil
+                    return
+                }
+                let delay = self.retryDelays[min(self.attempt, self.retryDelays.count - 1)]
+                self.attempt = min(self.attempt + 1, self.retryDelays.count)
+                self.lock.withLock { self.retryAt = Date().addingTimeInterval(delay) }
+                self.queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    guard let self, self.running, self.generation == epoch else { return }
+                    self.listen()
+                }
+            }
         }
     }
 
@@ -163,8 +249,14 @@ final class LocalTelemetryCollector {
     private func stopOnQueue(updateStatus: Bool) {
         running = false
         readyCallback = nil
-        lock.withLock { ready = false }
         generation += 1
+        closeListener()
+        lock.withLock { retryAt = nil }
+        if updateStatus { setState(.stopped) }
+    }
+
+    private func closeListener() {
+        lock.withLock { ready = false }
         listener?.stateUpdateHandler = nil
         listener?.newConnectionHandler = nil
         listener?.cancel()
@@ -172,29 +264,29 @@ final class LocalTelemetryCollector {
         let pending = Array(connections.values)
         connections.removeAll()
         for request in pending { request.close() }
-        if updateStatus { setStatus("계측 연결 중지됨") }
     }
 
-    private func setStatus(_ value: String) { lock.withLock { storedStatus = value } }
+    private func setState(_ value: TelemetryCollectorState) { lock.withLock { storedState = value } }
 
     static func isOwnCollectorRunning(timeout: TimeInterval = 1) -> Bool {
         let deadline = Date().addingTimeInterval(max(0.05, timeout))
-        return verifiedHealth(deadline: deadline)
+        return verifiedHealth(port: port, deadline: deadline)
     }
 
     static func fetchSnapshot(timeout: TimeInterval = 1) -> [TelemetryReading] {
         let deadline = Date().addingTimeInterval(max(0.05, timeout))
-        guard verifiedHealth(deadline: deadline),
-              let data = TelemetryFetchOperation.fetch(path: "/v1/readings", deadline: deadline, maximumBytes: 1_048_576) else { return [] }
+        guard verifiedHealth(port: port, deadline: deadline),
+              let data = TelemetryFetchOperation.fetch(path: "/v1/readings", port: port, deadline: deadline,
+                                                       maximumBytes: 1_048_576) else { return [] }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         guard let readings = try? decoder.decode([TelemetryReading].self, from: data),
-              readings.count <= maximumReadings else { return [] }
+              readings.count <= maximumReadings + maximumLatest else { return [] }
         return readings
     }
 
-    private static func verifiedHealth(deadline: Date) -> Bool {
-        guard let data = TelemetryFetchOperation.fetch(path: "/health", deadline: deadline, maximumBytes: 1024),
+    private static func verifiedHealth(port: UInt16, deadline: Date) -> Bool {
+        guard let data = TelemetryFetchOperation.fetch(path: "/health", port: port, deadline: deadline, maximumBytes: 1024),
               let health = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
               health["owner"] as? String == "TokenCat", health["appIdentifier"] as? String == "dev.seuput.TokenCat",
               let schema = health["schema"] as? NSNumber, CFGetTypeID(schema) != CFBooleanGetTypeID(),
@@ -212,13 +304,11 @@ final class LocalTelemetryCollector {
               let root = object as? [String: Any],
               let records = TelemetryDecoder.decode(root, path: path) else { return false }
         let diagnostics = TelemetryDecoder.diagnostics(root, path: path)
+        let providers = TelemetryDecoder.providers(root, path: path)
         lock.withLock {
+            for provider in providers { batches[provider] = Date() }
             diagnosticReadingCounts[signal] = min(diagnosticReadingCounts[signal] ?? 0, Int.max - records.count) + records.count
-            for entry in diagnostics {
-                diagnosticEntries.removeAll { $0 == entry }
-                diagnosticEntries.append(entry)
-                if diagnosticEntries.count > Self.maximumDiagnostics { diagnosticEntries.removeFirst() }
-            }
+            for entry in diagnostics { TelemetryDecoder.merge(entry, into: &diagnosticEntries) }
             for record in records {
                 let key = record.key
                 if var previous = stored[key] {
@@ -228,6 +318,7 @@ final class LocalTelemetryCollector {
                     previous.merge(record)
                     stored[key] = previous
                 } else { stored[key] = record }
+                if let merged = stored[key] { remember(merged) }
             }
             if stored.count > Self.maximumReadings {
                 let keep = stored.sorted { a, b in a.value.reading.at == b.value.reading.at
@@ -235,9 +326,32 @@ final class LocalTelemetryCollector {
                 stored = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
             }
             receivedAt = Date()
-            storedStatus = "계측 연결됨"
+            storedState = .receiving
         }
         return true
+    }
+
+    /// Keeps the newest reading per identity, preferring one that carries a rate, in a
+    /// least-recently-updated store of `maximumLatest` identities. Called under `lock`.
+    private func remember(_ record: TelemetryRecord) {
+        let reading = record.reading
+        let identity = [reading.provider.rawValue, reading.sessionID ?? "", reading.agentID ?? "", reading.model ?? ""]
+            .joined(separator: "\u{1f}")
+        touches &+= 1
+        var kept = record
+        if let existing = latest[identity]?.record, existing.key != record.key,
+           (existing.hasRate && !record.hasRate) || (existing.hasRate == record.hasRate && existing.reading.at > reading.at) {
+            kept = existing
+        }
+        latest[identity] = (kept, touches)
+        // Subagent identities go first, so a quiet main session keeps its last rate through a burst.
+        if latest.count > Self.maximumLatest,
+           let oldest = latest.min(by: { a, b in
+               let aMain = a.value.record.reading.agentID == nil, bMain = b.value.record.reading.agentID == nil
+               return aMain != bMain ? !aMain : a.value.touched < b.value.touched
+           })?.key {
+            latest.removeValue(forKey: oldest)
+        }
     }
 }
 
@@ -245,6 +359,7 @@ private struct TelemetryRecord {
     var reading: TelemetryReading
     var durationPriority: Int = 0
     var intervalPriority: Int = 0
+    var hasRate: Bool { TokenSpeedMeasurement(reading).tokensPerSecond != nil }
     var key: String {
         let scope = "\(reading.provider.rawValue)|\(reading.sessionID ?? "")|"
         if let request = reading.requestID { return scope + "request|" + request }
@@ -383,6 +498,14 @@ private enum TelemetryDecoder {
         return result
     }
 
+    /// Clients named by the batch's resources, whether or not any record decodes.
+    static func providers(_ root: [String: Any], path: String) -> Set<TokenSource> {
+        let resourceKey = path == "/v1/logs" ? "resourceLogs" : path == "/v1/metrics" ? "resourceMetrics" : "resourceSpans"
+        return Set((root[resourceKey] as? [[String: Any]] ?? []).compactMap { resource in
+            source(attributes((resource["resource"] as? [String: Any])?["attributes"]), fallback: nil)
+        })
+    }
+
     private static func source(_ attrs: [String: Any], fallback: String?) -> TokenSource? {
         if let service = attrs["service.name"] as? String {
             switch service {
@@ -401,7 +524,22 @@ private enum TelemetryDecoder {
         return nil
     }
 
-    /// Only bounded signal/service/metric/unit metadata is retained, never log bodies or attributes.
+    /// Same-slot entries combine their attribute keys; the newest slot moves to the end.
+    static func merge(_ entry: TelemetryDiagnosticEntry, into entries: inout [TelemetryDiagnosticEntry]) {
+        var entry = entry
+        if let index = entries.firstIndex(where: { $0.sameSlot(entry) }) {
+            var existing = entries.remove(at: index)
+            existing.absorb(entry)
+            entry = existing
+        }
+        entries.append(entry)
+        if entries.count > LocalTelemetryCollector.maximumDiagnostics {
+            entries.removeFirst(entries.count - LocalTelemetryCollector.maximumDiagnostics)
+        }
+    }
+
+    /// Only bounded signal/service/metric/unit metadata is retained, never log bodies or
+    /// attribute values. Unrecognized log/trace services add span or event names and keys.
     static func diagnostics(_ root: [String: Any], path: String) -> [TelemetryDiagnosticEntry] {
         let signal = path == "/v1/logs" ? "logs" : path == "/v1/metrics" ? "metrics" : "traces"
         let resourceKey = path == "/v1/logs" ? "resourceLogs" : path == "/v1/metrics" ? "resourceMetrics" : "resourceSpans"
@@ -412,17 +550,35 @@ private enum TelemetryDecoder {
             guard string.utf8.count <= 256, string.utf8.allSatisfy({ (32...126).contains($0) }) else { return "__invalid_metadata__" }
             return string
         }
-        func append(_ entry: TelemetryDiagnosticEntry) {
-            result.removeAll { $0 == entry }
-            result.append(entry)
-            if result.count > LocalTelemetryCollector.maximumDiagnostics { result.removeFirst() }
+        func append(_ entry: TelemetryDiagnosticEntry) { merge(entry, into: &result) }
+        // Span/event names and attribute keys are code-defined identifiers; anything else is dropped.
+        func isName(_ text: String) -> Bool {
+            (1...128).contains(text.utf8.count) && text.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0)
+                || (97...122).contains($0) || "._-:/".utf8.contains($0) }
         }
         for resource in root[resourceKey] as? [[String: Any]] ?? [] {
             let base = attributes((resource["resource"] as? [String: Any])?["attributes"])
             let service = bounded(base["service.name"])
             if signal != "metrics" {
-                append(TelemetryDiagnosticEntry(signal: signal, resourceServiceName: service,
-                    recognized: source(base, fallback: nil) == .claude))
+                let recognized = source(base, fallback: nil) == .claude
+                var described = false
+                for scope in recognized ? [] : resource[scopeKey] as? [[String: Any]] ?? [] {
+                    for item in scope[signal == "logs" ? "logRecords" : "spans"] as? [[String: Any]] ?? [] {
+                        let raw = item["attributes"] as? [[String: Any]] ?? []
+                        let keys = Set(raw.compactMap { $0["key"] as? String }.filter { isName($0) && $0.utf8.count <= 64 })
+                        // Codex log events carry their name in event.name; bodies are never read.
+                        let label = signal == "traces" ? item["name"] : raw.first(where: {
+                            ["event.name", "event_name"].contains($0["key"] as? String ?? "") })
+                            .flatMap { ($0["value"] as? [String: Any])?["stringValue"] }
+                        append(TelemetryDiagnosticEntry(signal: signal, resourceServiceName: service, recognized: false,
+                            name: (label as? String).map { isName($0) ? $0 : "__invalid_metadata__" },
+                            attributeKeys: Array(keys.sorted().prefix(LocalTelemetryCollector.maximumDiagnosticKeys))))
+                        described = true
+                    }
+                }
+                if !described {
+                    append(TelemetryDiagnosticEntry(signal: signal, resourceServiceName: service, recognized: recognized))
+                }
                 continue
             }
             for scope in resource[scopeKey] as? [[String: Any]] ?? [] {
@@ -655,10 +811,9 @@ private final class TelemetryFetchOperation: NSObject, URLSessionDataDelegate, @
 
     init(maximumBytes: Int) { self.maximumBytes = maximumBytes }
 
-    static func fetch(path: String, deadline: Date, maximumBytes: Int) -> Data? {
+    static func fetch(path: String, port: UInt16, deadline: Date, maximumBytes: Int) -> Data? {
         let remaining = deadline.timeIntervalSinceNow
-        guard remaining > 0,
-              let url = URL(string: "http://127.0.0.1:\(LocalTelemetryCollector.port)\(path)") else { return nil }
+        guard remaining > 0, let url = URL(string: "http://127.0.0.1:\(port)\(path)") else { return nil }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = remaining
         configuration.timeoutIntervalForResource = remaining

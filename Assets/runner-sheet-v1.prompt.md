@@ -1,5 +1,7 @@
 # TokenCat 달리기 스프라이트 v1
 
+> 상태: `runner-v2`(Assets/runner-v2.md)로 대체되어 앱 번들에 넣지 않는다. 기록용으로 보존한다.
+
 - 생성: 내장 `image_gen`, 신규 생성, `transparent_background: true`.
 - 저장: `Assets/runner-sheet-v1.png`. 생성 원본을 그대로 복사.
 - 크기: 1774 × 887 RGBA. 실제 알파 0–255, 완전 투명 픽셀 68.846%, 네 모서리 알파 모두 0.

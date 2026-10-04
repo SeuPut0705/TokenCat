@@ -1,0 +1,12 @@
+{
+  "version": 2,
+  "cell": {"width": 30, "height": 18},
+  "sheets": {"1": "runner-v2@1x.png", "2": "runner-v2@2x.png"},
+  "poses": [
+    {"pose": "sit", "row": 0, "frames": 2, "durations": [3.200, 0.160]},
+    {"pose": "sleep", "row": 1, "frames": 2, "durations": [1.600, 1.600]},
+    {"pose": "walk", "row": 2, "frames": 4, "durations": [0.125, 0.125, 0.125, 0.125]},
+    {"pose": "run", "row": 3, "frames": 6, "durations": [0.071, 0.071, 0.071, 0.071, 0.071, 0.071]},
+    {"pose": "alert", "row": 4, "frames": 2, "durations": [0.600, 0.300]}
+  ]
+}

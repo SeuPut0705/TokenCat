@@ -160,11 +160,12 @@ func runTelemetryChecks() -> [String] {
     let diagnosticJSON = String(data: (try? JSONEncoder().encode(diagnosticSnapshot)) ?? Data(), encoding: .utf8) ?? ""
     check(!diagnosticJSON.contains("PRIVATE") && !diagnosticJSON.contains("output_tokens")
           && !diagnosticJSON.contains("\"duration_ms\":"), "Diagnostic output retained event bodies or other attributes")
-    for index in 0..<40 {
+    let bound = LocalTelemetryCollector.maximumDiagnostics
+    for index in 0..<(bound + 8) {
         _ = diagnostics.ingest(metric("unknown.metric.\(index)"), path: "/v1/metrics")
     }
-    check(diagnostics.diagnostics().entries.count == 32
-          && diagnostics.diagnostics().entries.last?.metricName == "unknown.metric.39",
+    check(diagnostics.diagnostics().entries.count == bound
+          && diagnostics.diagnostics().entries.last?.metricName == "unknown.metric.\(bound + 7)",
           "Diagnostic metadata did not evict entries at its memory bound")
     _ = diagnostics.ingest(metric(String(repeating: "x", count: 1000)), path: "/v1/metrics")
     check(diagnostics.diagnostics().entries.last?.metricName == "__invalid_metadata__",
@@ -221,6 +222,75 @@ func runTelemetryChecks() -> [String] {
           && !privacy.ingest(json(["resourceSpans": []]), path: "/v1/logs"),
           "Malformed JSON/schema was accepted")
 
+    // Unrecognized services keep span/event names and attribute keys only, never values.
+    let unknownApp = LocalTelemetryCollector()
+    func spans(_ names: [String], _ values: [String: Any], service: String = "codex-app-server") -> Data {
+        json(["resourceSpans": [["resource": ["attributes": attrs(["service.name": service])],
+            "scopeSpans": [["spans": names.map { ["name": $0, "attributes": attrs(values)] }]]]]])
+    }
+    _ = unknownApp.ingest(spans(["handle_request", "handle_request"], ["thread.id": "PRIVATE_THREAD", "prompt": "PRIVATE_PROMPT"]),
+                          path: "/v1/traces")
+    _ = unknownApp.ingest(spans(["handle_request"], ["turn.id": "PRIVATE_TURN", "bad key\n": "x"]), path: "/v1/traces")
+    _ = unknownApp.ingest(spans(["PRIVATE PROMPT as a span name"], [:]), path: "/v1/traces")
+    _ = unknownApp.ingest(logs(["event.name": "codex.sse_event", "output_token_count": 7, "conversation.id": "PRIVATE_CONV"],
+                               service: "codex-app-server"), path: "/v1/logs")
+    let appEntries = unknownApp.diagnostics().entries
+    let appJSON = String(decoding: (try? JSONEncoder().encode(unknownApp.diagnostics())) ?? Data(), as: UTF8.self)
+    check(appEntries.count == 3 && unknownApp.snapshot().isEmpty
+          && appEntries.contains(where: { $0.name == "__invalid_metadata__" && $0.attributeKeys == [] })
+          && appEntries.contains(where: { $0.signal == "traces" && $0.name == "handle_request" && !$0.recognized
+              && $0.attributeKeys == ["prompt", "thread.id", "turn.id"] })
+          && appEntries.contains(where: { $0.signal == "logs" && $0.name == "codex.sse_event"
+              && $0.attributeKeys == ["conversation.id", "event.name", "output_token_count"] })
+          && !appJSON.contains("PRIVATE") && !appJSON.contains("\"7\""),
+          "Unrecognized service diagnostics lost span/event names or keys, or kept attribute values")
+    let manyKeys = LocalTelemetryCollector()
+    _ = manyKeys.ingest(spans(["wide"], Dictionary(uniqueKeysWithValues: (0..<100).map { ("key.\($0)", "v") })), path: "/v1/traces")
+    check(manyKeys.diagnostics().entries.first?.attributeKeys?.count == LocalTelemetryCollector.maximumDiagnosticKeys,
+          "Diagnostic attribute keys were not bounded")
+
+    // The newest reading per session/agent/model survives a burst that fills the recent window.
+    let burst = LocalTelemetryCollector()
+    _ = burst.ingest(logs(["session.id": "quiet-main", "request_id": "main-request", "model": "main-model",
+        "output_tokens": 40, "duration_ms": 1_000], time: "1749999000000000000"), path: "/v1/logs")
+    for index in 0..<300 {
+        _ = burst.ingest(logs(["session.id": "busy", "agent_id": "agent-\(index % 20)", "request_id": "busy-\(index)",
+            "model": "worker-model", "output_tokens": 1, "duration_ms": 10],
+            time: String(1_750_000_000_000_000_000 + Int64(index) * 1_000_000)), path: "/v1/logs")
+    }
+    let burstReadings = burst.snapshot()
+    check(burstReadings.contains(where: { $0.sessionID == "quiet-main" && $0.outputTokens == 40 })
+          && burstReadings.count == 257 && burstReadings.first?.requestID == "busy-299",
+          "A quiet session's last measurement was evicted by a burst of other requests")
+    let identities = LocalTelemetryCollector()
+    for index in 0..<500 {
+        // 200 sessions, then one busy identity fills the recent window.
+        let session = index < 200 ? "s-\(index)" : "busy"
+        _ = identities.ingest(logs(["session.id": session, "request_id": "r-\(index)", "output_tokens": 1, "duration_ms": 10],
+            time: String(1_750_000_000_000_000_000 + Int64(index) * 1_000_000)), path: "/v1/logs")
+    }
+    let identityReadings = identities.snapshot()
+    check(identityReadings.count == LocalTelemetryCollector.maximumReadings + LocalTelemetryCollector.maximumLatest - 1
+          && identityReadings.contains(where: { $0.sessionID == "s-73" })
+          && !identityReadings.contains(where: { $0.sessionID == "s-72" }),
+          "The per-identity store was not bounded with least-recently-updated eviction")
+
+    let agentBurst = LocalTelemetryCollector()
+    _ = agentBurst.ingest(logs(["session.id": "main-session", "request_id": "main-only", "model": "main-model",
+        "output_tokens": 40, "duration_ms": 1_000], time: "1749999000000000000"), path: "/v1/logs")
+    for index in 0..<400 {
+        _ = agentBurst.ingest(logs(["session.id": "main-session", "agent_id": "worker-\(index)", "request_id": "worker-\(index)",
+            "model": "worker-model", "output_tokens": 1, "duration_ms": 10],
+            time: String(1_750_000_000_000_000_000 + Int64(index) * 1_000_000)), path: "/v1/logs")
+    }
+    check(agentBurst.snapshot().contains(where: { $0.requestID == "main-only" }),
+          "More than 128 subagent identities evicted the quiet main session's last measurement")
+
+    let undecoded = LocalTelemetryCollector()
+    _ = undecoded.ingest(Data(#"{"resourceSpans":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"codex-app-server"}}]},"scopeSpans":[{"spans":[{"name":"session_task.turn"}]}]}]}"#.utf8), path: "/v1/traces")
+    check(undecoded.snapshot().isEmpty && undecoded.lastBatchAt[.codex] != nil && undecoded.lastBatchAt[.claude] == nil,
+          "A client batch without decodable readings was not recorded as received from that client")
+
     let bounded = LocalTelemetryCollector()
     for index in 0..<270 {
         _ = bounded.ingest(logs(["session.id": "bounded-session", "request_id": "request-\(index)",
@@ -273,8 +343,10 @@ func runTelemetryChecks() -> [String] {
     let encoded = String(data: TelemetryHTTP.encode(code: 200, body: wire("{}")), encoding: .utf8) ?? ""
     check(encoded.contains("Content-Length: 2\r\n") && encoded.contains("Connection: close\r\n")
           && !encoded.contains("Access-Control-Allow-Origin"), "Response framing or CORS contract changed")
-    check(collector.lastReceivedAt != nil && collector.status == "계측 연결됨",
+    check(collector.lastReceivedAt != nil && collector.state == .receiving && collector.status == "실측 수신 중",
           "A successful export did not update connection freshness")
+    check(LocalTelemetryCollector().state == .waiting && TelemetryCollectorState.busyTokenCat.status != TelemetryCollectorState.busyOtherApp.status,
+          "Collector states did not separate another TokenCat from another app")
     print("Telemetry checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }
@@ -296,7 +368,7 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
         return condition()
     }
     let collector = LocalTelemetryCollector(port: port)
-    let blocked = LocalTelemetryCollector(port: port)
+    let blocked = LocalTelemetryCollector(port: port, retryDelays: [0.05, 0.1])
     let callbacks = TelemetryCallbackProbe()
     defer { blocked.stop(); collector.stop() }
     collector.start { callbacks.didReady(collector.isRunning) }
@@ -309,12 +381,36 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
     check(callbacks.snapshot.readyCount == 1 && callbacks.snapshot.duplicateCount == 0,
           "A duplicate start delivered or replaced a callback")
 
-    blocked.start { callbacks.didDuplicate() }
-    check(until { blocked.status.hasPrefix("계측 연결 실패") }, "A port collision did not fail explicitly")
-    check(!blocked.isRunning && callbacks.snapshot.duplicateCount == 0,
-          "A failed listener delivered a ready callback")
-
+    blocked.start { callbacks.didRetry() }
+    check(until { blocked.state == .busyTokenCat }, "A port held by another TokenCat was not identified by its /health")
+    check(until { blocked.nextRetryAt != nil } && !blocked.isRunning && callbacks.snapshot.retryCount == 0,
+          "A failed listener delivered a ready callback or scheduled no retry")
+    // Past the schedule the last delay repeats, so a port freed minutes later is still taken over.
+    Thread.sleep(forTimeInterval: 0.6)
+    check(until { blocked.nextRetryAt != nil && blocked.state == .busyTokenCat } && !blocked.isRunning,
+          "Retrying stopped after the last scheduled delay")
     collector.stop()
+    check(until { callbacks.snapshot.retryCount == 1 } && blocked.isRunning && blocked.state == .waiting,
+          "A retry did not take over the port once it was released")
+    blocked.stop()
+    check(blocked.state == .stopped && blocked.nextRetryAt == nil, "Stopping did not cancel the retry state")
+
+    // A port held by a non-TokenCat process (no /health answer) is reported as another app.
+    let other = socket(AF_INET, SOCK_STREAM, 0)
+    var address = sockaddr_in()
+    address.sin_family = sa_family_t(AF_INET)
+    address.sin_port = (port &+ 1).bigEndian
+    address.sin_addr.s_addr = inet_addr("127.0.0.1")
+    let bound = withUnsafePointer(to: &address) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(other, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    } == 0 && listen(other, 1) == 0
+    defer { close(other) }
+    let squatted = LocalTelemetryCollector(port: port &+ 1, retryDelays: [])
+    squatted.start { callbacks.didDuplicate() }
+    check(bound && until { squatted.state == .busyOtherApp } && !squatted.isRunning && squatted.nextRetryAt == nil,
+          "A port held by another app was not reported as such, or retried past its schedule")
+    squatted.stop()
+
     let stoppedCount = callbacks.snapshot.readyCount
     Thread.sleep(forTimeInterval: 0.05)
     check(!collector.isRunning && callbacks.snapshot.readyCount == stoppedCount,
@@ -346,10 +442,12 @@ private final class TelemetryCallbackProbe {
     private var readyCount = 0
     private var duplicateCount = 0
     private var closedCount = 0
+    private var retryCount = 0
     private var onlyReadyCallbacks = true
-    var snapshot: (readyCount: Int, duplicateCount: Int, closedCount: Int, onlyReadyCallbacks: Bool) {
-        lock.withLock { (readyCount, duplicateCount, closedCount, onlyReadyCallbacks) }
+    var snapshot: (readyCount: Int, duplicateCount: Int, closedCount: Int, retryCount: Int, onlyReadyCallbacks: Bool) {
+        lock.withLock { (readyCount, duplicateCount, closedCount, retryCount, onlyReadyCallbacks) }
     }
+    func didRetry() { lock.withLock { retryCount += 1 } }
     func didReady(_ isRunning: Bool) {
         lock.withLock { readyCount += 1; onlyReadyCallbacks = onlyReadyCallbacks && isRunning }
     }
