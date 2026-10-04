@@ -204,7 +204,8 @@ func runTelemetrySetupChecks() -> [String] {
         let wrapped = statusLine(lineHome)
         check(wrapped?["command"] as? String == TelemetrySetup.statusLineCommand && wrapped?["padding"] as? Int == 0
               && wrapped?["type"] as? String == "command" && object(lineHome, ".claude/settings.json")?["theme"] as? String == "dark"
-              && lineResult.restartRequired == [.codex, .claude], "Status line was not wrapped with its other fields kept")
+              && lineResult.restartRequired == [.codex, .claude] && lineResult.bridged && lineResult.notes.isEmpty,
+              "Status line was not wrapped with its other fields kept")
         check(data(lineHome, sidecar) == Data(originalCommand.utf8) && data(lineHome, script) == Data(TelemetrySetup.statusLineScript.utf8)
               && mode(lineHome, script) == 0o700 && mode(lineHome, sidecar) == 0o600, "Bridge script or original command was not saved privately")
         let recorded = ((object(lineHome, support + "/telemetry-connection.json")?["statusLine"] as? [String: Any])?["original"] as? String)
@@ -237,7 +238,8 @@ func runTelemetrySetupChecks() -> [String] {
             let oddResult = try TelemetrySetup(home: oddHome).connect()
             let before = (try? JSONSerialization.jsonObject(with: Data(odd.utf8)) as? NSDictionary)?["statusLine"] as? NSObject
             let after = object(oddHome, ".claude/settings.json")
-            check(oddResult.message.contains("statusLine 형식이 예상과 달라") && (after?["env"] as? [String: Any])?["OTEL_LOGS_EXPORTER"] as? String == "otlp"
+            check(oddResult.message.contains("statusLine 형식이 예상과 달라") && oddResult.notes == [.statusLineSkipped] && !oddResult.bridged
+                  && (after?["env"] as? [String: Any])?["OTEL_LOGS_EXPORTER"] as? String == "otlp"
                   && (after?["statusLine"] as? NSObject).map { before?.isEqual($0) == true } == true && data(oddHome, script) == nil,
                   "An unexpected status line shape was changed or blocked the connection")
         }
@@ -292,20 +294,22 @@ func runTelemetrySetupChecks() -> [String] {
         try files.removeItem(at: sidecarHome.appendingPathComponent(sidecar))
         let recreated = try TelemetrySetup(home: sidecarHome).connect()
         check(recreated.changedFiles.isEmpty && recreated.message.contains("원래 명령을 백업 기록에서 다시 만들었습니다")
+              && recreated.notes == [.originalRecreated] && recreated.bridged
               && data(sidecarHome, sidecar) == Data(originalCommand.utf8) && mode(sidecarHome, sidecar) == 0o600,
               "A missing original command was not recreated from the record")
         let syncedHome = try fixture("statusline-synced", codex: String(decoding: data(sidecarHome, ".codex/config.toml") ?? Data(), as: UTF8.self),
                                      claude: String(decoding: data(sidecarHome, ".claude/settings.json") ?? Data(), as: UTF8.self))
         let syncedBytes = data(syncedHome, ".claude/settings.json")
         let synced = try TelemetrySetup(home: syncedHome).connect()
-        check(synced.changedFiles.isEmpty && synced.message.contains("원래 명령을 찾을 수 없어") && data(syncedHome, ".claude/settings.json") == syncedBytes
+        check(synced.changedFiles.isEmpty && synced.message.contains("원래 명령을 찾을 수 없어") && synced.notes == [.originalUnknown] && synced.bridged
+              && data(syncedHome, ".claude/settings.json") == syncedBytes
               && data(syncedHome, script) != nil && data(syncedHome, sidecar) == nil,
               "Settings naming the bridge without a record here said 'already applied' or were changed")
         let spelled = #"{"statusLine":{"type":"command","command":"/bin/sh '/Users/sample/Library/Application Support/TokenCat/claude-statusline.sh'"}}"#
         let spelledHome = try fixture("statusline-spelled", codex: originalCodex, claude: spelled)
         let spelledResult = try TelemetrySetup(home: spelledHome).connect()
         check(statusLine(spelledHome)?["command"] as? String == "/bin/sh '/Users/sample/Library/Application Support/TokenCat/claude-statusline.sh'"
-              && data(spelledHome, sidecar) == nil && spelledResult.message.contains("원래 명령을 찾을 수 없어")
+              && data(spelledHome, sidecar) == nil && spelledResult.message.contains("원래 명령을 찾을 수 없어") && spelledResult.notes == [.originalUnknown]
               && (object(spelledHome, support + "/telemetry-connection.json")?["statusLine"]) == nil,
               "Another spelling of the bridge was wrapped as its own original")
 

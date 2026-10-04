@@ -347,7 +347,8 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
 
 // MARK: - Settings
 
-/// All five settings tabs in tab order, in two columns of nearly equal height (일반 + 메뉴 막대 | 고양이 + 실측 + 정보).
+/// All five settings tabs in tab order, in two columns (일반 + 메뉴 막대 | 고양이 + 실측 + 정보). Windows are 40 apart in
+/// both columns; the shorter column is centred in the taller one's height.
 func settingsCollage(_ theme: Theme, panes: [String: CGImage]) -> CGImage {
     let look = Look.of(theme)
     let columns = [["general", "menubar"], ["cat", "telemetry", "about"]]
@@ -359,15 +360,13 @@ func settingsCollage(_ theme: Theme, panes: [String: CGImage]) -> CGImage {
     let canvas = Canvas(Int(pad * 2 + windowWidth * 2 + gap), Int(pad * 2 + tallest))
     look.paintWall(canvas, glowScale: 0.8)
     for (column, names) in columns.enumerated() {
-        // Every column spans the full height (shared top and bottom edges); the shorter one gets a larger gap.
-        let columnGap = (tallest - names.map(height).reduce(0, +)) / CGFloat(names.count - 1)
-        var y = pad
+        var y = pad + ((tallest - columnHeights[column]) / 2).rounded()
         for name in names {
             let image = panes[name]!
             let rect = CGRect(x: pad + CGFloat(column) * (windowWidth + gap), y: y, width: windowWidth, height: height(name))
             let base = color(Pixels(image).rgb(4, 4))
             framed(canvas, image, rect, radius: 18, base: base, look: look, shadowOffset: 12, shadowBlur: 36)
-            y += rect.height + columnGap
+            y += rect.height + gap
         }
     }
     return roundCorners(canvas, radius: 28)

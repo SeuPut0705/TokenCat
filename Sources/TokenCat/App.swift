@@ -167,6 +167,10 @@ final class DashboardModel: ObservableObject {
     @Published var telemetryNextRetryAt: Date?
     @Published var telemetrySetupNote: String?
     @Published var telemetrySetupFailure: TelemetrySetupFailure?
+    /// The last successful connection's status line notes (skipped, original unknown or recreated). Fixtures pin it.
+    @Published var telemetryConnectNotes: [TelemetrySetupNote] = []
+    /// Whether Claude Code settings run the usage-limit bridge after the last connection; nil until one succeeds.
+    @Published var claudeBridged: Bool?
     /// Clients whose config changed and that have not sent a reading since; they need a new launch.
     @Published var telemetryRestartNeeded: Set<TokenSource> = []
     /// Pending for more than 24 h: the client may never send telemetry in its current version.
@@ -490,19 +494,20 @@ enum Format {
         if value < 999_950 { return trimmed(Double(value) / 1_000, "k") }
         return trimmed(Double(value) / 1_000_000, "M")
     }
+    /// "3분 전" / "3m ago"; nil is "기록 없음" / "never".
     static func age(_ date: Date?, now: Date) -> String {
-        guard let date else { return "기록 없음" }
+        guard let date else { return loc("기록 없음", "never") }
         let seconds = max(0, Int(now.timeIntervalSince(date)))
-        if seconds < 60 { return "\(seconds)초 전" }
-        if seconds < 3600 { return "\(seconds / 60)분 전" }
-        if seconds < 86_400 { return "\(seconds / 3600)시간 전" }
-        return "\(seconds / 86_400)일 전"
+        if seconds < 60 { return ago(span(seconds, .second)) }
+        if seconds < 3600 { return ago(span(seconds / 60, .minute)) }
+        if seconds < 86_400 { return ago(span(seconds / 3600, .hour)) }
+        return ago(span(seconds / 86_400, .day))
     }
     static func power(_ snapshot: SystemSnapshot) -> String {
-        if snapshot.isCharging == true { return "충전 중" }
-        if snapshot.powerSource == "AC Power" { return "전원 어댑터 연결" }
-        if snapshot.powerSource == "Battery Power" { return "배터리 사용 중" }
-        return "전원 상태 미확인"
+        if snapshot.isCharging == true { return loc("충전 중", "Charging") }
+        if snapshot.powerSource == "AC Power" { return loc("전원 어댑터 연결", "On power adapter") }
+        if snapshot.powerSource == "Battery Power" { return loc("배터리 사용 중", "On battery") }
+        return loc("전원 상태 미확인", "Power source unknown")
     }
     static func elapsed(_ date: Date?, at now: Date) -> String {
         guard let date else { return "—" }
@@ -1055,10 +1060,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         notifier.postUpdate(release)
     }
 
-    /// The quick menu item: the dashboard opens to show the progress.
-    @objc private func installUpdateAction() {
-        updater.install()
-        openDashboard()
+    /// The quick menu item: an install opens the dashboard to show the progress; after a failure that blocks the
+    /// install, the release page.
+    @objc private func quickMenuUpdateAction() {
+        switch model.update.quickMenuCommand {
+        case .install?:
+            updater.install()
+            openDashboard()
+        case let command?:
+            handleUpdate(command)
+        case nil:
+            break
+        }
     }
 
     // MARK: Menus
@@ -1132,7 +1145,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             menuItem($0.title, #selector(selectMotion(_:)), value: $0.rawValue, checked: preferences.animationSource == $0)
         }))
         menu.addItem(.separator())
-        if let title = model.update.quickMenuTitle { menu.addItem(menuItem(title, #selector(installUpdateAction))) }
+        if let title = model.update.quickMenuTitle { menu.addItem(menuItem(title, #selector(quickMenuUpdateAction))) }
         menu.addItem(menuItem("설정…", #selector(openSettingsAction), key: ","))
         menu.addItem(menuItem("활성 상태 보기", #selector(openActivityMonitor)))
         menu.addItem(menuItem("TokenCat 정보", #selector(showAbout)))
@@ -1166,7 +1179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         NSApp.orderFrontStandardAboutPanel(options: AppInfo.aboutOptions)
     }
 
-    /// "TokenCat이 하는 일 다시 보기": the first-run card shows again in the dashboard.
+    /// "처음 안내 다시 보기": the first-run card shows again in the dashboard.
     private func reshowOnboarding() {
         UserDefaults.standard.set(false, forKey: "onboardingSeen")
         openDashboard()
@@ -1178,9 +1191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         settingsState.runnerPose = animator.plan.pose
         if settingsWindow == nil {
             let tabs = SettingsTabsController(preferences: model.preferences, model: model, state: settingsState,
-                                              actions: SettingsActions(about: { [weak self] in self?.showAbout() },
-                                                                       openPanel: { [weak self] in self?.openPanel() },
-                                                                       reshowOnboarding: { [weak self] in self?.reshowOnboarding() }))
+                                              actions: SettingsActions(reshowOnboarding: { [weak self] in self?.reshowOnboarding() }))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SettingsTabsController.width, height: 400),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
             SettingsTabsController.configure(window, with: tabs)
@@ -1246,12 +1257,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let message: String?
             var failure: TelemetrySetupFailure?
-            var restart: [TokenSource] = []
+            var result: TelemetrySetupResult?
             do {
-                restart = try TelemetrySetup().connect().restartRequired
+                result = try TelemetrySetup().connect()
                 message = nil
             } catch {
-                message = "실측 연결: \(error.localizedDescription)"
+                message = OnboardingCard.notePrefix + error.localizedDescription
                 failure = (error as? TelemetrySetupError)?.failure ?? .writeFailed(restored: true)
             }
             DispatchQueue.main.async {
@@ -1259,8 +1270,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                 self?.telemetryConfigured = message == nil
                 self?.model.telemetrySetupNote = message
                 self?.model.telemetrySetupFailure = failure
+                // The status line notes are shown on the 실측 tab and decide the first-run card's sentence.
+                self?.model.telemetryConnectNotes = result?.notes ?? []
+                self?.model.claudeBridged = result?.bridged
                 // Running clients keep their old config; remember to say so until each one reports.
-                self?.model.noteTelemetryConnected(restart)
+                self?.model.noteTelemetryConnected(result?.restartRequired ?? [])
             }
         }
     }

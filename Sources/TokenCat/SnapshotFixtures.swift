@@ -66,7 +66,7 @@ enum SnapshotFixtures {
     private static func components() -> [(String, AnyView)] {
         let down = SessionPresentation.telemetryNotice(state: .busyOtherApp, note: nil, restart: [])
         let outcomes: [OnboardingCard.Outcome] = [
-            .added,
+            .added(bridged: true),
             OnboardingCard.outcome(notice: nil, note: "실측 연결: Claude Code에 기존 OTLP 전송 대상이 있어 덮어쓰지 않았습니다.", failure: .conflict, state: .waiting),
             OnboardingCard.outcome(notice: nil, note: "실측 연결: 설정 파일을 저장하지 못했습니다.", failure: .writeFailed(restored: true), state: .waiting),
             OnboardingCard.outcome(notice: down, note: nil, failure: nil, state: .busyOtherApp),

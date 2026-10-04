@@ -395,12 +395,26 @@ struct UpdateState: Equatable {
         if case .failed(let failure) = install { return failure }
         return nil
     }
-    /// Running from the translocated copy fails before any download every time, until the app is moved and reopened.
-    var blockedByFailure: Bool { installFailure == .translocated }
+    /// A failure that trying again cannot fix (the translocated copy, a folder without write access, a release without its
+    /// file or digest, …): the install is not offered again until a newer release arrives.
+    var blockedByFailure: Bool { installFailure.map { !$0.retryable } ?? false }
     var canInstall: Bool { disabled == nil && available != nil && !installing && !blockedByFailure }
     var canCheck: Bool { disabled == nil && check != .checking && !installing }
-    /// The quick menu item while an update can be installed.
-    var quickMenuTitle: String? { canInstall ? available.map { "업데이트 \($0.version) 설치…" } : nil }
+    /// The quick menu item: the install while it can run, the release page after a failure that blocks it.
+    var quickMenuCommand: UpdateCommand? {
+        guard disabled == nil, available != nil, !installing else { return nil }
+        return blockedByFailure ? .openReleasePage : .install
+    }
+    var quickMenuTitle: String? {
+        guard let version = available?.version, let command = quickMenuCommand else { return nil }
+        return command == .install ? "업데이트 \(version) 설치…" : "업데이트 \(version) 릴리스 페이지…"
+    }
+
+    /// A check's newer release. One other than the failed install's clears that failure, so it can be installed.
+    mutating func receive(available release: UpdateRelease?) {
+        if installFailure != nil, let release, release.version != available?.version { install = .none }
+        available = release
+    }
 
     static func progress(_ fraction: Double) -> String { "업데이트 내려받는 중 \(Int((min(1, max(0, fraction)) * 100).rounded(.down)))%" }
     /// "0.9.1로 업데이트했습니다"; "으로" after 0, 3 and 6 (영, 삼, 육), which end in a consonant other than ㄹ.
@@ -602,7 +616,7 @@ final class Updater {
         var next = state
         next.check = .done
         next.checkedAt = store.checkedAt
-        next.available = newer(latest)
+        next.receive(available: newer(latest))
         state = next
         if let release = next.available, store.notifiedVersion != release.version {
             store.notifiedVersion = release.version

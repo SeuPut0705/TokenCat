@@ -526,7 +526,7 @@ func runSessionPresentationChecks() -> [String] {
     func footer(_ loading: Bool, _ ai: Int, _ system: Int, _ notice: TelemetryNotice?) -> FooterStatus {
         SessionPresentation.footerStatus(loading: loading, tokenDelay: ai, systemDelay: system, notice: notice)
     }
-    check(footer(true, 20, 20, port).kind == .loading && footer(false, 12, 5, port) == FooterStatus(kind: .aiDelay, text: "AI 수집 지연 12초")
+    check(footer(true, 20, 20, port) == FooterStatus(kind: .loading, text: "준비 중") && footer(false, 12, 5, port) == FooterStatus(kind: .aiDelay, text: "AI 수집 지연 12초")
           && footer(false, 3, 4, port) == FooterStatus(kind: .systemDelay, text: "시스템 수집 지연 4초")
           && footer(false, 0, 0, port) == FooterStatus(kind: .notice, text: "실측 꺼짐 · 포트 사용 중")
           && footer(false, 0, 0, restart).text == "재시작 후 실측 표시" && footer(false, 0, 0, nil) == FooterStatus(kind: .live, text: "실시간"),
@@ -535,7 +535,10 @@ func runSessionPresentationChecks() -> [String] {
           && OnboardingCard.outcome(notice: conflict, note: "실측 연결: 이유", failure: .conflict, state: .waiting) == .skipped("이유")
           && OnboardingCard.outcome(notice: failed, note: "이유", failure: .writeFailed(restored: false), state: .waiting) == .failed("이유")
           && OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .starting) == .preparing
-          && OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .receiving) == .added, "first-run outcome says only what happened")
+          && OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .receiving) == .added(bridged: false)
+          && OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .waiting, bridged: true) == .added(bridged: true)
+          && OnboardingCard.outcome(notice: conflict, note: "이유", failure: .conflict, state: .waiting, bridged: true) == .skipped("이유"),
+          "first-run outcome says only what happened")
     let restartSlot = SessionPresentation.speed(question, now: now, restartNeeded: true)
     check(restartSlot.value == "—" && restartSlot.help == "실측 연결됨 · Claude Code를 새로 실행하면 속도가 표시됩니다",
           "restart-needed speed help")

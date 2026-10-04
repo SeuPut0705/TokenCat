@@ -8,7 +8,8 @@ import Foundation
 func runSnapshot(_ binary: String, _ arguments: [String]) {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: binary)
-    process.arguments = arguments
+    // The README images are Korean whatever this Mac's language is.
+    process.arguments = arguments + ["--language", "ko"]
     let pipe = Pipe()
     process.standardOutput = pipe
     process.standardError = pipe

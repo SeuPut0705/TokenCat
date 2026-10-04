@@ -6,6 +6,28 @@ struct TelemetrySetupResult {
     var changedFiles: [String]
     var restartRequired: [TokenSource]
     var message: String
+    /// What the CLI message says about the Claude Code status line, for the app to show without reading the message.
+    var notes: [TelemetrySetupNote] = []
+    /// Claude Code settings run the status line bridge after this call.
+    var bridged = false
+}
+
+/// A status line outcome beside a successful connection; `text` is the sentence the CLI message carries.
+enum TelemetrySetupNote: Equatable {
+    /// `statusLine` is not a command: the usage-limit bridge was not added.
+    case statusLineSkipped
+    /// Settings run the bridge, but no original command is known here: the status line prints nothing.
+    case originalUnknown
+    /// The bridge's missing original command was written again from the connection record.
+    case originalRecreated
+
+    var text: String {
+        switch self {
+        case .statusLineSkipped: return "Claude Code statusLine 형식이 예상과 달라 사용량 한도 연결은 건너뛰었습니다."
+        case .originalUnknown: return "Claude Code 상태 표시줄이 TokenCat 브리지를 가리키지만 원래 명령을 찾을 수 없어 상태 표시줄이 비어 보입니다. settings.json의 statusLine을 직접 고쳐 주세요."
+        case .originalRecreated: return "Claude Code 상태 표시줄의 원래 명령을 백업 기록에서 다시 만들었습니다."
+        }
+    }
 }
 
 /// What the UI says about a failed automatic connection, without reading message text.
@@ -68,7 +90,7 @@ final class TelemetrySetup {
     /// command ends, whether TokenCat is absent or slow. `-q` skips ~/.curlrc and `--noproxy` keeps it on loopback.
     static let statusLineScript = """
         #!/bin/sh
-        # TokenCat: Claude Code status line bridge. TokenCat --disconnect-telemetry restores the original status line.
+        # TokenCat: Claude Code status line bridge. TokenCat --disconnect-telemetry puts the previous status line back while settings.json still runs this script; if it cannot, the original command stays in \(statusLineOriginalName) beside this file.
         # Sends Claude Code's status JSON to TokenCat on 127.0.0.1 only (TokenCat keeps the usage limits, nothing else),
         # then runs the original status line command with the same input; its output and exit status pass through.
         [ -n "${TOKENCAT_STATUSLINE_BRIDGE:-}" ] && exit 0
@@ -138,11 +160,13 @@ final class TelemetrySetup {
         let changes = candidates.filter { $0.original != $0.replacement }
         // Settings that already run the bridge (not wrapped now) need its original command beside it.
         let bridgeNote = plan.bridged && !plan.wraps ? bridgeOriginalNote(manifest) : nil
-        let note = [plan.note, bridgeNote].compactMap { $0 }.map { " " + $0 }.joined()
+        let notes = [plan.note, bridgeNote].compactMap { $0 }
+        let note = notes.map { " " + $0.text }.joined()
         guard !changes.isEmpty else {
             // A bridge in use is kept current; a failed refresh leaves the working one.
             if plan.bridged { try? writeBridgeScript() }
-            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "로컬 실측 연결 설정이 이미 적용돼 있습니다." + note)
+            return TelemetrySetupResult(changedFiles: [], restartRequired: [], message: "로컬 실측 연결 설정이 이미 적용돼 있습니다." + note,
+                                        notes: notes, bridged: plan.bridged)
         }
         if connected {
             // A connection made before the status line bridge existed gets only the bridge, under the same backups.
@@ -188,7 +212,7 @@ final class TelemetrySetup {
             throw TelemetrySetupError.writeFailed(restored: restored)
         }
         return TelemetrySetupResult(changedFiles: changes.map { $0.url.path }, restartRequired: changes.map(\.source),
-            message: "로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다." + note)
+            message: "로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다." + note, notes: notes, bridged: plan.bridged)
     }
 
     /// Migration for a connection without the bridge (env already connected, status line untouched). The current file is
@@ -229,7 +253,7 @@ final class TelemetrySetup {
         // The OTLP connection is unchanged, so no restart notice: until a running Claude Code reloads its settings,
         // its limits are simply not shown yet.
         return TelemetrySetupResult(changedFiles: [url.path], restartRequired: [],
-            message: "Claude Code 상태 표시줄에 사용량 한도 연결을 추가했습니다. 기존 상태 표시줄 출력은 그대로입니다.")
+            message: "Claude Code 상태 표시줄에 사용량 한도 연결을 추가했습니다. 기존 상태 표시줄 출력은 그대로입니다.", bridged: true)
     }
 
     func disconnect() throws -> TelemetrySetupResult {
@@ -354,16 +378,16 @@ final class TelemetrySetup {
     /// Settings already run the bridge but this connection did not wrap them now. A missing sidecar is recreated from the
     /// record; without a record (a settings.json copied from another Mac, or the folder deleted) the original command is
     /// unknown, which the note says instead of "already applied". Nil when nothing needs saying.
-    private func bridgeOriginalNote(_ manifest: Manifest?) -> String? {
+    private func bridgeOriginalNote(_ manifest: Manifest?) -> TelemetrySetupNote? {
         guard !files.fileExists(atPath: bridgeOriginal.path) else { return nil }
-        let unknown = "Claude Code 상태 표시줄이 TokenCat 브리지를 가리키지만 원래 명령을 찾을 수 없어 상태 표시줄이 비어 보입니다. settings.json의 statusLine을 직접 고쳐 주세요."
+        let unknown = TelemetrySetupNote.originalUnknown
         guard let record = manifest?.statusLine else { return unknown }
         // There was no status line: the bridge only forwards and prints nothing, as intended.
         guard let text = record.original else { return nil }
         guard let original = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any],
               let command = original["command"] as? String, !Self.runsBridge(command) else { return unknown }
         do { try atomicWrite(Data(command.utf8), to: bridgeOriginal, permissions: 0o600) } catch { return unknown }
-        return "Claude Code 상태 표시줄의 원래 명령을 백업 기록에서 다시 만들었습니다."
+        return .originalRecreated
     }
 
     /// `data` with one occurrence of the JSON string literal for `old` swapped for `new`, when that swap alone turns it into
@@ -496,7 +520,7 @@ final class TelemetrySetup {
         var originalCommand: String?
         /// The planned settings run the bridge.
         var bridged = false
-        var note: String?
+        var note: TelemetrySetupNote?
     }
 
     /// `bridgedBefore`: the active connection already wrapped the status line once, so a status line that no longer
@@ -570,7 +594,7 @@ final class TelemetrySetup {
             plan.originalStatusLine = String(decoding: try JSONSerialization.data(withJSONObject: line,
                 options: [.sortedKeys, .withoutEscapingSlashes]), as: UTF8.self)
         } else {
-            plan.note = "Claude Code statusLine 형식이 예상과 달라 사용량 한도 연결은 건너뛰었습니다."
+            plan.note = .statusLineSkipped
             return plan
         }
         plan.wraps = true

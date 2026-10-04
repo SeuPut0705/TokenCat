@@ -40,21 +40,23 @@ enum AttentionEvent: Equatable {
     var signal: AttentionSignal {
         switch self { case .finished(let signal), .input(let signal): return signal }
     }
-    /// The state first (P-5): "입력 필요 · TokenCat", "턴 완료 · TokenCat", "턴 중단 · 프로젝트 미확인".
+    /// The state first (P-5): "입력 필요 · TokenCat" / "Input needed · TokenCat", "턴 완료 · TokenCat",
+    /// "턴 중단 · 프로젝트 미확인" / "Turn interrupted · Unknown project".
     var title: String {
         let what: String
         switch self {
-        case .input: what = "입력 필요"
-        case .finished(let signal): what = signal.ended == .interrupted ? "턴 중단" : "턴 완료"
+        case .input: what = loc("입력 필요", "Input needed")
+        case .finished(let signal): what = signal.ended == .interrupted ? loc("턴 중단", "Turn interrupted") : loc("턴 완료", "Turn complete")
         }
-        return what + " · " + (signal.project.flatMap { $0.isEmpty ? nil : $0 } ?? "프로젝트 미확인")
+        return what + " · " + (signal.project.flatMap { $0.isEmpty ? nil : $0 } ?? loc("프로젝트 미확인", "Unknown project"))
     }
     /// "Claude Code · claude-opus-5-5".
     var subtitle: String { [signal.source.title, signal.model].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ") }
-    /// Completion "12,480 tok · 4분 12초" (never divided), input "답변하면 계속됩니다", interruption nothing.
+    /// Completion "12,480 tok · 4분 12초" / "12,480 tok · 4m 12s" (never divided), input "답변하면 계속됩니다" /
+    /// "Reply to continue", interruption nothing.
     var body: String {
         switch self {
-        case .input: return "답변하면 계속됩니다"
+        case .input: return loc("답변하면 계속됩니다", "Reply to continue")
         case .finished(let signal):
             guard signal.ended == .complete else { return "" }
             return [signal.outputTokens.flatMap { $0 > 0 ? "\(Format.tokens($0)) tok" : nil }, signal.durationSeconds.flatMap(Self.duration)]
@@ -70,12 +72,12 @@ enum AttentionEvent: Equatable {
     }
     static func inputIdentifier(_ group: String) -> String { "input-" + group }
 
-    /// Raw duration reported by the client; never combined with token counts.
+    /// Raw duration reported by the client ("4분 12초" / "4m 12s"); never combined with token counts.
     static func duration(_ seconds: Double) -> String? {
         guard seconds.isFinite, seconds >= 1 else { return nil }
         let total = Int(seconds.rounded())
-        if total >= 3_600 { return "\(total / 3_600)시간 \(total / 60 % 60)분" }
-        return total >= 60 ? "\(total / 60)분 \(total % 60)초" : "\(total)초"
+        if total >= 3_600 { return Format.span(total / 3_600, .hour) + " " + Format.span(total / 60 % 60, .minute) }
+        return total >= 60 ? Format.span(total / 60, .minute) + " " + Format.span(total % 60, .second) : Format.span(total, .second)
     }
 }
 
@@ -144,7 +146,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         content.userInfo = ["group": event.signal.id]
         if sound, case .input = event { content.sound = .default }
         center.add(UNNotificationRequest(identifier: event.identifier, content: content, trigger: nil)) { error in
-            if let error { NSLog("TokenCat 알림 요청 실패: %@", error.localizedDescription) }
+            if let error { NSLog(loc("TokenCat 알림 요청 실패: %@", "TokenCat notification request failed: %@"), error.localizedDescription) }
         }
     }
 
@@ -154,11 +156,11 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// opens the dashboard, where the notice offers the install.
     func postUpdate(_ release: UpdateRelease) {
         let content = UNMutableNotificationContent()
-        content.title = "새 버전 \(release.version)"
-        content.body = "TokenCat 상세 화면이나 설정에서 업데이트할 수 있습니다"
+        content.title = loc("새 버전 \(release.version)", "New version \(release.version)")
+        content.body = loc("TokenCat 상세 화면이나 설정에서 업데이트할 수 있습니다", "Update from the TokenCat dashboard or Settings")
         content.threadIdentifier = Self.updateIdentifier
         center.add(UNNotificationRequest(identifier: Self.updateIdentifier, content: content, trigger: nil)) { error in
-            if let error { NSLog("TokenCat 알림 요청 실패: %@", error.localizedDescription) }
+            if let error { NSLog(loc("TokenCat 알림 요청 실패: %@", "TokenCat notification request failed: %@"), error.localizedDescription) }
         }
     }
 
@@ -202,25 +204,26 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     static func describe(_ status: UNAuthorizationStatus?) -> String {
         switch status {
-        case .authorized, .provisional: return "알림 권한 허용됨"
-        case .denied: return "시스템 설정에서 TokenCat 알림이 꺼져 있어 보낼 수 없습니다"
-        case .notDetermined: return "켜면 macOS가 알림 권한을 한 번 묻습니다"
-        case nil: return "알림 권한 확인 중"
-        default: return "알림 권한 상태를 확인할 수 없습니다"
+        case .authorized, .provisional: return loc("알림 권한 허용됨", "Notifications allowed")
+        case .denied: return loc("시스템 설정에서 TokenCat 알림이 꺼져 있어 보낼 수 없습니다", "TokenCat notifications are off in System Settings")
+        case .notDetermined: return loc("켜면 macOS가 알림 권한을 한 번 묻습니다", "macOS asks for permission once when you turn one on")
+        case nil: return loc("알림 권한 확인 중", "Checking notification permission")
+        default: return loc("알림 권한 상태를 확인할 수 없습니다", "Can't read the notification permission")
         }
     }
 
     /// The sound toggle's caption, from the setting macOS reports (P-5). An earlier alert-only grant is not asked again,
     /// so the sound can stay `.disabled` / `.notSupported` until the user changes it in System Settings.
     static func describeSound(_ status: UNAuthorizationStatus?, _ sound: UNNotificationSetting?, on: Bool) -> String {
-        guard on else { return "꺼짐 · 입력 필요 알림을 소리 없이 보냅니다" }
+        guard on else { return loc("꺼짐 · 입력 필요 알림을 소리 없이 보냅니다", "Off · Input needed alerts are silent") }
         switch (status, sound) {
-        case (.denied?, _): return "알림이 꺼져 있어 소리도 나지 않습니다"
-        case (_, .enabled?): return "켜짐 · 입력 필요 알림에 기본 소리를 냅니다"
-        case (.notDetermined?, _): return "알림 권한을 허용하면 소리가 납니다"
-        case (_, .disabled?): return "시스템 설정에서 TokenCat 알림 소리가 꺼져 있습니다"
-        case (_, .notSupported?): return "macOS가 TokenCat 알림 소리를 허용하지 않았습니다 · 시스템 설정 › 알림에서 확인하세요"
-        default: return "알림 소리 설정을 확인하는 중"
+        case (.denied?, _): return loc("알림이 꺼져 있어 소리도 나지 않습니다", "Notifications are off, so no sound plays")
+        case (_, .enabled?): return loc("켜짐 · 입력 필요 알림에 기본 소리를 냅니다", "On · Input needed alerts play the default sound")
+        case (.notDetermined?, _): return loc("알림 권한을 허용하면 소리가 납니다", "Plays once you allow notifications")
+        case (_, .disabled?): return loc("시스템 설정에서 TokenCat 알림 소리가 꺼져 있습니다", "TokenCat sounds are off in System Settings")
+        case (_, .notSupported?): return loc("macOS가 TokenCat 알림 소리를 허용하지 않았습니다 · 시스템 설정 › 알림에서 확인하세요",
+                                             "macOS hasn't allowed TokenCat sounds · Check System Settings › Notifications")
+        default: return loc("알림 소리 설정을 확인하는 중", "Checking the sound setting")
         }
     }
 }

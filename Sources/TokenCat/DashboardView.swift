@@ -234,8 +234,11 @@ struct DashboardView: View {
         VStack(alignment: .leading, spacing: 0) {
             DashboardHeader(model: model, presentation: presentation, actions: actions, interactive: scrollsSessions)
             if scrollsSessions && !onboardingSeen {
+                // "감쌌습니다(출력 그대로)" only while the original status line command is known.
                 OnboardingCard(outcome: OnboardingCard.outcome(notice: telemetryNotice, note: model.telemetrySetupNote,
-                                                               failure: model.telemetrySetupFailure, state: model.telemetryState),
+                                                               failure: model.telemetrySetupFailure, state: model.telemetryState,
+                                                               bridged: model.claudeBridged == true
+                                                                   && !model.telemetryConnectNotes.contains(.originalUnknown)),
                                settings: actions.openTelemetrySettings, dismiss: { onboardingSeen = true })
                     .padding(.top, DashboardLayout.block)
             }
@@ -377,30 +380,50 @@ struct DashboardHeader: View {
 // MARK: - First run
 
 /// Shown once in the interactive popover, never in snapshots; only ✕ dismisses it.
-/// The telemetry line says only what actually happened: collector down, setup skipped or failed, still starting, or added.
+/// The telemetry line says only what actually happened: collector down, setup skipped or failed, still starting, or added
+/// (with the Claude Code status line wrapped or not); "설정 열기" at its end stands out when something did not apply.
 struct OnboardingCard: View {
-    enum Outcome: Equatable { case added, skipped(String), failed(String), collectorDown(String), preparing }
+    enum Outcome: Equatable { case added(bridged: Bool), skipped(String), failed(String), collectorDown(String), preparing }
     var outcome: Outcome
     var settings: () -> Void
     var dismiss: () -> Void
     static let backupPath = "~/Library/Application Support/TokenCat/telemetry-backups"
 
-    static func outcome(notice: TelemetryNotice?, note: String?, failure: TelemetrySetupFailure?, state: TelemetryCollectorState) -> Outcome {
+    /// `bridged`: Claude Code settings run the usage-limit bridge with a known original command.
+    /// Starts the connect failure note (App.swift), which the card strips to show only the reason.
+    static var notePrefix: String { loc("실측 연결: ", "Telemetry: ") }
+
+    static func outcome(notice: TelemetryNotice?, note: String?, failure: TelemetrySetupFailure?, state: TelemetryCollectorState,
+                        bridged: Bool = false) -> Outcome {
         if let notice, notice.collectorDown { return .collectorDown(notice.text) }
         if let note {
-            let reason = note.replacingOccurrences(of: "실측 연결: ", with: "")
+            let reason = note.replacingOccurrences(of: notePrefix, with: "")
             return failure == .conflict || failure == .invalid ? .skipped(reason) : .failed(reason)
         }
-        return state == .starting ? .preparing : .added
+        return state == .starting ? .preparing : .added(bridged: bridged)
     }
 
-    private var telemetry: (title: String, detail: String) {
+    /// `tail` ends the detail ("A · B" on one line); when the line is too long it starts the second line, before the links.
+    private var telemetry: (title: String, detail: String, tail: String?) {
         switch outcome {
-        case .added: return ("실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했습니다", "다음에 새로 실행할 때부터 적용됩니다")
-        case .skipped(let reason): return ("실측 연결을 건너뛰었습니다", reason)
-        case .failed(let reason): return ("실측 연결을 완료하지 못했습니다", reason)
-        case .collectorDown(let text): return ("실측 연결을 하지 않았습니다", text)
-        case .preparing: return ("실측 수집기를 준비하고 있습니다", "준비되면 Codex·Claude Code 설정에 로컬 전송을 추가합니다")
+        case .added(let bridged):
+            return ("실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했습니다",
+                    bridged ? "Claude Code 상태 표시줄도 한도만 읽도록 감쌌습니다(출력 그대로)" : "새로 실행할 때부터 적용됩니다",
+                    bridged ? "새로 실행할 때부터 적용" : nil)
+        case .skipped(let reason): return ("실측 연결을 건너뛰었습니다", reason, nil)
+        case .failed(let reason): return ("실측 연결을 완료하지 못했습니다", reason, nil)
+        case .collectorDown(let text): return ("실측 연결을 하지 않았습니다", text, nil)
+        case .preparing: return ("실측 수집기를 준비하고 있습니다", "준비되면 Codex·Claude Code 설정에 로컬 전송을 추가합니다", nil)
+        }
+    }
+
+    private var added: Bool { if case .added = outcome { return true } else { return false } }
+
+    /// Skipped, failed or collector down: the way to Settings is the next step.
+    private var needsSettings: Bool {
+        switch outcome {
+        case .skipped, .failed, .collectorDown: return true
+        case .added, .preparing: return false
         }
     }
 
@@ -417,38 +440,61 @@ struct OnboardingCard: View {
             }
             .frame(height: 18)
             row("lock.shield", "대화 본문은 저장하지 않습니다", "모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 읽습니다")
-            row("slider.horizontal.3", telemetry.title, telemetry.detail, backups: outcome == .added)
-            HStack(alignment: .bottom, spacing: 8) {
-                row("hand.raised", "모델 호출·계정 로그인을 하지 않습니다",
-                    "로그인 시 열기와 알림은 직접 켠 경우에만 동작합니다. 새 버전 확인만 GitHub에 묻습니다(설정 › 정보에서 끌 수 있음)")
-                Spacer(minLength: 0)
-                SmallBorderedButton(title: "실측 설정 열기", action: settings)
-            }
+            row("slider.horizontal.3", telemetry.title, telemetry.detail, tail: telemetry.tail, links: true)
+            row("hand.raised", "모델 호출·계정 로그인을 하지 않습니다", "인터넷 요청은 GitHub 새 버전 확인뿐입니다(설정 › 정보에서 끄기)")
         }
         .padding(12)
         .buttonStyle(.automatic)
         .container(tint: true)
     }
 
-    private func row(_ symbol: String, _ title: String, _ detail: String, backups: Bool = false) -> some View {
+    /// The links follow the detail on its line when they fit, otherwise they start the next line (after `tail`).
+    private func row(_ symbol: String, _ title: String, _ detail: String, tail: String? = nil, links: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             Image(systemName: symbol).font(TCFont.body).foregroundStyle(Color.accentColor).frame(width: 20, alignment: .leading)
             VStack(alignment: .leading, spacing: 1) {
                 Text(title).font(TCFont.metaMedium).fixedSize(horizontal: false, vertical: true)
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    Text(detail).font(TCFont.meta).toneSecondary().fixedSize(horizontal: false, vertical: true)
-                    if backups {
-                        Button {
-                            let url = URL(fileURLWithPath: (Self.backupPath as NSString).expandingTildeInPath, isDirectory: true)
-                            NSWorkspace.shared.activateFileViewerSelecting([url])
-                        } label: { Text("백업 보기").font(TCFont.metaMedium).underline() }
-                        .buttonStyle(.plain).fixedSize()
-                        .help("원본 백업 \(Self.backupPath) · Finder에서 보여 주기만 합니다")
+                if links {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            detailText(([detail] + [tail].compactMap { $0 }).joined(separator: " · ")).fixedSize()
+                            linkButtons
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            detailText(detail).fixedSize(horizontal: false, vertical: true)
+                            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                if let tail { detailText(tail).fixedSize() }
+                                linkButtons
+                            }
+                        }
                     }
+                } else {
+                    detailText(detail).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private func detailText(_ text: String) -> some View { Text(text).font(TCFont.meta).toneSecondary() }
+
+    @ViewBuilder private var linkButtons: some View {
+        if added {
+            link("백업 보기", help: "원본 백업 \(Self.backupPath) · Finder에서 보여 주기만 합니다") {
+                let url = URL(fileURLWithPath: (Self.backupPath as NSString).expandingTildeInPath, isDirectory: true)
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+        }
+        link("설정 열기", help: "설정의 실측 탭을 엽니다", emphasized: needsSettings, action: settings)
+    }
+
+    /// An underlined 11 pt medium text button; accent when it is the next step.
+    private func link(_ title: String, help: String, emphasized: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(TCFont.metaMedium).underline().foregroundStyle(emphasized ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(HierarchicalShapeStyle.primary))
+        }
+        .buttonStyle(.plain).fixedSize()
+        .help(help)
     }
 }
 
@@ -510,8 +556,11 @@ struct FlowCard: View {
             Text("출력 토큰").font(TCFont.title).fixedSize().accessibilityAddTraits(.isHeader)
             Text("최근 5분 기록 없음").font(TCFont.meta).toneSecondary().lineLimit(1)
             Spacer(minLength: 8)
-            Text(newestOutputAt.map { "마지막 출력 " + SessionPresentation.helpAge($0, now: now) } ?? "출력 기록 없음")
-                .font(TCFont.metaMono).toneSecondary().lineLimit(1).fixedSize()
+            // Without any output yet the row already says "기록 없음" once.
+            if let newestOutputAt {
+                Text("마지막 출력 " + SessionPresentation.helpAge(newestOutputAt, now: now))
+                    .font(TCFont.metaMono).toneSecondary().lineLimit(1).fixedSize()
+            }
         }
         .frame(height: 20)
     }
@@ -568,7 +617,7 @@ struct FlowCard: View {
             VStack(alignment: .trailing, spacing: 1) {
                 HStack(spacing: 4) {
                     if let glyph = caption.glyph, !loading { StateGlyphView(kind: glyph, side: 8, contrast: high) }
-                    Text(loading ? "마지막 기록" : caption.text).font(TCFont.meta).lineLimit(1).truncationMode(.tail)
+                    Text(loading ? SessionPresentation.lastRecordCaption : caption.text).font(TCFont.meta).lineLimit(1).truncationMode(.tail)
                         .foregroundColor(caption.emphasized && !loading ? nil : secondary)
                 }
                 .frame(maxWidth: 220, alignment: .trailing)
@@ -609,7 +658,7 @@ struct FlowCard: View {
         var parts = ["\(total.formatted()) 토큰"]
         if let last = flow.last { parts.append("마지막 기록 \(last.tokens.formatted()) 토큰, \(SessionPresentation.recordAge(last.at, now: now))") }
         else { parts.append("최근 5분 동안 출력 기록 없음") }
-        if caption.glyph != nil || caption.text != "마지막 기록" { parts.append(caption.text) }
+        if caption.glyph != nil || caption.text != SessionPresentation.lastRecordCaption { parts.append(caption.text) }
         parts.append("로그 기록 시점 기준이며 속도가 아닙니다")
         return parts.joined(separator: ". ")
     }
@@ -640,9 +689,9 @@ private struct SpeedHeadlineView: View {
         }
     }
 
-    /// An unknown rate is a bare tertiary "—", like the row's speed cell.
+    /// An unknown rate is a tertiary "—" with " tok/s", like the row's speed cell, so it never reads as a divider.
     private var value: some View {
-        let unit = headline.kind.map { Text(" " + $0).font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high)) } ?? Text("")
+        let unit = Text(" " + (headline.kind ?? "tok/s")).font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
         return (Text(headline.value).font(TCFont.metric).foregroundColor(headline.known ? nil : TCColor.textTertiary(contrast: high)) + unit)
             .lineLimit(1).fixedSize()
     }
@@ -1307,6 +1356,7 @@ struct SpeedLabel: View {
     var slot: SpeedSlot
     /// Narrow third line: the rate kind moves to help.
     var short = false
+    @Environment(\.tokenCatHighContrast) private var high
     var body: some View {
         Group {
             if slot.known {
@@ -1317,7 +1367,9 @@ struct SpeedLabel: View {
                 }
                 .toneSecondary()
             } else {
-                Text("—").font(TCFont.meta).toneTertiary()
+                // The unit keeps a lone "—" from reading as a divider.
+                Text("—").font(TCFont.meta).foregroundColor(TCColor.textTertiary(contrast: high))
+                    + Text(" tok/s").font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
             }
         }
         .lineLimit(1).fixedSize().help(slot.help)
@@ -1432,7 +1484,7 @@ struct LiveSessionRow: View {
     private func spokenValue(_ contextSlot: ContextSlot?, _ speed: SpeedSlot) -> String {
         var state: String?
         if item.state == .input { state = SessionPresentation.inputTitle(reading) }
-        if item.state == .retrying { state = reading.retry.map { "API " + SessionPresentation.retryText($0, now: now) } }
+        if item.state == .retrying { state = reading.retry.map { SessionPresentation.retryText($0, now: now, api: true) } }
         return [state, SessionPresentation.effortLabel(reading).map { "추론 \($0)" },
                 SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { "턴 경과 \($0)" },
                 RowText.output(reading), RowText.children(childCount), contextSlot?.spoken,
@@ -1466,7 +1518,8 @@ struct LiveSessionRow: View {
     }
 }
 
-/// "+1,356 tok · 방금" with a reserved 6 pt dot: green and primary semibold for 5 s, then secondary.
+/// "+1,356 tok · 방금" with a reserved 6 pt dot 4 pt before it (as on the flow card and child rows): green and primary
+/// semibold for 5 s, then secondary.
 private struct LastRecordLabel: View {
     var record: TokenOutputEvent
     var now: Date
@@ -1475,9 +1528,9 @@ private struct LastRecordLabel: View {
     var body: some View {
         let fresh = SessionPresentation.isFresh(record.at, now: now)
         let secondary = TCColor.textSecondary(contrast: high)
-        // The dot hangs in the glyph column (x = 12–22) so the text stays on the text column (x = 28).
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Circle().fill(TCColor.activity).frame(width: 6, height: 6).frame(width: 10).opacity(fresh ? 1 : 0)
+        // The dot sits in a 12 pt slot from the glyph column (x = 12) so the text stays on the text column (x = 28).
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Circle().fill(TCColor.activity).frame(width: 6, height: 6).frame(width: 12, alignment: .trailing).opacity(fresh ? 1 : 0)
             (Text("+\(Format.tokens(record.tokens)) tok").font(fresh ? TCFont.metaMonoSemibold : TCFont.metaMono).foregroundColor(fresh ? nil : secondary)
                 + Text(age ? " · " + SessionPresentation.recordAge(record.at, now: now) : "").font(TCFont.metaMono).foregroundColor(secondary))
                 .lineLimit(1).fixedSize()
@@ -1498,12 +1551,15 @@ struct IdleSessionRow: View {
     private var age: String { Format.age(reading.lastActivity, now: now) }
     /// An idle lead whose subagents are live shows the group's state instead of its own age.
     private var followsGroup: Bool { !item.state.isLive && groupState.isLive && liveChildren > 0 }
-    private var stateAge: String {
-        if followsGroup { return SessionPresentation.childGroupText(groupState, count: liveChildren) }
+    private var trailing: String { followsGroup ? SessionPresentation.childGroupText(groupState, count: liveChildren) : age }
+    /// "중단", "종료 기록 없음" beside the client, so the age column keeps one width; it drops first when the row is tight
+    /// (the ring glyph, help and VoiceOver still say it).
+    private var stateWord: String? {
+        guard !followsGroup else { return nil }
         switch item.state {
-        case .interrupted: return "중단 · \(age)"
-        case .unfinished: return "종료 기록 없음 · \(age)"
-        default: return age
+        case .interrupted: return "중단"
+        case .unfinished: return "종료 기록 없음"
+        default: return nil
         }
     }
 
@@ -1513,9 +1569,10 @@ struct IdleSessionRow: View {
             StateGlyphView(kind: StateGlyph.Kind(state) ?? .idle, side: 8, contrast: high).frame(width: 10)
                 .padding(.leading, DashboardLayout.glyphX)
             ViewThatFits(in: .horizontal) {
-                names(client: true, id: context.showsID(reading))
-                names(client: true, id: false)
-                names(client: false, id: false)
+                names(client: true, id: context.showsID(reading), word: true)
+                names(client: true, id: context.showsID(reading), word: false)
+                names(client: true, id: false, word: false)
+                names(client: false, id: false, word: false)
             }
             .padding(.leading, 6)
             .layoutPriority(1)
@@ -1525,8 +1582,9 @@ struct IdleSessionRow: View {
                     .toneSecondary().lineLimit(1).fixedSize().padding(.trailing, 10)
                     .help(SessionPresentation.lastTurnSummary(reading) ?? "")
             }
-            Text(stateAge).font(TCFont.metaMono).toneSecondary().lineLimit(1)
-                .frame(minWidth: 64, alignment: .trailing).fixedSize()
+            // A fixed 64 pt age column, so "마지막 턴" lines up across rows; the group's state text may be wider.
+            Text(trailing).font(TCFont.metaMono).toneSecondary().lineLimit(1)
+                .frame(minWidth: 64, maxWidth: followsGroup ? .infinity : 64, alignment: .trailing).fixedSize()
                 .help("\(state.title) · 마지막 활동 \(SessionPresentation.helpAge(reading.lastActivity, now: now))")
         }
         .padding(.trailing, DashboardLayout.inset)
@@ -1538,16 +1596,17 @@ struct IdleSessionRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: state))
-        .accessibilityValue(["마지막 활동 \(age)", followsGroup ? stateAge : nil, RowText.children(childCount), SessionPresentation.lastTurnSummary(reading),
+        .accessibilityValue(["마지막 활동 \(age)", followsGroup ? trailing : nil, RowText.children(childCount), SessionPresentation.lastTurnSummary(reading),
                              SessionPresentation.speed(reading, now: now).spoken].compactMap { $0 }.joined(separator: ", "))
         .accessibilityAction { context.tap(item.id) }
         .rowActions(reading)
     }
 
-    private func names(client: Bool, id: Bool) -> some View {
+    private func names(client: Bool, id: Bool, word: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(reading.project ?? "프로젝트 미확인").font(TCFont.body).lineLimit(1).truncationMode(.tail).layoutPriority(2)
             if client { Text(reading.source.title).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
+            if word, let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).fixedSize() }
             if id { Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
         }
     }
@@ -1617,8 +1676,8 @@ struct ChildSessionRow: View {
     @ViewBuilder private var recordAge: some View {
         if let record = SessionPresentation.lastRecord(reading) {
             let age = SessionPresentation.recordAge(record.at, now: now)
-            HStack(spacing: 3) {
-                if age == "방금" { Circle().fill(TCColor.activity).frame(width: 5, height: 5) }
+            HStack(spacing: 4) {
+                if age == SessionPresentation.justNow { Circle().fill(TCColor.activity).frame(width: 6, height: 6) }
                 Text(age).font(TCFont.metaMono).toneSecondary().lineLimit(1).fixedSize()
             }
         }
@@ -1778,7 +1837,9 @@ struct SystemArea: View {
         .accessibilityAction(named: "활성 상태 보기", open)
     }
 
+    /// Before the first sample a redacted "00%" (about 32 pt), so the skeleton has the value's width.
     private func percentText(_ value: Double?) -> Text {
+        guard hasSample else { return Text("00").font(TCFont.value) + Text("%").font(TCFont.micro) }
         guard let value, value.isFinite else { return Text("—").font(TCFont.value).foregroundColor(TCColor.textTertiary(contrast: high)) }
         return Text(String(format: "%.0f", value)).font(TCFont.value) + Text("%").font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
     }
@@ -1865,12 +1926,15 @@ struct SystemArea: View {
         let download = StatusBarContent.splitRate(StatusBarContent.networkRate(hasSample ? system.downloadBytesPerSecond : nil))
         let upload = StatusBarContent.networkRate(hasSample ? system.uploadBytesPerSecond : nil)
         let up = StatusBarContent.splitRate(upload)
+        // The redacted skeleton before the first sample has a rate's width.
+        let shownDown = hasSample ? download : (number: "0.0", unit: "kB/s")
+        let shownUp = hasSample ? up : (number: "0.0", unit: "kB/s")
         return cell("네트워크", help: "네트워크: Wi-Fi·Ethernet 합산, VPN·루프백 제외\n\(system.localIPs.isEmpty ? "IPv4 주소 미확인" : "IPv4 " + system.localIPs.joined(separator: " · "))",
                     spoken: "다운로드 \(download.number)\(download.unit), 업로드 \(upload)") {
-            Text("↓ " + download.number).font(TCFont.value)
-                + Text(download.unit.isEmpty ? "" : " " + download.unit).font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
+            Text("↓ " + shownDown.number).font(TCFont.value)
+                + Text(shownDown.unit.isEmpty ? "" : " " + shownDown.unit).font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
         } aux: {
-            Text("↑ " + up.number + (up.unit.isEmpty ? "" : " " + up.unit)).font(TCFont.micro.monospacedDigit()).toneSecondary().lineLimit(1)
+            Text("↑ " + shownUp.number + (shownUp.unit.isEmpty ? "" : " " + shownUp.unit)).font(TCFont.micro.monospacedDigit()).toneSecondary().lineLimit(1)
         }
     }
 }
@@ -1901,8 +1965,7 @@ struct DashboardFooter: View {
         Group {
             switch status.kind {
             case .loading:
-                Circle().fill(TCColor.idle).frame(width: 6, height: 6)
-                    .help("수집 준비 중").accessibilityElement().accessibilityLabel("수집 준비 중")
+                item(Circle().fill(TCColor.idle).frame(width: 6, height: 6), primary: false).help("첫 수집을 준비하고 있습니다")
             case .aiDelay, .systemDelay:
                 item(Circle().fill(TCColor.warning).frame(width: 6, height: 6), primary: true).help(help)
             case .notice:

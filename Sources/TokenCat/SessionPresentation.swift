@@ -457,19 +457,26 @@ enum SessionPresentation {
         return "\(word), \(reading.project ?? "프로젝트 미확인"), \(reading.source.title) \(reading.model ?? "모델 미확인")"
     }
 
-    static func retryText(_ retry: TokenRetryState, now: Date) -> String {
-        let attempts = retry.maxAttempts.map { "\(retry.attempt)/\($0)" } ?? "\(retry.attempt)회째"
-        if retry.networkDown { return "재시도 \(attempts) · 네트워크 끊김" }
-        guard let at = retry.retryAt, at > now else { return "재시도 \(attempts) · 재요청 중" }
+    /// "재시도 2/10 · 4초 후" / "Retry 2/10 · in 4s"; `api` starts it "API 재시도" / "API retry".
+    static func retryText(_ retry: TokenRetryState, now: Date, api: Bool = false) -> String {
+        let attempts = retry.maxAttempts.map { "\(retry.attempt)/\($0)" } ?? loc("\(retry.attempt)회째", "#\(retry.attempt)")
+        let head = (api ? loc("API 재시도", "API retry") : loc("재시도", "Retry")) + " \(attempts) · "
+        if retry.networkDown { return head + loc("네트워크 끊김", "network down") }
+        guard let at = retry.retryAt, at > now else { return head + loc("재요청 중", "retrying now") }
         let seconds = Int(ceil(at.timeIntervalSince(now)))
-        return "재시도 \(attempts) · " + (seconds >= 60 ? "\(seconds / 60)분 후" : "\(seconds)초 후")
+        return head + Format.later(seconds >= 60 ? Format.span(seconds / 60, .minute) : Format.span(seconds, .second))
     }
 
-    /// Output ages on rows and the flow card: "방금" under 10 s, then 10 s steps, then `Format.age`.
+    /// Shared with the views, which mark a record this fresh.
+    static var justNow: String { loc("방금", "just now") }
+    /// The flow card's default caption; the views compare against it.
+    static var lastRecordCaption: String { loc("마지막 기록", "Last record") }
+
+    /// Output ages on rows and the flow card: "방금" / "just now" under 10 s, then 10 s steps, then `Format.age`.
     static func recordAge(_ date: Date, now: Date) -> String {
         let seconds = max(0, Int(now.timeIntervalSince(date)))
-        if seconds < 10 { return "방금" }
-        if seconds < 60 { return "\(seconds / 10 * 10)초 전" }
+        if seconds < 10 { return justNow }
+        if seconds < 60 { return Format.ago(Format.span(seconds / 10 * 10, .second)) }
         return Format.age(date, now: now)
     }
 
@@ -530,19 +537,19 @@ enum SessionPresentation {
 
     /// Minute-granular age for help text, so tooltips do not change every second.
     static func helpAge(_ date: Date?, now: Date) -> String {
-        guard let date else { return "기록 없음" }
-        let seconds = max(0, Int(now.timeIntervalSince(date)))
-        if seconds < 60 { return "1분 이내" }
-        if seconds < 3_600 { return "\(seconds / 60)분 전" }
-        if seconds < 86_400 { return "\(seconds / 3_600)시간 전" }
-        return "\(seconds / 86_400)일 전"
+        guard let date, now.timeIntervalSince(date) < 60 else { return Format.age(date, now: now) }
+        return loc("1분 이내", "<1m ago")
     }
 
+    /// Time left, minute-granular: "2시간 13분" / "2h 13m", "5일 11시간" / "5d 11h", "1분 이내" / "<1m".
     static func countdown(to date: Date, now: Date) -> String {
         let minutes = max(0, Int(date.timeIntervalSince(now)) / 60)
-        if minutes >= 1_440 { return minutes % 1_440 / 60 > 0 ? "\(minutes / 1_440)일 \(minutes % 1_440 / 60)시간" : "\(minutes / 1_440)일" }
-        if minutes >= 60 { return minutes % 60 > 0 ? "\(minutes / 60)시간 \(minutes % 60)분" : "\(minutes / 60)시간" }
-        return minutes > 0 ? "\(minutes)분" : "1분 이내"
+        func pair(_ big: Int, _ bigUnit: Format.TimeUnit, _ small: Int, _ smallUnit: Format.TimeUnit) -> String {
+            Format.span(big, bigUnit) + (small > 0 ? " " + Format.span(small, smallUnit) : "")
+        }
+        if minutes >= 1_440 { return pair(minutes / 1_440, .day, minutes % 1_440 / 60, .hour) }
+        if minutes >= 60 { return pair(minutes / 60, .hour, minutes % 60, .minute) }
+        return minutes > 0 ? Format.span(minutes, .minute) : loc("1분 이내", "<1m")
     }
 
     static func windowLabel(_ minutes: Int?) -> String {
@@ -668,11 +675,12 @@ enum SessionPresentation {
     }
 
     /// Spoken elapsed time: seconds under a minute, then minutes ("4분"), then hours and minutes.
+    /// VoiceOver: "1시간 5분" / "1 hour 5 minutes".
     static func spokenDuration(_ start: Date?, now: Date) -> String? {
         guard let start else { return nil }
         let seconds = max(0, Int(now.timeIntervalSince(start)))
-        if seconds >= 3_600 { return "\(seconds / 3_600)시간 \(seconds / 60 % 60)분" }
-        return seconds >= 60 ? "\(seconds / 60)분" : "\(seconds)초"
+        if seconds >= 3_600 { return Format.span(seconds / 3_600, .hour, spoken: true) + " " + Format.span(seconds / 60 % 60, .minute, spoken: true) }
+        return seconds >= 60 ? Format.span(seconds / 60, .minute, spoken: true) : Format.span(seconds, .second, spoken: true)
     }
 
     // MARK: Header, flow caption, footer
@@ -720,7 +728,7 @@ enum SessionPresentation {
 
     /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record.
     static func flowCaption(counts: SessionCounts, last: Date?, now: Date) -> FlowCaption {
-        let base = FlowCaption(text: "마지막 기록", help: "최근 5분 안에 로그에 기록된 마지막 출력입니다")
+        let base = FlowCaption(text: lastRecordCaption, help: "최근 5분 안에 로그에 기록된 마지막 출력입니다")
         guard counts.liveGroups > 0 else { return base }
         if let last, now.timeIntervalSince(last) <= 30 { return base }
         let help = "응답이 끝나면 토큰이 기록됩니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다"
@@ -729,7 +737,7 @@ enum SessionPresentation {
                                glyph: .input, emphasized: true, help: help)
         }
         if counts.retrying > 0 {
-            let text = counts.retry.map { $0.networkDown ? "API 재시도 · 네트워크 끊김" : "API " + retryText($0, now: now) } ?? "API 재시도"
+            let text = counts.retry.map { $0.networkDown ? "API 재시도 · 네트워크 끊김" : retryText($0, now: now, api: true) } ?? "API 재시도"
             return FlowCaption(text: text, glyph: .retry, emphasized: true, help: help)
         }
         if counts.tool > 0 { return FlowCaption(text: "\(toolTitle(counts.leadingToolCategory)) 중 · 응답 후 기록", help: help) }
@@ -774,7 +782,7 @@ enum SessionPresentation {
 
     /// One footer item: collection delay first, then the telemetry notice, then "실시간".
     static func footerStatus(loading: Bool, tokenDelay: Int, systemDelay: Int, notice: TelemetryNotice?) -> FooterStatus {
-        if loading { return FooterStatus(kind: .loading, text: "") }
+        if loading { return FooterStatus(kind: .loading, text: "준비 중") }
         if tokenDelay > 3 { return FooterStatus(kind: .aiDelay, text: "AI 수집 지연 \(tokenDelay)초") }
         if systemDelay > 3 { return FooterStatus(kind: .systemDelay, text: "시스템 수집 지연 \(systemDelay)초") }
         if let notice { return FooterStatus(kind: .notice, text: notice.text) }

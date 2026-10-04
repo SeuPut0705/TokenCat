@@ -168,13 +168,29 @@ func runUpdaterChecks() -> [String] {
     let failed = state.notice(dismissed: nil)
     state.install = .failed(.translocated)
     let blocked = state.notice(dismissed: nil)
-    let blockedInstall = state.canInstall || state.quickMenuTitle != nil
+    // A failure that trying again cannot fix is not offered the install again; the quick menu opens the release page.
+    let blockedInstall = [UpdateFailure.translocated, .notWritable, .noDigest, .relaunchFailed].contains { failure in
+        var copy = state
+        copy.install = .failed(failure)
+        return copy.canInstall || copy.quickMenuTitle != "업데이트 0.9.1 릴리스 페이지…" || copy.quickMenuCommand != .openReleasePage
+    }
     state.install = .failed(.network)
     check(failed?.text == "업데이트 실패" && failed?.detail == "네트워크 오류" && failed?.kind == .failed(retryable: true)
           && blocked?.kind == .failed(retryable: false) && blocked?.detail == "임시 위치에서 실행 중"
           && UpdateState(install: .failed(.translocated)).status(now: at) == ("업데이트 실패", "임시 위치에서 실행 중", true)
-          && !blockedInstall && state.canInstall && state.quickMenuTitle == "업데이트 0.9.1 설치…",
-          "failures: short reason, retry only when it can help; the translocated copy is not offered the install again")
+          && !blockedInstall && state.canInstall && state.quickMenuTitle == "업데이트 0.9.1 설치…" && state.quickMenuCommand == .install,
+          "failures: short reason, retry only when it can help; a blocked install offers the release page instead")
+    // A newer release than the failed one can be installed again; the same release keeps the failure.
+    var blockedState = state
+    blockedState.install = .failed(.notWritable)
+    blockedState.receive(available: latest)
+    let sameKept = !blockedState.canInstall && blockedState.installFailure == .notWritable
+    blockedState.receive(available: newer)
+    var downloading = state
+    downloading.install = .downloading(0.1)
+    downloading.receive(available: newer)
+    check(sameKept && blockedState.canInstall && blockedState.installFailure == nil && blockedState.quickMenuTitle == "업데이트 0.9.2 설치…"
+          && downloading.install == .downloading(0.1), "a newer release clears a blocking failure; a download in progress is untouched")
     state.install = .none
     check(state.status(now: at) == ("새 버전 0.9.1", "3분 전 확인", false) && state.quickMenuTitle == "업데이트 0.9.1 설치…",
           "Settings line and quick menu item with a new version")

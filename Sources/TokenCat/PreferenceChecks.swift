@@ -405,6 +405,18 @@ func runShellChecks() -> [String] {
     let interrupted = tracker.update([signal, codex]).first
     check(interrupted?.title == "턴 중단 · 프로젝트 미확인" && interrupted?.subtitle == "Codex" && interrupted?.body == "",
           "An interrupted turn is not reported as 중단 without a project, model or body")
+    AppLanguage.with(.en) {
+        check(asked.first?.title == "Input needed · TokenCat" && asked.first?.body == "Reply to continue"
+              && finished.first?.title == "Turn complete · TokenCat" && finished.first?.body == "12,480 tok · 4m 12s"
+              && interrupted?.title == "Turn interrupted · Unknown project" && AttentionEvent.duration(3_725) == "1h 2m"
+              && Notifier.describe(.denied) == "TokenCat notifications are off in System Settings"
+              && Notifier.describeSound(.authorized, .enabled, on: true) == "On · Input needed alerts play the default sound"
+              && LoginItem.describe(.requiresApproval) == "Needs approval in System Settings > General > Login Items",
+              "English notifications or login item captions are wrong")
+    }
+    check(AttentionEvent.duration(3_725) == "1시간 2분" && AttentionEvent.duration(5) == "5초"
+          && LoginItem.describe(.notRegistered) == "꺼짐 · 켤 때만 로그인 항목에 등록합니다",
+          "Korean notification durations or login item captions changed")
     var repeated = signal
     repeated.id = "claude:s2"
     repeated.live = true
@@ -489,6 +501,16 @@ func runShellChecks() -> [String] {
           && client(false, false, nil, at).text == "기록 수신 중 · 속도 형식 없음" && client(false, false, nil, at).detail != nil
           && client(false, false, nil, nil).text == "이번 실행에서 받은 실측 없음",
           "Client telemetry rows are not checked restart → 24 h → received → batch only → none")
+    let limits = { (notes: [TelemetrySetupNote], bridged: Bool?, received: Date?) in
+        TelemetryStatusRow.claudeLimits(notes: notes, bridged: bridged, received: received, now: at)
+    }
+    check(limits([.originalUnknown], true, at) == (.problem, "상태 표시줄이 비어 보일 수 있음", "settings.json의 statusLine을 직접 고쳐 주세요")
+          && limits([.statusLineSkipped], false, at).text == "연결 안 함 · statusLine 형식이 달라 건너뜀"
+          && limits([], true, at.addingTimeInterval(-180)) == (.received, "최근 수신 3분 전", nil)
+          && limits([.originalRecreated], true, at.addingTimeInterval(-50)) == (.received, "최근 수신 1분 이내", "원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다")
+          && limits([], true, nil) == (.waiting, "아직 받지 못함 · Claude Code를 새로 실행하면 표시", nil)
+          && limits([], false, nil).text == "연결 안 함" && limits([], nil, nil).row == .info,
+          "Claude limit row is not checked empty status line → skipped → received → waiting → none")
     print("Shell checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

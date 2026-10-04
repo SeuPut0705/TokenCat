@@ -63,11 +63,9 @@ enum SettingsPane: String, CaseIterable, Identifiable {
 
 /// What Settings asks of the app shell; views never reach windows themselves.
 struct SettingsActions {
-    var about: () -> Void
-    var openPanel: () -> Void
     /// Clears `onboardingSeen` and opens the dashboard.
     var reshowOnboarding: () -> Void
-    static let none = SettingsActions(about: {}, openPanel: {}, reshowOnboarding: {})
+    static let none = SettingsActions(reshowOnboarding: {})
 }
 
 /// Live system state shown in Settings: read back on open, never changed without a user action.
@@ -85,6 +83,14 @@ final class SettingsState: ObservableObject {
     init(notifier: Notifier) {
         self.notifier = notifier
         refresh()
+    }
+
+    /// Fixed states for `--snapshot-settings --fixtures`: the login item and notification permission are never read or asked.
+    init(notifier: Notifier, login: SMAppService.Status, notifications: UNAuthorizationStatus?, sound: UNNotificationSetting?) {
+        self.notifier = notifier
+        loginStatus = login
+        notificationStatus = notifications
+        soundSetting = sound
     }
 
     func refresh() {
@@ -208,7 +214,7 @@ struct SettingsPaneView: View {
     var body: some View {
         Group {
             switch pane {
-            case .general: GeneralPane(preferences: preferences, model: model, state: state, actions: actions)
+            case .general: GeneralPane(preferences: preferences, state: state)
             case .menubar: MenuBarPane(preferences: preferences, model: model, state: state)
             case .cat: CatPane(preferences: preferences, state: state)
             case .telemetry: TelemetryPane(model: model)
@@ -222,14 +228,22 @@ struct SettingsPaneView: View {
 }
 
 /// Title with an 11 pt secondary subtitle under it, inside the control's own label (T-2); explicit, so macOS 13 lays it out too.
+/// `warning` puts a 12 pt warning triangle before the title.
 private struct SettingsLabel: View {
     var title: String
     var subtitle: String?
     var subtitleColor: Color = .secondary
+    var warning = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(title)
+            HStack(spacing: 4) {
+                if warning {
+                    Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(TCColor.warning)
+                        .accessibilityHidden(true)
+                }
+                Text(title)
+            }
             if let subtitle {
                 Text(subtitle).font(.system(size: 11)).foregroundStyle(subtitleColor).fixedSize(horizontal: false, vertical: true)
             }
@@ -257,9 +271,7 @@ private func openNotificationSettings() {
 
 private struct GeneralPane: View {
     @ObservedObject var preferences: Preferences
-    let model: DashboardModel
     @ObservedObject var state: SettingsState
-    let actions: SettingsActions
     @State private var confirmsReset = false
     @Environment(\.undoManager) private var undoManager
 
@@ -297,36 +309,31 @@ private struct GeneralPane: View {
                                   subtitle: Notifier.describeSound(state.notificationStatus, state.soundSetting, on: preferences.notifyInputSound))
                 }
                 .disabled(!preferences.notifyInput)
+                // The way to System Settings sits in this row when macOS blocks alerts or the sound.
                 LabeledContent("권한") {
-                    Text(Notifier.describe(state.notificationStatus)).font(.system(size: 11)).multilineTextAlignment(.trailing)
-                        .foregroundStyle(state.notificationStatus == .denied
-                                         && (preferences.notifyTurnComplete || preferences.notifyInput || preferences.notifyUpdate)
-                                         ? TCColor.warning : Color.secondary)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        Text(Notifier.describe(state.notificationStatus)).font(.system(size: 11)).multilineTextAlignment(.trailing)
+                            .foregroundStyle(state.notificationStatus == .denied
+                                             && (preferences.notifyTurnComplete || preferences.notifyInput || preferences.notifyUpdate)
+                                             ? TCColor.warning : Color.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if state.notificationStatus == .denied
+                            || (preferences.notifyInput && preferences.notifyInputSound && Notifier.soundBlocked(state.notificationStatus, state.soundSetting)) {
+                            Button("알림 설정 열기", action: openNotificationSettings).controlSize(.small)
+                        }
+                    }
                 }
                 if let error = state.notificationError { settingsCaption(error, color: .red) }
-                if state.notificationStatus == .denied
-                    || (preferences.notifyInput && preferences.notifyInputSound && Notifier.soundBlocked(state.notificationStatus, state.soundSetting)) {
-                    Button("알림 설정 열기", action: openNotificationSettings)
-                }
             } header: {
                 Text("알림")
             } footer: {
-                settingsFooter("기본값은 꺼짐입니다. 팝오버나 패널이 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.")
-            }
-
-            Section {
-                LabeledContent("상세 패널") {
-                    Button("상세 패널 열기", action: actions.openPanel)
+                VStack(alignment: .leading, spacing: 8) {
+                    settingsFooter("기본값은 꺼짐입니다. 팝오버나 패널이 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.")
+                    HStack {
+                        Spacer()
+                        Button("기본값으로 되돌리기…") { confirmsReset = true }
+                    }
                 }
-                .help("메뉴 막대에서 떨어진 창에 같은 내용을 띄웁니다")
-            } header: {
-                Text("창")
-            } footer: {
-                HStack {
-                    Spacer()
-                    Button("기본값으로 되돌리기…") { confirmsReset = true }
-                }
-                .padding(.top, 4)
             }
         }
         .alert("메뉴 막대·고양이·알림 설정을 기본값으로 되돌릴까요?", isPresented: $confirmsReset) {
@@ -360,46 +367,66 @@ private struct UpdateSection: View {
             Toggle("새 버전 자동 확인", isOn: $preferences.autoCheckUpdates)
                 .disabled(update.disabled != nil)
                 .help("실행 직후, 15분마다, 잠자기에서 깨어난 뒤 GitHub 최신 릴리스를 확인합니다")
-            // One row: the full failure sentence spans the width under the status and its buttons.
+            // One row: the full failure sentence spans the width under the status and its buttons; it replaces the short
+            // reason, and only the title carries the warning mark.
             VStack(alignment: .leading, spacing: 6) {
                 LabeledContent {
-                    // Like the dashboard footer: after a failure, a retry only when it can help, and the release page.
-                    HStack(spacing: 6) {
-                        if let failure {
-                            if failure.retryable && update.canInstall {
-                                Button("다시 시도") { model.requestUpdate(.install) }
-                                    .help("릴리스 정보를 다시 확인하고 내려받습니다")
-                            }
-                            Button("릴리스 페이지 열기") { model.requestUpdate(.openReleasePage) }
-                        } else if update.canInstall {
-                            Button("업데이트") { model.requestUpdate(.install) }
-                                .help("내려받아 설치한 뒤 TokenCat을 다시 엽니다")
-                        }
-                        Button("지금 확인") { model.requestUpdate(.check) }.disabled(!update.canCheck)
-                    }
-                    .fixedSize()
+                    HStack(spacing: 6) { updateButtons(update, failure: failure) }
+                        .fixedSize()
                 } label: {
-                    SettingsLabel(title: status.title, subtitle: status.detail, subtitleColor: status.problem ? TCColor.warning : .secondary)
+                    SettingsLabel(title: status.title, subtitle: failure == nil ? status.detail : nil, warning: status.problem)
                 }
-                if let failure { settingsCaption(failure.text, color: TCColor.warning) }
+                if let failure { settingsCaption(failure.text) }
             }
-            // Turned on while macOS denies notifications: said here too, not only on the 일반 tab.
+            // Turned on while macOS denies notifications: said here too, with the way to System Settings in the same row.
             let denied = preferences.notifyUpdate && state.notificationStatus == .denied
-            Toggle(isOn: Binding(get: { preferences.notifyUpdate }, set: { on in
-                preferences.notifyUpdate = on
-                if on { state.notificationToggleEnabled() }
-            })) {
+            LabeledContent {
+                HStack(spacing: 8) {
+                    if denied { Button("알림 설정 열기", action: openNotificationSettings).controlSize(.small) }
+                    Toggle("새 버전 알림", isOn: Binding(get: { preferences.notifyUpdate }, set: { on in
+                        preferences.notifyUpdate = on
+                        if on { state.notificationToggleEnabled() }
+                    }))
+                    .labelsHidden().toggleStyle(.switch)
+                    .disabled(update.disabled != nil)
+                }
+            } label: {
                 SettingsLabel(title: "새 버전 알림",
                               subtitle: denied ? "macOS 알림 권한이 꺼져 있어 보내지 않습니다" : "새 버전을 찾으면 소리 없이 한 번 알립니다",
                               subtitleColor: denied ? TCColor.warning : .secondary)
             }
-            .disabled(update.disabled != nil)
             if preferences.notifyUpdate, let error = state.notificationError { settingsCaption(error, color: .red) }
-            if denied { Button("알림 설정 열기", action: openNotificationSettings) }
         } header: {
             Text("업데이트")
-        } footer: {
-            settingsFooter("GitHub에 최신 버전만 묻고, 설치 파일은 업데이트를 누를 때만 내려받습니다.")
+        }
+    }
+
+    /// At most two: after a retryable failure "다시 시도" and the release page (no second way to check); after one that
+    /// blocks the install, what the person can do (the Applications folder for a translocated copy, else the release page)
+    /// and "지금 확인", since a newer release can be installed again.
+    @ViewBuilder private func updateButtons(_ update: UpdateState, failure: UpdateFailure?) -> some View {
+        if let failure {
+            if failure.retryable {
+                if update.canInstall {
+                    Button("다시 시도") { model.requestUpdate(.install) }
+                        .help("릴리스 정보를 다시 확인하고 내려받습니다")
+                }
+                Button("릴리스 페이지 열기") { model.requestUpdate(.openReleasePage) }
+            } else {
+                if failure == .translocated {
+                    Button("응용 프로그램 폴더 열기") { NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications", isDirectory: true)) }
+                        .help("Finder에서 TokenCat을 이 폴더로 옮긴 뒤 다시 여세요")
+                } else {
+                    Button("릴리스 페이지 열기") { model.requestUpdate(.openReleasePage) }
+                }
+                Button("지금 확인") { model.requestUpdate(.check) }.disabled(!update.canCheck)
+            }
+        } else {
+            if update.canInstall {
+                Button("업데이트") { model.requestUpdate(.install) }
+                    .help("내려받아 설치한 뒤 TokenCat을 다시 엽니다")
+            }
+            Button("지금 확인") { model.requestUpdate(.check) }.disabled(!update.canCheck)
         }
     }
 }
@@ -604,6 +631,19 @@ enum TelemetryStatusRow: Equatable {
         }
         return (.waiting, "이번 실행에서 받은 실측 없음", nil)
     }
+
+    /// The usage-limit bridge, checked top to bottom: an empty status line, skipped, a reading, the bridge waiting for a
+    /// relaunch, nothing connected. `bridged` is nil until a connection succeeds this run. A recreated original command
+    /// adds the second line.
+    static func claudeLimits(notes: [TelemetrySetupNote], bridged: Bool?, received: Date?, now: Date)
+        -> (row: TelemetryStatusRow, text: String, detail: String?) {
+        if notes.contains(.originalUnknown) { return (.problem, "상태 표시줄이 비어 보일 수 있음", "settings.json의 statusLine을 직접 고쳐 주세요") }
+        if notes.contains(.statusLineSkipped) { return (.info, "연결 안 함 · statusLine 형식이 달라 건너뜀", nil) }
+        let detail = notes.contains(.originalRecreated) ? "원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다" : nil
+        if let at = received { return (.received, "최근 수신 " + (now.timeIntervalSince(at) < 60 ? "1분 이내" : Format.age(at, now: now)), detail) }
+        if bridged == true { return (.waiting, "아직 받지 못함 · Claude Code를 새로 실행하면 표시", detail) }
+        return (.info, bridged == nil ? "연결 확인 전" : "연결 안 함", nil)
+    }
 }
 
 private struct TelemetryPane: View {
@@ -623,8 +663,14 @@ private struct TelemetryPane: View {
                                                            batch: model.telemetryBatches[source], now: model.now)
                     LabeledContent(source.title) { statusLine(status.row, status.text, detail: status.detail) }
                 }
+                // Whether the status line bridge delivers; the newer of the two windows' receipts.
+                let limits = TelemetryStatusRow.claudeLimits(notes: model.telemetryConnectNotes, bridged: model.claudeBridged,
+                                                             received: [model.claudeLimits.fiveHour?.receivedAt,
+                                                                        model.claudeLimits.sevenDay?.receivedAt].compactMap { $0 }.max(),
+                                                             now: model.now)
+                LabeledContent("Claude 한도") { statusLine(limits.row, limits.text, detail: limits.detail) }
             } footer: {
-                settingsFooter("실측은 클라이언트가 보낸 출력 토큰·요청 시간 같은 수치만 받습니다. Claude Code 상태 표시줄로 받은 정보는 사용량 한도만 남기고, 원래 상태 표시줄 출력은 바꾸지 않습니다. 연결 설정은 앱이 시작할 때 확인하며, 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.")
+                settingsFooter("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON의 한도만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.")
             }
             if !files.isEmpty {
                 Section {
@@ -708,8 +754,9 @@ private struct AboutPane: View {
     var body: some View {
         Form {
             Section {
+                // "TokenCat 정보" (the standard About panel) stays in the ⋯ and quick menus.
                 VStack(spacing: 6) {
-                    Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high).frame(width: 64, height: 64)
+                    Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high).frame(width: 48, height: 48)
                         .accessibilityHidden(true)
                     Text("TokenCat").font(.system(size: 15, weight: .semibold))
                     Text("버전 \(AppInfo.version) (\(AppInfo.build))").font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
@@ -721,12 +768,8 @@ private struct AboutPane: View {
                 .padding(.vertical, 6)
                 HStack {
                     Button("MIT 라이선스 보기") { showsLicense = true }
-                    Button("TokenCat 정보", action: actions.about)
-                    Spacer()
-                }
-                HStack {
-                    Button("TokenCat이 하는 일 다시 보기", action: actions.reshowOnboarding)
-                        .help("처음 실행 안내를 상세 화면에 다시 보입니다")
+                    Button("처음 안내 다시 보기", action: actions.reshowOnboarding)
+                        .help("처음 실행 안내(TokenCat이 하는 일)를 상세 화면에 다시 보입니다")
                     Spacer()
                 }
             }

@@ -402,13 +402,14 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
         checks += 1
         if !value() { failures.append(message) }
     }
-    func until(_ condition: () -> Bool) -> Bool {
-        let deadline = Date().addingTimeInterval(2)
-        while Date() < deadline {
+    /// `deadline` is a hard end (something is scheduled at it), so it gets no last look past it.
+    func until(timeout: TimeInterval = 2, deadline: Date? = nil, _ condition: () -> Bool) -> Bool {
+        let end = deadline ?? Date().addingTimeInterval(timeout)
+        while Date() < end {
             if condition() { return true }
             Thread.sleep(forTimeInterval: 0.01)
         }
-        return condition()
+        return deadline == nil && condition()
     }
     let collector = LocalTelemetryCollector(port: port)
     let blocked = LocalTelemetryCollector(port: port, retryDelays: [0.05, 0.1])
@@ -498,9 +499,10 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
     check(until { callbacks.snapshot.closedCount == 1 } && !collector.isRunning,
           "Stopping from the ready callback deadlocked or left the listener running")
 
-    // retryNow while a retry waits: one listener starts at once and the pending retry is cancelled.
+    // retryNow while a retry waits: one listener starts at once and the pending retry is cancelled. The retry waits 5 s,
+    // so a slow release of the port (a busy Mac) still leaves time to start before it.
     let holder = LocalTelemetryCollector(port: port)
-    let retrying = LocalTelemetryCollector(port: port, retryDelays: [1.5])
+    let retrying = LocalTelemetryCollector(port: port, retryDelays: [5])
     let retryCallbacks = TelemetryCallbackProbe()
     defer { holder.stop(); retrying.stop() }
     holder.start()
@@ -509,12 +511,17 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
     check(until { retrying.nextRetryAt != nil } && !retrying.isRunning && retrying.state == .busyTokenCat,
           "retryNow: no retry was scheduled behind a busy port")
     let scheduled = retrying.nextRetryAt ?? Date()
+    let releaseStart = Date()
     holder.stop()
-    check(until { telemetryTestPortIsFree(port) }, "retryNow: the holder did not release the test port")
+    let released = until(timeout: 5) { telemetryTestPortIsFree(port) }
+    let releaseMs = Int(Date().timeIntervalSince(releaseStart) * 1_000)
+    check(released, "retryNow: the holder did not release the test port within 5 s (\(releaseMs) ms)")
+    let retryStart = Date()
     retrying.retryNow()
-    let startedEarly = until { retrying.isRunning } && Date() < scheduled
+    let startedEarly = until(deadline: scheduled) { retrying.isRunning }
+    let startMs = Int(Date().timeIntervalSince(retryStart) * 1_000)
     check(startedEarly && retrying.state == .waiting && retrying.nextRetryAt == nil,
-          "retryNow did not start the listener before the scheduled retry")
+          "retryNow did not start the listener before the scheduled retry (release \(releaseMs) ms, start \(startMs) ms, retry due \(Int(scheduled.timeIntervalSince(retryStart) * 1_000)) ms)")
     retrying.retryNow()
     // Past the cancelled deadline a stale attempt would open a second listener, fail on the port and drop the first.
     Thread.sleep(until: scheduled.addingTimeInterval(0.4))
@@ -525,11 +532,15 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
     return failures
 }
 
-/// True when `port` can be bound on loopback right now (the socket is closed again at once).
+/// True when `port` can be bound on loopback right now (the socket is closed again at once). Like the collector's
+/// listener, the probe reuses the address: a connection the holder closed first leaves its port in TIME_WAIT for
+/// 2 × MSL (30 s), which blocks a plain bind but not the listener, so only a socket still bound there counts.
 func telemetryTestPortIsFree(_ port: UInt16) -> Bool {
     let probe = socket(AF_INET, SOCK_STREAM, 0)
     guard probe >= 0 else { return false }
     defer { close(probe) }
+    var reuse: Int32 = 1
+    guard setsockopt(probe, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout<Int32>.size)) == 0 else { return false }
     var address = sockaddr_in()
     address.sin_family = sa_family_t(AF_INET)
     address.sin_port = port.bigEndian

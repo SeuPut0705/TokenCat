@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ServiceManagement
 import SwiftUI
 import UserNotifications
 
@@ -7,8 +8,15 @@ import UserNotifications
 @MainActor
 enum TokenCatMain {
     static func main() {
+        // `--language ko|en` picks the display language for any command, including the app itself.
+        if let raw = AppLanguage.flagValue(CommandLine.arguments), AppLanguage(rawValue: raw) == nil {
+            print("Unknown --language '\(raw)': ko or en")
+            exit(1)
+        }
         if CommandLine.arguments.contains("--self-test") {
-            let failures = runTrackerChecks() + runPreferenceChecks() + runShellChecks() + runStatusBarChecks() + runSessionPresentationChecks()
+            // Existing suites assert Korean text; the localization suite switches to English where it checks it.
+            AppLanguage.current = .ko
+            let failures = runLocalizationChecks() + runTrackerChecks() + runPreferenceChecks() + runShellChecks() + runStatusBarChecks() + runSessionPresentationChecks()
                 + runDesignTokenChecks() + runTelemetryChecks() + runTelemetrySetupChecks() + runTokenSpeedChecks() + runUpdaterChecks()
                 + Runner.resourceErrors()
             if Runner.resourceErrors().isEmpty { print("Bundled artwork: PASS (\(RunnerPose.allCases.map(Runner.frames).reduce(0, +)) frames in \(RunnerPose.allCases.count) poses, \(RunnerHead.allCases.count) pixel heads)") }
@@ -332,9 +340,13 @@ enum TokenCatMain {
     /// AppKit-backed Form controls. `--pane general|menubar|cat|telemetry|about|all` (default all; `--focus telemetry`
     /// is the telemetry pane) stacks the chosen panes vertically. The tab choice is kept in a throwaway defaults domain.
     /// `--fixtures` uses synthetic state instead of this Mac's logs and preferences: the collector off with a retry in
-    /// 25 s, Codex waiting for a relaunch, version 0.9.1 available (checked 3 min ago), default preferences.
-    /// `--update-failure network|translocated|not-writable|no-digest|invalid-bundle` adds that failed install to it.
-    /// Prints each pane's content height and the drag types registered in the view tree (drop targets exist).
+    /// 25 s, Codex waiting for a relaunch, the Claude limit bridge received 50 s ago, version 0.9.1 available (checked
+    /// 3 min ago), default preferences, the login item not registered and notification permission not asked yet.
+    /// `--update-failure network|translocated|not-writable|no-digest|invalid-bundle` adds that failed install to it;
+    /// `--setup-note unknown|skipped|recreated` the connection's status line note; `--login requires-approval|enabled`
+    /// that login item state; `--notifications denied|authorized` that permission (denied also turns every notification
+    /// choice on, the tallest case). Prints each pane's content height and the drag types registered in the view tree
+    /// (drop targets exist).
     private static func snapshotSettings(path: String) {
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
@@ -351,20 +363,39 @@ enum TokenCatMain {
         let suite = "dev.seuput.TokenCat.SettingsSnapshot.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suite) else { print("Settings snapshot failed"); exit(1) }
         let preferences = fixtures ? Preferences(defaults: defaults) : model.preferences
+        func option<Value>(_ flag: String, _ values: [String: Value]) -> Value? {
+            guard let raw = value(flag) else { return nil }
+            guard let chosen = values[raw] else { print("Unknown \(flag) '\(raw)': \(values.keys.sorted())"); exit(1) }
+            return chosen
+        }
+        let login = option("--login", ["requires-approval": SMAppService.Status.requiresApproval, "enabled": .enabled])
+        let notifications = option("--notifications", ["denied": UNAuthorizationStatus.denied, "authorized": .authorized])
         if fixtures {
             model.telemetryState = .busyOtherApp
             model.telemetryNextRetryAt = model.now.addingTimeInterval(25)
             model.telemetryRestartNeeded = [.codex]
             let failures: [String: UpdateFailure] = ["network": .network, "translocated": .translocated, "not-writable": .notWritable,
                                                      "no-digest": .noDigest, "invalid-bundle": .invalidBundle("코드 서명을 확인하지 못했습니다")]
-            let failure = value("--update-failure")
-            guard failure.map({ failures[$0] != nil }) ?? true else { print("Unknown update failure '\(failure ?? "")': \(failures.keys.sorted())"); exit(1) }
-            model.update = SnapshotFixtures.update(failure.flatMap { failures[$0] }.map { .failed($0) } ?? .none, now: model.now)
+            model.update = SnapshotFixtures.update(option("--update-failure", failures).map { .failed($0) } ?? .none, now: model.now)
+            let received = model.now.addingTimeInterval(-50)
+            model.claudeLimits = ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: 42, resetsAt: model.now.addingTimeInterval(7_980), receivedAt: received),
+                                                   sevenDay: ClaudeLimitWindow(usedPercent: 31, resetsAt: model.now.addingTimeInterval(273_600), receivedAt: received))
+            let note = option("--setup-note", ["unknown": TelemetrySetupNote.originalUnknown, "skipped": .statusLineSkipped, "recreated": .originalRecreated])
+            model.telemetryConnectNotes = note.map { [$0] } ?? []
+            model.claudeBridged = note != .statusLineSkipped
+            if notifications == .denied {
+                preferences.notifyTurnComplete = true
+                preferences.notifyInput = true
+                preferences.notifyInputSound = true
+                preferences.notifyUpdate = true
+            }
         } else {
             model.start()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + (fixtures ? 0.5 : 4)) {
-            let state = SettingsState(notifier: Notifier())
+            let state = fixtures ? SettingsState(notifier: Notifier(), login: login ?? .notRegistered, notifications: notifications ?? .notDetermined,
+                                                 sound: notifications == .denied ? .disabled : nil)
+                : SettingsState(notifier: Notifier())
             // The preview shows the pose the cat would plan for these sessions now.
             var director = RunnerDirector()
             let activity = RunnerActivity(groups: model.groups, cpu: model.hasSample ? model.system.cpuPercent : nil, now: Date())

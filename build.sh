@@ -14,6 +14,12 @@ for asset in $bundled; do
     cp "Assets/$asset" dist/TokenCat.app/Contents/Resources/
 done
 cp LICENSE dist/TokenCat.app/Contents/Resources/LICENSE
+# Real ko/en localizations (CFBundleLocalizations alone is not enough for every macOS) so System Settings offers the
+# per-app language; the texts themselves live in the code (Localization.swift).
+for lang in en ko; do
+    mkdir -p dist/TokenCat.app/Contents/Resources/$lang.lproj
+    print '"CFBundleDisplayName" = "TokenCat";' > dist/TokenCat.app/Contents/Resources/$lang.lproj/InfoPlist.strings
+done
 # App icon: 16/32 px from the sprite's pixel head, every larger size from the 1024 master (v2; v3 is preview only).
 rm -rf work/TokenCat.iconset
 mkdir -p work/TokenCat.iconset
@@ -37,6 +43,8 @@ cat > dist/TokenCat.app/Contents/Info.plist <<'PLIST'
 <key>CFBundleIdentifier</key><string>dev.seuput.TokenCat</string>
 <key>CFBundleName</key><string>TokenCat</string>
 <key>CFBundleDisplayName</key><string>TokenCat</string>
+<key>CFBundleDevelopmentRegion</key><string>en</string>
+<key>CFBundleLocalizations</key><array><string>en</string><string>ko</string></array>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.9.0</string>
 <key>CFBundleVersion</key><string>10</string>
