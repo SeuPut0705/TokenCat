@@ -42,11 +42,9 @@ enum StatusBarContent {
         return (number.hasSuffix(".0") ? String(number.dropLast(2)) : number) + units[unit]
     }
 
-    static func metrics(system: SystemSnapshot, tokens: [TokenReading], preferences: Preferences,
+    /// `counts` and `recorded` come from the popover's per-publish presentation so both show the same numbers.
+    static func metrics(system: SystemSnapshot, counts: SessionCounts, recorded: Int, preferences: Preferences,
                         hasSample: Bool, hasTokenSample: Bool) -> [StatusBarMetric] {
-        let active = tokens.filter(\.active)
-        let codexCount = active.filter { $0.source == .codex }.count
-        let claudeCount = active.filter { $0.source == .claude }.count
         func percentage(_ number: Double?) -> String {
             guard hasSample, let number, number.isFinite else { return "—" }
             return String(format: "%.0f%%", number)
@@ -77,21 +75,14 @@ enum StatusBarContent {
                 return StatusBarMetric(id: id, label: "NET", value: "↑\(upload)\n↓\(download)", symbol: "network",
                                        detail: "업로드 \(upload) · 다운로드 \(download)")
             case .ai:
-                let value = hasTokenSample ? String(active.count) : "—"
-                let toolCount = active.filter { $0.activityState == .tool }.count
-                let staleCount = tokens.filter { $0.activityState == .stale }.count
-                let hasFreshOutput = active.contains { reading in
-                    guard let at = reading.lastOutputAt, let sampled = reading.sampledAt,
-                          let delta = reading.lastOutputDelta, delta > 0 else { return false }
-                    let age = sampled.timeIntervalSince(at)
-                    return age >= -5 && age <= 5
-                }
-                let phase: TokenActivityState = toolCount > 0 ? .tool : (hasFreshOutput ? .output : (active.isEmpty ? (staleCount > 0 ? .stale : .idle) : .working))
+                // The value equals the popover's 출력/도구/진행 chips combined.
+                let value = hasTokenSample ? String(counts.runningGroups) : "—"
                 let detail = hasTokenSample
-                    ? "AI 최근 활동 \(active.count)개 · 도구 기록 \(toolCount)개 · 로그 대기 \(staleCount)개\nCodex \(codexCount), Claude Code \(claudeCount) · 상태는 최근 로그 기준"
-                    : "AI 세션 기록 확인 중"
-                return StatusBarMetric(id: id, label: "AI", value: value, symbol: "terminal",
-                                       detail: detail, isActive: hasTokenSample && !active.isEmpty, activityState: phase)
+                    ? "AI 진행 중 \(counts.runningGroups)개 · 도구 실행 \(counts.toolMembers) · 하위 에이전트 \(counts.runningSubagents) · 로그 대기 \(counts.waiting)\n최근 5분 출력 기록 \(Format.tokens(recorded)) tok · Codex \(counts.running[.codex] ?? 0), Claude Code \(counts.running[.claude] ?? 0)"
+                    : "AI 기록 확인 중"
+                return StatusBarMetric(id: id, label: "AI", value: value, symbol: "terminal", detail: detail,
+                                       isActive: hasTokenSample && counts.runningGroups > 0,
+                                       activityState: hasTokenSample ? counts.phase : .idle)
             }
         }
     }
@@ -317,11 +308,11 @@ func runStatusBarChecks() -> [String] {
         let actual = StatusBarContent.networkRate(value)
         return actual == expected ? nil : "Status bar \(name): expected \(expected), got \(actual)"
     }
+    var checks = cases.count
     let suiteName = "dev.seuput.TokenCat.StatusBarChecks.\(UUID().uuidString)"
     guard let defaults = UserDefaults(suiteName: suiteName) else {
-        failures += ["loading and zero values", "battery omission", "selection and activity count", "tool activity", "recent output", "expired output", "stale logs", "stable layout width"]
-            .map { "Status bar \($0): isolated preferences unavailable" }
-        print("Status bar checks: \(cases.count + 8 - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
+        failures.append("Status bar: isolated preferences unavailable")
+        print("Status bar checks: \(checks + 1 - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
         return failures
     }
     defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -329,10 +320,17 @@ func runStatusBarChecks() -> [String] {
     preferences.reset()
     var system = SystemSnapshot()
     system.cpuPercent = 0
-    let loading = StatusBarContent.metrics(system: system, tokens: [], preferences: preferences, hasSample: false, hasTokenSample: false)
-    let zero = StatusBarContent.metrics(system: system, tokens: [], preferences: preferences, hasSample: true, hasTokenSample: true)
-    let waitingForTokens = StatusBarContent.metrics(system: system, tokens: [], preferences: preferences, hasSample: true, hasTokenSample: false)
+    let at = Date()
+    func metrics(_ system: SystemSnapshot, _ tokens: [TokenReading], now: Date = at, hasSample: Bool = true, hasTokenSample: Bool = true) -> [StatusBarMetric] {
+        StatusBarContent.metrics(system: system, counts: SessionCounts(SessionPresentation.groups(tokens, now: now)),
+                                 recorded: FlowSeries.make(tokens, now: now).total, preferences: preferences,
+                                 hasSample: hasSample, hasTokenSample: hasTokenSample)
+    }
+    let loading = metrics(system, [], hasSample: false, hasTokenSample: false)
+    let zero = metrics(system, [])
+    let waitingForTokens = metrics(system, [], hasTokenSample: false)
     func check(_ name: String, _ passed: Bool) {
+        checks += 1
         if !passed { failures.append("Status bar \(name)") }
     }
     check("loading differs from sampled zero",
@@ -354,24 +352,39 @@ func runStatusBarChecks() -> [String] {
                      turnAverageTokensPerSecond: 200, active: true),
         TokenReading(source: .codex, id: "inactive-codex", turnAverageTokensPerSecond: 999, active: false)
     ]
-    let selected = StatusBarContent.metrics(system: system, tokens: tokens, preferences: preferences, hasSample: true, hasTokenSample: true)
+    let selected = metrics(system, tokens)
     check("selected order and activity count do not aggregate speed",
           selected.map(\.id) == [.ai, .cpu] && selected.first?.value == "2" && selected.first?.isActive == true)
 
-    let at = Date()
     var output = TokenReading(source: .codex, id: "output", active: true, activityState: .output,
                               lastOutputAt: at, lastOutputDelta: 12, sampledAt: at)
     let tool = TokenReading(source: .claude, id: "tool", active: true, activityState: .tool, sampledAt: at)
-    func ai(_ readings: [TokenReading]) -> StatusBarMetric? {
-        StatusBarContent.metrics(system: system, tokens: readings, preferences: preferences,
-                                 hasSample: true, hasTokenSample: true).first(where: { $0.id == .ai })
+    func ai(_ readings: [TokenReading], now: Date = at) -> StatusBarMetric? {
+        metrics(system, readings, now: now).first(where: { $0.id == .ai })
     }
     check("pending tool remains visible alongside output", ai([output, tool])?.activityState == .tool && ai([output, tool])?.value == "2")
     check("confirmed recent output is highlighted", ai([output])?.activityState == .output)
     output.sampledAt = at.addingTimeInterval(6)
-    check("old output stops highlighting while turn remains active", ai([output])?.activityState == .working)
-    let stale = TokenReading(source: .codex, id: "stale", active: false, activityState: .stale, sampledAt: at)
-    check("stale logs are waiting rather than active", ai([stale])?.activityState == .stale && ai([stale])?.value == "0" && ai([stale])?.isActive == false)
+    check("old output stops highlighting while turn remains active",
+          ai([output], now: at.addingTimeInterval(6))?.activityState == .working)
+    let stale = TokenReading(source: .codex, id: "stale", active: false, lastActivity: at.addingTimeInterval(-180),
+                             activityState: .stale, sampledAt: at)
+    check("stale logs are waiting rather than running",
+          ai([stale])?.activityState == .stale && ai([stale])?.value == "0" && ai([stale])?.isActive == false)
+    let unfinished = TokenReading(source: .codex, id: "unfinished", active: false, lastActivity: at.addingTimeInterval(-3_600),
+                                  activityState: .unfinished, sampledAt: at)
+    check("unfinished turns are neither counted nor tinted",
+          ai([unfinished])?.activityState == .idle && ai([unfinished])?.value == "0")
+    check("a running session outranks waiting for the tint", ai([stale, tool])?.activityState == .tool && ai([stale, tool])?.value == "1")
+    var parent = TokenReading(source: .claude, id: "claude:parent", sessionID: "s1", active: true, activityState: .working, sampledAt: at)
+    var child = TokenReading(source: .claude, id: "claude:child", sessionID: "s1", agentID: "a1", isSubagent: true,
+                             active: true, activityState: .tool, sampledAt: at)
+    check("subagents count once with their session", ai([parent, child])?.value == "1" && ai([parent, child])?.activityState == .tool
+          && ai([parent, child])?.detail.contains("하위 에이전트 1") == true)
+    parent.activityState = .complete
+    parent.active = false
+    child.parentSessionID = "s1"
+    check("a running subagent keeps an idle parent's group running", ai([parent, child])?.value == "1")
 
     preferences.reset()
     var missing = SystemSnapshot()
@@ -385,8 +398,8 @@ func runStatusBarChecks() -> [String] {
     maximum.diskTotalBytes = .max
     maximum.uploadBytesPerSecond = .greatestFiniteMagnitude
     maximum.downloadBytesPerSecond = .greatestFiniteMagnitude
-    let missingMetrics = StatusBarContent.metrics(system: missing, tokens: [], preferences: preferences, hasSample: false, hasTokenSample: false)
-    let maximumMetrics = StatusBarContent.metrics(system: maximum, tokens: tokens, preferences: preferences, hasSample: true, hasTokenSample: true)
+    let missingMetrics = metrics(missing, [], hasSample: false, hasTokenSample: false)
+    let maximumMetrics = metrics(maximum, tokens)
     let view = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 0, height: 22))
     var stable = true
     for layout in StatusBarLayout.allCases {
@@ -396,6 +409,6 @@ func runStatusBarChecks() -> [String] {
         stable = stable && width == view.requiredWidth && width > 0
     }
     check("layout width is stable from unknown to maximum values", stable)
-    print("Status bar checks: \(cases.count + 8 - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
+    print("Status bar checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

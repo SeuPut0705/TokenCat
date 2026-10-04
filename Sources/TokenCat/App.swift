@@ -67,6 +67,13 @@ final class DashboardModel: ObservableObject {
     @Published var tokensSampledAt: Date?
     @Published var telemetryStatus = "실측 수신 대기"
     @Published var telemetrySetupNote: String?
+    @Published private(set) var telemetryReady = false
+    /// The single clock for every age and elapsed value shown; views never read `Date()`.
+    @Published private(set) var now = Date()
+    @Published private(set) var flow = FlowSeries.empty
+    @Published private(set) var sessions = SessionListModel.empty
+    @Published var sessionsExpanded = false { didSet { if sessionsExpanded != oldValue { rebuildPresentation() } } }
+    @Published var popoverShownAt: Date?
     let preferences = Preferences()
     let telemetry = LocalTelemetryCollector()
     private let telemetryProvider: (() -> [TelemetryReading])?
@@ -155,6 +162,8 @@ final class DashboardModel: ObservableObject {
             let measurements = self.telemetryProvider?() ?? self.telemetry.snapshot()
             let tokens = TokenSpeed.apply(logs, measurements: measurements)
             let telemetryStatus = self.telemetry.status
+            // Verification commands read the running app's collector through the provider.
+            let telemetryReady = self.telemetryProvider != nil || self.telemetry.isRunning
             let measuredAt = Date()
             DispatchQueue.main.async {
                 self.tokensInFlight = false
@@ -162,6 +171,8 @@ final class DashboardModel: ObservableObject {
                 self.tokens = tokens
                 self.tokensSampledAt = measuredAt
                 self.telemetryStatus = telemetryStatus
+                if self.telemetryReady != telemetryReady { self.telemetryReady = telemetryReady }
+                self.rebuildPresentation()
                 self.onUpdate?()
                 if self.tokenRefreshPending {
                     self.tokenRefreshPending = false
@@ -186,10 +197,18 @@ final class DashboardModel: ObservableObject {
                         self.cpuHistory.append(cpu)
                         self.cpuHistory = Array(self.cpuHistory.suffix(90))
                     }
+                    self.rebuildPresentation()
                     self.onUpdate?()
                 }
             }
         }
+    }
+    private func rebuildPresentation() {
+        let now = max(system.sampledAt, tokensSampledAt ?? .distantPast)
+        if now != self.now { self.now = now }
+        let flow = FlowSeries.make(tokens, now: now)
+        if flow != self.flow { self.flow = flow }
+        sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow)
     }
 }
 
@@ -214,9 +233,24 @@ enum Format {
         }
         return "\(number(used)) / \(number(total)) \(unit)"
     }
-    static func age(_ date: Date?) -> String {
+    /// Grouped below 100,000 so recent counts stay exact; abbreviated above.
+    static func tokens(_ value: Int) -> String {
+        if value < 100_000 { return value.formatted(.number.locale(Locale(identifier: "ko_KR"))) }
+        if value < 999_950 { return String(format: "%.1fk", Double(value) / 1_000) }
+        return String(format: "%.2fM", Double(value) / 1_000_000)
+    }
+    static func compactTokens(_ value: Int) -> String {
+        func trimmed(_ number: Double, _ unit: String) -> String {
+            let text = String(format: "%.1f", number)
+            return (text.hasSuffix(".0") ? String(text.dropLast(2)) : text) + unit
+        }
+        if value < 1_000 { return String(value) }
+        if value < 999_950 { return trimmed(Double(value) / 1_000, "k") }
+        return trimmed(Double(value) / 1_000_000, "M")
+    }
+    static func age(_ date: Date?, now: Date) -> String {
         guard let date else { return "기록 없음" }
-        let seconds = max(0, Int(Date().timeIntervalSince(date)))
+        let seconds = max(0, Int(now.timeIntervalSince(date)))
         if seconds < 60 { return "\(seconds)초 전" }
         if seconds < 3600 { return "\(seconds / 60)분 전" }
         if seconds < 86_400 { return "\(seconds / 3600)시간 전" }
@@ -233,324 +267,6 @@ enum Format {
         let seconds = max(0, Int(now.timeIntervalSince(date)))
         if seconds >= 3_600 { return String(format: "%d:%02d:%02d", seconds / 3_600, seconds / 60 % 60, seconds % 60) }
         return String(format: "%d:%02d", seconds / 60, seconds % 60)
-    }
-}
-
-struct Sparkline: View {
-    var values: [Double]
-    var body: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .bottom) {
-                Rectangle().fill(Color.primary.opacity(0.07)).frame(height: 1)
-                Path { path in
-                    guard values.count > 1 else { return }
-                    for (index, value) in values.enumerated() {
-                        let point = CGPoint(x: geometry.size.width * Double(index) / Double(values.count - 1), y: (geometry.size.height - 2) * (1 - min(100, max(0, value)) / 100) + 1)
-                        if index == 0 { path.move(to: point) } else { path.addLine(to: point) }
-                    }
-                }.stroke(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, lineCap: .round, lineJoin: .round))
-            }
-        }
-        .accessibilityLabel("최근 CPU 사용률")
-    }
-}
-
-struct MetricTile: View {
-    var icon: String
-    var title: String
-    var value: String
-    var detail: String
-    var fraction: Double? = nil
-    var history: [Double]? = nil
-    var height: CGFloat = 70
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Image(systemName: icon).font(.system(size: 11)).foregroundStyle(.secondary)
-                Text(title).font(.system(size: 11, weight: .medium)).fixedSize()
-                Spacer(minLength: 0)
-                Text(value).font(.system(size: 13, weight: .semibold, design: .monospaced)).lineLimit(1)
-            }
-            Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if let history {
-                Sparkline(values: history).frame(height: 15)
-            } else if let fraction {
-                GeometryReader { geometry in
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 2).fill(Color.primary.opacity(0.1))
-                        RoundedRectangle(cornerRadius: 2).fill(fraction > 0.85 ? Color.orange : Color.accentColor)
-                            .frame(width: geometry.size.width * min(1, max(0, fraction)))
-                    }
-                }.frame(height: 3)
-            }
-        }.padding(8).frame(maxWidth: .infinity, minHeight: height, maxHeight: height, alignment: .topLeading)
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
-    }
-}
-
-struct NetworkTile: View {
-    var system: SystemSnapshot
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                Image(systemName: "network").font(.system(size: 11)).foregroundStyle(.secondary)
-                Text("네트워크").font(.system(size: 11, weight: .medium))
-                Spacer(minLength: 0)
-                Text("↑\(StatusBarContent.networkRate(system.uploadBytesPerSecond))  ↓\(StatusBarContent.networkRate(system.downloadBytesPerSecond))")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced)).lineLimit(1)
-            }
-            Text(system.localIPs.isEmpty ? "IPv4 주소 미확인" : system.localIPs.joined(separator: " · "))
-                .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-        }.padding(8).frame(maxWidth: .infinity, minHeight: 50, maxHeight: 50, alignment: .topLeading)
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
-    }
-}
-
-struct SystemGrid: View {
-    var system: SystemSnapshot
-    var cpuHistory: [Double]
-    var body: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 6) {
-                MetricTile(icon: "cpu", title: "CPU", value: Format.percent(system.cpuPercent), detail: "전체 코어 사용률", history: cpuHistory)
-                MetricTile(icon: "memorychip", title: "메모리", value: Format.percent(Format.ratio(system.memoryUsedBytes, system.memoryTotalBytes)), detail: Format.capacity(system.memoryUsedBytes, system.memoryTotalBytes), fraction: Format.ratio(system.memoryUsedBytes, system.memoryTotalBytes).map { $0 / 100 })
-                    .help("\(Format.bytes(system.memoryUsedBytes)) / \(Format.bytes(system.memoryTotalBytes))")
-                MetricTile(icon: "internaldrive", title: "저장 공간", value: Format.percent(Format.ratio(system.diskUsedBytes, system.diskTotalBytes)), detail: Format.capacity(system.diskUsedBytes, system.diskTotalBytes), fraction: Format.ratio(system.diskUsedBytes, system.diskTotalBytes).map { $0 / 100 })
-                    .help("\(Format.bytes(system.diskUsedBytes)) / \(Format.bytes(system.diskTotalBytes))")
-            }
-            HStack(spacing: 6) {
-                if system.batteryPresent {
-                    MetricTile(icon: "battery.75percent", title: "배터리", value: Format.percent(system.batteryPercent), detail: Format.power(system), height: 50)
-                        .frame(width: 128)
-                }
-                NetworkTile(system: system)
-            }
-        }
-    }
-}
-
-struct DashboardButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .foregroundStyle(.secondary)
-            .contentShape(Rectangle())
-            .opacity(configuration.isPressed ? 0.55 : 1)
-    }
-}
-
-struct SessionRow: View {
-    var reading: TokenReading
-    var now: Date
-    private var hasLiveStatus: Bool { reading.currentTurnStartedAt != nil || reading.active || reading.activityState == .stale }
-    static func height(for reading: TokenReading) -> CGFloat {
-        let live = reading.currentTurnStartedAt != nil || reading.active || reading.activityState == .stale
-        let previous = reading.speedMeasurement?.tokensPerSecond != nil && reading.speedMeasurement?.model != reading.model
-        return 44 + (live ? 17 : 0) + (previous ? 17 : 0)
-    }
-    private var activityTitle: String {
-        switch reading.activityState {
-        case .idle: return "기록 대기"
-        case .working: return "진행"
-        case .tool: return "도구 실행"
-        case .output: return "출력 기록"
-        case .complete: return "완료"
-        case .interrupted: return "중단"
-        case .stale: return "로그 대기"
-        case .unfinished: return "종료 기록 없음"
-        }
-    }
-    private var hasPreviousModel: Bool {
-        reading.speedMeasurement?.tokensPerSecond != nil && reading.speedMeasurement?.model != reading.model
-    }
-    private var shortID: String {
-        if reading.sessionID == nil && reading.agentID == nil && reading.speedMeasurement != nil { return "" }
-        if let agent = reading.agentID, !agent.isEmpty {
-            return agent.contains("/") ? URL(fileURLWithPath: agent).lastPathComponent : String(agent.prefix(8))
-        }
-        let identifier = reading.sessionID ?? URL(fileURLWithPath: reading.id).deletingPathExtension().lastPathComponent
-        // UUIDv7 prefixes are timestamps shared by conversations created together.
-        return String(identifier.suffix(8))
-    }
-    private var sessionLabel: String {
-        var parts = [reading.project, shortID].compactMap { $0 }.filter { !$0.isEmpty }
-        if reading.isSubagent { parts.append("하위 세션") }
-        return parts.joined(separator: " · ")
-    }
-    private var identityDetails: String {
-        [reading.project, reading.agentID.map { "에이전트 \($0)" }, reading.sessionID.map { "세션 \($0)" }]
-            .compactMap { $0 }.joined(separator: "\n")
-    }
-    private var details: String {
-        [identityDetails, reading.status, reading.speedMeasurement?.details ?? "속도 미측정 · 실측 데이터 연결 대기", reading.lastOutputTokens.map { "세션 출력 기록 \($0.formatted()) tokens" }, reading.currentTurnOutputTokens.map { "현재 턴에서 확인된 출력 \($0.formatted()) tokens" }]
-            .compactMap { $0 }.joined(separator: "\n")
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Circle().fill(reading.activityState == .stale ? Color.orange : (reading.active ? Color.green : Color.secondary.opacity(0.3))).frame(width: 5, height: 5)
-                    .accessibilityLabel(reading.active ? "최근 로그 활동 있음" : "최근 로그 활동 없음")
-                Text(reading.source == .codex ? "Codex" : "Claude")
-                    .font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary)
-                    .padding(.horizontal, 5).padding(.vertical, 2)
-                    .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 4))
-                Text(reading.model ?? "모델 기록 대기").font(.system(size: 12, weight: .medium)).lineLimit(1)
-                    .help(reading.model ?? "모델 미확인")
-                Spacer(minLength: 4)
-                Text(hasPreviousModel ? "—" : Format.tps(reading.speedMeasurement?.tokensPerSecond))
-                    .font(.system(size: 13, weight: .semibold, design: .monospaced))
-                Text(reading.speedMeasurement?.kind?.title ?? "tok/s")
-                    .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize()
-            }
-            HStack(spacing: 6) {
-                Text(sessionLabel).lineLimit(1).help(identityDetails)
-                Spacer(minLength: 4)
-                Text(reading.activityState == .interrupted
-                     ? "중단 \(Format.age(reading.lastActivity))"
-                     : "\(reading.speedMeasurement == nil ? "활동" : "측정") \(Format.age(reading.speedMeasurement?.at ?? reading.lastActivity))").fixedSize()
-            }.font(.system(size: 11)).foregroundStyle(.secondary)
-            if hasLiveStatus {
-                HStack(spacing: 6) {
-                    Text("\(activityTitle) \(Format.elapsed(reading.currentTurnStartedAt, at: now))")
-                        .font(.system(size: 10, weight: .medium, design: .monospaced))
-                        .foregroundStyle(reading.activityState == .stale ? Color.orange : Color.accentColor)
-                    if let output = reading.currentTurnOutputTokens {
-                        Text(output > 0 ? "기록 \(output.formatted()) tok" : "출력 기록 대기").foregroundStyle(.secondary)
-                    } else {
-                        Text("누적 미확인").foregroundStyle(.secondary)
-                            .help("현재 턴의 시작 또는 전체 토큰 구간을 읽지 못해 누적량을 계산할 수 없습니다. 최근 증가량은 별도로 표시합니다.")
-                    }
-                    Spacer(minLength: 0)
-                    if let at = reading.lastOutputAt, let delta = reading.lastOutputDelta,
-                       delta > 0, now.timeIntervalSince(at) >= -5, now.timeIntervalSince(at) <= 5 {
-                        Text("+\(delta.formatted()) tok").foregroundStyle(.green)
-                    }
-                }.font(.system(size: 10)).lineLimit(1)
-            }
-            if hasPreviousModel {
-                HStack(spacing: 4) {
-                    Text("이전 \(reading.speedMeasurement?.model ?? "모델 미확인")").lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text("\(Format.tps(reading.speedMeasurement?.tokensPerSecond)) \(reading.speedMeasurement?.kind?.title ?? "tok/s")").fixedSize()
-                }.font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-        }.padding(.horizontal, 10).padding(.vertical, 4).frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: Self.height(for: reading))
-            .help(details).accessibilityElement(children: .combine).accessibilityHint(details)
-    }
-}
-
-struct DashboardView: View {
-    @ObservedObject var model: DashboardModel
-    var settings: () -> Void
-    var quit: () -> Void
-    var scrollsSessions = true
-    @State private var showAllSessions = false
-    private func recentModelMeasurement(_ reading: TokenReading) -> Bool {
-        guard reading.sessionID == nil, let measurement = reading.speedMeasurement,
-              measurement.tokensPerSecond != nil else { return false }
-        let age = model.system.sampledAt.timeIntervalSince(measurement.at)
-        return age >= -5 && age < 120
-    }
-    private var sessions: [TokenReading] {
-        model.tokens.sorted {
-            let firstMeasured = recentModelMeasurement($0)
-            let secondMeasured = recentModelMeasurement($1)
-            if firstMeasured != secondMeasured { return firstMeasured }
-            if $0.active != $1.active { return $0.active }
-            if $0.active {
-                if $0.project != $1.project { return ($0.project ?? "") < ($1.project ?? "") }
-                return $0.id < $1.id
-            }
-            let first = $0.lastActivity ?? $0.measurementAt ?? .distantPast
-            let second = $1.lastActivity ?? $1.measurementAt ?? .distantPast
-            if first != second { return first > second }
-            return $0.id < $1.id
-        }
-    }
-    private var defaultSessionCount: Int { max(6, sessions.filter { $0.active || recentModelMeasurement($0) }.count) }
-    private var displayedSessions: [TokenReading] { showAllSessions ? sessions : Array(sessions.prefix(defaultSessionCount)) }
-    private var listHeight: CGFloat {
-        var height: CGFloat = 0
-        for reading in displayedSessions {
-            let row = SessionRow.height(for: reading)
-            let next = height + (height > 0 ? 1 : 0) + row
-            if next > 190 { break }
-            height = next
-        }
-        return height
-    }
-    private var sessionRows: some View {
-        VStack(spacing: 0) {
-            Color.clear.frame(height: 0).id("session-list-top")
-            ForEach(displayedSessions) { reading in
-                SessionRow(reading: reading, now: model.system.sampledAt)
-                if reading.id != displayedSessions.last?.id { Divider().padding(.horizontal, 10) }
-            }
-        }
-    }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 9) {
-                Image(nsImage: Runner.brandImage()).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
-                    .frame(width: 32, height: 32).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("TokenCat").font(.system(size: 15, weight: .semibold))
-                    Text("Mac · AI 활동").font(.system(size: 11)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Button(action: settings) { Image(systemName: "slider.horizontal.3").frame(width: 24, height: 28) }.help("표시 항목·순서 설정").accessibilityLabel("설정")
-                Button(action: quit) { Image(systemName: "power").frame(width: 24, height: 28) }.help("종료").accessibilityLabel("종료")
-            }
-            HStack {
-                Text("AI 세션").font(.system(size: 12, weight: .semibold))
-                    .help(model.telemetrySetupNote ?? model.telemetryStatus)
-                Spacer()
-                if sessions.count > defaultSessionCount {
-                    Button(showAllSessions ? "접기" : "모두 \(sessions.count)개") { showAllSessions.toggle() }
-                        .font(.system(size: 11))
-                }
-            }
-            if sessions.isEmpty {
-                Text("Codex·Claude Code 세션 기록을 기다리는 중")
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .center)
-                    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 7))
-            } else {
-                Group {
-                    if scrollsSessions {
-                        ScrollViewReader { scroll in
-                            ScrollView { sessionRows }
-                                .onChange(of: showAllSessions) { _ in scroll.scrollTo("session-list-top", anchor: .top) }
-                        }
-                    } else {
-                        // ImageRenderer cannot rasterize AppKit's scroll surface.
-                        // Export the same rows at the same viewport without interaction.
-                        sessionRows.fixedSize(horizontal: false, vertical: true)
-                            .frame(height: listHeight, alignment: .top).clipped()
-                    }
-                }.frame(height: listHeight)
-                    .background(Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(Color.primary.opacity(0.06), lineWidth: 1))
-            }
-            HStack {
-                Text("시스템").font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Text("전체 Mac").font(.system(size: 11)).foregroundStyle(.secondary)
-            }
-            SystemGrid(system: model.system, cpuHistory: model.cpuHistory)
-            Divider()
-            HStack {
-                Button("활성 상태 보기") { NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app")) }
-                Spacer()
-                HStack(spacing: 4) {
-                    let fresh = model.hasSample && Date().timeIntervalSince(model.system.sampledAt) < max(3, DashboardModel.samplingInterval * 3)
-                    Circle().fill(fresh ? Color.green : Color.orange).frame(width: 4, height: 4)
-                    Text(fresh ? "LIVE" : "수집 대기")
-                }.font(.system(size: 11)).foregroundStyle(.secondary)
-                    .help("시스템 측정 \(Format.age(model.system.sampledAt)) · AI 기록 수집 \(Format.age(model.tokensSampledAt))")
-            }.font(.system(size: 11))
-        }.padding(14).frame(width: 420).buttonStyle(DashboardButtonStyle())
     }
 }
 
@@ -586,9 +302,9 @@ struct PreferencesView: View {
                 Text("CPU 사용률").tag("cpu")
                 Text("AI 실측 속도").tag("tokens")
             }.onChange(of: preferences.animationSource) { _ in changed() }
-            Spacer()
+                .help("AI 실측 속도: 최근 5초 안에 받은 실측 속도에만 반응합니다. 실측이 없으면 천천히 걷습니다")
             Button("기본값으로 되돌리기") { preferences.reset(); changed() }
-        }.padding(20).frame(width: 360, height: 450)
+        }.padding(20).frame(width: 360).fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -618,7 +334,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         }
         popover.behavior = .transient
         popover.delegate = self
-        popover.contentViewController = NSHostingController(rootView: DashboardView(model: model, settings: { [weak self] in self?.openSettings() }, quit: { NSApp.terminate(nil) }))
+        let content = NSHostingController(rootView: DashboardView(model: model, settings: { [weak self] in self?.openSettings() }, quit: { NSApp.terminate(nil) }))
+        content.sizingOptions = [.preferredContentSize]
+        popover.contentViewController = content
         model.onUpdate = { [weak self] in self?.updateStatus() }
         model.telemetry.start { [weak self] in
             DispatchQueue.main.async { self?.connectTelemetryAutomatically() }
@@ -668,7 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func updateStatus() {
         guard let button = statusItem.button, let statusView else { return }
         let preferences = model.preferences
-        let metrics = StatusBarContent.metrics(system: model.system, tokens: model.tokens,
+        let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, recorded: model.flow.total,
             preferences: preferences, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         statusView.update(metrics: metrics, layout: preferences.statusBarLayout, showRunner: preferences.showRunner)
         statusItem.length = statusView.requiredWidth
@@ -678,9 +396,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
         button.title = ""
         button.image = nil
         let details = metrics.map(\.detail).joined(separator: "\n")
-        button.toolTip = "TokenCat\n\(details)\n속도는 세션 목록에서 확인할 수 있습니다."
+        button.toolTip = "TokenCat\n\(details)\n클릭하면 세션별 상세를 엽니다"
         button.setAccessibilityValue(details)
         button.setAccessibilityHelp("메뉴를 열어 세션별 모델과 속도, 시스템 상세 수치를 확인합니다.")
+    }
+    func popoverWillShow(_ notification: Notification) {
+        model.popoverShownAt = Date()
     }
     @objc func togglePopover() {
         guard let button = statusItem.button else { return }
@@ -698,7 +419,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     }
     private func writeStatusReadback(path: String) {
         guard let button = statusItem.button, let statusView else { return }
-        let metrics = StatusBarContent.metrics(system: model.system, tokens: model.tokens,
+        let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, recorded: model.flow.total,
             preferences: model.preferences, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         let report: [String: Any] = [
             "version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "",
@@ -716,7 +437,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
             try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: url)
             if let bitmap = button.bitmapImageRepForCachingDisplay(in: button.bounds) {
                 button.cacheDisplay(in: button.bounds, to: bitmap)
-                if let png = bitmap.representation(using: .png, properties: [:]) {
+                // The status button is transparent; composite it onto a menu-bar-like backdrop.
+                let dark = button.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                let canvas = NSImage(size: button.bounds.size)
+                canvas.lockFocus()
+                NSColor(white: dark ? 0.13 : 0.94, alpha: 1).setFill()
+                NSRect(origin: .zero, size: button.bounds.size).fill()
+                bitmap.draw(in: NSRect(origin: .zero, size: button.bounds.size), from: .zero, operation: .sourceOver,
+                            fraction: 1, respectFlipped: true, hints: nil)
+                canvas.unlockFocus()
+                if let tiff = canvas.tiffRepresentation, let opaque = NSBitmapImageRep(data: tiff),
+                   let png = opaque.representation(using: .png, properties: [:]) {
                     try png.write(to: url.deletingPathExtension().appendingPathExtension("png"))
                 }
             }
@@ -725,11 +456,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     func openSettings() {
         popover.performClose(nil)
         if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 360, height: 450), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let content = NSHostingView(rootView: PreferencesView(preferences: model.preferences,
+                changed: { [weak self] in self?.updateStatus() }))
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: content.fittingSize), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "TokenCat 설정"
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: PreferencesView(preferences: model.preferences,
-                changed: { [weak self] in self?.updateStatus() }))
+            window.contentView = content
+            window.setContentSize(content.fittingSize)
             window.center()
             settingsWindow = window
         }

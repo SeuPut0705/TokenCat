@@ -7,7 +7,7 @@ import SwiftUI
 enum TokenCatMain {
     static func main() {
         if CommandLine.arguments.contains("--self-test") {
-            let failures = runTrackerChecks() + runPreferenceChecks() + runStatusBarChecks()
+            let failures = runTrackerChecks() + runPreferenceChecks() + runStatusBarChecks() + runSessionPresentationChecks()
                 + runTelemetryChecks() + runTelemetrySetupChecks() + runTokenSpeedChecks() + Runner.resourceErrors()
             if Runner.resourceErrors().isEmpty { print("Bundled artwork: PASS (8 animation frames, transparent icon)") }
             if failures.isEmpty { print("TokenCat checks: PASS") }
@@ -145,7 +145,7 @@ enum TokenCatMain {
             let layout: StatusBarLayout = CommandLine.arguments.contains("--inline") ? .inline : .compact
             let view = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
             view.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
-            view.update(metrics: StatusBarContent.metrics(system: model.system, tokens: model.tokens,
+            view.update(metrics: StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, recorded: model.flow.total,
                 preferences: model.preferences, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil),
                 layout: layout, showRunner: model.preferences.showRunner)
             view.frame.size.width = view.requiredWidth
@@ -179,6 +179,7 @@ enum TokenCatMain {
                 .environment(\.colorScheme, light ? .light : .dark)
                 .background(light ? Color(red: 0.97, green: 0.97, blue: 0.98) : Color(red: 0.12, green: 0.12, blue: 0.13))
             let renderer = ImageRenderer(content: content)
+            renderer.proposedSize = ProposedViewSize(width: 420, height: nil)
             renderer.scale = 2
             renderer.isOpaque = true
             guard let cgImage = renderer.cgImage else { print("Snapshot failed"); exit(1) }
