@@ -82,6 +82,7 @@ for theme in Theme.allCases {
     for feature in features { save(featureShot(theme, feature.sheet, feature.region), feature.name + suffix) }
     save(menubarLayouts(theme, minimal: minimal, twoLine: twoLine, oneLine: oneLine), "menubar-layouts" + suffix)
     save(menubarStates(theme, minimal: minimal), "menubar-states" + suffix)
+    save(architecture(theme, menu: minimal, assets: assets), "architecture" + suffix)
     save(settingsCollage(theme, panes: images), "settings" + suffix)
     save(iconShowcase(theme, assets: assets), "app-icon" + suffix)
     save(posesSheet(theme, runner: runner, bars: twoLine.bar), "poses" + suffix)

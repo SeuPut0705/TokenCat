@@ -224,17 +224,10 @@ TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다�
 
 ## 작동 방식
 
-```mermaid
-flowchart LR
-    subgraph C["Codex · Claude Code"]
-        L["로컬 JSONL 기록<br/>~/.codex/sessions<br/>~/.claude/projects"]
-        O["OTLP 실측<br/>HTTP/JSON"]
-    end
-    L -- "파일 변경 감지 · 추가분만 읽기" --> T["TokenCat"]
-    O -- "127.0.0.1:16493" --> T
-    S["macOS 시스템 지표"] --> T
-    T --> M["메뉴 막대 · 상세 화면"]
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/architecture-dark.png">
+  <img src="docs/images/architecture-light.png" width="839" alt="Codex·Claude Code의 로컬 JSONL 기록(파일 변경 감지, 추가분만 읽기)과 OTLP 실측(127.0.0.1:16493), macOS 시스템 지표가 TokenCat으로 들어가 이 Mac 안에서 처리되고 메뉴 막대와 상세 화면에 표시되는 구조">
+</picture>
 
 - **로그**에서 세션, 모델, 출력 토큰, 진행 상태를 읽습니다. 로그가 기록한 시점에만 반영하므로 Claude Code처럼 메시지가 끝날 때 기록하는 클라이언트는 메시지 완료 후 숫자가 오릅니다. 진행 표시는 마지막 기록 뒤 허용 시간(모델 응답 대기 10분, Claude Code 도구 15분, Codex 도구 120초) 안에서만 유지하고, 지나면 `로그 대기`로 바꿉니다. OS 프로세스가 살아 있는지를 뜻하지는 않습니다.
 - **실측**은 제공사·세션·에이전트 식별자가 정확히 일치할 때만 세션 행에 붙입니다. 모델 이름이나 시간이 가깝다는 이유로 연결하지 않습니다. 속도는 근거에 따라 단위를 나눠 표시합니다.

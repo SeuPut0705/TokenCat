@@ -247,6 +247,101 @@ func menubarStates(_ theme: Theme, minimal: MenuMatrix) -> CGImage {
     return roundCorners(canvas, radius: 28)
 }
 
+// MARK: - Architecture
+
+/// Where TokenCat's numbers come from. Drawn here because GitHub's Mermaid frame clips wide flowcharts.
+func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
+    let look = Look.of(theme)
+    let dark = theme == .dark
+    let card = dark ? color(0xFFFFFF, 0.07) : color(0xFFFFFF, 0.72)
+    let group = dark ? color(0xFFFFFF, 0.03) : color(0xFFFFFF, 0.30)
+    let wire = dark ? color(0xC9CCF2, 0.60) : color(0x3B4277, 0.50)
+    let pill = dark ? color(0x262B57) : color(0xF4F5FC)
+    let pad: CGFloat = 56, leftWidth: CGFloat = 470, leftGap: CGFloat = 340, midWidth: CGFloat = 280
+    let rightGap: CGFloat = 96, rightWidth: CGFloat = 380
+    let groupLabel: CGFloat = 60, cardGap: CGFloat = 16, groupInset: CGFloat = 24, systemGap: CGFloat = 28
+    let jsonl = CGRect(x: pad + groupInset, y: pad + groupLabel, width: leftWidth - 2 * groupInset, height: 136)
+    let otlp = CGRect(x: jsonl.minX, y: jsonl.maxY + cardGap, width: jsonl.width, height: 112)
+    let codeGroup = CGRect(x: pad, y: pad, width: leftWidth, height: otlp.maxY + 22 - pad)
+    let system = CGRect(x: pad, y: codeGroup.maxY + systemGap, width: leftWidth, height: 112)
+    let canvas = Canvas(Int(pad * 2 + leftWidth + leftGap + midWidth + rightGap + rightWidth), Int(system.maxY + pad))
+    look.paintWall(canvas, glowScale: 0.8)
+
+    func box(_ rect: CGRect, _ fill: CGColor, radius: CGFloat = 18) {
+        canvas.fill(canvas.rounded(rect, radius), fill)
+        canvas.stroke(canvas.rounded(rect.insetBy(dx: 0.75, dy: 0.75), radius - 0.75), look.border, width: 1.5)
+    }
+    func source(_ rect: CGRect, _ title: String, _ lines: [String]) {
+        box(rect, card)
+        canvas.text(title, x: rect.minX + 24, baseline: rect.minY + 44, size: 24, bold: true, color: look.text)
+        for (index, line) in lines.enumerated() {
+            canvas.text(line, x: rect.minX + 24, baseline: rect.minY + 80 + CGFloat(index) * 28, size: 20, color: look.secondary)
+        }
+    }
+    /// Flat-ended curve with an arrowhead; the optional label sits in a pill at the midpoint.
+    func wireTo(_ start: CGPoint, _ end: CGPoint, label: String? = nil) {
+        let bend = (end.x - start.x) * 0.5, tip = CGPoint(x: end.x - 2, y: end.y)
+        let path = CGMutablePath()
+        path.move(to: start)
+        path.addCurve(to: CGPoint(x: tip.x - 10, y: tip.y), control1: CGPoint(x: start.x + bend, y: start.y),
+                      control2: CGPoint(x: tip.x - 10 - bend, y: tip.y))
+        canvas.stroke(canvas.cg(path), wire, width: 2.5)
+        let head = CGMutablePath()
+        head.addLines(between: [tip, CGPoint(x: tip.x - 14, y: tip.y - 8), CGPoint(x: tip.x - 14, y: tip.y + 8)])
+        head.closeSubpath()
+        canvas.fill(canvas.cg(head), wire)
+        guard let label else { return }
+        let mid = CGPoint(x: (start.x + tip.x - 10) / 2, y: (start.y + tip.y) / 2)
+        let width = Canvas.measure(label, size: 18) + 28
+        box(CGRect(x: mid.x - width / 2, y: mid.y - 18, width: width, height: 36), pill, radius: 18)
+        canvas.text(label, x: mid.x, baseline: mid.y + 6.5, size: 18, color: look.text, align: .center)
+    }
+
+    // Sources.
+    box(codeGroup, group, radius: 24)
+    canvas.text("Codex · Claude Code", x: codeGroup.minX + 24, baseline: codeGroup.minY + 40, size: 21, bold: true,
+                color: look.secondary)
+    source(jsonl, "로컬 JSONL 기록", ["~/.codex/sessions", "~/.claude/projects"])
+    source(otlp, "OTLP 실측", ["HTTP/JSON"])
+    source(system, "macOS 시스템 지표", ["CPU · 메모리 · 저장 공간 · 배터리 · 네트워크"])
+
+    // Menu bar item (the app's own render) shown inside the output card.
+    let state = MenuMatrix.stateNames.firstIndex(of: "입력 필요")!
+    let item = menu.slice(state, MenuMatrix.column(theme))
+    let barHeight = CGFloat(item.height), cardHeight = 70 + barHeight + 100
+    let midY = (CGFloat(canvas.height) - cardHeight) / 2
+    let app = CGRect(x: pad + leftWidth + leftGap, y: midY, width: midWidth, height: cardHeight)
+    let output = CGRect(x: app.maxX + rightGap, y: midY, width: rightWidth, height: cardHeight)
+
+    // TokenCat.
+    box(app, card, radius: 24)
+    let iconSize: CGFloat = 112
+    canvas.draw(downscale(readPNG(assets + "/app-icon-v2-1024.png"), to: Int(iconSize)),
+                CGRect(x: app.midX - iconSize / 2, y: app.minY + 14, width: iconSize, height: iconSize))
+    canvas.text("TokenCat", x: app.midX, baseline: app.maxY - 58, size: 30, bold: true, color: look.text, align: .center)
+    canvas.text("이 Mac 안에서 처리", x: app.midX, baseline: app.maxY - 26, size: 20, color: look.secondary, align: .center)
+
+    // Output.
+    box(output, card, radius: 24)
+    canvas.text("메뉴 막대 · 상세 화면", x: output.minX + 24, baseline: output.minY + 44, size: 24, bold: true, color: look.text)
+    let bar = CGRect(x: output.minX + 24, y: output.minY + 66, width: output.width - 48, height: barHeight)
+    canvas.clipped(canvas.rounded(bar, 12)) {
+        canvas.fill(bar, color(menu.bar[theme]!))
+        canvas.draw(item, CGRect(x: bar.maxX - 14 - CGFloat(item.width), y: bar.minY, width: CGFloat(item.width),
+                                 height: barHeight), quality: .none)
+    }
+    canvas.stroke(canvas.rounded(bar.insetBy(dx: 0.5, dy: 0.5), 11.5), look.border, width: 1)
+    canvas.text("세션 상태 · 출력 토큰 · 사용 한도", x: output.minX + 24, baseline: bar.maxY + 42, size: 20, color: look.secondary)
+    canvas.text("알림은 켠 경우에만", x: output.minX + 24, baseline: bar.maxY + 72, size: 20, color: look.secondary)
+
+    // Wires: each source lands on its own height of the TokenCat card.
+    wireTo(CGPoint(x: jsonl.maxX, y: jsonl.midY), CGPoint(x: app.minX, y: app.midY - 52), label: "파일 변경 감지 · 추가분만 읽기")
+    wireTo(CGPoint(x: otlp.maxX, y: otlp.midY), CGPoint(x: app.minX, y: app.midY), label: "127.0.0.1:16493")
+    wireTo(CGPoint(x: system.maxX, y: system.midY), CGPoint(x: app.minX, y: app.midY + 52))
+    wireTo(CGPoint(x: app.maxX, y: app.midY), CGPoint(x: output.minX, y: output.midY))
+    return roundCorners(canvas, radius: 28)
+}
+
 // MARK: - Settings
 
 /// Four settings tabs in two balanced columns (일반 + 고양이 | 메뉴 막대 + 정보).
