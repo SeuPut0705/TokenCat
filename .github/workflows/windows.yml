@@ -1,0 +1,95 @@
+# Builds and checks the Windows app (windows/, DESIGN.md §10.1) on a Windows runner: everything the Mac cannot run (tray icon
+# handles, the PowerShell/Git Bash statusLine bridge, renaming a running exe, the version resource) is checked here.
+# The release job lives in release.yml (windows/release.yml.patch adds it at integration).
+name: Windows
+
+on:
+  push:
+    branches: [main]
+    paths: ['windows/**', 'Assets/**', 'build.sh', '.github/workflows/windows.yml']
+  pull_request:
+    paths: ['windows/**', 'Assets/**', 'build.sh', '.github/workflows/windows.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: 빌드와 검사
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: windows/global.json
+
+      # TreatWarningsAsErrors is already in Directory.Build.props; -warnaserror keeps it even if that changes.
+      - name: 빌드 (경고는 오류)
+        run: dotnet build windows/TokenCat.Windows.slnx -c Release -warnaserror
+
+      # Core suites, including the open-writer log case (rule 8) and the updater's rename steps on NTFS.
+      - name: Core 검사
+        run: dotnet run --project windows/TokenCat.Checks -c Release --no-build
+
+      # The csproj sets win-x64, self-contained and single-file: the output must be exactly TokenCat.exe.
+      - name: 게시 (win-x64 단일 파일)
+        run: |
+          dotnet publish windows/TokenCat.App -c Release -o publish
+          ls -l publish
+          if [[ $(ls publish) != TokenCat.exe ]]; then
+            echo "::error::publish에 TokenCat.exe 말고 다른 파일이 있습니다: $(ls publish | tr '\n' ' ')"
+            exit 1
+          fi
+
+      # The updater compares ProductVersion with the release tag, and only a Windows-hosted build writes it (§1 #11).
+      - name: 버전 리소스 확인
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path build.sh -Pattern 'CFBundleShortVersionString</key><string>([0-9.]+)<').Matches[0].Groups[1].Value
+          $product = (Get-Item publish/TokenCat.exe).VersionInfo.ProductVersion
+          Write-Output "build.sh $version · TokenCat.exe ProductVersion $product"
+          if (-not $version -or $product -ne $version) { Write-Error "ProductVersion '$product'이 build.sh 버전 '$version'과 다릅니다."; exit 1 }
+
+      # Flat entries, exactly as released; --update-selftest runs the updater against this very file.
+      - name: 압축
+        shell: pwsh
+        run: Compress-Archive -Path publish/TokenCat.exe, LICENSE -DestinationPath TokenCat-Windows.zip
+
+      - name: 자체 검사
+        run: ./publish/TokenCat.exe --self-test
+
+      - name: 텔레메트리 수명 주기 검사 (루프백, Git Bash·PowerShell 브리지)
+        run: ./publish/TokenCat.exe --telemetry-lifecycle-checks
+
+      - name: 업데이트 자체 검사 (압축 해제, 버전, 이름 바꾸기, 다시 열기)
+        run: ./publish/TokenCat.exe --update-selftest TokenCat-Windows.zip
+
+      - name: 스냅숏
+        run: ./publish/TokenCat.exe --snapshot snapshots
+
+      - name: 빌드 올리기
+        uses: actions/upload-artifact@v7
+        with:
+          name: TokenCat-Windows
+          path: TokenCat-Windows.zip
+          retention-days: 7
+
+      - name: 스냅숏 올리기
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-snapshots
+          path: snapshots
+          retention-days: 7
+          if-no-files-found: warn

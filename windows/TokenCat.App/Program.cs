@@ -1,24 +1,30 @@
 using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Windows;
 using TokenCat;
 using static TokenCat.Lang;
-using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
 
-// WP0 skeleton, handed to WP5 (which owns this folder except the csproj, app.manifest and TokenCat.ico): a tray icon and an
-// empty flyout with the spike's mechanics (DESIGN §2.5, §2.9, §4.2). CLI dispatch, the live icon and the dashboard come with WP5.
+// Entry.swift for Windows: CLI flags first (they never take the single-instance mutex), then the tray app (DESIGN §2.9, §7.7).
 static class Program
 {
     [STAThread]
-    static int Main()
+    static int Main(string[] args)
     {
         // Swift's interpolation and String(format:) ignore the user's locale; culture-specific text names its culture.
         CultureInfo.DefaultThreadCurrentCulture = CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+        if (Command(args) is { } exit) return exit;
+
+        // `--after-update <pid>`: the new copy waits for the old one, then removes TokenCat.exe.old (§9).
+        if (Value(args, "--after-update") is { } pid && int.TryParse(pid, out var old)) UpdateInstaller.FinishAfterUpdate(old);
 
         // One per user session. A second launch lets the first take the foreground (only the launched process may grant
-        // it), signals it to open the flyout and exits.
+        // it), signals it to open the dashboard and exits.
         using var mutex = new Mutex(true, @"Local\dev.seuput.TokenCat", out var first);
+        if (!first)
+        {
+            try { first = mutex.WaitOne(0); }
+            catch (AbandonedMutexException) { first = true; } // a crashed holder: the mutex is ours now
+        }
         using var openRequest = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\dev.seuput.TokenCat.open");
         if (!first)
         {
@@ -29,72 +35,101 @@ static class Program
 
         Forms.Application.SetColorMode(Forms.SystemColorMode.System);
         var app = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
-        var flyout = new Flyout();
-        var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add(Loc("TokenCat 종료", "Quit TokenCat"), null, (_, _) => app.Shutdown());
-        var tray = new Forms.NotifyIcon { Icon = Native.HeadIcon(), Text = "TokenCat", ContextMenuStrip = menu, Visible = true };
-
-        // Click also fires for the right button, so only a left MouseClick toggles. Clicking the icon while the flyout is open
-        // first deactivates (hides) it; a click within 300 ms of that hide must not reopen it.
-        var hiddenAt = DateTime.MinValue;
-        flyout.Deactivated += (_, _) => { flyout.Hide(); hiddenAt = DateTime.UtcNow; };
-        flyout.KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) flyout.Hide(); };
-        tray.MouseClick += (_, e) =>
-        {
-            if (e.Button != Forms.MouseButtons.Left || DateTime.UtcNow - hiddenAt < TimeSpan.FromMilliseconds(300)) return;
-            Native.ShowAt(flyout, Forms.Cursor.Position);
-        };
-        ThreadPool.RegisterWaitForSingleObject(openRequest, (_, _) => app.Dispatcher.BeginInvoke(() =>
-        {
-            var area = Forms.Screen.PrimaryScreen!.WorkingArea;
-            Native.ShowAt(flyout, new Drawing.Point(area.Right, area.Bottom));
-        }), null, -1, false);
-        app.Exit += (_, _) => { tray.Visible = false; tray.Dispose(); };
-        return app.Run();
+        // The Updater (a Shell field) posts its timers back through the context it is created on; Run() hasn't installed one yet.
+        SynchronizationContext.SetSynchronizationContext(new System.Windows.Threading.DispatcherSynchronizationContext(app.Dispatcher));
+        var shell = new Shell(app);
+        var registration = ThreadPool.RegisterWaitForSingleObject(openRequest,
+            (_, _) => app.Dispatcher.BeginInvoke(shell.OpenAtCorner), null, -1, false);
+        app.Startup += (_, _) => shell.Start();
+        try { return app.Run(); }
+        finally { registration.Unregister(null); }
     }
-}
 
-static class Native
-{
-    public const int ASFW_ANY = -1;
-    [DllImport("user32.dll")] public static extern bool AllowSetForegroundWindow(int processId);
-    [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
-    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out Rect rect);
-    [DllImport("user32.dll")] static extern uint GetDpiForWindow(IntPtr hwnd);
-    struct Rect { public int Left, Top, Right, Bottom; }
-    const uint SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4;
-
-    /// The cat head @2x on a 32 px canvas; Windows scales it to the tray size.
-    /// ponytail: one static HICON for the process lifetime. WP5's tray renders TrayFrame pixels at the exact size and
-    /// destroys each HICON it replaces.
-    public static Drawing.Icon HeadIcon()
+    static string? Value(string[] args, string flag)
     {
-        using var stream = typeof(Native).Assembly.GetManifestResourceStream("app-head-normal@2x.png")!;
-        using var head = new Drawing.Bitmap(stream);
-        using var canvas = new Drawing.Bitmap(32, 32);
-        using (var graphics = Drawing.Graphics.FromImage(canvas))
+        var index = Array.IndexOf(args, flag);
+        return index >= 0 && index + 1 < args.Length ? args[index + 1] : null;
+    }
+
+    /// The CLI (Entry.swift's flags plus Windows' own). Null runs the app.
+    static int? Command(string[] args)
+    {
+        string[] flags = ["--self-test", "--telemetry-lifecycle-checks", "--connect-telemetry", "--disconnect-telemetry", "--telemetry-readings",
+            "--update-check", "--update-selftest", "--diagnose", "--snapshot"];
+        var language = FlagValue(args);
+        if (!args.Any(flags.Contains) && (language is null || Parse(language) is not null)) return null;
+        Native.UseParentConsole();
+        // `--language ko|en` picks the display language for any command, including the app itself.
+        if (language is not null && Parse(language) is null)
         {
-            graphics.InterpolationMode = Drawing.Drawing2D.InterpolationMode.NearestNeighbor;
-            graphics.PixelOffsetMode = Drawing.Drawing2D.PixelOffsetMode.Half;
-            graphics.DrawImage(head, (32 - head.Width) / 2, (32 - head.Height) / 2, head.Width, head.Height);
+            Console.WriteLine($"Unknown --language '{language}': ko or en");
+            return 1;
         }
-        return Drawing.Icon.FromHandle(canvas.GetHicon());
+        if (args.Contains("--self-test"))
+        {
+            // Existing suites assert Korean text; the localization suite switches to English where it checks it.
+            Current = AppLanguage.Ko;
+            List<string> failures = [.. AppChecks.Run(), .. Suites.RunAll()];
+            return Suites.Report(failures);
+        }
+        // Opens real loopback listeners on two free test ports (never the app's port), so it stays out of --self-test.
+        if (args.Contains("--telemetry-lifecycle-checks"))
+            return Suites.Report(TelemetryLifecycleChecks.Run(int.TryParse(Value(args, "--telemetry-lifecycle-checks"), out var port) ? port : null));
+        if (args.Contains("--connect-telemetry") || args.Contains("--disconnect-telemetry")) return ConnectTelemetry(args.Contains("--connect-telemetry"));
+        if (args.Contains("--telemetry-readings"))
+        {
+            if (!TelemetryCollector.IsOwnCollectorRunning(TimeSpan.FromSeconds(1))) return 1;
+            Console.WriteLine(System.Text.Encoding.UTF8.GetString(Json.Serialize(TelemetryCollector.FetchSnapshot(TimeSpan.FromSeconds(1)))).TrimEnd());
+            return 0;
+        }
+        // Read-only: one GET of the latest release, printed; nothing is stored, downloaded or installed.
+        if (args.Contains("--update-check")) return Updater.CommandLineCheck();
+        if (args.Contains("--update-selftest"))
+        {
+            if (Value(args, "--update-selftest") is not { } zip) { Console.WriteLine("--update-selftest <zip>"); return 1; }
+            return UpdateInstaller.SelfTest(zip);
+        }
+        if (args.Contains("--diagnose"))
+        {
+            var sampler = new WindowsSystemSampler();
+            sampler.Sample();
+            Thread.Sleep(1000);
+            var system = sampler.Sample();
+            var tokens = TokenSpeed.Apply(new TokenTracker(AppPaths.Home).Sample(), TelemetryCollector.FetchSnapshot(TimeSpan.FromSeconds(1)));
+            Console.WriteLine(System.Text.Encoding.UTF8.GetString(Json.Serialize(new { system, tokens })).TrimEnd());
+            return 0;
+        }
+        if (args.Contains("--snapshot"))
+        {
+            if (Value(args, "--snapshot") is not { } directory) { Console.WriteLine("--snapshot <dir>"); return 1; }
+            return Snapshot.Write(directory);
+        }
+        return null;
     }
 
-    /// Physical pixels throughout (PerMonitorV2): move onto the anchor's monitor first so WPF rescales for its DPI, then
-    /// measure and clamp into that monitor's working area (which excludes the taskbar on any edge), above/left of the anchor.
-    public static void ShowAt(Window window, Drawing.Point anchor)
+    /// The app's automatic connection follows the last command, a refused disconnect included: the intent is the same.
+    static int ConnectTelemetry(bool connect)
     {
-        window.Show();
-        window.Activate();
-        var hwnd = new System.Windows.Interop.WindowInteropHelper(window).Handle;
-        SetWindowPos(hwnd, IntPtr.Zero, anchor.X, anchor.Y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
-        window.UpdateLayout();
-        GetWindowRect(hwnd, out var r);
-        int width = r.Right - r.Left, height = r.Bottom - r.Top, margin = (int)(12 * GetDpiForWindow(hwnd) / 96);
-        var area = Forms.Screen.FromPoint(anchor).WorkingArea;
-        int x = Math.Clamp(anchor.X - width / 2, area.Left + margin, Math.Max(area.Left + margin, area.Right - margin - width));
-        int y = Math.Clamp(anchor.Y - height, area.Top + margin, Math.Max(area.Top + margin, area.Bottom - margin - height));
-        SetWindowPos(hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+        SettingsStore.Shared.Set(TelemetrySetup.OptOutKey, !connect);
+        if (connect && !TelemetryCollector.IsOwnCollectorRunning(TimeSpan.FromSeconds(1)))
+        {
+            Console.WriteLine(Loc("실행 중인 TokenCat 로컬 수집기가 없습니다. 앱을 먼저 실행하세요.", "No TokenCat collector is running. Open the app first."));
+            return 1;
+        }
+        try
+        {
+            var setup = new TelemetrySetup(AppPaths.Home, AppPaths.Support);
+            var result = connect ? setup.Connect() : setup.Disconnect();
+            Console.WriteLine(result.Message);
+            var count = result.ChangedFiles.Count;
+            var names = string.Join(", ", result.RestartRequired.Select(source => source.Title));
+            Console.WriteLine(Loc($"변경 파일 {count}개 · 다음 실행부터 적용: {names}", $"{Plural(count, "file")} changed · applies from the next launch: {names}"));
+            return 0;
+        }
+        catch (Exception error)
+        {
+            Console.WriteLine(Loc($"실측 연결: {error.Message}", $"Telemetry: {error.Message}"));
+            return 1;
+        }
     }
 }
