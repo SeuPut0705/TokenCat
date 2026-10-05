@@ -4,7 +4,7 @@
 
 [README](../README.ko.md)로 돌아가기
 
-시스템 지표와 Codex·Claude Code 토큰 기록을 함께 표시하는 작은 macOS 메뉴 막대 앱입니다. macOS 13 이상, Swift·AppKit·SwiftUI만 사용합니다. RunCat의 이미지나 코드는 사용하지 않습니다.
+시스템 지표와 Codex·Claude Code 토큰 기록을 함께 표시하는 작은 macOS 메뉴 막대 앱입니다. macOS 13 이상, Swift·AppKit·SwiftUI만 사용합니다. RunCat의 이미지나 코드는 사용하지 않습니다. Windows 미리보기는 [Windows (미리보기)](#windows-미리보기)에서 다룹니다.
 
 이 문서는 화면·수집·실측의 동작 규칙을 빠짐없이 적은 참고 문서입니다. 소개와 미리보기는 [README](../README.ko.md)에 있습니다. 아래 명령은 모두 저장소 루트에서 실행합니다.
 
@@ -128,7 +128,7 @@ TokenCat 자체는 모델 호출·계정 로그인을 하지 않으며, 로그�
 
 ## 업데이트와 배포
 
-배포는 GitHub Release로 합니다. `v<CFBundleShortVersionString>` 태그(예: `v0.9.0`)의 최신 릴리스에 `TokenCat.zip` 하나를 올리며, zip 맨 위에 `TokenCat.app`이 있습니다. 앱은 arm64·x86_64 universal 바이너리(최소 macOS 13)이고 ad-hoc 서명만 하며 Developer ID 서명·공증은 하지 않습니다.
+배포는 GitHub Release로 합니다. `v<CFBundleShortVersionString>` 태그(예: `v0.9.0`)의 최신 릴리스에 `TokenCat.zip`을 올리며, zip 맨 위에 `TokenCat.app`이 있습니다. 0.11.0부터는 같은 릴리스에 `TokenCat-Windows.zip`도 함께 올립니다([Windows (미리보기)](#windows-미리보기)). 앱은 arm64·x86_64 universal 바이너리(최소 macOS 13)이고 ad-hoc 서명만 하며 Developer ID 서명·공증은 하지 않습니다.
 
 **확인**: `GET https://api.github.com/repos/SeuPut0705/TokenCat/releases/latest` 한 가지만 요청합니다(`Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `User-Agent: TokenCat/<버전>`, 사용자 언어 목록 대신 고정한 `Accept-Language: en`; macOS가 `Host`·`Accept-Encoding: gzip, deflate`·`Connection`을 덧붙입니다). 설치 파일 내려받기도 같은 `User-Agent`·`Accept-Language`만 보냅니다. 응답에서는 `tag_name`, `html_url`, `draft`, `prerelease`와 `TokenCat.zip` 자산의 `browser_download_url`·`size`·`digest`(`sha256:<hex>`)만 읽고, 식별자나 사용 정보는 보내지 않습니다. `새 버전 자동 확인`(기본 켜짐)이 켜져 있으면 실행 약 5초 뒤, 15분마다(타이머 허용 오차 포함), 잠자기에서 깨고 약 15초 뒤, 마지막 확인이 5분 넘게 지난 상태에서 상세 화면을 열 때 확인하며, 요청은 한 번에 하나만 보냅니다. 끄면 `지금 확인`을 누를 때만 묻습니다.
 
@@ -139,6 +139,18 @@ TokenCat 자체는 모델 호출·계정 로그인을 하지 않으며, 로그�
 **릴리스 만들기**: `build.sh`의 버전을 올려 main에 푸시하면 [`.github/workflows/release.yml`](../.github/workflows/release.yml)이 실행됩니다. `build.sh`에서 버전과 빌드 번호를 읽어 `v<버전>` 태그가 이미 있으면 아무것도 하지 않습니다. 없으면 macOS 26 러너(`macos-26`, 이미지 기본 Xcode)에서 도구 버전을 출력하고 `./build.sh`, `--self-test`(러너에 Rosetta가 있으면 x86_64로도), `lipo -archs`의 arm64·x86_64 확인, Info.plist 버전과 태그 대조, `codesign --verify --deep --strict`를 거쳐 `ditto -c -k --sequesterRsrc --keepParent dist/TokenCat.app TokenCat.zip`으로 묶고 SHA-256을 출력합니다. 버전 확인 단계는 새 버전이 현재 최신 릴리스보다 높지 않으면 멈춥니다. 영어 다음 한국어로 릴리스 노트(소개 한 줄, 이전 태그와의 비교 링크, SHA-256을 먼저 확인하는 터미널 설치·Gatekeeper 안내, 처음 실행 때의 설정 자동 연결·상태 표시줄 감싸기와 해제 명령, SHA-256)를 만들어 `gh release create --draft`로 태그 없는 초안을 만들고(이전 실행이 남긴 같은 태그의 초안은 먼저 지움), 초안 자산의 `digest`가 zip의 SHA-256과 같을 때만 최신 릴리스로 게시합니다. 게시 뒤 `/releases/latest`가 새 태그와 같은 `digest`를 돌려주는지 몇 차례 다시 읽어 확인합니다. 실행은 동시성 그룹 `release` 하나로 묶여 진행 중인 릴리스를 취소하지 않습니다. 다만 GitHub는 기다리는 실행을 가장 새 것 하나만 남기므로, 릴리스 중에 버전을 두 번 이상 올려 푸시하면 중간 버전은 건너뛰고 가장 새 버전만 게시합니다.
 
 **Gatekeeper**: 공증하지 않은 앱이라 `spctl -a -vv -t exec`는 격리 여부와 관계없이 `rejected`로 평가하고, `syspolicy_check distribution`은 `Adhoc Signed App`(경고)과 `Notary Ticket Missing`(치명)을 보고합니다(macOS 27.0.1에서 확인). macOS는 이 평가를 격리 속성(`com.apple.quarantine`)이 붙은 앱을 처음 열 때 적용하므로, 브라우저로 받은 사본은 한 번 허용해야 하고 `curl`로 받아 `ditto -x -k`로 푼 사본은 격리 속성이 없어 바로 열립니다.
+
+## Windows (미리보기)
+
+Windows 버전은 [`windows/`](../windows)에 있습니다(C# .NET 10, WPF와 WinForms `NotifyIcon`, 외부 패키지 없음). Mac 앱의 UI가 아니라 규칙을 옮겼으며, 설계와 Mac 대비 제외 항목, PC 점검 목록은 [`windows/DESIGN.md`](../windows/DESIGN.md)에 있습니다. 설치와 사용자 입장에서 다른 점은 [README › Windows (미리보기)](../README.ko.md#windows-미리보기)에 있습니다.
+
+- **프로젝트**(`windows/TokenCat.Windows.slnx`): `TokenCat.Core`(`net10.0`, Windows API 없음)가 모든 규칙과 검사를 담습니다. 로그 추적, `127.0.0.1:16493` 루프백 수집기, 클라이언트 설정과 PowerShell 상태 표시줄 브리지, 표시 규칙, 캐릭터 동작, 업데이트가 여기에 있습니다. `TokenCat.App`(`net10.0-windows`)은 알림 영역 아이콘, 플라이아웃 상세 화면, 설정 창, 시스템 지표, 로그인 항목(`HKCU\…\Run`), 명령줄 옵션만 맡는 얇은 셸입니다. `TokenCat.Checks`는 Core 검사를 돌리는 콘솔 실행기입니다.
+- **Mac과 공유**: 버전은 `Directory.Build.props`가 `build.sh`에서 읽고, 스프라이트와 매니페스트는 `Assets/`에서 그대로 포함하므로 두 앱의 버전과 그림이 하나입니다. 설정 값은 Mac의 UserDefaults 키 이름 그대로 `%LOCALAPPDATA%\TokenCat\settings.json`에 둡니다.
+- **검사 동등성**: Core 검사 묶음은 Swift 검사를 실패 설명 문구까지 1:1로 옮겼고 Mac처럼 한국어로 실행하므로, 어긋난 곳을 한 번의 검색으로 두 코드에서 찾을 수 있습니다. Core 빌드와 검사는 macOS에서도 실행됩니다(`dotnet build windows/TokenCat.Windows.slnx -c Release`, `dotnet run --project windows/TokenCat.Checks -c Release`). Windows에서는 `TokenCat.exe --self-test`가 App 검사(포함된 그림, 아이콘 핸들 누수, 테마 대비)를 더합니다.
+- **CI**([`windows.yml`](../.github/workflows/windows.yml)): main 푸시와 PR이 `windows/`, `Assets/`, `build.sh`를 건드리면 `windows-latest` 러너에서 경고를 오류로 빌드하고 Core 검사를 돌린 뒤 단일 파일 `TokenCat.exe`(win-x64, self-contained)를 게시하고, ProductVersion이 `build.sh` 버전과 같은지 확인합니다. 이어서 `--self-test`, `--telemetry-lifecycle-checks`(실제 루프백, Git Bash와 PowerShell로 실행한 브리지 명령), 방금 묶은 zip에 대한 `--update-selftest`, `--snapshot`을 실행하고 zip과 스냅숏을 아티팩트로 올립니다.
+- **릴리스**([`release.yml`](../.github/workflows/release.yml)): `windows-latest`의 `windows` 작업이 빌드·검사·버전 확인을 반복하고 `TokenCat-Windows.zip`(`TokenCat.exe`와 `LICENSE`를 평평하게)을 묶어 `--update-selftest`를 거친 뒤 Mac 릴리스 작업에 넘깁니다. Mac 작업은 SHA-256을 확인해 `TokenCat.zip`과 같은 초안에 붙이고, 두 자산의 `digest`가 모두 맞을 때만 게시하며, `/releases/latest`에서 두 자산을 다시 읽어 확인합니다. 릴리스 노트에는 영어·한국어 Windows 설치 안내가 들어갑니다. exe는 Windows에서 빌드해야 합니다. SDK가 업데이트에서 태그와 비교하는 버전 리소스를 Windows에서만 쓰기 때문이며, Windows 빌드가 실패하면 릴리스 전체가 멈춥니다.
+- **업데이트**: 같은 `/releases/latest`를 요청하고, Windows 앱은 `TokenCat-Windows.zip`만 설치합니다. 크기와 SHA-256을 확인하고, zip에는 `TokenCat.exe`와 `LICENSE`만 허용하며, 새 exe의 ProductVersion을 릴리스와 대조한 뒤 실행 중인 `TokenCat.exe`를 `TokenCat.exe.old`로 이름을 바꾸고 새 파일을 넣어 `--after-update`로 다시 실행합니다. Mac 앱은 여전히 `TokenCat.zip`만 찾습니다.
+- **CI로 확인하지 못하는 것**: 배율별 알림 영역 아이콘, SmartScreen과 스마트 앱 컨트롤, IDE나 데스크톱 앱에서의 브리지, 실제 두 릴리스 사이의 앱 내 업데이트는 PC 점검 목록(DESIGN.md §12)에 있습니다.
 
 ## 검증 명령
 

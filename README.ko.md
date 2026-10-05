@@ -29,6 +29,7 @@
   <a href="#주요-기능">주요 기능</a> ·
   <a href="#개인정보와-안전">개인정보</a> ·
   <a href="#설치">설치</a> ·
+  <a href="#windows-미리보기">Windows</a> ·
   <a href="#작동-방식">작동 방식</a> ·
   <a href="#자주-묻는-질문">자주 묻는 질문</a> ·
   <a href="docs/DETAILS.ko.md">자세한 동작</a>
@@ -44,6 +45,7 @@
 - **세션과 하위 에이전트를 한 목록에**: 진행 상태, 실행 중인 도구 종류, 이번 턴 출력, 컨텍스트를 세션마다 보여 주고 하위 에이전트는 부모 아래에 묶습니다.
 - **로컬 전용**: 대화 본문을 저장하지 않고, 실측 수집기는 `127.0.0.1`에서만 열며, 모델 호출이나 계정 로그인을 하지 않습니다. 인터넷에는 업데이트를 확인하고 내려받을 때만 GitHub에 접속하며, 자동 확인은 끌 수 있습니다. 실측을 받기 위해 Codex·Claude Code 설정에 이 Mac으로 보내는 전송 설정을 자동으로 추가하고 Claude Code 상태 표시줄 명령을 TokenCat 브리지로 감싸며, 원본은 먼저 백업합니다.
 - **네이티브 앱**: Swift·AppKit·SwiftUI만 쓰고 외부 패키지가 없습니다. macOS 13 이상이 대상입니다.
+- **Windows 미리보기**: Windows 10·11(x64)용 알림 영역 버전을 같은 릴리스에 함께 올립니다. [Windows (미리보기)](#windows-미리보기)를 보세요.
 
 ## 주요 기능
 
@@ -296,6 +298,42 @@ TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다�
 
    연결한 뒤 바뀌지 않은 설정 파일은 원본 바이트로 되돌립니다. 그사이 수정된 파일은 TokenCat이 넣은 항목만 되돌리고, 지금 파일은 `~/Library/Application Support/TokenCat/telemetry-backups/`에 남깁니다. 명령은 한 일과 백업을 보고 직접 정리할 파일을 알려 주며, 복구는 클라이언트를 다음에 실행할 때부터 적용됩니다. `~/.claude/settings.json`의 `statusLine.command`가 아직 `claude-statusline.sh`를 가리키면 `~/Library/Application Support/TokenCat/claude-statusline-command`에 적힌 명령으로 바꿉니다(이 파일이 없으면 `statusLine`을 지웁니다). 정확한 규칙은 [자세한 동작 › 토큰 지표](docs/DETAILS.ko.md#토큰-지표)에 있습니다.
 4. 앱을 지웁니다. 복구를 마쳤다면 `~/Library/Application Support/TokenCat/`(백업·브리지)과 설정 값(`defaults delete dev.seuput.TokenCat`, Claude 한도 기록 포함)도 지울 수 있습니다. `~/.claude/settings.json`이 아직 `claude-statusline.sh`를 가리키면 이 폴더를 지우지 마세요. 원래 명령이 함께 사라지고 Claude Code 상태 표시줄이 실행에 실패합니다.
+
+## Windows (미리보기)
+
+0.11.0부터 TokenCat은 Windows 알림 영역에서도 실행됩니다. Mac 앱의 규칙을 같은 검사와 함께 옮겼지만 써 본 PC가 훨씬 적으므로, 문제가 있으면 [이슈](https://github.com/SeuPut0705/TokenCat/issues)로 알려 주세요(`--diagnose` 출력은 프로젝트 경로가 들어 있으니 첨부하지 마세요). 만든 방식은 [자세한 동작 › Windows (미리보기)](docs/DETAILS.ko.md#windows-미리보기)에 있습니다.
+
+Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
+
+1. [**TokenCat-Windows.zip 내려받기**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip) (Mac 앱과 같은 [최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest)의 첨부 파일). `TokenCat.exe` 하나와 `LICENSE`가 들어 있습니다.
+2. `TokenCat.exe`를 `%LOCALAPPDATA%\Programs\TokenCat`(권장, 파일 탐색기 주소 표시줄에 붙여 넣기)에 풀고 그곳에서 실행합니다. 압축 파일 안이나 임시 폴더에서 실행하면 스스로 업데이트하거나 로그인 시 열 수 없습니다.
+3. 코드 서명을 하지 않은 exe라 Microsoft Defender SmartScreen이 **Windows의 PC 보호** 창을 띄울 수 있습니다. **추가 정보**를 누른 뒤 **실행**을 누릅니다(영어 Windows에서는 **More info** → **Run anyway**). Windows 버전에 따라 문구가 다를 수 있으니 PC에 보이는 대로 따르세요. 압축을 풀기 전에 zip 파일 **속성**에서 **차단 해제**를 체크하면 이 창이 나오지 않습니다. Windows 11에서 **스마트 앱 컨트롤**이 켜져 있으면 서명하지 않은 앱을 하나만 허용할 방법이 없어, 이를 꺼야 실행됩니다.
+4. 처음에는 고양이가 숨겨진 아이콘(**^**) 안에 있을 수 있습니다. 계속 보이게 하려면 **^**에서 작업 표시줄로 끌어 놓거나, **설정 › 개인 설정 › 작업 표시줄 › 기타 시스템 트레이 아이콘**에서 켭니다.
+
+> [!IMPORTANT]
+> 처음 실행하면 Codex `%USERPROFILE%\.codex\config.toml`과 Claude Code `%USERPROFILE%\.claude\settings.json`에 이 PC(`127.0.0.1:16493`)로 보내는 실측 설정을 **자동으로** 추가합니다. 원본은 먼저 `%LOCALAPPDATA%\TokenCat\telemetry-backups`에 백업하고 프롬프트·응답 본문 로깅은 끕니다. Claude Code에 `statusLine`이 없으면 TokenCat 브리지(`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1`, PowerShell로 실행)를 추가합니다. 브리지는 상태 JSON을 `127.0.0.1`로만 보내고 아무것도 출력하지 않으며, 이미 있는 `statusLine`은 건드리지 않습니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다.
+
+**macOS와 다른 점**
+
+- **아이콘만**: 알림 영역에는 캐릭터와 상태만 보이고, 메뉴 막대의 숫자·배치·프리셋은 없습니다. 모서리의 노란 점은 입력 필요, 주황 점은 API 재시도입니다. 마우스를 올리면 짧은 요약이, 클릭하면 모든 숫자가 있는 상세 화면이, 우클릭하면 빠른 메뉴가 열립니다.
+- **크기는 디스플레이 배율을 따릅니다**: 100–175 %에서는 작업 중에 까딱이는 고양이 머리이고, 200 % 이상에서는 고른 캐릭터의 전신입니다.
+- **WSL은 추적하지 않습니다**: Windows에서 직접 실행한 Codex·Claude Code만 수집합니다(`%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.claude\projects`).
+- **Claude 한도**: 이미 있는 Claude Code `statusLine`은 감싸지 않으므로, 이때 Claude 한도는 Claude 데스크톱 앱을 쓰는 경우 그 사용량 기록에서만 읽습니다.
+- **언어**: Windows 표시 언어를 따릅니다(한국어면 한국어, 그 밖에는 영어).
+
+**업데이트**는 Mac과 같습니다. GitHub를 확인하고(설정 › 정보 › `새 버전 자동 확인`), `새 버전`과 `업데이트` 버튼을 보여 주며, `TokenCat-Windows.zip`을 내려받아 SHA-256을 확인한 뒤 `TokenCat.exe`를 바꾸고 다시 실행합니다. 압축 파일 안, 임시 폴더, 쓰기 권한이 없는 폴더(Program Files 등)에서는 TokenCat을 종료하고 `TokenCat.exe`를 직접 바꿉니다.
+
+**연결 해제와 제거**
+
+1. `로그인 시 TokenCat 열기`를 켰다면 설정 › 일반에서 끕니다. 시작 프로그램 항목이 지워집니다.
+2. 알림 영역 아이콘을 우클릭해 **TokenCat 종료**를 고릅니다.
+3. PowerShell에서 클라이언트 설정을 복구합니다(압축을 푼 폴더를 쓰고, `| Out-Host`는 출력을 기다리게 합니다). 규칙은 Mac과 같고, `statusLine`은 아직 TokenCat 브리지 그대로일 때만 지웁니다.
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\TokenCat\TokenCat.exe" --disconnect-telemetry | Out-Host
+   ```
+
+4. `%LOCALAPPDATA%\Programs\TokenCat`을 지웁니다. 복구를 마쳤다면 `%LOCALAPPDATA%\TokenCat`(설정 값, Claude 한도 기록, 백업, 브리지)도 지울 수 있지만, `%USERPROFILE%\.claude\settings.json`이 아직 `claude-statusline.ps1`을 가리키면 지우지 마세요.
 
 ## 작동 방식
 

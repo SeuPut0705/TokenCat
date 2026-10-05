@@ -29,6 +29,7 @@ English · [한국어](README.ko.md)
   <a href="#features">Features</a> ·
   <a href="#privacy-and-safety">Privacy</a> ·
   <a href="#install">Install</a> ·
+  <a href="#windows-preview">Windows</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#faq">FAQ</a> ·
   <a href="docs/DETAILS.md">Details</a>
@@ -44,6 +45,7 @@ The numbers are shown as they are. Token counts are the values actually recorded
 - **Sessions and subagents in one list**: each session shows its progress, the kind of tool running, output this turn and context, and subagents are grouped under their parent.
 - **Local only**: no conversation text is stored, the measurement collector listens only on `127.0.0.1`, and TokenCat never calls a model or signs in to an account. It goes online only to check for and download updates from GitHub, and automatic checks can be turned off. To receive measurements, it automatically adds settings to Codex and Claude Code that send telemetry to this Mac, and wraps the Claude Code status line command with a TokenCat bridge, backing up the originals first.
 - **Native app**: Swift, AppKit and SwiftUI only, with no third-party packages. Targets macOS 13 and later.
+- **Windows preview**: a notification-area version for Windows 10 and 11 (x64) ships on the same release. See [Windows (preview)](#windows-preview).
 
 ## Features
 
@@ -296,6 +298,42 @@ TokenCat checks the measurement connection on every launch and adds it again if 
 
    Config files unchanged since connecting are restored to their original bytes. In files edited since, only TokenCat's entries are reverted, and the current copy is kept in `~/Library/Application Support/TokenCat/telemetry-backups/`. The command says what it did, including any file left for you to clean up from the backups, and the restore takes effect the next time each client launches. If `statusLine.command` in `~/.claude/settings.json` still points to `claude-statusline.sh`, replace it with the command in `~/Library/Application Support/TokenCat/claude-statusline-command` (or remove `statusLine` if that file doesn't exist). The exact rules are in [Details › Token metrics](docs/DETAILS.md#token-metrics).
 4. Delete the app. Once the restore is done, you can also delete `~/Library/Application Support/TokenCat/` (backups and bridge) and the settings (`defaults delete dev.seuput.TokenCat`, which includes the Claude limit records). Don't delete that folder while `~/.claude/settings.json` still points to `claude-statusline.sh`: the original command would go with it, and the Claude Code status line would fail to run.
+
+## Windows (preview)
+
+TokenCat also runs in the Windows notification area, starting with 0.11.0. It's a port of the Mac app's rules, with the same checks, but it has been tried on far fewer PCs, so please [report issues](https://github.com/SeuPut0705/TokenCat/issues) (don't attach `--diagnose` output: it includes project paths). How it's built is in [Details › Windows (preview)](docs/DETAILS.md#windows-preview).
+
+It runs on Windows 10 and 11 (x64). There's no installer.
+
+1. [**Download TokenCat-Windows.zip**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip) (attached to the same [latest release](https://github.com/SeuPut0705/TokenCat/releases/latest) as the Mac app). It holds a single `TokenCat.exe` and `LICENSE`.
+2. Extract `TokenCat.exe` to `%LOCALAPPDATA%\Programs\TokenCat` (recommended; paste the path into the File Explorer address bar) and run it from there. Run from inside the zip or a temporary folder, it can't update itself or open at login.
+3. The exe isn't code-signed, so Microsoft Defender SmartScreen may show **Windows protected your PC**. Click **More info**, then **Run anyway** (on Korean Windows, **추가 정보** → **실행**). The wording can differ between Windows versions, so follow what your PC shows. Checking **Unblock** in the zip's **Properties** before extracting skips this prompt. With **Smart App Control** on (Windows 11), unsigned apps are blocked with no per-app exception, so TokenCat runs only with it off.
+4. The cat may sit in the hidden icons (**^**) at first. To keep it in view, drag it from **^** onto the taskbar, or turn it on in **Settings › Personalization › Taskbar › Other system tray icons**.
+
+> [!IMPORTANT]
+> On first launch, TokenCat **automatically** adds settings that send telemetry to this PC (`127.0.0.1:16493`) to Codex `%USERPROFILE%\.codex\config.toml` and Claude Code `%USERPROFILE%\.claude\settings.json`. It backs up the originals to `%LOCALAPPDATA%\TokenCat\telemetry-backups` first and turns off prompt and response text logging. If Claude Code has no `statusLine`, it adds the TokenCat bridge (`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1`, run by PowerShell), which sends the status JSON only to `127.0.0.1` and prints nothing; an existing `statusLine` is left untouched. It checks the connection on every launch; after `--disconnect-telemetry`, it won't reconnect until you run `--connect-telemetry`.
+
+**What's different from macOS**
+
+- **Icon only**: the tray shows the character and its state, without the menu bar's numbers, layouts or presets. A yellow corner dot means input is needed, an orange one an API retry. Hover for a short summary, click for the dashboard with all the numbers, and right-click for the quick menu.
+- **Size follows the display scale**: at 100–175 % the icon is the cat head, which bobs while working; at 200 % and above it's the full-body character you picked.
+- **WSL isn't tracked**: only Codex and Claude Code running on Windows itself are collected (`%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.claude\projects`).
+- **Claude limits**: an existing Claude Code `statusLine` isn't wrapped, so Claude limits then come only from the Claude desktop app's usage history, if you use the desktop app.
+- **Language**: follows the Windows display language (Korean if it's Korean, English otherwise).
+
+**Updates** work as on the Mac: TokenCat checks GitHub (Settings › About › `Check for updates automatically`), shows `New version` with an `Update` button, downloads `TokenCat-Windows.zip`, verifies its SHA-256, swaps `TokenCat.exe` and relaunches. From inside the zip, a temporary folder or a folder you can't write to (such as Program Files), quit TokenCat and replace `TokenCat.exe` by hand instead.
+
+**Disconnect and uninstall**
+
+1. If you turned on `Open TokenCat at login`, turn it off in Settings › General. This removes the startup entry.
+2. Right-click the tray icon and choose **Quit TokenCat**.
+3. Restore the client settings in PowerShell (use the folder you extracted to; `| Out-Host` waits for the output). The rules are the same as on the Mac, and `statusLine` is removed only while it's still exactly the TokenCat bridge.
+
+   ```powershell
+   & "$env:LOCALAPPDATA\Programs\TokenCat\TokenCat.exe" --disconnect-telemetry | Out-Host
+   ```
+
+4. Delete `%LOCALAPPDATA%\Programs\TokenCat`. Once the restore is done, you can also delete `%LOCALAPPDATA%\TokenCat` (settings, Claude limit records, backups and the bridge), but not while `%USERPROFILE%\.claude\settings.json` still points to `claude-statusline.ps1`.
 
 ## How it works
 
