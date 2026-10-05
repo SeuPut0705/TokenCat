@@ -74,7 +74,7 @@ public static class SessionPresentationChecks
         var command = reading("codex:cmd", TokenSource.Codex, session: "C", project: "alpha", active: true, state: A.Tool, last: -40)
             with { ToolCategory = ToolCategory.Command, ToolName = "exec" };
         check(StateTitle(S.Tool, command) == "명령 실행" && StateTitle(S.Tool, reading("x", active: true, state: A.Tool)) == "도구 실행"
-              && ToolTitle(ToolCategory.Agent) == "하위 에이전트 대기" && ToolTitle(ToolCategory.Mcp) == "MCP 도구", "tool category titles");
+              && ToolTitle(ToolCategory.Agent) == "하위 에이전트 대기" && ToolTitle(ToolCategory.Mcp) == "MCP 도구 실행", "tool category titles");
 
         // Grouping is by exact (source, session) identity.
         var claudeParent = reading("claude:p", session: "S1", project: "TokenCat", active: true, state: A.Working, last: -2);
@@ -462,8 +462,8 @@ public static class SessionPresentationChecks
               && expiredNotice?.Help.StartsWith("Codex: 이 버전에서 실측을 받지 못했습니다", StringComparison.Ordinal) == true,
               "a day without a receipt asks for a check");
         check(port?.Text == "실측 꺼짐 · 포트 사용 중" && conflict?.Text == "실측 꺼짐 · 설정 충돌"
-              && failed?.Kind == TelemetryNoticeKind.Failed && restart?.Text == "Codex · Claude Code 재시작 후 실측 표시" && restart?.IsProblem == false
-              && restart?.Help.StartsWith("Codex · Claude Code를 새로 실행하면", StringComparison.Ordinal) == true, "telemetry notice causes");
+              && failed?.Kind == TelemetryNoticeKind.Failed && restart?.Text == "Codex·Claude Code 재시작 후 속도 표시" && restart?.IsProblem == false
+              && restart?.Help.StartsWith("Codex·Claude Code를 새로 실행하면", StringComparison.Ordinal) == true, "telemetry notice causes");
         check(new[] { TelemetryCollectorState.Receiving, TelemetryCollectorState.Waiting, TelemetryCollectorState.Starting }
                   .All(collector => Notice(collector, null, none) == null)
               && new[] { port, conflict, failed, otherTokenCat, broken, expiredNotice }.All(notice => (notice?.Text.Count(ch => ch != ' ') ?? 0) <= 15),
@@ -473,7 +473,7 @@ public static class SessionPresentationChecks
               && Footer(false, 12, 5, port) == new FooterStatus(FooterStatusKind.AiDelay, "AI 수집 지연 12초")
               && Footer(false, 3, 4, port) == new FooterStatus(FooterStatusKind.SystemDelay, "시스템 수집 지연 4초")
               && Footer(false, 0, 0, port) == new FooterStatus(FooterStatusKind.Notice, "실측 꺼짐 · 포트 사용 중")
-              && Footer(false, 0, 0, restart).Text == "Codex · Claude Code 재시작 후 실측 표시" && Footer(false, 0, 0, null) == new FooterStatus(FooterStatusKind.Live, "실시간"),
+              && Footer(false, 0, 0, restart).Text == "Codex·Claude Code 재시작 후 속도 표시" && Footer(false, 0, 0, null) == new FooterStatus(FooterStatusKind.Live, "실시간"),
               "footer priority: AI delay, system delay, notice, live");
         var conflictFailure = new TelemetrySetupFailure.Conflict();
         check(OnboardingOutcome.Make(port, null, null, TelemetryCollectorState.BusyOtherApp) == new OnboardingOutcome.CollectorDown("실측 꺼짐 · 포트 사용 중")
@@ -598,7 +598,7 @@ public static class SessionPresentationChecks
         var restartWaiting = headline([speedAlpha, speedBeta], only(TokenSource.Codex, TokenSource.Claude));
         check(headline([speedAlpha, speedBeta], only(TokenSource.Codex))?.Project == "Alpha"
               && restartWaiting?.Value == "—" && restartWaiting?.Known == false
-              && restartWaiting?.Help == "실측 연결됨 · Codex · Claude Code를 새로 실행하면 속도가 표시됩니다",
+              && restartWaiting?.Help == "실측 연결됨 · Codex·Claude Code를 새로 실행하면 속도가 표시됩니다",
               "clients waiting for a restart are left out, like the row speed");
         var staleAlpha = timed("claude:alpha", TokenSource.Claude, "Alpha", "m1", ago: -130);
         var stalePair = headline([staleAlpha, timed("codex:beta", TokenSource.Codex, "Beta", "g1", ago: -121, interval: 20)], only(TokenSource.Codex));

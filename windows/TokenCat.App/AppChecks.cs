@@ -357,7 +357,8 @@ static class AppChecks
             && Limits([TelemetrySetupNote.OriginalRecreated], true, at.AddSeconds(-50)) == (SettingsView.StatusRow.Received, "최근 수신 1분 이내", "원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다")
             && Limits([], true, null) == (SettingsView.StatusRow.Waiting, "아직 받지 못함 · Claude Code를 새로 실행하면 표시", null)
             && Limits([], false, null).Text == "연결 안 함" && Limits([], null, null).Row == SettingsView.StatusRow.Info
-            && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-720), true, at) == (SettingsView.StatusRow.Received, "Claude 데스크톱 앱 기록 · 12분 전", null),
+            && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-720), true, at) == (SettingsView.StatusRow.Received, "Claude 데스크톱 앱 기록 · 12분 전", null)
+            && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-30), false, at, live: true) == (SettingsView.StatusRow.Received, "실시간 확인 1분 이내", null),
             "Claude limit row is not checked empty status line → skipped → received → waiting → none");
         check(LoginItem.Describe(LoginItem.State.NotRegistered) == "꺼짐 · 켤 때만 시작 프로그램에 등록합니다", "Korean startup app captions changed");
         const string command = "\"C:\\Users\\me\\AppData\\Local\\Programs\\TokenCat\\TokenCat.exe\"";

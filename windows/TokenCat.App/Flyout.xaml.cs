@@ -45,7 +45,7 @@ sealed class DashboardWindow : Window
         SourceInitialized += (_, _) => Native.StyleWindow(this, round: false);
         Loaded += (_, _) => MinWidth = MaxWidth = ActualWidth;
         Rebuild(actions);
-        System.Windows.Automation.AutomationProperties.SetName(this, Loc("TokenCat 대시보드", "TokenCat dashboard"));
+        System.Windows.Automation.AutomationProperties.SetName(this, Loc("TokenCat 상세 화면", "TokenCat dashboard"));
     }
 
     internal void Rebuild(DashboardActions actions)

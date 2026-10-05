@@ -85,7 +85,7 @@ func runSessionPresentationChecks() -> [String] {
     command.toolName = "exec"
     check(SessionPresentation.stateTitle(.tool, command) == "명령 실행"
           && SessionPresentation.stateTitle(.tool, reading("x", active: true, state: .tool)) == "도구 실행"
-          && SessionPresentation.toolTitle(.agent) == "하위 에이전트 대기" && SessionPresentation.toolTitle(.mcp) == "MCP 도구",
+          && SessionPresentation.toolTitle(.agent) == "하위 에이전트 대기" && SessionPresentation.toolTitle(.mcp) == "MCP 도구 실행",
           "tool category titles")
 
     // Grouping is by exact (source, session) identity.
@@ -546,8 +546,8 @@ func runSessionPresentationChecks() -> [String] {
     check(expiredNotice?.kind == .expired && expiredNotice?.text == "실측 미수신 · 확인 필요" && expiredNotice?.isProblem == true
           && expiredNotice?.help.hasPrefix("Codex: 이 버전에서 실측을 받지 못했습니다") == true, "a day without a receipt asks for a check")
     check(port?.text == "실측 꺼짐 · 포트 사용 중" && conflict?.text == "실측 꺼짐 · 설정 충돌"
-          && failed?.kind == .failed && restart?.text == "Codex · Claude Code 재시작 후 실측 표시" && restart?.isProblem == false
-          && restart?.help.hasPrefix("Codex · Claude Code를 새로 실행하면") == true, "telemetry notice causes")
+          && failed?.kind == .failed && restart?.text == "Codex·Claude Code 재시작 후 속도 표시" && restart?.isProblem == false
+          && restart?.help.hasPrefix("Codex·Claude Code를 새로 실행하면") == true, "telemetry notice causes")
     check([TelemetryCollectorState.receiving, .waiting, .starting].allSatisfy { SessionPresentation.telemetryNotice(state: $0, note: nil, restart: []) == nil }
           && [port, conflict, failed, otherTokenCat, broken, expiredNotice].allSatisfy { ($0?.text.filter { $0 != " " }.count ?? 0) <= 15 },
           "no notice while healthy; copy stays short")
@@ -585,7 +585,7 @@ func runSessionPresentationChecks() -> [String] {
     check(footer(true, 20, 20, port) == FooterStatus(kind: .loading, text: "준비 중") && footer(false, 12, 5, port) == FooterStatus(kind: .aiDelay, text: "AI 수집 지연 12초")
           && footer(false, 3, 4, port) == FooterStatus(kind: .systemDelay, text: "시스템 수집 지연 4초")
           && footer(false, 0, 0, port) == FooterStatus(kind: .notice, text: "실측 꺼짐 · 포트 사용 중")
-          && footer(false, 0, 0, restart).text == "Codex · Claude Code 재시작 후 실측 표시" && footer(false, 0, 0, nil) == FooterStatus(kind: .live, text: "실시간"),
+          && footer(false, 0, 0, restart).text == "Codex·Claude Code 재시작 후 속도 표시" && footer(false, 0, 0, nil) == FooterStatus(kind: .live, text: "실시간"),
           "footer priority: AI delay, system delay, notice, live")
     check(OnboardingCard.outcome(notice: port, note: nil, failure: nil, state: .busyOtherApp) == .collectorDown("실측 꺼짐 · 포트 사용 중")
           && OnboardingCard.outcome(notice: conflict, note: "실측 연결: 이유", failure: .conflict, state: .waiting) == .skipped("이유")
@@ -756,7 +756,7 @@ func runSessionPresentationChecks() -> [String] {
           "a measurement from the session's previous model is left out")
     let restartWaiting = headline([speedAlpha, speedBeta], restart: [.codex, .claude])
     check(headline([speedAlpha, speedBeta], restart: [.codex])?.project == "Alpha"
-          && restartWaiting?.value == "—" && restartWaiting?.known == false && restartWaiting?.help == "실측 연결됨 · Codex · Claude Code를 새로 실행하면 속도가 표시됩니다",
+          && restartWaiting?.value == "—" && restartWaiting?.known == false && restartWaiting?.help == "실측 연결됨 · Codex·Claude Code를 새로 실행하면 속도가 표시됩니다",
           "clients waiting for a restart are left out, like the row speed")
     let staleAlpha = timed("claude:alpha", .claude, project: "Alpha", model: "m1", ago: -130)
     let stalePair = headline([staleAlpha, timed("codex:beta", .codex, project: "Beta", model: "g1", ago: -121, interval: 20)], restart: [.codex])

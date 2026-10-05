@@ -31,8 +31,11 @@ final class Preferences: ObservableObject {
     @Published var notifyInput: Bool { didSet { persist() } }
     /// "입력 필요 알림에 소리": off by default; `.sound` permission is asked only when it is turned on (P-5).
     @Published var notifyInputSound: Bool { didSet { persist() } }
-    /// "새 버전 자동 확인": on by default; TokenCat's only internet request. Not part of "기본값으로 되돌리기".
+    /// "새 버전 자동 확인": on by default; asks GitHub only. Not part of "기본값으로 되돌리기".
     @Published var autoCheckUpdates: Bool { didSet { persist() } }
+    /// "실시간 한도 확인": on by default; asks OpenAI (through Codex's app-server) and Anthropic for usage limits
+    /// (`LiveLimits`). Not part of "기본값으로 되돌리기".
+    @Published var liveUsageLimits: Bool { didSet { persist() } }
     /// "새 버전 알림": off by default like every notification; silent, once per version.
     @Published var notifyUpdate: Bool { didSet { persist() } }
     /// The version whose dashboard notice was closed with ✕; a newer version shows again.
@@ -61,6 +64,7 @@ final class Preferences: ObservableObject {
         notifyInput = defaults.bool(forKey: "notifyInput")
         notifyInputSound = defaults.bool(forKey: "notifyInputSound")
         autoCheckUpdates = defaults.object(forKey: "autoCheckUpdates") as? Bool ?? true
+        liveUsageLimits = defaults.object(forKey: "liveUsageLimits") as? Bool ?? true
         notifyUpdate = defaults.bool(forKey: "notifyUpdate")
         // An optional wrapped property already starts as nil; setting the wrapper keeps didSet (and its write) out of init.
         _dismissedUpdateVersion = Published(initialValue: defaults.string(forKey: "dismissedUpdateVersion"))
@@ -79,6 +83,7 @@ final class Preferences: ObservableObject {
         defaults.set(notifyInput, forKey: "notifyInput")
         defaults.set(notifyInputSound, forKey: "notifyInputSound")
         defaults.set(autoCheckUpdates, forKey: "autoCheckUpdates")
+        defaults.set(liveUsageLimits, forKey: "liveUsageLimits")
         defaults.set(notifyUpdate, forKey: "notifyUpdate")
         defaults.set(dismissedUpdateVersion, forKey: "dismissedUpdateVersion")
     }
@@ -234,6 +239,12 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var telemetryBatches: [TokenSource: Date] = [:]
     /// Claude usage-limit windows from the status line bridge, kept across launches (numbers and times only). Fixtures pin it.
     @Published var claudeLimits = ClaudeUsageLimits()
+    /// Codex windows of the newest live read (실시간 한도 확인), weighed with the log records; empty until one arrives.
+    @Published var codexLiveLimits: [TokenRateLimit] = [] { didSet { if codexLiveLimits != oldValue { rebuildPresentation() } } }
+    /// Set by the app shell: whether the popover or panel is on screen, and whether the screens or the Mac sleep.
+    var dashboardVisible: () -> Bool = { false }
+    var livePaused = false
+    private let liveLimits = LiveLimitPoller()
     /// Whether ~/.codex/sessions or ~/.claude/projects exists. Checked every 5 s on the token queue, never in a
     /// view body; a folder that appears later restarts the log watcher. Fixtures pin it.
     @Published var logFoldersFound = true
@@ -406,6 +417,23 @@ final class DashboardModel: ObservableObject {
         refreshSystem()
         refreshTokens()
         if lastFolderCheck.map({ ProcessInfo.processInfo.systemUptime - $0 >= Self.folderCheckInterval }) ?? true { checkLogFolders() }
+        pollLiveLimits()
+    }
+    /// The app's own model only (verification commands never go online): each provider every minute while one of its
+    /// sessions runs or the dashboard is open, otherwise every 10 minutes; nothing while the screens or the Mac sleep.
+    private func pollLiveLimits() {
+        guard ownsTelemetryState, preferences.liveUsageLimits, !livePaused else { return }
+        let runningSessions = sessions.counts.running
+        liveLimits.tick(now: Date(), open: dashboardVisible(), live: { (runningSessions[$0] ?? 0) > 0 }) { [weak self] outcome in
+            guard let self, self.running else { return }
+            if let codex = outcome.codex { self.codexLiveLimits = codex }
+            if let claude = outcome.claude {
+                let limits = self.claudeLimits.merged(claude)
+                guard limits != self.claudeLimits else { return }
+                self.claudeLimits = limits
+                limits.save(to: .standard)
+            }
+        }
     }
     private func refreshTokens() {
         guard running else { return }
@@ -518,7 +546,8 @@ final class DashboardModel: ObservableObject {
         let flow = FlowSeries.make(tokens, now: now)
         if flow != self.flow { self.flow = flow }
         groups = SessionPresentation.groups(tokens, now: now)
-        sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow, restart: telemetryRestartNeeded)
+        sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow, restart: telemetryRestartNeeded,
+                                         codexLive: codexLiveLimits)
         let newest = tokens.filter { !SessionPresentation.isTelemetry($0) }.compactMap(\.lastOutputAt).max()
         if newest != newestOutputAt { newestOutputAt = newest }
     }
@@ -639,7 +668,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var lastAccessibilityValue: String?
     private var observers: [(NotificationCenter, NSObjectProtocol)] = []
     private var preferenceChanges: AnyCancellable?
-    private var screensAsleep = false
+    private var screensAsleep = false { didSet { model.livePaused = screensAsleep || systemAsleep } }
+    private var systemAsleep = false { didSet { model.livePaused = screensAsleep || systemAsleep } }
     private var sessionActive = true
     private var statusWindowVisible = true
     /// `systemUptime`: a wall clock set back must not swallow status item clicks for that long.
@@ -676,7 +706,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             view.autoresizingMask = [.width, .height]
             button.addSubview(view)
             button.setAccessibilityLabel("TokenCat")
-            button.setAccessibilityHelp(loc("클릭하면 세션별 상세를 열고, 우클릭하면 빠른 메뉴를 엽니다.", "Click to open the dashboard. Right-click for the quick menu."))
+            button.setAccessibilityHelp(loc("클릭하면 상세 화면을, 우클릭하면 빠른 메뉴를 엽니다.", "Click to open the dashboard. Right-click for the quick menu."))
             // VoiceOver has no right click. Deferred: the menu's tracking loop must not run inside the accessibility request.
             button.setAccessibilityCustomActions([NSAccessibilityCustomAction(name: loc("빠른 메뉴", "Quick menu")) { [weak self] in
                 DispatchQueue.main.async { self?.showQuickMenu() }
@@ -691,6 +721,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         notifier.onOpen = { [weak self] group in self?.openDashboard(focus: group) }
         notifier.activate()
         model.onUpdate = { [weak self] in self?.publish() }
+        model.dashboardVisible = { [weak self] in self?.dashboardVisible ?? false }
         model.updateRequest = { [weak self] in self?.handleUpdate($0) }
         updater.onChange = { [weak self] state in
             guard let self else { return }
@@ -791,7 +822,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         on(workspace, NSWorkspace.screensDidWakeNotification) { $0.screensAsleep = false; $0.planRunner() }
         on(workspace, NSWorkspace.sessionDidResignActiveNotification) { $0.sessionActive = false; $0.planRunner() }
         on(workspace, NSWorkspace.sessionDidBecomeActiveNotification) { $0.sessionActive = true; $0.planRunner() }
-        on(workspace, NSWorkspace.didWakeNotification) { $0.updater.systemDidWake() }
+        on(workspace, NSWorkspace.willSleepNotification) { $0.systemAsleep = true }
+        on(workspace, NSWorkspace.didWakeNotification) { $0.systemAsleep = false; $0.updater.systemDidWake() }
         on(workspace, NSWorkspace.accessibilityDisplayOptionsDidChangeNotification) {
             $0.statusView?.displayOptionsChanged()
             $0.settingsState.refresh()

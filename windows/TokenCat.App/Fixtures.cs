@@ -317,16 +317,19 @@ static class Fixtures
         OnboardingOutcome.Make(null, null, null, TelemetryCollectorState.Starting),
     ];
 
-    /// The limit row states: Codex four, Claude three (both live, the 5-hour window at the warning level, both reset).
+    /// The limit row states: Codex five, Claude four (both live, the 5-hour window at the warning level, both reset), each
+    /// ending with a value from a live poll 20 s ago ("· 실시간").
     public static IReadOnlyList<UsageLimitSummary> Limits() =>
     [
         .. new[] { Limit(28, 5 * 86_400 + 8 * 3_600, -4 * 3_600), Limit(87, 2 * 86_400 + 4 * 3_600, -95), Limit(97, 3 * 3_600 + 20 * 60, -30), Limit(64, -600, -7_000) }
             .Select(limit => new UsageLimitSummary(limit.UsedPercent, limit.WindowMinutes, limit.ResetsAt, limit.RecordedAt)),
+        new UsageLimitSummary(31, 10_080, At(5 * 86_400 + 8 * 3_600), At(-20)) { Live = true },
         .. new[]
         {
             Claude((42, 2 * 3_600 + 13 * 60), (31, 3 * 86_400 + 4 * 3_600), -50), Claude((91, 47 * 60), (64, 2 * 86_400), -20),
             Claude((77, -1_200), (58, -600), -9_000),
         }.Select(limits => SessionPresentation.ClaudeUsageLimit(limits, Now)).OfType<UsageLimitSummary>(),
+        SessionPresentation.ClaudeUsageLimit(Claude((42, 2 * 3_600 + 13 * 60), (31, 3 * 86_400 + 4 * 3_600), -20), Now)! with { Live = true },
     ];
 
     /// Settings › fixtures (mac `--snapshot-settings --fixtures`): the collector off with a retry in 25 s, Codex waiting for a

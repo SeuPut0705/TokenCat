@@ -64,7 +64,11 @@ public sealed record SystemSnapshot
 public sealed record TokenRetryState(int Attempt, int? MaxAttempts, DateTimeOffset? RetryAt, bool NetworkDown, DateTimeOffset At);
 
 /// Codex usage limit window as last written by the client. `RecordedAt` is the log time.
-public sealed record TokenRateLimit(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt, DateTimeOffset RecordedAt);
+public sealed record TokenRateLimit(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt, DateTimeOffset RecordedAt)
+{
+    /// From a live poll (LiveLimits), not a log; `RecordedAt` is then the poll time.
+    public bool Live { get; init; }
+}
 
 /// Context occupied by the latest request. Claude reports no window size, so `WindowTokens` stays null there.
 public sealed record TokenContextUsage(int UsedTokens, int? WindowTokens, DateTimeOffset RecordedAt, DateTimeOffset? CompactedAt);
@@ -178,7 +182,11 @@ public sealed partial record TokenSpeedMeasurement
 
 /// One Claude usage-limit window. `ResetsAt` is null from the desktop app, which records no reset time.
 /// `ReceivedAt` is when TokenCat received it, or the desktop app's record time.
-public sealed record ClaudeLimitWindow(double UsedPercent, DateTimeOffset? ResetsAt, DateTimeOffset ReceivedAt);
+public sealed record ClaudeLimitWindow(double UsedPercent, DateTimeOffset? ResetsAt, DateTimeOffset ReceivedAt)
+{
+    /// From a live poll (LiveLimits), not the status line or the desktop app. Not stored: a relaunch shows it as a record.
+    [JsonIgnore] public bool Live { get; init; }
+}
 
 /// `rate_limits.five_hour` and `.seven_day`. Merge/decode live in WP2's `ClaudeUsage`; persisted under `DefaultsKey` in
 /// `SettingsStore`.

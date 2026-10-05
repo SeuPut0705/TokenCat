@@ -16,8 +16,8 @@ enum AppInfo {
     /// The binary the disconnect command names; settings fixtures pin the installed path so snapshots hold no local path.
     static var executablePath = Bundle.main.executablePath ?? "/Applications/TokenCat.app/Contents/MacOS/TokenCat"
     static var privacy: String {
-        loc("로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인과, 업데이트를 누를 때의 내려받기뿐입니다.",
-            "TokenCat reads only metadata from local logs and local telemetry. It never stores or shows prompts or responses, never calls a model and never signs in to an account. It goes online only to check GitHub for updates and to download one when you click Update.")
+        loc("로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인, 업데이트를 누를 때의 내려받기, 실시간 한도 확인이 켜져 있을 때 Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic에 사용량을 묻는 요청뿐입니다. 토큰은 저장하지 않습니다.",
+            "TokenCat reads only metadata from local logs and local telemetry. It never stores or shows prompts or responses, never calls a model and never signs in to an account. It goes online only to check GitHub for updates, to download one when you click Update and, with Live usage limits on, to ask OpenAI and Anthropic for usage with Codex and Claude Code's saved sign-in. Tokens are never stored.")
     }
     static let copyright = "Copyright © 2026 TokenCat contributors · MIT License"
     static func license() -> String {
@@ -223,7 +223,7 @@ struct SettingsPaneView: View {
             case .general: GeneralPane(preferences: preferences, state: state)
             case .menubar: MenuBarPane(preferences: preferences, model: model, state: state)
             case .character: CharacterPane(preferences: preferences, state: state)
-            case .telemetry: TelemetryPane(model: model)
+            case .telemetry: TelemetryPane(model: model, preferences: preferences)
             case .about: AboutPane(model: model, preferences: preferences, state: state, actions: actions)
             }
         }
@@ -311,14 +311,14 @@ private struct GeneralPane: View {
                 }
                 Toggle(isOn: notificationBinding(\.notifyInput)) {
                     SettingsLabel(title: loc("입력 필요", "Input needed"),
-                                  subtitle: loc("질문·계획 승인을 기다리면 알립니다. 권한 확인 창은 로그에 남지 않아 알 수 없습니다",
+                                  subtitle: loc("질문·계획 승인을 기다리면 알립니다. 권한 확인 요청은 로그에 남지 않아 알 수 없습니다",
                                                 "Notifies when a question or plan approval is waiting. Permission prompts aren't logged, so TokenCat can't see them"))
                 }
                 Toggle(isOn: Binding(get: { preferences.notifyInputSound }, set: { on in
                     preferences.notifyInputSound = on
                     if on { state.notificationToggleEnabled(sound: true) }
                 })) {
-                    SettingsLabel(title: loc("입력 필요 알림에 소리", "Sound for input needed alerts"),
+                    SettingsLabel(title: loc("입력 필요 알림에 소리", "Sound for input-needed alerts"),
                                   subtitle: Notifier.describeSound(state.notificationStatus, state.soundSetting, on: preferences.notifyInputSound))
                 }
                 .disabled(!preferences.notifyInput)
@@ -341,8 +341,8 @@ private struct GeneralPane: View {
                 Text(loc("알림", "Notifications"))
             } footer: {
                 VStack(alignment: .leading, spacing: 8) {
-                    settingsFooter(loc("기본값은 꺼짐입니다. 팝오버나 패널이 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.",
-                                       "Off by default, and never sent while the popover or panel is visible. They include only the project, model, token count and duration, never questions or responses."))
+                    settingsFooter(loc("기본값은 꺼짐입니다. 상세 화면이 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.",
+                                       "Off by default, and never sent while the dashboard is visible. They include only the project, model, token count and duration, never questions or responses."))
                     HStack {
                         Spacer()
                         Button(loc("기본값으로 되돌리기…", "Restore Defaults…")) { confirmsReset = true }
@@ -675,13 +675,15 @@ enum TelemetryStatusRow: Equatable {
 
     /// The usage-limit bridge, checked top to bottom: an empty status line, skipped, a reading, the bridge waiting for a
     /// relaunch, nothing connected. `bridged` is nil until a connection succeeds this run. A recreated original command
-    /// adds the second line. `desktop`: the newest reading is the Claude desktop app's own record, not a bridge receipt.
-    static func claudeLimits(notes: [TelemetrySetupNote], bridged: Bool?, received: Date?, desktop: Bool = false, now: Date)
+    /// adds the second line. `desktop`: the newest reading is the Claude desktop app's own record, not a bridge receipt;
+    /// `live`: a live read (실시간 한도 확인).
+    static func claudeLimits(notes: [TelemetrySetupNote], bridged: Bool?, received: Date?, desktop: Bool = false, live: Bool = false, now: Date)
         -> (row: TelemetryStatusRow, text: String, detail: String?) {
         if notes.contains(.originalUnknown) { return (.problem, loc("상태 표시줄이 비어 보일 수 있음", "Status line may look empty"),
                                                                  loc("settings.json의 statusLine을 직접 고쳐 주세요", "Fix statusLine in settings.json by hand")) }
         if notes.contains(.statusLineSkipped) { return (.info, loc("연결 안 함 · statusLine 형식이 달라 건너뜀", "Not connected · unsupported statusLine format"), nil) }
         let detail = notes.contains(.originalRecreated) ? loc("원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다", "Recreated the original status line command from backup") : nil
+        if let at = received, live { return (.received, loc("실시간 확인 ", "Checked live ") + SessionPresentation.helpAge(at, now: now), detail) }
         if let at = received, desktop { return (.received, loc("Claude 데스크톱 앱 기록 · \(Format.age(at, now: now))", "Claude desktop app · recorded \(Format.age(at, now: now))"), detail) }
         if let at = received { return (.received, loc("최근 수신 ", "Last received ") + SessionPresentation.helpAge(at, now: now), detail) }
         if bridged == true { return (.waiting, loc("아직 받지 못함 · Claude Code를 새로 실행하면 표시", "Nothing yet · restart Claude Code to show"), detail) }
@@ -691,6 +693,7 @@ enum TelemetryStatusRow: Equatable {
 
 private struct TelemetryPane: View {
     @ObservedObject var model: DashboardModel
+    @ObservedObject var preferences: Preferences
     /// Read once on appear; the buttons only reveal files in Finder and never open or edit them.
     @State private var files: [(title: String, url: URL)] = []
 
@@ -708,13 +711,23 @@ private struct TelemetryPane: View {
                 }
                 // Whether the status line bridge delivers; the newer of the two windows' receipts (no reset time: the desktop app).
                 let newest = [model.claudeLimits.fiveHour, model.claudeLimits.sevenDay].compactMap { $0 }.max { $0.receivedAt < $1.receivedAt }
-                let limits = TelemetryStatusRow.claudeLimits(notes: model.telemetryConnectNotes, bridged: model.claudeBridged,
-                                                             received: newest?.receivedAt, desktop: newest?.resetsAt == nil, now: model.now)
+                let live = newest?.live == true
+                let limits = TelemetryStatusRow.claudeLimits(notes: model.telemetryConnectNotes, bridged: model.claudeBridged, received: newest?.receivedAt,
+                                                             desktop: newest?.resetsAt == nil && !live, live: live, now: model.now)
                 LabeledContent(loc("Claude 한도", "Claude limits")) { statusLine(limits.row, limits.text, detail: limits.detail) }
             } footer: {
                 // Non-breaking hyphens (U+2011) keep the flag on one line; the footer is not selectable, so it is retyped.
-                settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 되돌리려면 터미널에서 \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry를 실행합니다.",
-                                   "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply. To undo it, run \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry in Terminal."))
+                settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 해제하려면 터미널에서 \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry를 실행합니다.",
+                                   "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply. To disconnect, run \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry in Terminal."))
+            }
+            Section {
+                Toggle(isOn: $preferences.liveUsageLimits) {
+                    SettingsLabel(title: loc("실시간 한도 확인", "Live usage limits"),
+                                  subtitle: loc("Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic 사용량을 사용 중에는 1분, 평소에는 10분마다 확인합니다. 토큰은 저장하지 않습니다.",
+                                                "Checks usage with OpenAI and Anthropic using Codex and Claude Code's saved sign-in, every minute while in use and every 10 minutes otherwise. Tokens are never stored."))
+                }
+                .help(loc("세션이 실행 중이거나 TokenCat 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인하고, 화면이나 Mac이 잠자는 동안은 멈춥니다. 만료된 Claude 토큰은 보내지 않고 갱신하지도 않습니다.",
+                          "Checks every minute while a session runs or a TokenCat window is open, otherwise every 10 minutes, and pauses while the screens or the Mac sleep. An expired Claude token is never sent or refreshed."))
             }
             if !files.isEmpty {
                 Section {

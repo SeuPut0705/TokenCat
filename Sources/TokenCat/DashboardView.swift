@@ -368,6 +368,8 @@ struct DashboardHeader: View {
                 Button(loc("TokenCat 종료", "Quit TokenCat"), action: actions.quit).keyboardShortcut("q")
             } label: { icon }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            // The gear beside it is secondary; the menu button would otherwise take the body colour.
+            .tint(TCColor.textSecondary(contrast: high))
             .frame(width: 24, height: 24)
             .help(loc("더 보기", "More")).accessibilityLabel(loc("더 보기", "More"))
         } else {
@@ -464,8 +466,8 @@ struct OnboardingCard: View {
                     "Reads only metadata such as models, token counts, tool types and project folders"))
             row("slider.horizontal.3", telemetry.title, telemetry.detail, tail: telemetry.tail, links: true)
             row("hand.raised", loc("모델 호출·계정 로그인을 하지 않습니다", "Doesn't call models or sign in to accounts"),
-                loc("인터넷 요청은 GitHub 새 버전 확인과 업데이트를 누를 때의 내려받기뿐입니다(설정 › 정보에서 확인 끄기)",
-                    "Only goes online to check GitHub for new versions and to download one when you click Update (turn off checks in Settings › About)"))
+                loc("인터넷 요청은 GitHub 새 버전 확인·내려받기와 OpenAI·Anthropic 사용량 확인뿐입니다(설정에서 끄기)",
+                    "Only goes online to check GitHub for new versions and to ask OpenAI and Anthropic for usage (turn off in Settings)"))
         }
         .padding(12)
         .buttonStyle(.automatic)
@@ -810,7 +812,8 @@ struct FlowChart: View {
 
 // MARK: - Usage limits
 
-/// The AI container's bottom rows (Codex, then Claude): the last recorded limit window, always with its record age; no forecast.
+/// The AI container's bottom rows (Codex, then Claude): the last recorded or live-read limit window, always with its record
+/// age or "실시간"; no forecast.
 struct UsageLimitRow: View {
     var limit: UsageLimitSummary
     var now: Date

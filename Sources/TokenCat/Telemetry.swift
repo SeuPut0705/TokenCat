@@ -21,14 +21,16 @@ struct TelemetryReading: Codable {
     var serverInferenceMs: Double?
 }
 
-/// One Claude usage-limit window: the percentage and times only, as Claude Code last piped it to its status line or
-/// the Claude desktop app last recorded it.
+/// One Claude usage-limit window: the percentage and times only, as Claude Code last piped it to its status line,
+/// the Claude desktop app last recorded it or a live read returned it.
 struct ClaudeLimitWindow: Codable, Equatable {
     var usedPercent: Double
     /// Nil from the desktop app, which records no reset time; the window then counts as reset one window after the record.
     var resetsAt: Date?
     /// When TokenCat received it (the status line JSON carries no record time of its own), or the desktop app's record time.
     var receivedAt: Date
+    /// From a live read of Anthropic's usage endpoint (`LiveLimits`); `receivedAt` is then the read time.
+    var live: Bool? = nil
 }
 
 /// `rate_limits.five_hour` and `.seven_day` from the status line JSON (Claude.ai subscribers, after the first response).
@@ -40,18 +42,23 @@ struct ClaudeUsageLimits: Codable, Equatable {
 
     var isEmpty: Bool { fiveHour == nil && sevenDay == nil }
 
-    /// Per window, the newer receipt wins. A window missing from a receipt is kept: Claude Code drops a window once it
+    /// Per window, the newer receipt wins, except that a record repeating a live read's value within 2 minutes keeps the
+    /// live read (and its "실시간" label). A window missing from a receipt is kept: Claude Code drops a window once it
     /// resets, and the kept one then reads as reset by its own time.
     func merged(_ other: ClaudeUsageLimits) -> ClaudeUsageLimits {
         func newer(_ a: ClaudeLimitWindow?, _ b: ClaudeLimitWindow?) -> ClaudeLimitWindow? {
             guard let a else { return b }
             guard let b else { return a }
-            return b.receivedAt > a.receivedAt ? b : a
+            let (old, new) = b.receivedAt > a.receivedAt ? (a, b) : (b, a)
+            let repeated = old.live == true && new.live != true && new.receivedAt.timeIntervalSince(old.receivedAt) < LiveLimits.freshness
+                && new.usedPercent.rounded() == old.usedPercent.rounded()
+                && abs((new.resetsAt ?? old.resetsAt ?? .distantPast).timeIntervalSince(old.resetsAt ?? .distantPast)) <= 60
+            return repeated ? old : new
         }
         return ClaudeUsageLimits(fiveHour: newer(fiveHour, other.fiveHour), sevenDay: newer(sevenDay, other.sevenDay))
     }
 
-    private static func number(_ value: Any?) -> Double? {
+    static func number(_ value: Any?) -> Double? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(), number.doubleValue.isFinite else { return nil }
         return number.doubleValue
     }
@@ -425,9 +432,10 @@ final class LocalTelemetryCollector {
                 if let merged = stored[key] { remember(merged) }
             }
             if stored.count > Self.maximumReadings {
-                let keep = stored.sorted { a, b in a.value.reading.at == b.value.reading.at
-                    ? a.key < b.key : a.value.reading.at > b.value.reading.at }.prefix(Self.maximumReadings)
-                stored = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
+                // Drops the oldest (ties: the last key) in place instead of rebuilding the dictionary.
+                let drop = stored.map { (at: $0.value.reading.at, key: $0.key) }
+                    .sorted { $0.at != $1.at ? $0.at < $1.at : $0.key > $1.key }.prefix(stored.count - Self.maximumReadings)
+                for entry in drop { stored.removeValue(forKey: entry.key) }
             }
             receivedAt = Date()
             storedState = .receiving

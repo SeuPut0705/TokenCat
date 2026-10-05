@@ -12,6 +12,7 @@ public static class Suites
         SessionPresentationChecks.Run, PreferenceChecks.Run, ShellChecks.Run, StatusSummaryChecks.Run,
         MonitorChecks.Run,                                                                           // WP3
         RunnerChecks.Run, UpdaterChecks.Run,                                                         // WP4
+        LiveLimitChecks.Run,
     ];
 
     /// Runs every suite in Korean, as the mac `--self-test` does. A suite that throws counts as one failure.

@@ -6,12 +6,20 @@ namespace TokenCat;
 /// `ClaudeLimits` property would hide it. Persistence is `SettingsStore` under `ClaudeUsageLimits.DefaultsKey`.
 public static class ClaudeUsage
 {
-    /// Per window, the newer receipt wins. A window missing from a receipt is kept: Claude Code drops a window once it
+    /// Per window, the newer receipt wins, except that a record repeating a live poll's value within 2 minutes keeps the
+    /// poll (and its "실시간" label). A window missing from a receipt is kept: Claude Code drops a window once it
     /// resets, and the kept one then reads as reset by its own time.
     public static ClaudeUsageLimits Merged(ClaudeUsageLimits a, ClaudeUsageLimits b)
     {
-        static ClaudeLimitWindow? Newer(ClaudeLimitWindow? a, ClaudeLimitWindow? b) =>
-            a is null ? b : b is null ? a : b.ReceivedAt > a.ReceivedAt ? b : a;
+        static ClaudeLimitWindow? Newer(ClaudeLimitWindow? a, ClaudeLimitWindow? b)
+        {
+            if (a is null || b is null) return a ?? b;
+            var (old, recent) = b.ReceivedAt > a.ReceivedAt ? (a, b) : (b, a);
+            var repeated = old.Live && !recent.Live && (recent.ReceivedAt - old.ReceivedAt).TotalSeconds < LiveLimits.LiveFor
+                && SessionPresentation.Round(recent.UsedPercent) == SessionPresentation.Round(old.UsedPercent)
+                && Math.Abs(((recent.ResetsAt ?? old.ResetsAt ?? DateTimeOffset.MinValue) - (old.ResetsAt ?? DateTimeOffset.MinValue)).TotalSeconds) <= 60;
+            return repeated ? old : recent;
+        }
         return new(Newer(a.FiveHour, b.FiveHour), Newer(a.SevenDay, b.SevenDay));
     }
 

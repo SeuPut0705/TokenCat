@@ -61,7 +61,7 @@ enum SnapshotFixtures {
         return written == fixtures().count + components().count ? 0 : 1
     }
 
-    /// Component sheets: the five first-run outcomes (never part of a dashboard snapshot) and the limit row states (Codex four, Claude three).
+    /// Component sheets: the five first-run outcomes (never part of a dashboard snapshot) and the limit row states (Codex six, Claude four; the last ones live reads).
     @MainActor
     private static func components() -> [(String, AnyView)] {
         let down = SessionPresentation.telemetryNotice(state: .busyOtherApp, note: nil, restart: [])
@@ -78,13 +78,17 @@ enum SnapshotFixtures {
         let onboarding = VStack(spacing: 12) {
             ForEach(Array(outcomes.enumerated()), id: \.offset) { OnboardingCard(outcome: $0.element, settings: {}, dismiss: {}) }
         }
+        // Codex: four log records, then a live read 20 s ago ("실시간") and one 5 minutes ago (back to the record age).
         let codex = [limit(28, resetsIn: 5 * 86_400 + 8 * 3_600, recorded: -4 * 3_600), limit(87, resetsIn: 2 * 86_400 + 4 * 3_600, recorded: -95),
-                     limit(97, resetsIn: 3 * 3_600 + 20 * 60, recorded: -30), limit(64, resetsIn: -600, recorded: -7_000)]
-            .map { UsageLimitSummary(usedPercent: $0.usedPercent, windowMinutes: $0.windowMinutes, resetsAt: $0.resetsAt, recordedAt: $0.recordedAt) }
-        // Claude: both windows live (the higher one shown), the 5-hour window at the warning level, and both reset.
+                     limit(97, resetsIn: 3 * 3_600 + 20 * 60, recorded: -30), limit(64, resetsIn: -600, recorded: -7_000),
+                     limit(31, resetsIn: 5 * 86_400 + 2 * 3_600, recorded: -20, live: true), limit(33, resetsIn: 5 * 86_400 + 2 * 3_600, recorded: -300, live: true)]
+            .map { UsageLimitSummary(usedPercent: $0.usedPercent, windowMinutes: $0.windowMinutes, resetsAt: $0.resetsAt, recordedAt: $0.recordedAt,
+                                     live: $0.live == true) }
+        // Claude: both windows live (the higher one shown), the 5-hour window at the warning level, both reset, then a live read.
         let claude = [claudeLimits(fiveHour: (42, 2 * 3_600 + 13 * 60), weekly: (31, 3 * 86_400 + 4 * 3_600), recorded: -50),
                       claudeLimits(fiveHour: (91, 47 * 60), weekly: (64, 2 * 86_400), recorded: -20),
-                      claudeLimits(fiveHour: (77, -1_200), weekly: (58, -600), recorded: -9_000)]
+                      claudeLimits(fiveHour: (77, -1_200), weekly: (58, -600), recorded: -9_000),
+                      claudeLimits(fiveHour: (48, 2 * 3_600 + 5 * 60), weekly: (33, 3 * 86_400 + 4 * 3_600), recorded: -15, live: true)]
             .compactMap { SessionPresentation.claudeUsageLimit($0, now: now) }
         let limits = codex + claude
         let rows = VStack(spacing: 12) {
@@ -223,13 +227,14 @@ enum SnapshotFixtures {
         return value
     }
 
-    private static func limit(_ percent: Double, resetsIn: TimeInterval, recorded: TimeInterval) -> TokenRateLimit {
-        TokenRateLimit(usedPercent: percent, windowMinutes: 10_080, resetsAt: at(resetsIn), recordedAt: at(recorded))
+    private static func limit(_ percent: Double, resetsIn: TimeInterval, recorded: TimeInterval, live: Bool = false) -> TokenRateLimit {
+        TokenRateLimit(usedPercent: percent, windowMinutes: 10_080, resetsAt: at(resetsIn), recordedAt: at(recorded), live: live ? true : nil)
     }
 
-    private static func claudeLimits(fiveHour: (Double, TimeInterval), weekly: (Double, TimeInterval), recorded: TimeInterval) -> ClaudeUsageLimits {
-        ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: fiveHour.0, resetsAt: at(fiveHour.1), receivedAt: at(recorded)),
-                          sevenDay: ClaudeLimitWindow(usedPercent: weekly.0, resetsAt: at(weekly.1), receivedAt: at(recorded)))
+    private static func claudeLimits(fiveHour: (Double, TimeInterval), weekly: (Double, TimeInterval), recorded: TimeInterval,
+                                     live: Bool = false) -> ClaudeUsageLimits {
+        ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: fiveHour.0, resetsAt: at(fiveHour.1), receivedAt: at(recorded), live: live ? true : nil),
+                          sevenDay: ClaudeLimitWindow(usedPercent: weekly.0, resetsAt: at(weekly.1), receivedAt: at(recorded), live: live ? true : nil))
     }
 
     /// A Codex server rate ("생성 tok/s"): one token every `interval` ms.

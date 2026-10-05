@@ -215,12 +215,17 @@ public sealed record SpeedHeadline(string Value, string? Kind, string? Project, 
 public sealed record ContextSlot(string Text, string Short, double? Fraction, bool Warning, string? Compacted, string Help, string Spoken);
 
 /// An account usage-limit window as last recorded: Codex from its logs, Claude from the status line bridge or the Claude
-/// desktop app's history (no reset time). Never projected forward.
+/// desktop app's history (no reset time); either one also from a live poll (LiveLimits). Never projected forward.
 public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt, DateTimeOffset RecordedAt)
 {
     public TokenSource Source { get; init; } = TokenSource.Codex;
     /// Claude only: the other live window, named in help and VoiceOver.
     public OtherWindow? Other { get; init; }
+    /// Read from OpenAI or Anthropic by a live poll; `RecordedAt` is that poll.
+    public bool Live { get; init; }
+
+    /// A live poll in the last 2 minutes: "실시간" takes the place of the record age.
+    public bool IsLive(DateTimeOffset now) => Live && (now - RecordedAt).TotalSeconds < LiveLimits.LiveFor;
 
     public sealed record OtherWindow(double UsedPercent, int WindowMinutes, DateTimeOffset ResetsAt);
 
@@ -251,9 +256,9 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
     {
         if (Expired(now)) return WaitingText;
         var age = SessionPresentation.HelpAge(RecordedAt, now, spoken);
-        if (ResetsAt is not { } resetsAt) return Loc($"{age} 기록 기준", $"As of {age}");
+        if (ResetsAt is not { } resetsAt) return IsLive(now) ? Loc("실시간", "Live") : Loc($"{age} 기록 기준", $"As of {age}");
         var reset = SessionPresentation.Countdown(resetsAt, now, spoken);
-        return Loc($"{reset} 후 초기화 · {age} 기록 기준", $"Resets in {reset} · as of {age}");
+        return IsLive(now) ? Loc($"{reset} 후 초기화 · 실시간", $"Resets in {reset} · live") : Loc($"{reset} 후 초기화 · {age} 기록 기준", $"Resets in {reset} · as of {age}");
     }
 
     /// On-screen variants, widest first; the reset countdown is never the part that is dropped.
@@ -261,10 +266,10 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
     {
         if (Expired(now)) return [WaitingText];
         var age = SessionPresentation.HelpAge(RecordedAt, now);
-        if (ResetsAt is not { } resetsAt) return [Loc($"{age} 기록", $"Recorded {age}")];
+        if (ResetsAt is not { } resetsAt) return [IsLive(now) ? Loc("실시간", "Live") : Loc($"{age} 기록", $"Recorded {age}")];
         var countdown = SessionPresentation.Countdown(resetsAt, now);
         var reset = Loc($"{countdown} 후 초기화", $"Resets in {countdown}");
-        return [reset + " · " + Loc($"{age} 기록", $"recorded {age}"), reset];
+        return [reset + " · " + (IsLive(now) ? Loc("실시간", "live") : Loc($"{age} 기록", $"recorded {age}")), reset];
     }
 
     /// "주간 한도 31% 사용 · 3일 4시간 후 초기화" while the other window has not reset.
@@ -288,7 +293,13 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
 
     public string Help(DateTimeOffset now)
     {
-        var basis = Source == TokenSource.Codex
+        var basis = Live
+            ? (Source == TokenSource.Codex
+                ? Loc("Codex에 저장된 로그인으로 OpenAI에서 확인한 계정 사용량입니다.", "Account usage checked with OpenAI using Codex's saved sign-in.")
+                : Loc("Claude Code에 저장된 로그인으로 Anthropic에서 확인한 계정 사용량입니다.", "Account usage checked with Anthropic using Claude Code's saved sign-in."))
+              + Loc(" 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
+                    " It's checked every minute while a session runs or this window is open, otherwise every 10 minutes.")
+            : Source == TokenSource.Codex
             ? Loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
                   "The last account usage recorded in the Codex logs. It isn't a live balance and updates only while you use Codex.")
             : Loc("Claude Code가 상태 표시줄로 보냈거나 Claude 데스크톱 앱이 기록한 마지막 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude를 사용할 때만 갱신됩니다.",
@@ -386,7 +397,7 @@ public static partial class Format
 public static class SessionPresentation
 {
     static readonly TokenSource[] Sources = Enum.GetValues<TokenSource>();
-    static string Names(IEnumerable<TokenSource> sources) => string.Join(" · ", Sources.Where(sources.Contains).Select(source => source.Title));
+    static string Names(IEnumerable<TokenSource> sources) => string.Join(Loc("·", " and "), Sources.Where(sources.Contains).Select(source => source.Title));
 
     /// Swift `.rounded()`: half away from zero (printf-style F0 would round half to even).
     internal static int Round(double value) => (int)Math.Round(value, MidpointRounding.AwayFromZero);
@@ -537,7 +548,7 @@ public static class SessionPresentation
         ToolCategory.File => Loc("파일 작업", "File operation"),
         ToolCategory.Web => Loc("웹 조회", "Web lookup"),
         ToolCategory.Agent => Loc("하위 에이전트 대기", "Waiting for subagent"),
-        ToolCategory.Mcp => Loc("MCP 도구", "MCP tool"),
+        ToolCategory.Mcp => Loc("MCP 도구 실행", "MCP tool"),
         ToolCategory.Question => Loc("입력 요청", "Input request"),
         _ => Loc("도구 실행", "Running tool"),
     };
@@ -697,22 +708,30 @@ public static class SessionPresentation
     /// Replay-proof per window length: its newest reset wins, then the highest percentage inside it. Among windows that have
     /// not reset the higher use wins (a tie goes to the longer window); when all have reset, the latest reset.
     /// Without any reset time the windows cannot be told apart, so only the newest record counts.
-    public static UsageLimitSummary? UsageLimit(IReadOnlyList<TokenReading> readings, DateTimeOffset now)
+    /// `codexLive`: the windows of the newest live poll (LiveLimits), weighed with the log records like one more session.
+    public static UsageLimitSummary? UsageLimit(IReadOnlyList<TokenReading> readings, DateTimeOffset now, IReadOnlyList<TokenRateLimit>? codexLive = null)
     {
-        var limits = readings.Where(reading => reading.Source == TokenSource.Codex).Select(reading => reading.RateLimit)
-            .OfType<TokenRateLimit>().Where(limit => double.IsFinite(limit.UsedPercent)).ToList();
+        // Live polls last: past 2 minutes old they lose a tie to a later record of the same value.
+        var limits = readings.Where(reading => reading.Source == TokenSource.Codex).Select(reading => reading.RateLimit).OfType<TokenRateLimit>()
+            .Concat(codexLive ?? []).Where(limit => double.IsFinite(limit.UsedPercent)).ToList();
         if (limits.Count == 0) return null;
         if (limits.All(limit => limit.ResetsAt is null))
         {
             var last = limits.MaxBy(limit => limit.RecordedAt)!;
-            return new UsageLimitSummary(last.UsedPercent, last.WindowMinutes, null, last.RecordedAt);
+            return new UsageLimitSummary(last.UsedPercent, last.WindowMinutes, null, last.RecordedAt) { Live = last.Live };
         }
+        // A live poll overrides older records of its window; under 2 minutes old it also wins a tie with a later record of the
+        // same value, so the row keeps "실시간".
+        int Fresh(TokenRateLimit limit) => limit.Live && (now - limit.RecordedAt).TotalSeconds < LiveLimits.LiveFor ? 1 : 0;
         var windows = limits.Where(limit => limit.ResetsAt is not null).GroupBy(limit => limit.WindowMinutes).Select(group =>
         {
             var newest = group.Max(limit => limit.ResetsAt!.Value);
             var window = group.Where(limit => Math.Abs(Seconds(limit.ResetsAt!.Value, newest)) <= 60).ToList();
-            var top = window.MaxBy(limit => limit.UsedPercent)!;
-            return new UsageLimitSummary(top.UsedPercent, top.WindowMinutes, top.ResetsAt, window.Max(limit => limit.RecordedAt));
+            if (window.Where(limit => limit.Live).Select(limit => (DateTimeOffset?)limit.RecordedAt).Max() is { } polled)
+                window = window.Where(limit => limit.RecordedAt >= polled).ToList();
+            var top = window.MaxBy(limit => (limit.UsedPercent, Fresh(limit)))!;
+            return new UsageLimitSummary(top.UsedPercent, top.WindowMinutes, top.ResetsAt, top.Live ? top.RecordedAt : window.Max(limit => limit.RecordedAt))
+                { Live = top.Live };
         }).ToList();
         var live = windows.Where(window => window.ResetsAt > now).ToList();
         return live.Count > 0 ? live.MaxBy(window => (window.UsedPercent, window.WindowMinutes ?? 0)) : windows.MaxBy(window => (window.ResetsAt, window.WindowMinutes ?? 0));
@@ -734,7 +753,7 @@ public static class SessionPresentation
             .Select(pair => pair.Window.ResetsAt is { } at ? new UsageLimitSummary.OtherWindow(pair.Window.UsedPercent, pair.Minutes, at) : null)
             .FirstOrDefault();
         return new UsageLimitSummary(top.Window.UsedPercent, top.Minutes, top.Window.ResetsAt, top.Window.ReceivedAt)
-        { Source = TokenSource.Claude, Other = other };
+        { Source = TokenSource.Claude, Other = other, Live = top.Window.Live };
     }
 
     /// The flow card's "지금 속도": the newest measurement under 2 minutes old among visible live rows (leads and
@@ -765,7 +784,7 @@ public static class SessionPresentation
             if (!rows.Any(row => row.State.ExpectsSpeed)) return null;
             var sources = Sources.Where(source => rows.Any(row => row.Reading.Source == source)).ToList();
             var waiting = sources.Where(restart.Contains).ToList();
-            var names = string.Join(" · ", waiting.Select(source => source.Title));
+            var names = string.Join(Loc("·", " and "), waiting.Select(source => source.Title));
             // A fresh measurement left out only for its model says so, rather than that none arrived.
             var previous = Measured(current: false).Select(item => item.Measurement).MaxBy(measurement => measurement.At);
             var reason = previous is not null
@@ -806,7 +825,7 @@ public static class SessionPresentation
         {
             var help = restartNeeded
                 ? Loc($"실측 연결됨 · {reading.Source.Title}를 새로 실행하면 속도가 표시됩니다", $"Telemetry connected · restart {reading.Source.Title} to show speed")
-                : Loc("실측 속도 없음 · 로그 시각으로 추정하지 않습니다", "No measured speed · not estimated from log times");
+                : Loc("속도 실측 없음 · 로그 시각으로 추정하지 않습니다", "No measured speed · not estimated from log times");
             return new SpeedSlot(null, "—", null, false, help, Loc("속도 실측 없음", "No measured speed"));
         }
         var kind = measurement.Kind?.Title ?? "tok/s";
@@ -956,7 +975,7 @@ public static class SessionPresentation
                 Loc($"{Names(expired)}: 이 버전에서 실측을 받지 못했습니다. 새로 실행한 뒤에도 그대로면 설정에서 연결 상태를 확인하세요.",
                     $"{Names(expired)}: no telemetry received with this version. If it's still missing after a restart, check the connection in Settings.") + open);
         if (restart.Count == 0) return null;
-        return new TelemetryNotice(TelemetryNoticeKind.Restart, Loc($"{Names(restart)} 재시작 후 실측 표시", $"Restart {Names(restart)} to show speed"),
+        return new TelemetryNotice(TelemetryNoticeKind.Restart, Loc($"{Names(restart)} 재시작 후 속도 표시", $"Restart {Names(restart)} for speed"),
             Loc($"{Names(restart)}를 새로 실행하면 속도가 표시됩니다. 진행 중인 작업은 재시작하지 않습니다.",
                 $"Restart {Names(restart)} to show speed. TokenCat doesn't restart running work.") + open);
     }

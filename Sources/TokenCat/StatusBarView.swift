@@ -171,7 +171,7 @@ enum StatusBarContent {
             if !parts.isEmpty { lines.append(parts.joined(separator: " · ")) }
         }
         lines.append(hasTokenSample ? loc("AI ", "AI: ") + aiCountLine(counts, ai) : loc("AI 기록 확인 중", "Reading AI records"))
-        lines.append(loc("클릭: 세션 상세 · 우클릭: 빠른 메뉴", "Click: details · Right-click: quick menu"))
+        lines.append(loc("클릭: 상세 화면 · 우클릭: 빠른 메뉴", "Click: details · Right-click: quick menu"))
         return lines.joined(separator: "\n")
     }
 }

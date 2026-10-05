@@ -15,8 +15,8 @@ public static class PreferenceChecks
             Preferences open() => new(store);
             check(open().AnimationSource == RunnerMotion.Activity && !open().NotifyTurnComplete && !open().NotifyInput,
                   "A new install did not default to AI activity motion with notifications and their sound off");
-            check(open().AutoCheckUpdates && !open().NotifyUpdate && open().DismissedUpdateVersion == null,
-                  "A new install did not default to automatic update checks on and the new-version notification off");
+            check(open().AutoCheckUpdates && !open().NotifyUpdate && open().DismissedUpdateVersion == null && open().LiveUsageLimits,
+                  "A new install did not default to automatic update checks and live usage limits on and the new-version notification off");
             store.Set("animationSource", "tokens");
             check(open().AnimationSource == RunnerMotion.Activity,
                   "Migration lost a visible provider, unrelated preferences, or kept the legacy 'tokens' motion");
@@ -40,10 +40,12 @@ public static class PreferenceChecks
             guarded.NotifyUpdate = true;
             guarded.AutoCheckUpdates = false;
             guarded.DismissedUpdateVersion = "0.9.1";
+            guarded.LiveUsageLimits = false;
             var stored = open();
             check(stored.NotifyInput && stored.NotifyTurnComplete && stored.AnimationSource == RunnerMotion.Still && stored.NotifyUpdate
-                  && !stored.AutoCheckUpdates && stored.DismissedUpdateVersion == "0.9.1" && store.Get<string>("animationSource") == "still",
-                  "The input sound, new-version notification, automatic check or dismissed version did not persist");
+                  && !stored.AutoCheckUpdates && stored.DismissedUpdateVersion == "0.9.1" && store.Get<string>("animationSource") == "still"
+                  && !stored.LiveUsageLimits && store.Get<bool?>("liveUsageLimits") == false,
+                  "The input sound, new-version notification, automatic check, live usage limits or dismissed version did not persist");
             // Character: persisted, announced to the tray, part of reset; an unknown stored id falls back to the cat.
             var changed = new List<string?>();
             guarded.PropertyChanged += (_, change) => changed.Add(change.PropertyName);

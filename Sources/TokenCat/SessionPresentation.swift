@@ -188,7 +188,8 @@ struct ContextSlot: Equatable {
 }
 
 /// An account usage-limit window as last recorded: Codex from its logs, Claude from Claude Code's status line
-/// (`recordedAt` is then TokenCat's receipt) or the Claude desktop app's usage history (no reset time). Never projected forward.
+/// (`recordedAt` is then TokenCat's receipt) or the Claude desktop app's usage history (no reset time), or either from a
+/// live read (`recordedAt` is the read time). Never projected forward.
 struct UsageLimitSummary: Equatable {
     var usedPercent: Double
     var windowMinutes: Int?
@@ -197,6 +198,8 @@ struct UsageLimitSummary: Equatable {
     var source: TokenSource = .codex
     /// Claude only: the other live window, named in help and VoiceOver.
     var other: OtherWindow?
+    /// From a live read (실시간 한도 확인), not a record.
+    var live = false
     struct OtherWindow: Equatable {
         var usedPercent: Double
         var windowMinutes: Int
@@ -226,22 +229,24 @@ struct UsageLimitSummary: Equatable {
         let name = source == .codex ? "Codex" : "Claude"
         return loc("초기화됨 · 다음 \(name) 기록 대기", "Reset · waiting for a \(name) record")
     }
+    /// A live read under 2 minutes old: "실시간" replaces the record age.
+    func isLive(now: Date) -> Bool { live && now.timeIntervalSince(recordedAt) < LiveLimits.freshness }
     /// Help and VoiceOver wording.
     func detail(now: Date, spoken: Bool = false) -> String {
         if expired(now: now) { return waitingText }
-        let age = SessionPresentation.helpAge(recordedAt, now: now, spoken: spoken)
-        guard let resetsAt else { return loc("\(age) 기록 기준", "As of \(age)") }
+        let age = SessionPresentation.helpAge(recordedAt, now: now, spoken: spoken), live = isLive(now: now)
+        guard let resetsAt else { return live ? loc("실시간", "Live") : loc("\(age) 기록 기준", "As of \(age)") }
         let reset = SessionPresentation.countdown(to: resetsAt, now: now, spoken: spoken)
-        return loc("\(reset) 후 초기화 · \(age) 기록 기준", "Resets in \(reset) · as of \(age)")
+        return loc("\(reset) 후 초기화 · ", "Resets in \(reset) · ") + (live ? loc("실시간", "live") : loc("\(age) 기록 기준", "as of \(age)"))
     }
     /// On-screen variants, widest first; the reset countdown is never the part that is dropped.
     func details(now: Date) -> [String] {
         if expired(now: now) { return [waitingText] }
-        let age = SessionPresentation.helpAge(recordedAt, now: now)
-        guard let resetsAt else { return [loc("\(age) 기록", "Recorded \(age)")] }
+        let age = SessionPresentation.helpAge(recordedAt, now: now), live = isLive(now: now)
+        guard let resetsAt else { return [live ? loc("실시간", "Live") : loc("\(age) 기록", "Recorded \(age)")] }
         let countdown = SessionPresentation.countdown(to: resetsAt, now: now)
         let reset = loc("\(countdown) 후 초기화", "Resets in \(countdown)")
-        return [reset + " · " + loc("\(age) 기록", "recorded \(age)"), reset]
+        return [reset + " · " + (live ? loc("실시간", "live") : loc("\(age) 기록", "recorded \(age)")), reset]
     }
     /// "주간 한도 31% 사용 · 3일 4시간 후 초기화" while the other window has not reset.
     func otherText(now: Date, spoken: Bool = false) -> String? {
@@ -257,7 +262,12 @@ struct UsageLimitSummary: Equatable {
         return main + (otherText(now: now, spoken: true).map { ", " + $0.replacingOccurrences(of: "%", with: loc("퍼센트", " percent")).replacingOccurrences(of: " · ", with: ", ") } ?? "")
     }
     func help(now: Date) -> String {
-        let basis = source == .codex ? loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
+        let basis = live ? (source == .codex
+            ? loc("Codex에 저장된 로그인으로 OpenAI에서 확인한 계정 사용량입니다.", "Account usage checked with OpenAI using Codex's saved sign-in.")
+            : loc("Claude Code에 저장된 로그인으로 Anthropic에서 확인한 계정 사용량입니다.", "Account usage checked with Anthropic using Claude Code's saved sign-in."))
+            + loc(" 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
+                  " It's checked every minute while a session runs or this window is open, otherwise every 10 minutes.")
+            : source == .codex ? loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
                                            "The last account usage recorded in the Codex logs. It isn't a live balance and updates only while you use Codex.")
             : loc("Claude Code가 상태 표시줄로 보냈거나 Claude 데스크톱 앱이 기록한 마지막 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude를 사용할 때만 갱신됩니다.",
                   "The last Claude account usage sent by Claude Code to its status line or recorded by the Claude desktop app. It isn't a live balance and updates only while you use Claude.")
@@ -347,14 +357,16 @@ enum SessionPresentation {
         }
         var groups: [SessionGroup] = []
         var parentIndex: [String: Int] = [:]
-        for reading in tokens.sorted(by: { $0.id < $1.id }) where isTelemetry(reading) || !reading.isSubagent {
+        // Sorting indices moves Ints, not whole TokenReadings.
+        let sorted = tokens.indices.sorted { tokens[$0].id < tokens[$1].id }.map { tokens[$0] }
+        for reading in sorted where isTelemetry(reading) || !reading.isSubagent {
             groups.append(SessionGroup(lead: SessionMember(reading: reading, state: displayState(reading, now: now))))
             guard !isTelemetry(reading), let key = key(reading.source, reading.sessionID) else { continue }
             if let existing = parentIndex[key],
                (groups[existing].lead.reading.lastActivity ?? .distantPast) >= (reading.lastActivity ?? .distantPast) { continue }
             parentIndex[key] = groups.count - 1
         }
-        for reading in tokens.sorted(by: { $0.id < $1.id }) where !isTelemetry(reading) && reading.isSubagent {
+        for reading in sorted where !isTelemetry(reading) && reading.isSubagent {
             let member = SessionMember(reading: reading, state: displayState(reading, now: now))
             if let key = key(reading.source, reading.parentSessionID ?? reading.sessionID), let index = parentIndex[key] {
                 groups[index].children.append(member)
@@ -428,7 +440,7 @@ enum SessionPresentation {
         case .file: return loc("파일 작업", "File operation")
         case .web: return loc("웹 조회", "Web lookup")
         case .agent: return loc("하위 에이전트 대기", "Waiting for subagent")
-        case .mcp: return loc("MCP 도구", "MCP tool")
+        case .mcp: return loc("MCP 도구 실행", "MCP tool")
         case .question: return loc("입력 요청", "Input request")
         case .other, nil: return loc("도구 실행", "Running tool")
         }
@@ -580,18 +592,26 @@ enum SessionPresentation {
     /// Replay-proof per window length: the newest reset wins, then the highest percentage inside it. Across windows (each
     /// session logs only its fuller one), the higher use among those not reset wins like Claude's; all reset, the latest.
     /// Without any reset time the windows cannot be told apart, so only the newest record counts.
-    static func usageLimit(_ tokens: [TokenReading], now: Date) -> UsageLimitSummary? {
-        let limits = tokens.filter { $0.source == .codex }.compactMap(\.rateLimit).filter { $0.usedPercent.isFinite }
+    /// `live`: the windows of the newest live read, weighed with the log records like one more session.
+    static func usageLimit(_ tokens: [TokenReading], live reads: [TokenRateLimit] = [], now: Date) -> UsageLimitSummary? {
+        // Live reads last: past 2 minutes old they lose a tie to a later record of the same value.
+        let limits = (tokens.filter { $0.source == .codex }.compactMap(\.rateLimit) + reads).filter { $0.usedPercent.isFinite }
         guard let newest = limits.map({ $0.resetsAt ?? .distantPast }).max() else { return nil }
         if newest == .distantPast, let last = limits.max(by: { $0.recordedAt < $1.recordedAt }) {
-            return UsageLimitSummary(usedPercent: last.usedPercent, windowMinutes: last.windowMinutes, resetsAt: nil, recordedAt: last.recordedAt)
+            return UsageLimitSummary(usedPercent: last.usedPercent, windowMinutes: last.windowMinutes, resetsAt: nil, recordedAt: last.recordedAt,
+                                     live: last.live == true)
         }
+        // A live read overrides older records of its window; under 2 minutes old it also wins a tie with a later record
+        // of the same value, so the row keeps "실시간".
+        func fresh(_ limit: TokenRateLimit) -> Int { limit.live == true && now.timeIntervalSince(limit.recordedAt) < LiveLimits.freshness ? 1 : 0 }
         let windows = Dictionary(grouping: limits.filter { $0.resetsAt != nil }, by: \.windowMinutes).values.compactMap { group -> UsageLimitSummary? in
             guard let newest = group.compactMap(\.resetsAt).max() else { return nil }
-            let window = group.filter { abs(($0.resetsAt ?? .distantPast).timeIntervalSince(newest)) <= 60 }
-            guard let top = window.max(by: { $0.usedPercent < $1.usedPercent }) else { return nil }
+            var window = group.filter { abs(($0.resetsAt ?? .distantPast).timeIntervalSince(newest)) <= 60 }
+            if let read = window.filter({ $0.live == true }).map(\.recordedAt).max() { window = window.filter { $0.recordedAt >= read } }
+            guard let top = window.max(by: { ($0.usedPercent, fresh($0)) < ($1.usedPercent, fresh($1)) }) else { return nil }
+            let recordedAt = top.live == true ? top.recordedAt : window.map(\.recordedAt).max() ?? top.recordedAt
             return UsageLimitSummary(usedPercent: top.usedPercent, windowMinutes: top.windowMinutes, resetsAt: top.resetsAt,
-                                     recordedAt: window.map(\.recordedAt).max() ?? top.recordedAt)
+                                     recordedAt: recordedAt, live: top.live == true)
         }
         let live = windows.filter { ($0.resetsAt ?? .distantPast) > now }
         return live.max { ($0.usedPercent, $0.windowMinutes ?? 0) < ($1.usedPercent, $1.windowMinutes ?? 0) }
@@ -611,7 +631,7 @@ enum SessionPresentation {
             window.0.resetsAt.map { UsageLimitSummary.OtherWindow(usedPercent: window.0.usedPercent, windowMinutes: window.1, resetsAt: $0) }
         }
         return UsageLimitSummary(usedPercent: top.0.usedPercent, windowMinutes: top.1, resetsAt: top.0.resetsAt,
-                                 recordedAt: top.0.receivedAt, source: .claude, other: other)
+                                 recordedAt: top.0.receivedAt, source: .claude, other: other, live: top.0.live == true)
     }
 
     /// The flow card's "지금 속도": the newest measurement under 2 minutes old among visible live rows (leads and
@@ -635,7 +655,7 @@ enum SessionPresentation {
             guard rows.contains(where: { $0.state.expectsSpeed }) else { return nil }
             let sources = TokenSource.allCases.filter { source in rows.contains { $0.reading.source == source } }
             let waiting = sources.filter(restart.contains)
-            let names = waiting.map(\.title).joined(separator: " · ")
+            let names = waiting.map(\.title).joined(separator: loc("·", " and "))
             // A fresh measurement left out only for its model says so, rather than that none arrived.
             let previous = rows.compactMap { row -> TokenSpeedMeasurement? in
                 guard !restart.contains(row.reading.source), let measurement = row.reading.speedMeasurement, measurement.tokensPerSecond != nil,
@@ -677,7 +697,7 @@ enum SessionPresentation {
         guard let measurement = reading.speedMeasurement, let rate = measurement.tokensPerSecond else {
             let help = restartNeeded ? loc("실측 연결됨 · \(reading.source.title)를 새로 실행하면 속도가 표시됩니다",
                                            "Telemetry connected · restart \(reading.source.title) to show speed")
-                : loc("실측 속도 없음 · 로그 시각으로 추정하지 않습니다", "No measured speed · not estimated from log times")
+                : loc("속도 실측 없음 · 로그 시각으로 추정하지 않습니다", "No measured speed · not estimated from log times")
             return SpeedSlot(prefix: nil, value: "—", kind: nil, recent: false, help: help, spoken: loc("속도 실측 없음", "No measured speed"))
         }
         let kind = measurement.kind?.title ?? "tok/s"
@@ -799,7 +819,7 @@ enum SessionPresentation {
     static func telemetryNotice(state: TelemetryCollectorState, status: String? = nil, note: String?, failure: TelemetrySetupFailure? = nil,
                                 restart: Set<TokenSource>, expired: Set<TokenSource> = []) -> TelemetryNotice? {
         let open = loc("\n누르면 설정을 엽니다", "\nClick to open Settings")
-        func names(_ sources: Set<TokenSource>) -> String { TokenSource.allCases.filter(sources.contains).map(\.title).joined(separator: " · ") }
+        func names(_ sources: Set<TokenSource>) -> String { TokenSource.allCases.filter(sources.contains).map(\.title).joined(separator: loc("·", " and ")) }
         switch state {
         case .busyTokenCat:
             return TelemetryNotice(kind: .busy, text: loc("실측 꺼짐 · 다른 TokenCat", "Telemetry off · another TokenCat"),
@@ -828,7 +848,7 @@ enum SessionPresentation {
                                              "\(names(expired)): no telemetry received with this version. If it's still missing after a restart, check the connection in Settings.") + open)
         }
         guard !restart.isEmpty else { return nil }
-        return TelemetryNotice(kind: .restart, text: loc("\(names(restart)) 재시작 후 실측 표시", "Restart \(names(restart)) to show speed"),
+        return TelemetryNotice(kind: .restart, text: loc("\(names(restart)) 재시작 후 속도 표시", "Restart \(names(restart)) for speed"),
                                help: loc("\(names(restart))를 새로 실행하면 속도가 표시됩니다. 진행 중인 작업은 재시작하지 않습니다.",
                                          "Restart \(names(restart)) to show speed. TokenCat doesn't restart running work.") + open)
     }
@@ -1166,7 +1186,7 @@ struct SessionListModel {
     /// `flow` is no longer read (row bars were removed, S-2); the shell still passes it. `restart`: clients waiting for a
     /// relaunch, whose rows show no speed cell.
     static func make(tokens: [TokenReading], now: Date, expanded: Bool, flow: FlowSeries = .empty,
-                     restart: Set<TokenSource> = [], calendar: Calendar = .current) -> SessionListModel {
+                     restart: Set<TokenSource> = [], codexLive: [TokenRateLimit] = [], calendar: Calendar = .current) -> SessionListModel {
         let groups = SessionPresentation.groups(tokens, now: now)
         func stable(_ a: SessionGroup, _ b: SessionGroup) -> Bool {
             let order = (a.lead.reading.project ?? "").localizedStandardCompare(b.lead.reading.project ?? "")
@@ -1186,14 +1206,15 @@ struct SessionListModel {
         let pinnedGroups = input + running + waiting + measured
         let pinned = Set(pinnedGroups.map(\.id))
         // Keys first: `lastActivity` scans every member, too slow to recompute per comparison on each sample.
-        let keyed: [(group: SessionGroup, at: Date)] = groups.filter { !pinned.contains($0.id) }.map { ($0, $0.lastActivity) }
-        let rest = keyed.sorted { $0.at != $1.at ? $0.at > $1.at : $0.group.id < $1.group.id }.map(\.group)
+        let unpinned = groups.filter { !pinned.contains($0.id) }
+        let keys = unpinned.map { (at: $0.lastActivity, id: $0.id) }
+        let rest = keys.indices.sorted { keys[$0].at != keys[$1].at ? keys[$0].at > keys[$1].at : keys[$0].id < keys[$1].id }.map { unpinned[$0] }
         let ordered = pinnedGroups + rest
         let shown = expanded ? ordered : Array(ordered.prefix(max(pinned.count, collapsedMinimum)))
 
         var model = SessionListModel()
         model.counts = SessionCounts(groups)
-        model.usageLimit = SessionPresentation.usageLimit(tokens, now: now)
+        model.usageLimit = SessionPresentation.usageLimit(tokens, live: codexLive, now: now)
         model.hiddenGroups = ordered.count - shown.count
         func measuredSpeed(_ reading: TokenReading) -> Bool {
             reading.speedMeasurement?.tokensPerSecond != nil && !restart.contains(reading.source)

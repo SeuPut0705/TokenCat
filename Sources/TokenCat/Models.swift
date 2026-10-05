@@ -50,6 +50,8 @@ struct TokenRateLimit: Codable, Equatable {
     var windowMinutes: Int?
     var resetsAt: Date?
     var recordedAt: Date
+    /// From a live read (`LiveLimits`), not a log; `recordedAt` is then the read time.
+    var live: Bool? = nil
 }
 
 /// Context occupied by the latest request. Codex reports the window size; Claude does not,

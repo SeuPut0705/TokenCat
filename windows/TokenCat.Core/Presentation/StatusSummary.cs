@@ -211,7 +211,7 @@ public static class StatusBarContent
             }.OfType<string>().ToList();
             if (parts.Count > 0) lines.Add(string.Join(" · ", parts));
         }
-        lines.Add(Loc("클릭: 세션 상세 · 우클릭: 빠른 메뉴", "Click: details · Right-click: quick menu"));
+        lines.Add(Loc("클릭: 상세 화면 · 우클릭: 빠른 메뉴", "Click: details · Right-click: quick menu"));
         return string.Join("\n", lines);
     }
 }

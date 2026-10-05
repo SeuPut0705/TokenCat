@@ -453,7 +453,7 @@ func runShellChecks() -> [String] {
               && finished.first?.title == "Turn complete · TokenCat" && finished.first?.body == "12,480 tok · 4m 12s"
               && interrupted?.title == "Turn interrupted · Unknown project" && AttentionEvent.duration(3_725) == "1h 2m"
               && Notifier.describe(.denied) == "TokenCat notifications are off in System Settings"
-              && Notifier.describeSound(.authorized, .enabled, on: true) == "On · input needed alerts play the default sound"
+              && Notifier.describeSound(.authorized, .enabled, on: true) == "On · input-needed alerts play the default sound"
               && LoginItem.describe(.requiresApproval) == "Needs approval in System Settings › General › Login Items",
               "English notifications or login item captions are wrong")
     }

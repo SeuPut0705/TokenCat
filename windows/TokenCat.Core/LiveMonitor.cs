@@ -9,9 +9,11 @@ namespace TokenCat;
 // log-watcher paths wake it too, at most every 0.25 s. Named LiveMonitor because System.Threading.Monitor is an implicit using.
 
 /// `SampleSystem` is the App's Windows sampler (called on a worker thread, at most once at a time). Without `Telemetry` (checks)
-/// the collector reads as stopped and no Claude desktop history is read, as on the mac's verification path.
+/// the collector reads as stopped and no Claude desktop history is read, as on the mac's verification path. `ReadLimits` is
+/// `LiveLimits.Read`; without it nothing is polled.
 public sealed record MonitorOptions(string Home, string SupportDirectory, Func<SystemSnapshot> SampleSystem,
-    TelemetryCollector? Telemetry = null, Func<DateTimeOffset>? Clock = null);
+    TelemetryCollector? Telemetry = null, Func<DateTimeOffset>? Clock = null,
+    Func<TokenSource, CancellationToken, Task<LiveLimitResult>>? ReadLimits = null);
 
 /// DashboardModel's published state, immutable per publish. Fixtures construct it directly (WP5 snapshots).
 public sealed record MonitorState(
@@ -75,6 +77,11 @@ public sealed class LiveMonitor : IDisposable
     readonly Dictionary<TokenSource, DateTimeOffset> lastReceived = [], batches = [];
     TelemetryRestartState restart = new();
     ClaudeUsageLimits claudeLimits;
+    // Live usage limits: the setting, a dashboard on screen, one that just opened, each provider's poll, Codex's last answer
+    // (Claude's merges into `claudeLimits`).
+    bool limitsEnabled, limitsWatched, limitsOpened;
+    readonly Dictionary<TokenSource, LiveLimits.Poll> polls = Enum.GetValues<TokenSource>().ToDictionary(source => source, _ => new LiveLimits.Poll());
+    IReadOnlyList<TokenRateLimit> codexLive = [];
     MonitorState current;
     CancellationTokenSource? running;
     Channel<string[]>? wake;
@@ -178,6 +185,17 @@ public sealed class LiveMonitor : IDisposable
         }
     }
 
+    /// Live usage limits: `enabled` is the setting while the PC is awake with a screen on, `watched` a dashboard on screen. Polls
+    /// start from the 1 s tick, so a dashboard that opens is answered within about a second plus the request.
+    public void WatchLimits(bool enabled, bool watched)
+    {
+        lock (gate)
+        {
+            limitsOpened |= watched && !limitsWatched;
+            (limitsEnabled, limitsWatched) = (enabled, watched);
+        }
+    }
+
     public static ClaudeUsageLimits LoadClaudeLimits(SettingsStore store) =>
         store.Get<ClaudeUsageLimits>(ClaudeUsageLimits.DefaultsKey) ?? ClaudeUsageLimits.Empty;
 
@@ -214,6 +232,7 @@ public sealed class LiveMonitor : IDisposable
                 }
                 // A failed sample keeps the previous values; the footer's collection delay shows it.
                 catch (Exception error) when (error is not OperationCanceledException) { }
+                lock (gate) PollLimits(token);
             }
             while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false));
         }
@@ -292,6 +311,41 @@ public sealed class LiveMonitor : IDisposable
         }
     }
 
+    /// Starts each provider's live limit poll that is due (LiveLimits.Due): "active" while one of its sessions runs or a dashboard
+    /// shows. An answer replaces Codex's live windows or merges into Claude's (newer per window) and publishes. Caller holds `gate`.
+    void PollLimits(CancellationToken token)
+    {
+        var opened = limitsOpened;
+        limitsOpened = false;
+        if (options.ReadLimits is not { } read || !limitsEnabled || token.IsCancellationRequested) return;
+        foreach (var (source, poll) in polls)
+        {
+            var running = current.Groups.Any(group => group.Lead.Reading.Source == source && group.State.IsRunning);
+            var since = poll.Started is { } started ? Stopwatch.GetElapsedTime(started).TotalSeconds : (double?)null;
+            if (poll.Running || !LiveLimits.Due(since, poll.Failures, running || limitsWatched, opened)) continue;
+            (poll.Running, poll.Started) = (true, Stopwatch.GetTimestamp());
+            _ = Task.Run(async () =>
+            {
+                LiveLimitResult result;
+                try { result = await read(source, token).ConfigureAwait(false); }
+                catch (Exception) { result = new(Failed: true); }
+                lock (gate)
+                {
+                    poll.Running = false;
+                    poll.Failures = result.Failed ? poll.Failures + 1 : 0;
+                    if (token.IsCancellationRequested || (result.Codex is null && result.Claude is null)) return;
+                    if (result.Codex is { } codex) codexLive = codex;
+                    if (result.Claude is { } claude)
+                    {
+                        claudeLimits = ClaudeUsage.Merged(claudeLimits, claude);
+                        SaveClaudeLimits(store, claudeLimits);
+                    }
+                    Publish();
+                }
+            }, CancellationToken.None);
+        }
+    }
+
     static void Later(Dictionary<TokenSource, DateTimeOffset> times, TokenSource source, DateTimeOffset at)
     {
         if (!times.TryGetValue(source, out var known) || at > known) times[source] = at;
@@ -327,7 +381,7 @@ public sealed class LiveMonitor : IDisposable
     {
         var now = tokensSampledAt is { } sampled && sampled > system.SampledAt ? sampled : system.SampledAt;
         current = State(now, FlowSeries.Make(tokens, now), SessionPresentation.Groups(tokens, now),
-                        SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed));
+                        SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed, codexLive: codexLive));
         if (running is { IsCancellationRequested: false }) Updated?.Invoke(current);
     }
 }

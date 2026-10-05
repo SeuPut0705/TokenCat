@@ -18,6 +18,7 @@ enum TokenCatMain {
             AppLanguage.current = .ko
             let failures = runLocalizationChecks() + runTrackerChecks() + runPreferenceChecks() + runShellChecks() + runStatusBarChecks() + runSessionPresentationChecks()
                 + runDesignTokenChecks() + runTelemetryChecks() + runTelemetrySetupChecks() + runTokenSpeedChecks() + runUpdaterChecks()
+                + runLiveLimitChecks()
                 + Runner.resourceErrors()
             if Runner.resourceErrors().isEmpty { print("Bundled artwork: PASS (\(RunnerCharacter.allCases.count) characters × \(RunnerPose.allCases.map(Runner.frames).reduce(0, +)) frames in \(RunnerPose.allCases.count) poses, \(RunnerHead.allCases.count) pixel heads)") }
             if failures.isEmpty { print("TokenCat checks: PASS") }
@@ -69,6 +70,10 @@ enum TokenCatMain {
         if CommandLine.arguments.contains("--update-check") {
             exit(Updater.commandLineCheck())
         }
+        // Read-only: one live usage read per provider (Codex app-server, Anthropic usage), numbers only; never a token.
+        if CommandLine.arguments.contains("--live-limits") {
+            exit(LiveLimits.commandLineCheck())
+        }
         if CommandLine.arguments.contains("--notification-status") {
             notificationStatus()
             return
@@ -113,7 +118,7 @@ enum TokenCatMain {
             return
         }
         if handOffToRunningInstance() {
-            print(loc("TokenCat이 이미 실행 중이어서 기존 앱의 패널을 열었습니다.", "TokenCat is already running, so its dashboard was opened."))
+            print(loc("TokenCat이 이미 실행 중이어서 기존 앱의 상세 화면을 열었습니다.", "TokenCat is already running, so its dashboard was opened."))
             return
         }
         let app = NSApplication.shared

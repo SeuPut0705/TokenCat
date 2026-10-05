@@ -46,7 +46,8 @@ sealed class Shell
     TelemetrySetupFailure? setupFailure;
     IReadOnlyList<TelemetrySetupNote> connectNotes = [];
     bool? claudeBridged;
-    bool setupInFlight, locked, suspended, quitting;
+    bool setupInFlight, locked, suspended, displayOff, quitting;
+    IntPtr displayWatch;
     DateTimeOffset? quietSince;
     string? balloonGroup;
     /// A `Stopwatch` timestamp: the wall clock set back must not swallow tray clicks for that long.
@@ -66,7 +67,8 @@ sealed class Shell
         animator = new RunnerAnimator(RunnerManifest.Parse(Sprites.Resource("runner-v2.json")), () => DateTimeOffset.UtcNow);
         tray = new TrayIcon(trayMenu);
         flyout = new Flyout(actions);
-        monitor = new LiveMonitor(new MonitorOptions(AppPaths.Home, AppPaths.Support, sampler.Sample, collector));
+        monitor = new LiveMonitor(new MonitorOptions(AppPaths.Home, AppPaths.Support, sampler.Sample, collector,
+            ReadLimits: new LiveLimits(AppPaths.Home, Updater.CurrentVersion).Read));
     }
 
     MonitorState Current => state ?? monitor.Current;
@@ -116,6 +118,7 @@ sealed class Shell
             UpdateWidget();
             PlanRunner();
             updater.SetAutomatic(preferences.AutoCheckUpdates);
+            SyncLimits();
             RefreshViews();
         });
         SystemEvents.UserPreferenceChanged += OnPreferenceChanged;
@@ -128,6 +131,8 @@ sealed class Shell
         RenderTray();
         collector.Start(() => dispatcher.BeginInvoke(ConnectTelemetryAutomatically));
         monitor.Start();
+        displayWatch = Native.WatchDisplay(on => dispatcher.BeginInvoke(() => { displayOff = !on; SyncLimits(); }));
+        SyncLimits();
         updater.Start(preferences.AutoCheckUpdates);
         Publish(monitor.Current);
 
@@ -194,6 +199,7 @@ sealed class Shell
     {
         if (e.Mode == PowerModes.Suspend) suspended = true;
         else if (e.Mode == PowerModes.Resume) { suspended = false; updater.SystemDidWake(); }
+        SyncLimits();
         PlanRunner();
     });
 
@@ -234,6 +240,15 @@ sealed class Shell
 
     /// A panel behind other windows doesn't count, so its notifications still arrive.
     bool DashboardVisible => flyout.IsVisible || window is { IsVisible: true, IsActive: true };
+
+    /// Live usage limits poll while the setting is on and the PC is awake with a screen on; every minute while the flyout or an
+    /// unminimized window shows them.
+    void SyncLimits()
+    {
+        if (quitting) return;
+        monitor.WatchLimits(preferences.LiveUsageLimits && !suspended && !displayOff,
+            flyout.IsVisible || window is { IsVisible: true, WindowState: not WindowState.Minimized });
+    }
 
     // MARK: Character
 
@@ -375,6 +390,7 @@ sealed class Shell
         flyout.Activate();
         Native.Place(flyout, at, below: below);
         flyout.Dashboard.Opened();
+        SyncLimits();
     }
 
     void HideFlyout()
@@ -382,6 +398,7 @@ sealed class Shell
         if (!flyout.IsVisible) return;
         flyout.Hide();
         hiddenAt = Stopwatch.GetTimestamp();
+        SyncLimits();
         // "…로 업데이트했습니다" shows for one showing of the dashboard.
         updater.ClearUpdatedNote();
     }
@@ -405,13 +422,15 @@ sealed class Shell
         if (window is null)
         {
             window = new DashboardWindow(actions);
-            window.Closed += (_, _) => { window = null; updater.ClearUpdatedNote(); };
+            window.Closed += (_, _) => { window = null; updater.ClearUpdatedNote(); SyncLimits(); };
+            window.StateChanged += (_, _) => SyncLimits();
         }
         updater.DashboardOpened();
         window.Dashboard.Show(Input());
         window.Show();
         Front(window);
         window.Dashboard.Opened();
+        SyncLimits();
     }
 
     void OpenSettings(SettingsPage? page = null)
@@ -576,6 +595,7 @@ sealed class Shell
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
         SystemEvents.TimeChanged -= OnTimeChanged;
+        Native.UnwatchDisplay(displayWatch);
         animator.Stop();
         updater.Stop();
         monitor.Stop();

@@ -32,6 +32,13 @@ static class Native
     [DllImport("kernel32.dll")] public static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
     [DllImport("kernel32.dll")] public static extern bool GlobalMemoryStatusEx(ref MemoryStatus status);
 
+    delegate uint PowerCallback(IntPtr context, uint type, IntPtr setting);
+    struct SubscribeParameters { public PowerCallback Callback; public IntPtr Context; }
+    [DllImport("powrprof.dll")] static extern uint PowerSettingRegisterNotification(ref Guid setting, uint flags, ref SubscribeParameters recipient, out IntPtr handle);
+    [DllImport("powrprof.dll")] static extern uint PowerSettingUnregisterNotification(IntPtr handle);
+    /// Kept alive for as long as the system may call it.
+    static PowerCallback? displayCallback;
+
     struct Rect { public int Left, Top, Right, Bottom; }
     const uint SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10;
 
@@ -50,6 +57,26 @@ static class Native
         var handle = GetStdHandle(-11);
         if (handle == IntPtr.Zero || handle == new IntPtr(-1)) AttachConsole(-1);
         else Console.SetOut(new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false)) { AutoFlush = true });
+    }
+
+    /// Calls `changed(on)` at once and whenever the console display turns off or on (dimmed counts as on), on a system thread:
+    /// GUID_CONSOLE_DISPLAY_STATE through PBT_POWERSETTINGCHANGE (POWERBROADCAST_SETTING's DWORD at offset 20), no window needed.
+    /// Zero when unavailable; give the handle to UnwatchDisplay.
+    public static IntPtr WatchDisplay(Action<bool> changed)
+    {
+        displayCallback = (_, type, setting) =>
+        {
+            if (type == 0x8013 && setting != IntPtr.Zero) changed(Marshal.ReadInt32(setting, 20) != 0);
+            return 0;
+        };
+        var display = new Guid("6FE69556-704A-47A0-8F24-C28D936FDA47");
+        var recipient = new SubscribeParameters { Callback = displayCallback };
+        return PowerSettingRegisterNotification(ref display, 2 /* DEVICE_NOTIFY_CALLBACK */, ref recipient, out var handle) == 0 ? handle : IntPtr.Zero;
+    }
+
+    public static void UnwatchDisplay(IntPtr handle)
+    {
+        if (handle != IntPtr.Zero) PowerSettingUnregisterNotification(handle);
     }
 
     /// The taskbar's DPI (the tray icon lives there), else the system DPI.

@@ -16,7 +16,7 @@ public sealed class Preferences : INotifyPropertyChanged
     readonly SettingsStore store;
     RunnerMotion animationSource;
     RunnerCharacter character;
-    bool notifyTurnComplete, notifyInput, autoCheckUpdates, notifyUpdate, showWidget;
+    bool notifyTurnComplete, notifyInput, autoCheckUpdates, notifyUpdate, showWidget, liveUsageLimits;
     string? dismissedUpdateVersion;
     StatusBarLayout layout;
     IReadOnlyList<MetricID> order;
@@ -33,6 +33,7 @@ public sealed class Preferences : INotifyPropertyChanged
         notifyInput = store.Get<bool?>("notifyInput") ?? false;
         autoCheckUpdates = store.Get<bool?>("autoCheckUpdates") ?? true;
         notifyUpdate = store.Get<bool?>("notifyUpdate") ?? false;
+        liveUsageLimits = store.Get<bool?>("liveUsageLimits") ?? true;
         dismissedUpdateVersion = store.Get<string>("dismissedUpdateVersion");
         // The widget starts on, in the minimal layout (the mac bar starts compact); unknown item names are dropped.
         showWidget = store.Get<bool?>("showWidget") ?? true;
@@ -86,8 +87,11 @@ public sealed class Preferences : INotifyPropertyChanged
     /// Opt-in notifications; both default off.
     public bool NotifyTurnComplete { get => notifyTurnComplete; set => Change(ref notifyTurnComplete, value, "notifyTurnComplete", value); }
     public bool NotifyInput { get => notifyInput; set => Change(ref notifyInput, value, "notifyInput", value); }
-    /// "새 버전 자동 확인": on by default; TokenCat's only internet request. Not part of "기본값으로 되돌리기".
+    /// "새 버전 자동 확인": on by default; the GitHub release check. Not part of "기본값으로 되돌리기".
     public bool AutoCheckUpdates { get => autoCheckUpdates; set => Change(ref autoCheckUpdates, value, "autoCheckUpdates", value); }
+    /// "실시간 한도 확인": on by default; Codex and Claude usage from OpenAI and Anthropic (LiveLimits). Not part of
+    /// "기본값으로 되돌리기" either.
+    public bool LiveUsageLimits { get => liveUsageLimits; set => Change(ref liveUsageLimits, value, "liveUsageLimits", value); }
     /// "새 버전 알림": off by default like every notification; silent, once per version.
     public bool NotifyUpdate { get => notifyUpdate; set => Change(ref notifyUpdate, value, "notifyUpdate", value); }
     /// The version whose flyout notice was closed with ✕; a newer version shows again.

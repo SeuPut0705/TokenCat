@@ -338,8 +338,8 @@ static class OnboardingCard
         }
         stack.Children.Add(Line(Ui.Sliders, telemetry.Title, telemetry.Detail, telemetry.Tail, Links));
         stack.Children.Add(Line(Ui.Blocked, Loc("모델 호출·계정 로그인을 하지 않습니다", "Doesn't call models or sign in to accounts"),
-            Loc("인터넷 요청은 GitHub 새 버전 확인과 업데이트를 누를 때의 내려받기뿐입니다(설정 › 정보에서 확인 끄기)",
-                "Only goes online to check GitHub for new versions and to download one when you click Update (turn off checks in Settings › About)")));
+            Loc("인터넷 요청은 GitHub 새 버전 확인·내려받기와 OpenAI·Anthropic 사용량 확인뿐입니다(설정에서 끄기)",
+                "Only goes online to check GitHub for new versions and to ask OpenAI and Anthropic for usage (turn off in Settings)")));
         return Ui.Container(stack, tint: true);
     }
 
@@ -404,8 +404,9 @@ sealed class FlowCard : Border
     public FlowCard()
     {
         Padding = new Thickness(Dashboard.Inset, Dashboard.InsetVertical, Dashboard.Inset, Dashboard.InsetVertical);
-        var collapsedTitle = Dashboard.Row(6, Ui.Text(Loc("출력 토큰", "Output tokens"), Font.Title),
-            Ui.Text(Loc("최근 5분 기록 없음", "None in the last 5 min"), Font.Meta, Theme.Secondary));
+        // One line, so the caption sits on the title's baseline.
+        var collapsedTitle = Ui.Line(Ui.Run(Loc("출력 토큰", "Output tokens"), Font.Title),
+            Ui.Run("  " + Loc("최근 5분 기록 없음", "None in the last 5 min"), Font.Meta, Theme.Secondary));
         collapsedTitle.VerticalAlignment = collapsedLast.VerticalAlignment = VerticalAlignment.Center;
         collapsed.Children.Add(Dashboard.Spread(collapsedTitle, collapsedLast));
 
@@ -414,8 +415,8 @@ sealed class FlowCard : Border
             () => { }, Loc("출력 토큰 설명", "About output tokens"), circle: true);
         var popup = new Popup { PlacementTarget = info, Placement = PlacementMode.Bottom, StaysOpen = false, AllowsTransparency = false, Child = Help() };
         info.Click += (_, _) => popup.IsOpen = !popup.IsOpen;
-        var titleRow = Dashboard.Spread(Dashboard.Row(6, Ui.Text(Loc("출력 토큰", "Output tokens"), Font.Title),
-            Ui.Text(Loc("최근 5분 · 로그 기록 기준", "Last 5 min · based on log records"), Font.Meta, Theme.Secondary)), info, 4);
+        var titleRow = Dashboard.Spread(Ui.Line(Ui.Run(Loc("출력 토큰", "Output tokens"), Font.Title),
+            Ui.Run("  " + Loc("최근 5분 · 로그 기록 기준", "Last 5 min · based on log records"), Font.Meta, Theme.Secondary)), info, 4);
         titleRow.Height = 16;
         card.Children.Add(titleRow);
 
@@ -926,7 +927,7 @@ sealed class Footer : Grid
         label.VerticalAlignment = VerticalAlignment.Center;
         var row = Dashboard.Row(0, label);
         Button TextButton(string title, string help, UpdateCommand command) =>
-            Named(Ui.HoverButton(new Border { Padding = new Thickness(5, 0, 5, 0), Height = 18, Child = Ui.Text(title, Font.MetaMedium, Theme.Accent) },
+            Named(Ui.HoverButton(new Border { Padding = new Thickness(5, 0, 5, 0), Height = 18, Child = Centered(Ui.Text(title, Font.MetaMedium, Theme.Accent)) },
                 () => actions.Update(command), help), title);
         Button Close(string help) => Ui.HoverButton(new Border { Width = 18, Height = 18, Child = Centered(Ui.Icon(Ui.Close, 9, Theme.Secondary)) },
             () => actions.Update(UpdateCommand.Dismiss), help, circle: true);

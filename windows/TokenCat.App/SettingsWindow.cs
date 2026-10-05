@@ -20,8 +20,8 @@ static class AppInfo
 {
     public static string Version => typeof(AppInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "—";
 
-    public static string Privacy => Loc("로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인과, 업데이트를 누를 때의 내려받기뿐입니다.",
-        "TokenCat reads only metadata from local logs and local telemetry. It never stores or shows prompts or responses, never calls a model and never signs in to an account. It goes online only to check GitHub for updates and to download one when you click Update.");
+    public static string Privacy => Loc("로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인, 업데이트를 누를 때의 내려받기, 실시간 한도 확인이 켜져 있을 때 Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic에 사용량을 묻는 요청뿐입니다. 토큰은 저장하지 않습니다.",
+        "TokenCat reads only metadata from local logs and local telemetry. It never stores or shows prompts or responses, never calls a model and never signs in to an account. It goes online only to check GitHub for updates, to download one when you click Update and, with Live usage limits on, to ask OpenAI and Anthropic for usage with Codex and Claude Code's saved sign-in. Tokens are never stored.");
 
     /// The release zip puts LICENSE next to TokenCat.exe.
     public static string License()
@@ -329,7 +329,7 @@ sealed class SettingsView : Grid
         });
         reset.HorizontalAlignment = HorizontalAlignment.Right;
         var notificationFooter = new StackPanel();
-        notificationFooter.Children.Add(Caption(Loc("기본값은 꺼짐입니다. 대시보드가 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.",
+        notificationFooter.Children.Add(Caption(Loc("기본값은 꺼짐입니다. 상세 화면이 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.",
             "Off by default, and never sent while the dashboard is visible. They include only the project, model, token count and duration, never questions or responses.")));
         reset.Margin = new Thickness(0, 8, 0, 0);
         notificationFooter.Children.Add(reset);
@@ -367,7 +367,7 @@ sealed class SettingsView : Grid
             [
                 Toggle(Loc("턴 완료", "Turn complete"), Loc("최상위 세션의 턴이 끝나거나 중단되면 알립니다", "Notifies when a top-level session's turn ends or is interrupted"),
                     preferences.NotifyTurnComplete, on => preferences.NotifyTurnComplete = on),
-                Toggle(Loc("입력 필요", "Input needed"), Loc("질문·계획 승인을 기다리면 알립니다. 권한 확인 창은 로그에 남지 않아 알 수 없습니다",
+                Toggle(Loc("입력 필요", "Input needed"), Loc("질문·계획 승인을 기다리면 알립니다. 권한 확인 요청은 로그에 남지 않아 알 수 없습니다",
                     "Notifies when a question or plan approval is waiting. Permission prompts aren't logged, so TokenCat can't see them"),
                     preferences.NotifyInput, on => preferences.NotifyInput = on),
             ], notificationFooter));
@@ -503,9 +503,10 @@ sealed class SettingsView : Grid
         return (StatusRow.Waiting, Loc("이번 실행에서 받은 실측 없음", "No telemetry since launch"), null);
     }
 
-    /// The usage-limit sources, checked top to bottom. `desktop`: the newest reading is the Claude desktop app's own record.
+    /// The usage-limit sources, checked top to bottom. `desktop`: the newest reading is the Claude desktop app's own record;
+    /// `live`: a live poll's.
     public static (StatusRow Row, string Text, string? Detail) ClaudeLimitsStatus(IReadOnlyList<TelemetrySetupNote> notes, bool? bridged, DateTimeOffset? received,
-        bool desktop, DateTimeOffset now)
+        bool desktop, DateTimeOffset now, bool live = false)
     {
         if (notes.Contains(TelemetrySetupNote.OriginalUnknown))
             return (StatusRow.Problem, Loc("상태 표시줄이 비어 보일 수 있음", "Status line may look empty"), Loc("settings.json의 statusLine을 직접 고쳐 주세요", "Fix statusLine in settings.json by hand"));
@@ -514,6 +515,7 @@ sealed class SettingsView : Grid
         // Windows v1 keeps an existing status line (§7.4); its limits then come from the desktop app's history.
         var detail = notes.Contains(TelemetrySetupNote.OriginalRecreated) ? Loc("원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다", "Recreated the original status line command from backup")
             : notes.Contains(TelemetrySetupNote.StatusLineKept) ? TelemetrySetupNote.StatusLineKept.Text : null;
+        if (received is { } polled && live) return (StatusRow.Received, Loc("실시간 확인 ", "Checked live ") + SessionPresentation.HelpAge(polled, now, false), detail);
         if (received is { } at && desktop)
             return (StatusRow.Received, Loc($"Claude 데스크톱 앱 기록 · {Format.Age(at, now)}", $"Claude desktop app · recorded {Format.Age(at, now)}"), detail);
         if (received is { } last) return (StatusRow.Received, Loc("최근 수신 ", "Last received ") + SessionPresentation.HelpAge(last, now, false), detail);
@@ -591,13 +593,13 @@ sealed class SettingsView : Grid
         }
         // Whether the bridge delivers: the newer of the two windows' receipts (no reset time: the desktop app).
         var newest = new[] { state.ClaudeLimits.FiveHour, state.ClaudeLimits.SevenDay }.OfType<ClaudeLimitWindow>().MaxBy(window => window.ReceivedAt);
-        var limits = ClaudeLimitsStatus(dashboard.ConnectNotes, dashboard.ClaudeBridged, newest?.ReceivedAt, newest is { ResetsAt: null }, now);
+        var limits = ClaudeLimitsStatus(dashboard.ConnectNotes, dashboard.ClaudeBridged, newest?.ReceivedAt, newest is { ResetsAt: null }, now, newest is { Live: true });
         rows.Add(Labeled(Label(Loc("Claude 한도", "Claude limits")), StatusLine(limits.Row, limits.Text, limits.Detail)));
         // Non-breaking hyphens (U+2011) keep the flag on one line.
         var exe = snapshot ? @"%LOCALAPPDATA%\Programs\TokenCat\TokenCat.exe" : Environment.ProcessPath;
         var command = $"& \"{exe}\" \u2011\u2011disconnect\u2011telemetry | Out-Host";
-        var footer = Caption(Loc($"실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 되돌리려면 PowerShell에서 {command}를 실행합니다.",
-            $"Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply. To undo it, run {command} in PowerShell."));
+        var footer = Caption(Loc($"실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 해제하려면 PowerShell에서 {command}를 실행합니다.",
+            $"Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply. To disconnect, run {command} in PowerShell."));
         var files = new (string Title, string Path)[]
         {
             (Loc("백업 폴더 보기", "Show Backup Folder"), Path.Combine(AppPaths.Support, "telemetry-backups")),
@@ -606,7 +608,12 @@ sealed class SettingsView : Grid
         }.Where(file => !snapshot && (File.Exists(file.Path) || Directory.Exists(file.Path))).ToList();
         var buttons = new WrapPanel();
         foreach (var file in files) { var button = Ui.SmallButton(file.Title, () => Shell.Reveal(file.Path), file.Path); button.Margin = new Thickness(0, 0, 6, 6); buttons.Children.Add(button); }
-        return Page(Section(null, rows, footer),
+        var preferences = actions.Preferences;
+        var live = Toggle(Loc("실시간 한도 확인", "Live usage limits"),
+            Loc("Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic 사용량을 사용 중에는 1분, 평소에는 10분마다 확인합니다. 토큰은 저장하지 않습니다.",
+                "Checks usage with OpenAI and Anthropic using Codex and Claude Code's saved sign-in, every minute while in use and every 10 minutes otherwise. Tokens are never stored."),
+            preferences.LiveUsageLimits, on => preferences.LiveUsageLimits = on);
+        return Page(Section(null, rows, footer), Section(null, [live]),
             files.Count == 0 ? null : Section(null, [buttons], Caption(Loc("탐색기에서 위치만 보여 주며 파일을 열거나 바꾸지 않습니다.", "Only shows where the files are in File Explorer; never opens or changes them."))));
     }
 
