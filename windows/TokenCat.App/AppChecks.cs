@@ -74,13 +74,22 @@ static class AppChecks
             var frames = new WidgetView();
             frames.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, items, true, true), StatusBarLayout.Compact);
             Snapshot.Render(() => frames, dark: true);
-            var before = Native.GuiResources();
+            // The 300 RenderTargetBitmaps are the harness's, not the widget's: let them finalize before counting.
+            static (uint Gdi, uint User) Settled()
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+                return Native.GuiResources();
+            }
+            var before = Settled();
             for (var i = 0; i < 300; i++)
             {
                 frames.UpdateRunner(RunnerCharacter.Cat, RunnerPose.Walk, i % 4, null);
                 Snapshot.Render(() => frames, dark: i % 2 == 0);
             }
-            var after = Native.GuiResources();
+            var after = Settled();
             check(Math.Abs((int)after.Gdi - (int)before.Gdi) <= 4 && Math.Abs((int)after.User - (int)before.User) <= 4,
                 $"300 widget frames leak no handles (GDI {before.Gdi} → {after.Gdi}, USER {before.User} → {after.User})");
         }
