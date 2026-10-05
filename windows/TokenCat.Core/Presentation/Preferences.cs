@@ -3,9 +3,9 @@ using System.Runtime.CompilerServices;
 
 namespace TokenCat;
 
-/// App.swift `Preferences`, the fields Windows keeps: the menu-bar order, items, layout, presets and the input sound are cut
-/// (DESIGN §3.2). Same keys and raw values as the mac's UserDefaults. A change writes its own key (the motion also marks
-/// itself confirmed) and raises PropertyChanged for the settings window and the tray.
+/// App.swift `Preferences`, the fields Windows keeps: the input sound and per-item editing are cut (DESIGN §3.2); the layout
+/// and items are set by presets and drawn by the on-screen widget (§4.7). Same keys and raw values as the mac's UserDefaults.
+/// A change writes its own key (the motion also marks itself confirmed) and raises PropertyChanged for Settings and the shell.
 public sealed class Preferences : INotifyPropertyChanged
 {
     /// The choices "기본값으로 되돌리기" covers; login item and automatic update checks are not here.
@@ -16,8 +16,11 @@ public sealed class Preferences : INotifyPropertyChanged
     readonly SettingsStore store;
     RunnerMotion animationSource;
     RunnerCharacter character;
-    bool notifyTurnComplete, notifyInput, autoCheckUpdates, notifyUpdate;
+    bool notifyTurnComplete, notifyInput, autoCheckUpdates, notifyUpdate, showWidget;
     string? dismissedUpdateVersion;
+    StatusBarLayout layout;
+    IReadOnlyList<MetricID> order;
+    IReadOnlySet<MetricID> visible;
 
     public Preferences(SettingsStore? store = null)
     {
@@ -31,6 +34,37 @@ public sealed class Preferences : INotifyPropertyChanged
         autoCheckUpdates = store.Get<bool?>("autoCheckUpdates") ?? true;
         notifyUpdate = store.Get<bool?>("notifyUpdate") ?? false;
         dismissedUpdateVersion = store.Get<string>("dismissedUpdateVersion");
+        // The widget starts on, in the minimal layout (the mac bar starts compact); unknown item names are dropped.
+        showWidget = store.Get<bool?>("showWidget") ?? true;
+        layout = RunnerCharacterText.Parse<StatusBarLayout>(store.Get<string>("statusBarLayout")) ?? StatusBarLayout.Minimal;
+        static IEnumerable<MetricID> Items(string[]? names) => (names ?? []).Select(RunnerCharacterText.Parse<MetricID>).OfType<MetricID>();
+        order = [.. Items(store.Get<string[]>("metricOrder")).Concat(Enum.GetValues<MetricID>()).Distinct()];
+        visible = store.Get<string[]>("visibleMetrics") is { } shown ? Items(shown).ToHashSet() : Enum.GetValues<MetricID>().ToHashSet();
+    }
+
+    /// "화면에 위젯 표시": on by default. Not part of "기본값으로 되돌리기".
+    public bool ShowWidget { get => showWidget; set => Change(ref showWidget, value, "showWidget", value); }
+    public StatusBarLayout Layout => layout;
+    /// What the two-line and one-line layouts draw, in order.
+    public IReadOnlyList<MetricID> ShownItems => [.. order.Where(visible.Contains)];
+
+    /// The preset the widget matches (the battery is ignored: a PC without one draws none); null is "사용자 지정".
+    public DisplayPreset? Preset => Enum.GetValues<DisplayPreset>().Cast<DisplayPreset?>().FirstOrDefault(preset =>
+        preset!.Value.Layout == layout && (preset.Value.Items is not { } items
+            || items.Where(id => id != MetricID.Battery).SequenceEqual(ShownItems.Where(id => id != MetricID.Battery))));
+
+    public void Apply(DisplayPreset preset)
+    {
+        if (preset.Items is { } items)
+        {
+            order = [.. items, .. order.Except(items)];
+            visible = items.ToHashSet();
+            store.Set("metricOrder", order.Select(Raw).ToArray());
+            store.Set("visibleMetrics", items.Select(Raw).ToArray());
+        }
+        layout = preset.Layout;
+        store.Set("statusBarLayout", Raw(layout));
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Preset)));
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

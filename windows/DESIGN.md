@@ -239,7 +239,7 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
 ### 3.2 Explicit cuts (v1) and their upgrade paths
 | Cut | Reason | Later |
 |---|---|---|
-| Menu-bar text metrics, layouts, metric ordering, display presets (`StatusBarLayout`, `MetricID`, `DisplayPreset`) | A tray item is one square icon | Tooltip + flyout carry the values. An optional second tray icon with pixel digits if asked. |
+| Menu-bar item editing (per-item visibility and drag ordering) | A tray item is one square icon | Since 0.12.0 the on-screen widget (§4.7) draws the layouts and presets; items change only through presets. |
 | Character art below 30 px (dog/hamster/penguin/robot heads, small bodies) | No such art exists. Non-integer scaling ruins it. | `Assets/Generator` emits `tray-<character>-16/24` sheets; App loads them by manifest. |
 | Wrapping an **existing** Claude statusLine | Needs shell detection, unverifiable here | v1.1 after PC test (open question 2) |
 | WSL logs, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` | Parity with mac. WSL also needs polling over `\\wsl.localhost` (no change notifications) and a collector reachable from WSL2 NAT. | Extra roots in `AppPaths`; the empty state names WSL in v1 (§2.2) |
@@ -297,11 +297,11 @@ with `Typography.NumeralAlignment="Tabular"` for "mono" digits. Korean falls bac
 Disabled headline (`QuickMenuSummary.headline`), session rows with the state colour square (click focuses that group in the flyout),
 separator, **Open**, **Open as window**, separator, **Character ▸** (5, checked), **Motion source ▸** (4, checked), separator,
 update item (`UpdateState.quickMenuTitle`) when present, **Settings…**, **Task Manager**, **About TokenCat**, separator, **Quit TokenCat**.
-"Layout" and "Show in menu bar" are cut. `Application.SetColorMode(SystemColorMode.System)` at start and again after a light/dark change should make the menu follow dark mode (PC check).
+"Layout" and "Show in menu bar" are cut; **Show/Hide Widget** follows **Open as window** (§4.7). `Application.SetColorMode(SystemColorMode.System)` at start and again after a light/dark change should make the menu follow dark mode (PC check).
 
 ### 4.4 Settings window
 Normal WPF window with four pages (left nav):
-* **General**: start at login (with Run/StartupApproved status text), notifications (input, turn end), Restore Defaults.
+* **General**: widget (show on screen, preset; §4.7), start at login (with Run/StartupApproved status text), notifications (input, turn end), Restore Defaults.
 * **Character**: picker with live 2× preview, motion source with `caption`/`subtitle` texts.
 * **Telemetry**: collector state with Retry Now, per-client status, Claude limits status, the `--disconnect-telemetry` command as text, and
   buttons that show the backups folder and both config files in File Explorer. Connecting and disconnecting stay in the CLI.
@@ -319,6 +319,31 @@ Two `ResourceDictionary` token sets (Light/Dark) copied from `DesignTokens.swift
    알림 영역에 있습니다. 보이지 않으면 ^를 열고 고양이를 작업 표시줄로 끌어 놓으세요."
 3. Telemetry auto-connect runs as on mac (unless opted out).
 
+### 4.7 On-screen widget (0.12.0)
+The taskbar can't show text the way the mac menu bar does, so the menu-bar item also floats on screen (PC feedback after 0.11.2).
+* **Window** (`Widget.cs`): borderless WPF `Window`, `Topmost`, `ShowInTaskbar=false`, `ShowActivated=false`, not focusable;
+  `WS_EX_TOOLWINDOW` (no Alt+Tab) and `WS_EX_NOACTIVATE` plus a `WM_MOUSEACTIVATE → MA_NOACTIVATE` hook, so a click never takes the
+  focus. Rounded by DWM like the flyout (no `AllowsTransparency`), opaque theme background so it reads over any wallpaper.
+* **Content** (`WidgetView`): `StatusBarContentView.drawContent` ported to `OnRender` in mac points: the same items (`StatusBarContent.Metrics`,
+  Core), 32 × 20 runner slot, fixed cells (minimal 30; two lines 32 / NET 66 / AI 36; one line 52 / 114 / 46), marks and label tones
+  (labels and units at label 0.72, idle "0" at 0.45). One point is `round(display scale)` whole device pixels (100–125 % → 1, 150–200 % → 2),
+  so the runner — the tray's own `TrayFrame` body pixels — is integer-scaled and crisp; DPI changes re-measure. The one-line layout shows
+  the short names (CPU, RAM…) where the mac draws SF Symbols. Layout and items come from presets (Settings › General); default **minimal**.
+* **Timers**: none of its own. Frames come from the tray animator's single frame timer (`RenderTray`); values, the full-screen check and
+  showing/hiding come from the monitor publish (about 1 s).
+* **Full screen**: hidden while `SHQueryUserNotificationState` is `QUNS_BUSY`, `QUNS_RUNNING_D3D_FULL_SCREEN` or `QUNS_PRESENTATION_MODE`,
+  unless the foreground window is the desktop (`Progman`/`WorkerW`); shown again after.
+* **Mouse**: drag moves it (manual capture, not `DragMove`, which would activate it); edges within 12 DIP of the work area snap, and it
+  stays inside the work area of the cursor's monitor. Click toggles the flyout, hung below the widget in the top half of the screen and
+  above it otherwise; a double-click counts once. Right-click brings the app forward (so the menu closes on an outside click) and shows
+  the tray menu.
+* **Persistence**: `showWidget` (default on) and the mac keys `statusBarLayout`, `metricOrder`, `visibleMetrics`; positions in
+  `widgetPositions` = `{ "<x,y,WxH per screen>": [x, y] }` in physical pixels, one per monitor set. A display change restores that set's
+  position, or keeps the widget on a remaining screen. "기본값으로 되돌리기" leaves all of these alone.
+* **Checks**: Core — metrics, the width contract, marks, snap/clamp, flyout anchor, full-screen mapping, positions and preferences.
+  App — measured width stable across values and equal to the contract, worst-case numbers unshrunk, 300 frames handle-flat.
+  Snapshot — `widget-{ko,en}.png`.
+
 ---
 
 ## 5. Project layout (repo: `windows/`)
@@ -331,7 +356,7 @@ windows/
                                    # Version = regex(CFBundleShortVersionString, ../build.sh) + <Error> target when empty,
                                    # IncludeSourceRevisionInInformationalVersion=false, DebugType=none for Release
   TokenCat.Core/                   # net10.0. No packages, no P/Invoke. Everything with a rule or a check.
-    Models.cs Lang.cs AppPaths.cs SettingsStore.cs Json.cs   # Json.cs: BOM-tolerant parse + the one writer config (rule 3)
+    Models.cs Lang.cs AppPaths.cs SettingsStore.cs Json.cs WidgetPlacement.cs   # Json.cs: BOM-tolerant parse + the one writer config (rule 3)
     Tracking/  Telemetry/  Presentation/  Runner/  Update/  LiveMonitor.cs
     Checks/    Check.cs Suites.cs <Suite>Checks.cs          # suites compiled into Core, like the mac target
   TokenCat.Checks/                 # net10.0 console, about 20 lines: Suites.RunAll() → "TokenCat checks: PASS", exit 1 on failure;
@@ -340,7 +365,7 @@ windows/
                                    # win-x64, SelfContained, PublishSingleFile, IncludeNativeLibrariesForSelfExtract,
                                    # SatelliteResourceLanguages=en;ko, so `dotnet publish -c Release` = the release exe
     TokenCat.App.csproj app.manifest (PerMonitorV2, asInvoker) TokenCat.ico
-    Program.cs Shell.cs TrayIcon.cs Native.cs Sprites.cs Theme.cs Flyout.xaml(.cs) Dashboard.cs SessionList.cs SettingsWindow.cs
+    Program.cs Shell.cs TrayIcon.cs Widget.cs Native.cs Sprites.cs Theme.cs Flyout.xaml(.cs) Dashboard.cs SessionList.cs SettingsWindow.cs
     WindowsSystemSampler.cs LoginItem.cs Fixtures.cs Snapshot.cs AppChecks.cs   # UI built in code; Flyout.xaml is the only XAML
 ```
 Assets are **not copied into the repo**. `TokenCat.App.csproj` embeds `../../Assets/runner-*@{1x,2x}.png`, `app-head-*`, `runner-v2-fx*`
@@ -757,6 +782,10 @@ WP5 data binding finishes after WP3. All file ownership is disjoint. `Suites.cs`
    - [ ] Flyout opens by the tray (bottom and top taskbar on Win10 if available), with a second monitor at a different scale if
          available. It closes on outside click/Esc, and clicking the icon while it's open closes it without flashing back. Right-click
          menu works with arrow keys/Esc and is dark on a dark system. Win+B → Enter opens it.
+   - [ ] Widget (§4.7): appears bottom-right; clicking it or the desktop never steals the focus from the app you're typing in. Drag
+         snaps to edges, survives a restart, and comes back per monitor set (dock/undock, a second monitor at another scale: crisp
+         after moving across). Click toggles the flyout (below it near the top edge); right-click menu closes on an outside click.
+         Hidden during a full-screen video/game/slideshow, back after; clicking the desktop doesn't hide it. Not in Alt+Tab or the taskbar.
    - [ ] Live latency: during a Codex turn the session row/tok updates within about 1 s (rule 8, open writer).
    - [ ] Defender: right-click the zip → Scan with Microsoft Defender. Record any detection name (§2.8).
    - [ ] Dark ↔ light switch updates the flyout and tray dot outline live.

@@ -32,7 +32,59 @@ static class AppChecks
         guarded("settings rows", () => SettingsRows(check));
         guarded("fixtures", () => FixtureChecks(check));
         guarded("automation", () => Automation(check));
+        guarded("widget", () => WidgetChecks(check));
         return c.Done();
+    }
+
+    /// The widget view (§4.7): its width follows the layout, never the values, and is the Core contract at its scale; the
+    /// worst-case numbers draw at natural size; offscreen frames leave the GDI and USER counts flat.
+    static void WidgetChecks(Action<bool, string> check)
+    {
+        var saved = Theme.Dark;
+        try
+        {
+            var maximum = new SystemSnapshot
+            {
+                CpuPercent = 100, BatteryPresent = true, BatteryPercent = 100, MemoryUsedBytes = 9, MemoryTotalBytes = 9, DiskUsedBytes = 9,
+                DiskTotalBytes = 9, UploadBytesPerSecond = 999e6, DownloadBytesPerSecond = 125e6,
+            };
+            var busy = new StatusAISummary { Running = 99, Input = 99, Phase = TokenActivityState.Input };
+            var items = Enum.GetValues<MetricID>();
+            List<string> unstable = [], shrunk = [];
+            foreach (var layout in Enum.GetValues<StatusBarLayout>())
+            {
+                var view = new WidgetView();
+                double Width(IReadOnlyList<StatusBarMetric> metrics)
+                {
+                    view.Update(metrics, layout);
+                    view.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                    return view.DesiredSize.Width;
+                }
+                var unknown = Width(StatusBarContent.Metrics(new SystemSnapshot { BatteryPresent = true }, new StatusAISummary(), layout, items, false, false));
+                var full = StatusBarContent.Metrics(maximum, busy, layout, items, true, true);
+                var width = Width(full);
+                var contract = (StatusBarContent.RequiredWidth(layout, full.Select(metric => metric.Id)) + 2 * WidgetView.Inset) * view.Scale;
+                if (unknown != width || Math.Abs(width - contract) > 0.01) unstable.Add($"{layout} {unknown}/{width}/{contract}");
+                Snapshot.Render(() => view, dark: false);
+                shrunk.AddRange(view.Drawn.Where(text => text.Fit < 1 && text.Text.Any(char.IsDigit)).Select(text => $"{layout} '{text.Text}' {text.Fit:F2}"));
+            }
+            check(unstable.Count == 0, "the widget's width follows its layout, not its values: " + string.Join(", ", unstable));
+            check(shrunk.Count == 0, "worst-case widget values fit their cells without shrinking: " + string.Join(", ", shrunk));
+
+            var frames = new WidgetView();
+            frames.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, items, true, true), StatusBarLayout.Compact);
+            Snapshot.Render(() => frames, dark: true);
+            var before = Native.GuiResources();
+            for (var i = 0; i < 300; i++)
+            {
+                frames.UpdateRunner(RunnerCharacter.Cat, RunnerPose.Walk, i % 4, null);
+                Snapshot.Render(() => frames, dark: i % 2 == 0);
+            }
+            var after = Native.GuiResources();
+            check(Math.Abs((int)after.Gdi - (int)before.Gdi) <= 4 && Math.Abs((int)after.User - (int)before.User) <= 4,
+                $"300 widget frames leak no handles (GDI {before.Gdi} → {after.Gdi}, USER {before.User} → {after.User})");
+        }
+        finally { Theme.Dark = saved; }
     }
 
     /// What Narrator reads (UI Automation): rows, limits and the header by name, the detail with its copy buttons, switches and

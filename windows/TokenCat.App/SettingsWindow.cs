@@ -9,7 +9,7 @@ using static TokenCat.Lang;
 
 namespace TokenCat;
 
-/// The Settings pages (§4.4), in navigation order. The mac "메뉴 막대" tab is cut: a tray item has no layout or items (§3.2).
+/// The Settings pages (§4.4), in navigation order. The mac "메뉴 막대" tab is a section of General: the widget's toggle and presets (§4.7).
 enum SettingsPage { General, Character, Telemetry, About }
 
 sealed record SettingsInput(DashboardInput Dashboard, IReadOnlyDictionary<TokenSource, DateTimeOffset> Batches, LoginItem.State Login);
@@ -333,7 +333,19 @@ sealed class SettingsView : Grid
             "Off by default, and never sent while the dashboard is visible. They include only the project, model, token count and duration, never questions or responses.")));
         reset.Margin = new Thickness(0, 8, 0, 0);
         notificationFooter.Children.Add(reset);
+        // The widget stands in for the mac menu-bar item (§4.7): the mac's preset picker, without per-item editing.
+        var presets = Choices(Enum.GetValues<DisplayPreset>().Select(preset => (DisplayPreset?)preset).ToList(), preferences.Preset,
+            preset => preset!.Value.Title, preset => Ui.Text(preset!.Value.Title, Font.Body), preset => preferences.Apply(preset!.Value));
         return Page(
+            Section(Loc("위젯", "Widget"),
+            [
+                Toggle(Loc("화면에 위젯 표시", "Show widget on screen"),
+                    Loc("작업 표시줄에는 글자를 넣을 수 없어 캐릭터와 AI 상태를 화면 위에 띄웁니다. 끌어서 옮기고, 전체 화면 앱을 쓰는 동안에는 숨깁니다.",
+                        "The taskbar can't show text, so the character and AI status float on screen. Drag it anywhere; it hides while a full-screen app is in front."),
+                    preferences.ShowWidget, on => preferences.ShowWidget = on),
+                Label(Loc("프리셋", "Preset"), preferences.Layout.Summary),
+                presets,
+            ]),
             Section(Loc("시작", "Startup"),
             [
                 Toggle(Loc("로그인 시 TokenCat 열기", "Open TokenCat at login"), LoginItem.Describe(login), LoginItem.IsOn(login), on =>

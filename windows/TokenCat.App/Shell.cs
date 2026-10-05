@@ -31,6 +31,7 @@ sealed class Shell
     readonly DispatcherTimer frameTimer = new(DispatcherPriority.Render), replanTimer = new();
     readonly AttentionTracker attention = new();
     readonly Flyout flyout;
+    readonly Widget widget = new();
     readonly DashboardActions actions;
     readonly List<string> playedContent = [];
     DashboardWindow? window;
@@ -51,6 +52,7 @@ sealed class Shell
     /// A `Stopwatch` timestamp: the wall clock set back must not swallow tray clicks for that long.
     long hiddenAt;
     Drawing.Point anchor;
+    bool anchorBelow;
 
     public Shell(Application app)
     {
@@ -79,11 +81,18 @@ sealed class Shell
             else if (!flyout.IsVisible) ShowFlyout(Forms.Cursor.Position);
         }));
         tray.OnBalloonClick(() => OpenDashboard(balloonGroup));
+        widget.Clicked += WidgetClicked;
+        widget.MenuRequested += () =>
+        {
+            Native.Foreground(widget);
+            trayMenu.Show(Forms.Cursor.Position);
+        };
+        widget.Dropped += at => WidgetPlacement.Save(SettingsStore.Shared, DisplayKey, at);
         // Built at open, like the mac quick menu. WinForms pre-cancels opening an empty strip, so un-cancel it once filled.
         trayMenu.Opening += (_, e) => { HideFlyout(); Menus.Fill(trayMenu, BuildTrayMenu); e.Cancel = false; };
         flyout.Deactivated += (_, _) => { if (!Menus.IsOpen) HideFlyout(); };
         flyout.KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) HideFlyout(); };
-        flyout.SizeChanged += (_, _) => { if (flyout.IsVisible) Native.Place(flyout, anchor, onto: false); };
+        flyout.SizeChanged += (_, _) => { if (flyout.IsVisible) Native.Place(flyout, anchor, onto: false, below: anchorBelow); };
         Menus.Closed += () => { if (flyout.IsVisible) flyout.Activate(); };
         // The frame timer follows the animator's own arming only, so a publish with an unchanged plan never restarts it.
         animator.Scheduled = ArmFrame;
@@ -102,6 +111,7 @@ sealed class Shell
         preferences.PropertyChanged += (_, _) => dispatcher.BeginInvoke(() =>
         {
             RenderTray(); // a new character draws the same pose and frame
+            UpdateWidget();
             PlanRunner();
             updater.SetAutomatic(preferences.AutoCheckUpdates);
             RefreshViews();
@@ -151,6 +161,7 @@ sealed class Shell
             // WinForms menus read the mode once per call; Theme.Dark is already set, so the re-entrant change skips this.
             Forms.Application.SetColorMode(Forms.SystemColorMode.System);
             flyout.Rebuild(actions);
+            widget.Restyle();
             window?.Rebuild(actions);
             settings?.Rebuild();
             RefreshViews();
@@ -162,7 +173,13 @@ sealed class Shell
     /// .NET caches the local time zone: a new one would otherwise show 오늘/어제 and times in the old zone until restart.
     void OnTimeChanged(object? sender, EventArgs e) => TimeZoneInfo.ClearCachedData();
 
-    void OnDisplayChanged(object? sender, EventArgs e) => dispatcher.BeginInvoke(() => { tray.Resize(); RenderTray(); });
+    /// A new monitor set brings back the widget position saved for it, or keeps the widget on a screen that remains.
+    void OnDisplayChanged(object? sender, EventArgs e) => dispatcher.BeginInvoke(() =>
+    {
+        tray.Resize();
+        RenderTray();
+        if (!quitting && widget.IsVisible) widget.Present(WidgetPlacement.Saved(SettingsStore.Shared, DisplayKey) ?? Native.Bounds(widget).Location);
+    });
 
     void OnSessionSwitch(object? sender, SessionSwitchEventArgs e) => dispatcher.BeginInvoke(() =>
     {
@@ -192,7 +209,10 @@ sealed class Shell
         // The baseline is the first real token sample, so sessions already waiting at launch are not announced.
         if (next.TokensSampledAt is not null) HandleAttention(groups);
         var counts = next.Sessions.Counts;
-        tray.Tooltip = StatusBarContent.Tooltip(next.System, counts, new StatusAISummary(groups, counts), next.HasSample, next.TokensSampledAt is not null);
+        var tooltip = StatusBarContent.Tooltip(next.System, counts, new StatusAISummary(groups, counts), next.HasSample, next.TokensSampledAt is not null);
+        tray.Tooltip = tooltip;
+        Ui.Help(widget, tooltip);
+        UpdateWidget();
         RefreshViews();
     }
 
@@ -246,6 +266,37 @@ sealed class Shell
         if (quitting) return;
         var (pose, frame, fx) = animator.Current;
         tray.Render(preferences.Character, pose, frame, fx, Dot);
+        if (widget.IsVisible) widget.View.UpdateRunner(preferences.Character, pose, frame, fx);
+    }
+
+    // MARK: Widget
+
+    static string DisplayKey => WidgetPlacement.DisplayKey(Forms.Screen.AllScreens.Select(screen => screen.Bounds));
+
+    /// Shown while "화면에 위젯 표시" is on and no full-screen app is in front, checked on every publish (about once a second).
+    void UpdateWidget()
+    {
+        if (quitting) return;
+        if (!preferences.ShowWidget || Native.FullScreenForeground())
+        {
+            widget.Hide();
+            return;
+        }
+        widget.View.Update(StatusBarContent.Metrics(Current, preferences.Layout, preferences.ShownItems), preferences.Layout);
+        var (pose, frame, fx) = animator.Current;
+        widget.View.UpdateRunner(preferences.Character, pose, frame, fx);
+        if (!widget.IsVisible) widget.Present(WidgetPlacement.Saved(SettingsStore.Shared, DisplayKey));
+    }
+
+    /// The widget never takes the focus, so a click on it doesn't deactivate (hide) an open flyout: it toggles it here.
+    void WidgetClicked()
+    {
+        if (flyout.IsVisible) { HideFlyout(); return; }
+        if (Stopwatch.GetElapsedTime(hiddenAt) < TimeSpan.FromMilliseconds(300)) return;
+        if (window is { IsVisible: true }) { Front(window); return; }
+        var bounds = Native.Bounds(widget);
+        var (at, below) = WidgetPlacement.FlyoutAnchor(bounds, Forms.Screen.FromRectangle(bounds).WorkingArea, Native.Pixels(widget, 6));
+        ShowFlyout(at, below);
     }
 
     // MARK: Notifications
@@ -311,15 +362,16 @@ sealed class Shell
         ShowFlyout(Forms.Cursor.Position);
     }
 
-    void ShowFlyout(Drawing.Point at)
+    void ShowFlyout(Drawing.Point at, bool below = false)
     {
         anchor = at;
+        anchorBelow = below;
         updater.DashboardOpened();
         flyout.Dashboard.Show(Input());
         flyout.MaxHeight = Math.Max(300, Native.WorkingHeight(flyout, at) - 24);
         flyout.Show();
         flyout.Activate();
-        Native.Place(flyout, at);
+        Native.Place(flyout, at, below: below);
         flyout.Dashboard.Opened();
     }
 
@@ -409,6 +461,7 @@ sealed class Shell
         menu.Separator();
         menu.Add(Loc("열기", "Open"), () => OpenDashboard());
         menu.Add(Loc("창으로 열기", "Open as Window"), OpenWindow);
+        menu.Add(preferences.ShowWidget ? Loc("위젯 숨기기", "Hide Widget") : Loc("위젯 표시", "Show Widget"), () => preferences.ShowWidget = !preferences.ShowWidget);
         menu.Separator();
         var characters = menu.Sub(Loc("캐릭터", "Character"));
         foreach (var character in Enum.GetValues<RunnerCharacter>())
@@ -530,7 +583,7 @@ sealed class Shell
         settings?.Close();
         window?.Close();
         flyout.Close();
-        app.Shutdown();
+        app.Shutdown(); // closes the widget too (it refuses any other close)
     }
 
     // MARK: Helpers

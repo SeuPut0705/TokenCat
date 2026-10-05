@@ -124,6 +124,92 @@ public static class StatusSummaryChecks
             check($"the English tooltip keeps 'Input needed' within 127 characters: {fullTip}",
                   fullTip.IndexOf("Input needed 1\n", StringComparison.Ordinal) is >= 0 and var end && end + "Input needed 1".Length <= 127);
         });
+
+        // The widget's items and layout contract (the mac menu-bar item's).
+        var everything = Enum.GetValues<MetricID>();
+        IReadOnlyList<StatusBarMetric> metrics(SystemSnapshot system, IReadOnlyList<TokenReading> readings, StatusBarLayout layout = StatusBarLayout.Compact,
+            IReadOnlyList<MetricID>? items = null, bool hasSample = true, bool hasTokenSample = true) =>
+            StatusBarContent.Metrics(system, summary(readings).AI, layout, items ?? everything, hasSample, hasTokenSample);
+        static string? valueOf(IReadOnlyList<StatusBarMetric> list, MetricID id) => list.FirstOrDefault(metric => metric.Id == id)?.Value;
+        var idleCpu = new SystemSnapshot { CpuPercent = 0 };
+        var loadingItems = metrics(idleCpu, [], hasSample: false, hasTokenSample: false);
+        var zero = metrics(idleCpu, []);
+        var waitingForTokens = metrics(idleCpu, [], hasTokenSample: false);
+        check("loading differs from sampled zero", valueOf(loadingItems, MetricID.Ai) == "—" && valueOf(loadingItems, MetricID.Cpu) == "—"
+              && valueOf(waitingForTokens, MetricID.Cpu) == "0%" && valueOf(waitingForTokens, MetricID.Ai) == "—"
+              && valueOf(zero, MetricID.Ai) == "0" && valueOf(zero, MetricID.Cpu) == "0%");
+        check("absent battery is omitted", zero.All(metric => metric.Id != MetricID.Battery) && zero.Count == everything.Length - 1);
+        check("idle AI has no mark and is not active",
+              zero.First(metric => metric.Id == MetricID.Ai) is { IsActive: false } idleAI && StatusBarContent.MarkWidth(idleAI.ActivityState) == 0);
+        var selected = metrics(idleCpu, [new TokenReading(TokenSource.Codex, "a") { Active = true }, new TokenReading(TokenSource.Claude, "b") { Active = true }],
+            items: [MetricID.Ai, MetricID.Cpu]);
+        check("selected items keep their order and the AI count is active", selected.Select(metric => metric.Id).SequenceEqual([MetricID.Ai, MetricID.Cpu])
+              && selected[0] is { Value: "2", IsActive: true, ActivityState: A.Working });
+        var minimal = metrics(idleCpu, [tool], StatusBarLayout.Minimal, [MetricID.Cpu]);
+        check("minimal layout shows the AI item even when it is hidden from the list",
+              minimal.Select(metric => metric.Id).SequenceEqual([MetricID.Ai]) && minimal[0].Value == "1" && minimal[0].ActivityState == A.Tool);
+        check("waiting-only AI shows the log-wait count with the half disc, not active",
+              metrics(idleCpu, [stale]).First(metric => metric.Id == MetricID.Ai) is { Value: "1", IsActive: false, ActivityState: A.Stale });
+        check("marks are 7 pt glyphs, the input disc 8 pt, in the unchanged 11 pt slot",
+              StatusBarContent.MarkWidth(A.Tool) == 7 && StatusBarContent.MarkWidth(A.Working) == 7 && StatusBarContent.MarkWidth(A.Stale) == 7
+              && StatusBarContent.MarkWidth(A.Input) == 8 && StatusBarContent.MarkWidth(A.Output) == 0 && StatusBarContent.MarkSlot == 11);
+        check("no state maps to the record-event glyph; output has no menu-bar mark",
+              StateGlyphKind.From(A.Output) == null && StateGlyphKind.From(A.Stale) == StateGlyphKind.Waiting && StateGlyphKind.From(A.Idle) == null
+              && StateGlyphKind.From(A.Input) == StateGlyphKind.Input && StateGlyphKind.From(A.Tool) == StateGlyphKind.Tool);
+        var maximum = new SystemSnapshot
+        {
+            CpuPercent = 100, BatteryPresent = true, BatteryPercent = 100, MemoryUsedBytes = ulong.MaxValue, MemoryTotalBytes = ulong.MaxValue,
+            DiskUsedBytes = ulong.MaxValue, DiskTotalBytes = ulong.MaxValue, UploadBytesPerSecond = double.MaxValue, DownloadBytesPerSecond = double.MaxValue,
+        };
+        var busyReadings = Enumerable.Range(0, 12).Select(index => new TokenReading(TokenSource.Codex, $"busy-{index}")
+            { SessionID = $"b{index}", Active = true, ActivityState = A.Tool, SampledAt = at }).ToList();
+        var widths = new Dictionary<StatusBarLayout, double>();
+        var stable = true;
+        foreach (var layout in Enum.GetValues<StatusBarLayout>())
+        {
+            var unknown = StatusBarContent.RequiredWidth(layout, metrics(new SystemSnapshot { BatteryPresent = true }, [], layout, hasSample: false, hasTokenSample: false).Select(metric => metric.Id));
+            widths[layout] = StatusBarContent.RequiredWidth(layout, metrics(maximum, busyReadings, layout).Select(metric => metric.Id));
+            stable = stable && unknown == widths[layout];
+        }
+        check("layout width is stable from unknown to maximum values", stable);
+        // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30.
+        check("cell widths match the layout contract", widths[StatusBarLayout.Compact] == 272 && widths[StatusBarLayout.Inline] == 410
+              && widths[StatusBarLayout.Minimal] == 72);
+
+        // Widget placement (DESIGN §4.7), physical pixels.
+        var area = new System.Drawing.Rectangle(0, 0, 1920, 1032);
+        check("the widget snaps to work-area edges within the threshold and is kept inside the work area",
+              WidgetPlacement.Fit(new(10, 500, 100, 40), area, 12) == new System.Drawing.Point(0, 500)
+              && WidgetPlacement.Fit(new(1815, 985, 100, 40), area, 12) == new System.Drawing.Point(1820, 992)
+              && WidgetPlacement.Fit(new(30, 500, 100, 40), area, 12) == new System.Drawing.Point(30, 500)
+              && WidgetPlacement.Fit(new(-300, 2000, 100, 40), area) == new System.Drawing.Point(0, 992)
+              && WidgetPlacement.Fit(new(5000, -50, 100, 40), new(1920, 0, 2560, 1400)) == new System.Drawing.Point(4380, 0)
+              && WidgetPlacement.Fit(new(50, 50, 3000, 40), area) == new System.Drawing.Point(0, 50));
+        check("the flyout hangs below a widget in the top half and above one in the bottom half",
+              WidgetPlacement.FlyoutAnchor(new(1800, 980, 100, 40), area, 6) == (new System.Drawing.Point(1850, 974), false)
+              && WidgetPlacement.FlyoutAnchor(new(100, 10, 100, 40), area, 6) == (new System.Drawing.Point(150, 56), true));
+        check("only a full-screen app, D3D full screen or presentation mode hides the widget, never the desktop",
+              WidgetPlacement.HidesFor(2, "Chrome_WidgetWin_1") && WidgetPlacement.HidesFor(3, null) && WidgetPlacement.HidesFor(4, "PPTFrameClass")
+              && !WidgetPlacement.HidesFor(1, null) && !WidgetPlacement.HidesFor(5, "Notepad") && !WidgetPlacement.HidesFor(6, null)
+              && !WidgetPlacement.HidesFor(7, null) && !WidgetPlacement.HidesFor(2, "Progman") && !WidgetPlacement.HidesFor(2, "WorkerW"));
+        System.Drawing.Rectangle laptop = new(0, 0, 1920, 1080), monitor = new(1920, 0, 2560, 1440);
+        var docked = WidgetPlacement.DisplayKey([monitor, laptop]);
+        var folder = Directory.CreateTempSubdirectory("tokencat-widget-checks-");
+        try
+        {
+            var store = new SettingsStore(Path.Combine(folder.FullName, "settings.json"));
+            var before = WidgetPlacement.Saved(store, docked);
+            WidgetPlacement.Save(store, docked, new(3900, 1300));
+            WidgetPlacement.Save(store, WidgetPlacement.DisplayKey([laptop]), new(-5, 12));
+            store.Set("unrelatedKey", true);
+            var kept = WidgetPlacement.Saved(store, docked) == new System.Drawing.Point(3900, 1300)
+                       && WidgetPlacement.Saved(store, WidgetPlacement.DisplayKey([laptop])) == new System.Drawing.Point(-5, 12)
+                       && WidgetPlacement.Saved(store, WidgetPlacement.DisplayKey([monitor])) == null;
+            store.Set(WidgetPlacement.PositionsKey, "garbage");
+            check("the widget position is remembered per monitor set and an unreadable value is ignored",
+                  before == null && kept && docked == "0,0,1920x1080;1920,0,2560x1440" && WidgetPlacement.Saved(store, docked) == null);
+        }
+        finally { folder.Delete(true); }
         return c.Done();
     }
 }

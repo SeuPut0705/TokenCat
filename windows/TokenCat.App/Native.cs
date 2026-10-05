@@ -21,6 +21,12 @@ static class Native
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr icon);
     [DllImport("user32.dll")] static extern uint GetGuiResources(IntPtr process, uint flags);
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+    [DllImport("user32.dll")] static extern int GetWindowLongW(IntPtr hwnd, int index);
+    [DllImport("user32.dll")] static extern int SetWindowLongW(IntPtr hwnd, int index, int value);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr hwnd, System.Text.StringBuilder name, int capacity);
+    [DllImport("shell32.dll")] static extern int SHQueryUserNotificationState(out int state);
     [DllImport("kernel32.dll")] static extern bool AttachConsole(int processId);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int handle);
     [DllImport("kernel32.dll")] public static extern bool GetSystemTimes(out long idle, out long kernel, out long user);
@@ -89,7 +95,8 @@ static class Native
     /// Physical pixels throughout (PerMonitorV2): move onto the anchor's monitor first so WPF rescales for its DPI, then
     /// measure and clamp into that monitor's working area (which excludes the taskbar on any edge), above/centred on the anchor.
     /// `onto: false` only re-clamps a window already on the anchor's monitor (its size changed).
-    public static void Place(Window window, Drawing.Point anchor, bool onto = true)
+    /// `below` hangs it under the anchor instead (a widget near the top of the screen).
+    public static void Place(Window window, Drawing.Point anchor, bool onto = true, bool below = false)
     {
         var hwnd = new WindowInteropHelper(window).Handle;
         if (hwnd == IntPtr.Zero) return;
@@ -99,8 +106,48 @@ static class Native
         int width = r.Right - r.Left, height = r.Bottom - r.Top, margin = (int)(12 * GetDpiForWindow(hwnd) / 96);
         var area = Forms.Screen.FromPoint(anchor).WorkingArea;
         int x = Math.Clamp(anchor.X - width / 2, area.Left + margin, Math.Max(area.Left + margin, area.Right - margin - width));
-        int y = Math.Clamp(anchor.Y - height, area.Top + margin, Math.Max(area.Top + margin, area.Bottom - margin - height));
+        int y = Math.Clamp(below ? anchor.Y : anchor.Y - height, area.Top + margin, Math.Max(area.Top + margin, area.Bottom - margin - height));
         SetWindowPos(hwnd, IntPtr.Zero, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    /// The window rectangle in physical pixels.
+    public static Drawing.Rectangle Bounds(Window window)
+    {
+        GetWindowRect(new WindowInteropHelper(window).Handle, out var r);
+        return Drawing.Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
+    }
+
+    /// Moves without resizing, activating or changing the z-order (a topmost window stays topmost).
+    public static void Move(Window window, Drawing.Point at) =>
+        SetWindowPos(new WindowInteropHelper(window).Handle, IntPtr.Zero, at.X, at.Y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+
+    /// `dips` in the window's current monitor pixels.
+    public static int Pixels(Window window, double dips) => (int)Math.Round(dips * GetDpiForWindow(new WindowInteropHelper(window).Handle) / 96);
+
+    /// The widget's styles (§4.7): WS_EX_TOOLWINDOW keeps it out of Alt+Tab, WS_EX_NOACTIVATE keeps a click from taking the
+    /// focus, and WM_MOUSEACTIVATE answers MA_NOACTIVATE as well, whatever WPF would do with the click.
+    public static void NoActivate(Window window)
+    {
+        var hwnd = new WindowInteropHelper(window).EnsureHandle();
+        SetWindowLongW(hwnd, -20, GetWindowLongW(hwnd, -20) | 0x80 | 0x08000000);
+        HwndSource.FromHwnd(hwnd)?.AddHook((IntPtr _, int message, IntPtr _, IntPtr _, ref bool handled) =>
+        {
+            if (message != 0x21) return IntPtr.Zero;
+            handled = true;
+            return 3;
+        });
+    }
+
+    /// A menu shown from a window that never activates closes on an outside click only once the app is in front (the
+    /// NotifyIcon does the same); the click that opened it allows this.
+    public static void Foreground(Window window) => SetForegroundWindow(new WindowInteropHelper(window).Handle);
+
+    /// A full-screen app, D3D full screen or presentation mode is in front (polled once a second; §4.7).
+    public static bool FullScreenForeground()
+    {
+        if (SHQueryUserNotificationState(out var state) != 0) return false;
+        var name = new System.Text.StringBuilder(64);
+        return WidgetPlacement.HidesFor(state, GetClassNameW(GetForegroundWindow(), name, name.Capacity) > 0 ? name.ToString() : null);
     }
 
     /// The working-area height of the anchor's monitor in the window's DIPs (the flyout's MaxHeight).

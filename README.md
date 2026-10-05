@@ -322,7 +322,8 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 
 **What's different from macOS**
 
-- **Icon only**: the tray shows the character and its state, without the menu bar's numbers, layouts or presets. A yellow corner dot means input is needed, an orange one an API retry. Hover for a short summary, click for the dashboard with all the numbers, and right-click for the quick menu.
+- **Widget on screen**: the taskbar can't show text, so the menu bar item floats on screen instead: the character, the AI status and session count (Minimal), or the menu bar's Two Lines and One Line layouts. Pick a preset in Settings › General. Drag it anywhere (edges snap); it's remembered per monitor setup, never takes the focus and hides while a full-screen app is in front. Click it for the dashboard, right-click for the quick menu. To hide it, right-click › **Hide Widget** or turn off `Show widget on screen` in Settings › General.
+- **Tray icon**: the character and its state. A yellow corner dot means input is needed, an orange one an API retry. Hover for a short summary, click for the dashboard with all the numbers, and right-click for the quick menu.
 - **Size follows the display scale**: at 100–175 % the icon is the cat head, which bobs while working; at 200 % and above it's the full-body character you picked.
 - **WSL isn't tracked**: only Codex and Claude Code running on Windows itself are collected (`%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.claude\projects`).
 - **Claude limits**: an existing Claude Code `statusLine` isn't wrapped, so Claude limits then come only from the Claude desktop app's usage history, if you use the desktop app.

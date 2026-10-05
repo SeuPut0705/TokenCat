@@ -2,6 +2,14 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.12.0
+
+**Windows (preview)**
+
+- A widget on screen shows what the Mac menu bar shows, since the taskbar can't show text: the character, the AI status and session count, or the Two Lines and One Line layouts picked by preset in Settings › General. · 작업 표시줄에는 글자를 넣을 수 없어, Mac 메뉴 막대처럼 캐릭터와 AI 상태·세션 수를 보여 주는 위젯을 화면 위에 띄웁니다. 설정 › 일반의 프리셋으로 두 줄·한 줄 배치도 고를 수 있습니다.
+- Drag the widget anywhere: it snaps to screen edges, remembers its place for each monitor setup, never takes the focus and hides while a full-screen app is in front. Click opens the dashboard, right-click the quick menu. · 위젯은 끌어서 아무 곳에나 둘 수 있습니다. 화면 가장자리에 붙고, 모니터 구성마다 위치를 기억하며, 포커스를 가져가지 않고, 전체 화면 앱이 앞에 있는 동안에는 숨습니다. 클릭하면 상세 화면이, 우클릭하면 빠른 메뉴가 열립니다.
+- To hide it, choose Hide Widget from its right-click or tray menu, or turn off Show widget on screen in Settings › General. · 숨기려면 위젯이나 알림 영역 아이콘의 우클릭 메뉴에서 위젯 숨기기를 누르거나, 설정 › 일반에서 화면에 위젯 표시를 끕니다.
+
 ## 0.11.2
 
 **macOS**

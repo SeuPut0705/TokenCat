@@ -3,8 +3,67 @@ using static TokenCat.Lang;
 
 namespace TokenCat;
 
-// StatusBarView.swift 1–232 (DESIGN §6.1): the AI summary, the rate and tooltip texts and the quick menu summary. The menu-bar
-// metrics, layouts and presets are cut (§3.2); the tray tooltip and the context menu use these.
+// StatusBarView.swift 1–232 (DESIGN §6.1): the AI summary, the rate and tooltip texts, the quick menu summary, and the menu-bar
+// items, layouts, presets and cell widths the on-screen widget draws (§4.7). The tray tooltip and the context menu use the rest.
+
+/// `StatusBarLayout`; raw values as stored ("minimal", "compact", "inline").
+public enum StatusBarLayout { Minimal, Compact, Inline }
+
+/// `MetricID`, the menu-bar items in their default order.
+public enum MetricID { Cpu, Memory, Disk, Battery, Network, Ai }
+
+/// `DisplayPreset`: one-pick widget setups. They set the layout and, except Minimal, the shown items with their order.
+public enum DisplayPreset { Minimal, AiFocus, SystemMonitor, EverythingInline }
+
+public static class StatusBarLayouts
+{
+    extension(StatusBarLayout layout)
+    {
+        public string Title => layout switch
+        {
+            StatusBarLayout.Minimal => Loc("최소", "Minimal"),
+            StatusBarLayout.Compact => Loc("두 줄", "Two Lines"),
+            _ => Loc("한 줄", "One Line"),
+        };
+
+        public string Summary => layout switch
+        {
+            StatusBarLayout.Minimal => Loc("캐릭터와 AI 상태·세션 수만 표시합니다", "Shows only the character, AI status and session count"),
+            StatusBarLayout.Compact => Loc("지표 이름 아래에 값을 표시합니다", "Shows each value under its name"),
+            // The mac draws SF Symbols here; Windows has no matching icons, so the short names stand in.
+            _ => Loc("이름 옆에 값을 한 줄로 표시합니다", "Shows values on one line beside their names"),
+        };
+    }
+
+    extension(DisplayPreset preset)
+    {
+        public string Title => preset switch
+        {
+            DisplayPreset.Minimal => Loc("최소", "Minimal"),
+            DisplayPreset.AiFocus => Loc("AI 집중", "AI Focus"),
+            DisplayPreset.SystemMonitor => Loc("시스템 모니터", "System Monitor"),
+            _ => Loc("전체 한 줄", "All on One Line"),
+        };
+
+        public StatusBarLayout Layout => preset switch
+        {
+            DisplayPreset.Minimal => StatusBarLayout.Minimal,
+            DisplayPreset.EverythingInline => StatusBarLayout.Inline,
+            _ => StatusBarLayout.Compact,
+        };
+
+        /// Null leaves the item list alone (the minimal layout ignores it).
+        public IReadOnlyList<MetricID>? Items => preset switch
+        {
+            DisplayPreset.Minimal => null,
+            DisplayPreset.AiFocus => [MetricID.Ai, MetricID.Cpu, MetricID.Memory],
+            _ => Enum.GetValues<MetricID>(),
+        };
+    }
+}
+
+/// One menu-bar item as drawn. The mac's SF Symbol name and VoiceOver detail are left out: the widget's help is the tray tooltip.
+public sealed record StatusBarMetric(MetricID Id, string Label, string Value, bool IsActive = false, TokenActivityState ActivityState = TokenActivityState.Idle);
 
 /// AI summary, derived once per publish from the shared session groups.
 public sealed record StatusAISummary
@@ -56,6 +115,65 @@ public static class StatusBarContent
         if (rounded.Value >= 1_000) return "≥999" + Units[unit];
         return rounded.Value.ToString(rounded.Precision == 1 ? "F1" : "F0", CultureInfo.InvariantCulture) + Units[unit];
     }
+
+    /// The status item's geometry in points (`StatusBarContentView`, with the character always shown): 4 pt edges, the
+    /// 32 × 20 runner slot and fixed cells, so the width never follows the values.
+    public const double Edge = 4, RunnerWidth = 32, Height = 24, MarkSlot = 8 + 3;
+
+    public static double CellWidth(StatusBarLayout layout, MetricID id) => layout switch
+    {
+        StatusBarLayout.Minimal => 30,
+        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, _ => 32 },
+        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, _ => 52 },
+    };
+
+    public static double RequiredWidth(StatusBarLayout layout, IEnumerable<MetricID> ids)
+    {
+        var cells = ids.Select(id => CellWidth(layout, id)).ToList();
+        return Edge * 2 + RunnerWidth + (cells.Count == 0 ? 0 : 2) + cells.Sum();
+    }
+
+    /// `StateGlyph` sizes in the bar: 7 pt, the input disc 8 pt (A0-3). Every state reserves `MarkSlot`, so the count never moves.
+    public static double MarkWidth(TokenActivityState state) => state switch
+    {
+        TokenActivityState.Input => 8,
+        TokenActivityState.Tool or TokenActivityState.Working or TokenActivityState.Stale => 7,
+        _ => 0,
+    };
+
+    /// `StatusBarContent.metrics`: `items` are the shown items in order (the minimal layout draws only AI). An absent battery
+    /// is omitted; values before the first sample are "—".
+    public static IReadOnlyList<StatusBarMetric> Metrics(SystemSnapshot system, StatusAISummary ai, StatusBarLayout layout,
+        IReadOnlyList<MetricID> items, bool hasSample, bool hasTokenSample)
+    {
+        string Percentage(double? number) => hasSample && number is { } n && double.IsFinite(n) ? Format.Percent(n) : "—";
+        var upload = NetworkRate(hasSample ? system.UploadBytesPerSecond : null);
+        var download = NetworkRate(hasSample ? system.DownloadBytesPerSecond : null);
+        var metrics = new List<StatusBarMetric>();
+        foreach (var id in layout == StatusBarLayout.Minimal ? [MetricID.Ai] : items)
+        {
+            switch (id)
+            {
+                case MetricID.Cpu: metrics.Add(new(id, "CPU", Percentage(system.CpuPercent))); break;
+                case MetricID.Memory: metrics.Add(new(id, "RAM", Percentage(Format.Ratio(system.MemoryUsedBytes, system.MemoryTotalBytes)))); break;
+                case MetricID.Disk: metrics.Add(new(id, "DISK", Percentage(Format.Ratio(system.DiskUsedBytes, system.DiskTotalBytes)))); break;
+                case MetricID.Battery when system.BatteryPresent: metrics.Add(new(id, "BAT", Percentage(system.BatteryPercent))); break;
+                case MetricID.Network: metrics.Add(new(id, "NET", $"↑{upload}\n↓{download}")); break;
+                case MetricID.Ai:
+                    // Running groups with their phase mark; with none running, the log-wait groups (secondary, half disc);
+                    // otherwise a tertiary "0" without a mark (M-2).
+                    var waitingOnly = ai.Running == 0 && ai.Waiting > 0;
+                    var value = hasTokenSample ? (waitingOnly ? ai.Waiting : ai.Running).ToString(CultureInfo.InvariantCulture) : "—";
+                    var state = !hasTokenSample ? TokenActivityState.Idle : ai.Running > 0 ? ai.Phase : waitingOnly ? TokenActivityState.Stale : TokenActivityState.Idle;
+                    metrics.Add(new(id, "AI", value, hasTokenSample && ai.Running > 0, state));
+                    break;
+            }
+        }
+        return metrics;
+    }
+
+    public static IReadOnlyList<StatusBarMetric> Metrics(MonitorState state, StatusBarLayout layout, IReadOnlyList<MetricID> items) =>
+        Metrics(state.System, new StatusAISummary(state.Groups, state.Sessions.Counts), layout, items, state.HasSample, state.TokensSampledAt is not null);
 
     /// "1.5kB/s" → ("1.5", "kB/s"); units are drawn smaller but never dropped.
     public static (string Number, string Unit) SplitRate(string text)

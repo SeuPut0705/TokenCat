@@ -75,6 +75,16 @@ public static class StateGlyphKinds
             SessionDisplayState.Complete or SessionDisplayState.Idle => StateGlyphKind.Idle,
             _ => null,
         };
+
+        /// `StateGlyph.Kind(phase:)`: the status item's mark. Output is an event and idle has none.
+        public static StateGlyphKind? From(TokenActivityState phase) => phase switch
+        {
+            TokenActivityState.Input => StateGlyphKind.Input,
+            TokenActivityState.Tool => StateGlyphKind.Tool,
+            TokenActivityState.Working => StateGlyphKind.Working,
+            TokenActivityState.Stale => StateGlyphKind.Waiting,
+            _ => null,
+        };
     }
 }
 

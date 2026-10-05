@@ -5,7 +5,7 @@ using System.Windows.Media.Imaging;
 
 namespace TokenCat;
 
-/// `--snapshot <dir>` (DESIGN §11 WP5): the Fixtures dashboard, the component sheets and every Settings page in {ko, en},
+/// `--snapshot <dir>` (DESIGN §11 WP5): the Fixtures dashboard, the component sheets, every Settings page and the widget in {ko, en},
 /// each PNG dark | light at 2×, plus the tray frames at 16/20/24/28/32 px for every pose. Offscreen RenderTargetBitmap;
 /// nothing local is read and no window is shown. CI uploads the folder for review.
 static class Snapshot
@@ -37,6 +37,7 @@ static class Snapshot
                     })));
                     foreach (var page in Enum.GetValues<SettingsPage>())
                         Save($"settings-{page.ToString().ToLowerInvariant()}-{code}.png", () => new SettingsView(Fixtures.Settings(), actions, page, _ => { }, snapshot: true));
+                    Save($"widget-{code}.png", Widgets);
                 });
             }
             try
@@ -72,6 +73,30 @@ static class Snapshot
         var view = new Dashboard(DashboardActions.None, snapshot: true, selection: fixture.Selection, detail: fixture.Detail, expanded: fixture.Expanded);
         view.Show(Fixtures.Input(fixture));
         return view;
+    }
+
+    /// The widget on a wallpaper-like blue: minimal, two-line and one-line with tools running, the same with input needed,
+    /// then minimal before the first sample (sleeping, with its z).
+    static FrameworkElement Widgets()
+    {
+        var stack = new System.Windows.Controls.StackPanel { Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x6E, 0xA5)) };
+        void Add(string fixture, StatusBarLayout layout, RunnerPose pose)
+        {
+            var state = Fixtures.Input(Fixtures.All().First(candidate => candidate.Name == fixture)).State;
+            var view = new WidgetView();
+            view.Update(StatusBarContent.Metrics(state, layout, Enum.GetValues<MetricID>()), layout);
+            view.UpdateRunner(RunnerCharacter.Cat, pose, 0, RunnerAnimator.StillFx(pose));
+            stack.Children.Add(new System.Windows.Controls.Border
+            {
+                Child = view, Background = Theme.Brush(Theme.Background), CornerRadius = new CornerRadius(8),
+                Margin = new Thickness(12, 12, 12, 0), HorizontalAlignment = HorizontalAlignment.Left,
+            });
+        }
+        foreach (var layout in Enum.GetValues<StatusBarLayout>()) Add("tool-categories", layout, RunnerPose.Walk);
+        foreach (var layout in Enum.GetValues<StatusBarLayout>()) Add("input-needed", layout, RunnerPose.Alert);
+        Add("loading", StatusBarLayout.Minimal, RunnerPose.Sleep);
+        stack.Children.Add(new System.Windows.Controls.Border { Height = 12 });
+        return stack;
     }
 
     /// Component previews framed like the dashboard: 16 DIP gutters, 12 between items.

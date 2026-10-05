@@ -63,6 +63,30 @@ public static class PreferenceChecks
                   "⌘Z after reset did not restore the previous order and all four notification toggles, or ⇧⌘Z did not reapply");
             store.Set("runnerCharacter", "unicorn");
             check(open().Character == RunnerCharacter.Cat, "An unknown stored character did not fall back to the cat");
+
+            // The on-screen widget (DESIGN §4.7): on, minimal, every item; presets set the mac keys; reset leaves it alone.
+            var widget = open();
+            check(widget.ShowWidget && widget.Layout == StatusBarLayout.Minimal && widget.Preset == DisplayPreset.Minimal
+                  && widget.ShownItems.SequenceEqual(Enum.GetValues<MetricID>()),
+                  "A new install did not show the widget in the minimal layout with every item");
+            widget.Apply(DisplayPreset.AiFocus);
+            var focus = open();
+            check(focus.Layout == StatusBarLayout.Compact && focus.ShownItems.SequenceEqual([MetricID.Ai, MetricID.Cpu, MetricID.Memory])
+                  && focus.Preset == DisplayPreset.AiFocus && store.Get<string>("statusBarLayout") == "compact"
+                  && store.Get<string[]>("visibleMetrics") is ["ai", "cpu", "memory"] && store.Get<string[]>("metricOrder")?.Length == 6,
+                  "The AI Focus preset did not persist its layout and items in the mac keys");
+            focus.Apply(DisplayPreset.Minimal);
+            check(open().Preset == DisplayPreset.Minimal && open().ShownItems.SequenceEqual([MetricID.Ai, MetricID.Cpu, MetricID.Memory]),
+                  "The minimal preset changed the item list");
+            focus.Apply(DisplayPreset.SystemMonitor);
+            store.Set("visibleMetrics", new[] { "cpu", "memory", "disk", "network", "ai", "unknown" });
+            check(open().Preset == DisplayPreset.SystemMonitor && open().ShownItems.Count == 5,
+                  "A PC without a battery item did not still match System Monitor, or an unknown item was kept");
+            focus.ShowWidget = false;
+            focus.Reset();
+            store.Set("statusBarLayout", "sideways");
+            check(!open().ShowWidget && store.Get<bool?>("showWidget") == false && open().Layout == StatusBarLayout.Minimal,
+                  "Hiding the widget did not persist, reset showed it again, or an unknown layout did not fall back to minimal");
         }
         finally { folder.Delete(true); }
         return c.Done();
