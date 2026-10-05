@@ -19,7 +19,7 @@ enum TokenCatMain {
             let failures = runLocalizationChecks() + runTrackerChecks() + runPreferenceChecks() + runShellChecks() + runStatusBarChecks() + runSessionPresentationChecks()
                 + runDesignTokenChecks() + runTelemetryChecks() + runTelemetrySetupChecks() + runTokenSpeedChecks() + runUpdaterChecks()
                 + Runner.resourceErrors()
-            if Runner.resourceErrors().isEmpty { print("Bundled artwork: PASS (\(RunnerPose.allCases.map(Runner.frames).reduce(0, +)) frames in \(RunnerPose.allCases.count) poses, \(RunnerHead.allCases.count) pixel heads)") }
+            if Runner.resourceErrors().isEmpty { print("Bundled artwork: PASS (\(RunnerCharacter.allCases.count) characters × \(RunnerPose.allCases.map(Runner.frames).reduce(0, +)) frames in \(RunnerPose.allCases.count) poses, \(RunnerHead.allCases.count) pixel heads)") }
             if failures.isEmpty { print("TokenCat checks: PASS") }
             else { failures.forEach { print("FAIL: \($0)") }; exit(1) }
             return
@@ -88,7 +88,7 @@ enum TokenCatMain {
             }
             return
         }
-        let resourceErrors = Runner.resourceErrors()
+        let resourceErrors = Runner.resourceErrors([.cat])
         guard resourceErrors.isEmpty else {
             resourceErrors.forEach { print(loc("이미지 리소스 오류: \($0)", "Image resource error: \($0)")) }
             exit(1)
@@ -227,20 +227,35 @@ enum TokenCatMain {
         catch { print("\(label) failed: \(error.localizedDescription)"); exit(1) }
     }
 
+    /// `--character cat|dog|hamster|penguin|robot` for the snapshot commands; an unknown value exits.
+    private static func characterFlag() -> RunnerCharacter? {
+        let arguments = CommandLine.arguments
+        guard let index = arguments.firstIndex(of: "--character") else { return nil }
+        let raw = arguments.indices.contains(index + 1) ? arguments[index + 1] : ""
+        guard let character = RunnerCharacter(rawValue: raw) else {
+            print("Unknown --character '\(raw)': \(RunnerCharacter.allCases.map(\.rawValue).joined(separator: ", "))")
+            exit(1)
+        }
+        return character
+    }
+
     private static func snapshotMenuBar(path: String) {
         let arguments = CommandLine.arguments
+        let character = characterFlag()
         let light = arguments.contains("--light")
         let highlighted = arguments.contains("--highlighted")
         let layout: StatusBarLayout = arguments.contains("--minimal") ? .minimal : arguments.contains("--inline") ? .inline : .compact
         let app = NSApplication.shared
         app.setActivationPolicy(.accessory)
         if arguments.contains("--fixtures") {
+            Runner.character = character ?? .cat
             guard let matrix = menuBarFixtures(layout: layout, showRunner: !arguments.contains("--no-runner")) else { print("Menu snapshot failed"); exit(1) }
             writePNG(matrix, to: path, label: "Menu fixture snapshot")
             return
         }
         let model = DashboardModel(telemetryProvider: { LocalTelemetryCollector.fetchSnapshot() },
                                    telemetryProbe: { LocalTelemetryCollector.isOwnCollectorRunning(timeout: 0.5) })
+        Runner.character = character ?? model.preferences.character
         model.start()
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
             let view = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
@@ -345,7 +360,7 @@ enum TokenCatMain {
 
     /// Renders the real Settings window (toolbar tabs and the selected pane) off screen; ImageRenderer cannot draw
     /// AppKit-backed Form controls. `--pane general|menubar|cat|telemetry|about|all` (default all; `--focus telemetry`
-    /// is the telemetry pane) stacks the chosen panes vertically. The tab choice is kept in a throwaway defaults domain.
+    /// is the telemetry pane; `cat` is the 캐릭터 tab) stacks the chosen panes vertically. `--character <id>` draws that character. The tab choice is kept in a throwaway defaults domain.
     /// `--fixtures` uses synthetic state instead of this Mac's logs and preferences: the collector off with a retry in
     /// 25 s, Codex waiting for a relaunch, the Claude limit bridge received 50 s ago, version 0.9.1 available (checked
     /// 3 min ago), default preferences, the login item not registered and notification permission not asked yet.
@@ -370,6 +385,9 @@ enum TokenCatMain {
         let suite = "dev.seuput.TokenCat.SettingsSnapshot.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suite) else { print("Settings snapshot failed"); exit(1) }
         let preferences = fixtures ? Preferences(defaults: defaults) : model.preferences
+        // Fixtures show the flag's character in the picker too; this Mac's own preferences are never written.
+        let character = characterFlag()
+        if fixtures { if let character { preferences.character = character } } else { Runner.character = character ?? preferences.character }
         func option<Value>(_ flag: String, _ values: [String: Value]) -> Value? {
             guard let raw = value(flag) else { return nil }
             guard let chosen = values[raw] else { print("Unknown \(flag) '\(raw)': \(values.keys.sorted())"); exit(1) }

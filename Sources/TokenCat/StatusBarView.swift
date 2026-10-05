@@ -12,7 +12,7 @@ enum StatusBarLayout: String, CaseIterable, Identifiable {
     }
     var summary: String {
         switch self {
-        case .minimal: return loc("고양이와 AI 상태·세션 수만 표시합니다", "Shows only the cat, AI status and session count")
+        case .minimal: return loc("캐릭터와 AI 상태·세션 수만 표시합니다", "Shows only the character, AI status and session count")
         case .compact: return loc("지표 이름 아래에 값을 표시합니다", "Shows each value under its name")
         case .inline: return loc("아이콘 옆에 값을 한 줄로 표시합니다", "Shows values on one line beside their icons")
         }
@@ -421,7 +421,7 @@ final class StatusBarContentView: NSView {
         image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
         // The z is a label-coloured template at the sprite's own snapped origin, never resampled (K-2).
         guard let step = runnerFX, let mask = fxMask(runnerPose, step), let context = NSGraphicsContext.current else { return }
-        let colour: NSColor = palette.contrast || !palette.stateColours ? .labelColor : .secondaryLabelColor
+        let colour: NSColor = palette.contrast || !palette.stateColours ? .labelColor : palette.secondary
         context.saveGraphicsState()
         context.imageInterpolation = .none
         context.cgContext.beginTransparencyLayer(in: rect, auxiliaryInfo: nil)
@@ -533,8 +533,9 @@ final class StatusBarContentView: NSView {
         Self.fillWaiting(in: rect, color: palette.secondary, context: context)
     }
 
-    /// The bar's secondary tone. The log-wait half disc uses it too (M-1): neutral 0.45 stays under 3:1 on a light bar or menu.
-    static func secondaryColor(contrast: Bool) -> NSColor { contrast ? NSColor.labelColor.withAlphaComponent(0.7) : .secondaryLabelColor }
+    /// The bar's secondary tone (labels, units, the log-wait half disc). A custom-drawn status item gets no vibrancy, so
+    /// secondaryLabelColor reads as flat grey on tinted bars; labelColor follows the bar's light/dark appearance instead.
+    static func secondaryColor(contrast: Bool) -> NSColor { NSColor.labelColor.withAlphaComponent(contrast ? 0.8 : 0.72) }
 
     private static func fillWaiting(in rect: NSRect, color: NSColor, context: CGContext) {
         context.saveGState()
@@ -724,7 +725,7 @@ final class MenuBarPreviewCache {
     }
 
     func preview(metrics: [StatusBarMetric], preferences: Preferences, pose: RunnerPose, now: Date) -> (images: [NSImage], width: CGFloat) {
-        let key = [preferences.statusBarLayout.rawValue, "\(preferences.showRunner)", preferences.order.map(\.rawValue).joined(separator: ","),
+        let key = [preferences.statusBarLayout.rawValue, "\(preferences.showRunner)", preferences.character.rawValue, preferences.order.map(\.rawValue).joined(separator: ","),
                    preferences.visible.map(\.rawValue).sorted().joined(separator: ","), pose.rawValue].joined(separator: "|")
         let current = metrics.map { "\($0.id.rawValue)=\($0.value)/\($0.activityState.rawValue)/\($0.isActive)" }
         if key == structure && (current == values || now.timeIntervalSince(builtAt) < 1) { return result }

@@ -15,13 +15,13 @@ enum RunnerMotion: String, CaseIterable, Identifiable {
     var caption: String {
         switch self {
         case .activity:
-            return loc("고양이 움직임은 상태만 나타내며 속도가 아닙니다. 진행 중이면 걷고, 출력이 기록되면 잠깐 달리고, 입력이 필요하면 앉아서 이쪽을 봅니다. 활동이 없으면 앉아 있다가 10분 뒤 잠듭니다.",
-                       "The cat's motion shows state, not speed. It walks while a session is working, runs briefly when output is recorded and sits facing you when input is needed. With no activity it sits, then sleeps after 10 minutes.")
+            return loc("캐릭터 움직임은 상태만 나타내며 속도가 아닙니다. 진행 중이면 걷고, 출력이 기록되면 잠깐 달리고, 입력이 필요하면 앉아서 이쪽을 봅니다. 활동이 없으면 앉아 있다가 10분 뒤 잠듭니다.",
+                       "The character's motion shows state, not speed. It walks while a session is working, runs briefly when output is recorded and sits facing you when input is needed. With no activity it sits, then sleeps after 10 minutes.")
         case .cpu: return loc("CPU 사용률이 4% 미만이면 앉고, 20%까지는 걷고, 그보다 높으면 달립니다. 높을수록 박자가 빨라집니다.",
                                "Sits below 4% CPU usage, walks up to 20% and runs above that. The higher the usage, the faster the pace.")
         case .measured: return loc("최근 5초 안에 받은 실측 속도에만 반응합니다. 40 tok/s 미만은 걷고 그 이상은 달리며, 실측이 없으면 앉아서 기다립니다.",
                                     "Reacts only to speeds measured in the last 5 s: walks below 40 tok/s, runs at 40 or more, and sits and waits when there's no measurement.")
-        case .still: return loc("고양이가 앉은 자세로 멈춰 있습니다.", "The cat sits still.")
+        case .still: return loc("캐릭터가 앉은 자세로 멈춰 있습니다.", "The character sits still.")
         }
     }
     /// One line under the picker (T-2); the legend (T-4) says the rest.

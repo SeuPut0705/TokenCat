@@ -8,9 +8,9 @@ enum RunnerPreview {
 
     /// What the menu bar shows, step by step: every sheet frame, with sleep expanded to its breathing steps
     /// A (frame 0) · B (frame 1 + zS) · C (frame 0 + zL). Returns the sprite and its fx mask per step.
-    static func steps() -> [(name: String, frames: [(art: Bitmap, fx: Bitmap?)])] {
-        RunnerArt.poses.map { pose in
-            let art = pose.frames.map { RunnerArt.bitmap(RunnerArt.compose($0)) }
+    static func steps(_ character: RunnerArt.CharacterArt = RunnerArt.characters[0]) -> [(name: String, frames: [(art: Bitmap, fx: Bitmap?)])] {
+        character.poses.ordered.map { pose in
+            let art = pose.frames.map { RunnerArt.bitmap(RunnerArt.compose($0), palette: character.palette) }
             let fx = RunnerArt.fx.filter { $0.pose == pose.name }
             guard !fx.isEmpty else { return (pose.name, art.map { ($0, nil) }) }
             return (pose.name, (0...fx.map(\.step).max()!).map { step in
@@ -30,8 +30,8 @@ enum RunnerPreview {
         return out
     }
 
-    static func contactSheet(to path: String, scale: Int = 8) {
-        let frames = steps()
+    static func contactSheet(_ character: RunnerArt.CharacterArt, to path: String, scale: Int = 8) {
+        let frames = steps(character)
         let columns = frames.map(\.frames.count).max()!
         let cw = RunnerArt.cell.width * scale, ch = RunnerArt.cell.height * scale, gap = scale * 2
         let sheetWidth = gap + columns * (cw + gap)
@@ -55,7 +55,33 @@ enum RunnerPreview {
         PNG.write(sheet, to: path)
     }
 
-    /// Menu bar mock: every step at true size on light and dark bars, @1x and @2x, plus a 3× zoom of it.
+    /// Every character side by side: one band per character and background (light, dark), each pose's still frame
+    /// (sleep with its zL) at 4× and then at true @1x size, in registry order.
+    static func lineup(to path: String, scale: Int = 4) {
+        let cw = RunnerArt.cell.width, ch = RunnerArt.cell.height, gap = 8
+        let stills = RunnerArt.characters.map { steps($0).map { $0.name == "sleep" ? $0.frames.last! : $0.frames[0] } } // sleep still: zL step
+        let poseCount = stills[0].count
+        let bandHeight = ch * scale + 2 * gap
+        let width = gap + poseCount * (cw * scale + gap) + gap + poseCount * (cw + 4) + gap
+        var sheet = Bitmap(width: width, height: stills.count * 2 * bandHeight, fill: RGBA(hex: 0x8A8D93))
+        for (index, frames) in stills.enumerated() {
+            for (backgroundIndex, background) in [light, dark].enumerated() {
+                let y = (index * 2 + backgroundIndex) * bandHeight
+                sheet.draw(Bitmap(width: width, height: bandHeight - 2, fill: background), x: 0, y: y)
+                let label = backgroundIndex == 0 ? labelOnLight : labelOnDark
+                for (column, frame) in frames.enumerated() {
+                    for (s, x) in [(scale, gap + column * (cw * scale + gap)), (1, gap + poseCount * (cw * scale + gap) + gap + column * (cw + 4))] {
+                        let top = y + gap + (s == 1 ? (ch * scale - ch) / 2 : 0)
+                        sheet.draw(frame.art.scaledNearest(s), x: x, y: top)
+                        if let fx = frame.fx { sheet.draw(tint(fx, label).scaledNearest(s), x: x, y: top) }
+                    }
+                }
+            }
+        }
+        PNG.write(sheet, to: path)
+    }
+
+    /// Menu bar mock (the cat): every step at true size on light and dark bars, @1x and @2x, plus a 3× zoom of it.
     static func menuBar(to path: String, zoomPath: String) {
         let frames = steps().flatMap(\.frames)
         let bars: [(scale: Int, background: RGBA, text: NSColor, label: RGBA)] = [

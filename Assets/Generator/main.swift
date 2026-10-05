@@ -3,7 +3,7 @@ import AppKit
 // Deterministic asset generator for TokenCat. No network, no image-generation service.
 // Usage (from the repository root):
 //   mkdir -p work && swiftc -O Assets/Generator/*.swift -o work/asset-generator && work/asset-generator [runner] [head] [icon] [previews] [system] [ascii]
-// With no arguments it writes runner, head, icon and previews. `system` (after ./build.sh) records how macOS draws the bundle icon.
+// With no arguments it writes runner (every character's sheet + the shared manifest), head, icon and previews. `system` (after ./build.sh) records how macOS draws the bundle icon.
 let root = FileManager.default.currentDirectoryPath
 let targets = Set(CommandLine.arguments.dropFirst())
 let all = targets.isEmpty
@@ -13,14 +13,26 @@ func number(_ value: Double) -> String { String(format: "%g", (value * 10000).ro
 func list(_ values: [Double]) -> String { "[" + values.map(number).joined(separator: ", ") + "]" }
 
 if all || targets.contains("runner") {
-    // Rows follow the manifest; unused cells stay fully transparent.
-    let columns = RunnerArt.poses.map(\.frames.count).max()!
-    var sheet = Bitmap(width: columns * RunnerArt.cell.width, height: RunnerArt.poses.count * RunnerArt.cell.height)
-    var poses: [String] = []
-    for (row, pose) in RunnerArt.poses.enumerated() {
-        for (column, frame) in pose.frames.enumerated() {
-            sheet.draw(RunnerArt.bitmap(RunnerArt.compose(frame)), x: column * RunnerArt.cell.width, y: row * RunnerArt.cell.height)
+    // One sheet per character, rows in manifest order; unused cells stay fully transparent.
+    let catPoses = RunnerArt.characters[0].poses.ordered
+    for character in RunnerArt.characters {
+        precondition(Set(character.palette.keys) == Set("KWSGCT") && character.palette.values.allSatisfy { $0.a == 255 },
+                     "\(character.id) palette: exactly K W S G C T, all opaque")
+        let rows = character.poses.ordered
+        var sheet = Bitmap(width: catPoses.map(\.frames.count).max()! * RunnerArt.cell.width, height: rows.count * RunnerArt.cell.height)
+        for (row, pose) in rows.enumerated() {
+            precondition(pose.frames.count == catPoses[row].frames.count, "\(character.id) \(pose.name): \(catPoses[row].frames.count) frames")
+            for (column, frame) in pose.frames.enumerated() {
+                let grid = RunnerArt.compose(frame, name: "(\(character.id) \(pose.name) frame \(column + 1))")
+                sheet.draw(RunnerArt.bitmap(grid, palette: character.palette), x: column * RunnerArt.cell.width, y: row * RunnerArt.cell.height)
+            }
         }
+        PNG.write(sheet, to: path("Assets/\(character.sheet)@1x.png"))
+        PNG.write(sheet.scaledNearest(2), to: path("Assets/\(character.sheet)@2x.png"))
+    }
+    // Every character shares the cat's manifest: poses, frame counts, timing and fx.
+    var poses: [String] = []
+    for (row, pose) in catPoses.enumerated() {
         let timing = RunnerArt.timing[pose.name]!
         precondition(timing.durations.count == pose.frames.count, "\(pose.name) timing")
         var entry = "{\"pose\": \"\(pose.name)\", \"row\": \(row), \"frames\": \(pose.frames.count), \"durations\": \(list(timing.durations))"
@@ -30,8 +42,6 @@ if all || targets.contains("runner") {
         precondition((timing.doubleEvery == nil) == (timing.doubleGap == nil), "\(pose.name) double blink")
         poses.append("    " + entry + "}")
     }
-    PNG.write(sheet, to: path("Assets/runner-v2@1x.png"))
-    PNG.write(sheet.scaledNearest(2), to: path("Assets/runner-v2@2x.png"))
 
     // Effect glyph atlas: left to right with a 1 px gap, alpha 0/255.
     var glyphs: [String] = [], x = 0
@@ -81,7 +91,10 @@ if all || targets.contains("icon") {
 }
 
 if all || targets.contains("previews") {
-    RunnerPreview.contactSheet(to: path("work/runner-v2-contact-8x.png"))
+    for character in RunnerArt.characters {
+        RunnerPreview.contactSheet(character, to: path("work/\(character.sheet)-contact-8x.png"))
+    }
+    RunnerPreview.lineup(to: path("work/runner-lineup.png"))
     RunnerPreview.menuBar(to: path("work/runner-v2-menubar.png"), zoomPath: path("work/runner-v2-menubar-3x.png"))
     RunnerPreview.heads(to: path("work/app-head-preview.png"))
     IconPreview.sheet(iconset: path("work/TokenCat.iconset"), to: path("work/app-icon-v2-preview.png"))
@@ -93,10 +106,12 @@ if targets.contains("system") {
 }
 
 if targets.contains("ascii") {
-    for pose in RunnerArt.poses {
-        for (index, frame) in pose.frames.enumerated() {
-            print("\(pose.name) \(index)")
-            RunnerArt.compose(frame).forEach { print(String($0)) }
+    for character in RunnerArt.characters {
+        for pose in character.poses.ordered {
+            for (index, frame) in pose.frames.enumerated() {
+                print("\(character.id) \(pose.name) \(index)")
+                RunnerArt.compose(frame).forEach { print(String($0)) }
+            }
         }
     }
     for head in RunnerArt.heads {

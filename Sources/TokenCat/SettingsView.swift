@@ -37,13 +37,14 @@ enum SettingsFocus: String { case telemetry }
 
 /// The toolbar tabs of the Settings window (T-1), in toolbar order.
 enum SettingsPane: String, CaseIterable, Identifiable {
-    case general, menubar, cat, telemetry, about
+    /// `character` keeps the raw value "cat" for the remembered tab and `--pane cat`.
+    case general, menubar, character = "cat", telemetry, about
     var id: String { rawValue }
     var title: String {
         switch self {
         case .general: return loc("일반", "General")
         case .menubar: return loc("메뉴 막대", "Menu Bar")
-        case .cat: return loc("고양이", "Cat")
+        case .character: return loc("캐릭터", "Character")
         case .telemetry: return loc("실측", "Telemetry")
         case .about: return loc("정보", "About")
         }
@@ -52,7 +53,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape"
         case .menubar: return "menubar.rectangle"
-        case .cat: return "cat"
+        case .character: return "cat"
         case .telemetry: return "dot.radiowaves.left.and.right"
         case .about: return "info.circle"
         }
@@ -60,7 +61,7 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     /// "cat" is missing from older SF Symbols; the paw print stands in.
     var image: NSImage? {
         NSImage(systemSymbolName: symbol, accessibilityDescription: title)
-            ?? (self == .cat ? NSImage(systemSymbolName: "pawprint", accessibilityDescription: title) : nil)
+            ?? (self == .character ? NSImage(systemSymbolName: "pawprint", accessibilityDescription: title) : nil)
     }
 }
 
@@ -219,7 +220,7 @@ struct SettingsPaneView: View {
             switch pane {
             case .general: GeneralPane(preferences: preferences, state: state)
             case .menubar: MenuBarPane(preferences: preferences, model: model, state: state)
-            case .cat: CatPane(preferences: preferences, state: state)
+            case .character: CharacterPane(preferences: preferences, state: state)
             case .telemetry: TelemetryPane(model: model)
             case .about: AboutPane(model: model, preferences: preferences, state: state, actions: actions)
             }
@@ -345,12 +346,12 @@ private struct GeneralPane: View {
                 }
             }
         }
-        .alert(loc("메뉴 막대·고양이·알림 설정을 기본값으로 되돌릴까요?", "Restore the menu bar, cat and notification settings to their defaults?"), isPresented: $confirmsReset) {
+        .alert(loc("메뉴 막대·캐릭터·알림 설정을 기본값으로 되돌릴까요?", "Restore the menu bar, character and notification settings to their defaults?"), isPresented: $confirmsReset) {
             Button(loc("되돌리기", "Restore"), role: .destructive) { preferences.reset(undoManager: undoManager) }
             Button(loc("취소", "Cancel"), role: .cancel) {}
         } message: {
-            Text(loc("항목 순서와 표시, 표시 방식, 고양이, 알림 선택이 바뀝니다. 로그인 항목, 새 버전 자동 확인과 macOS 알림 권한은 그대로입니다.",
-                      "This resets item order and visibility, the layout, and the cat and notification choices. The login item, automatic update checks and macOS notification permission stay as they are."))
+            Text(loc("항목 순서와 표시, 표시 방식, 캐릭터, 알림 선택이 바뀝니다. 로그인 항목, 새 버전 자동 확인과 macOS 알림 권한은 그대로입니다.",
+                      "This resets item order and visibility, the layout, and the character and notification choices. The login item, automatic update checks and macOS notification permission stay as they are."))
         }
     }
 
@@ -452,6 +453,11 @@ private struct MenuBarPane: View {
         Form {
             Section {
                 MenuBarPreview(model: model, preferences: preferences, pose: state.runnerPose)
+                Picker(loc("프리셋", "Preset"), selection: Binding(get: { preferences.preset }, set: { $0.map(preferences.apply) })) {
+                    ForEach(DisplayPreset.allCases) { Text($0.title).tag(DisplayPreset?.some($0)) }
+                    if preferences.preset == nil { Text(loc("사용자 지정", "Custom")).tag(DisplayPreset?.none) }
+                }
+                .help(loc("표시 방식과 항목을 한 번에 바꿉니다", "Sets the layout and items in one step"))
                 Picker(loc("표시 방식", "Layout"), selection: $preferences.statusBarLayout) {
                     ForEach(StatusBarLayout.allCases) { Text($0.title).tag($0) }
                 }
@@ -464,25 +470,33 @@ private struct MenuBarPane: View {
                 Text(loc("항목", "Items"))
             } footer: {
                 settingsFooter(preferences.statusBarLayout == .minimal
-                               ? loc("최소 표시는 고양이와 AI 상태·세션 수만 보여 줍니다. 항목 목록은 두 줄·한 줄 표시에 적용됩니다.",
-                                     "Minimal shows only the cat, AI status and session count. The item list applies to the Two Lines and One Line layouts.")
-                               : loc("끌어서 순서를 바꿉니다. 고양이를 숨기면 마지막 항목은 숨길 수 없습니다.",
-                                     "Drag to reorder. With the cat hidden, the last item can't be hidden."))
+                               ? loc("최소 표시는 캐릭터와 AI 상태·세션 수만 보여 줍니다. 항목 목록은 두 줄·한 줄 표시에 적용됩니다.",
+                                     "Minimal shows only the character, AI status and session count. The item list applies to the Two Lines and One Line layouts.")
+                               : loc("끌어서 순서를 바꿉니다. 캐릭터를 숨기면 마지막 항목은 숨길 수 없습니다.",
+                                     "Drag to reorder. With the character hidden, the last item can't be hidden."))
             }
         }
     }
 }
 
-private struct CatPane: View {
+private struct CharacterPane: View {
     @ObservedObject var preferences: Preferences
     @ObservedObject var state: SettingsState
 
     var body: some View {
         Form {
             Section {
-                Toggle(loc("메뉴 막대에 고양이 표시", "Show cat in menu bar"), isOn: Binding(get: { preferences.showRunner }, set: { preferences.setShowRunner($0) }))
+                Picker(loc("캐릭터", "Character"), selection: $preferences.character) {
+                    ForEach(RunnerCharacter.allCases) { character in
+                        Label { Text(character.title) } icon: {
+                            Image(nsImage: Runner.image(pose: .walk, frame: 0, character: character)).interpolation(.none)
+                        }
+                        .tag(character)
+                    }
+                }
+                Toggle(loc("메뉴 막대에 캐릭터 표시", "Show character in menu bar"), isOn: Binding(get: { preferences.showRunner }, set: { preferences.setShowRunner($0) }))
                     .disabled(preferences.showRunner && !preferences.canHideRunner)
-                    .help(preferences.canHideRunner ? "" : loc("표시할 항목이 없어 고양이를 숨길 수 없습니다", "The cat can't be hidden because no other item is shown"))
+                    .help(preferences.canHideRunner ? "" : loc("표시할 항목이 없어 캐릭터를 숨길 수 없습니다", "The character can't be hidden because no other item is shown"))
                 Picker(selection: $preferences.animationSource) {
                     ForEach(RunnerMotion.allCases) { Text($0.title).tag($0) }
                 } label: {
@@ -490,8 +504,8 @@ private struct CatPane: View {
                 }
                 .help(preferences.animationSource.caption)
                 let entries = RunnerLegend.entries(preferences.animationSource)
-                if !entries.isEmpty { RunnerLegend(entries: entries, reduceMotion: state.reduceMotion) }
-                if state.reduceMotion { settingsCaption(loc("macOS의 '동작 줄이기'가 켜져 있어 고양이는 자세만 바뀝니다.", "Reduce Motion is on in macOS, so the cat only changes poses.")) }
+                if !entries.isEmpty { RunnerLegend(entries: entries, character: preferences.character, reduceMotion: state.reduceMotion) }
+                if state.reduceMotion { settingsCaption(loc("macOS의 '동작 줄이기'가 켜져 있어 캐릭터는 자세만 바뀝니다.", "Reduce Motion is on in macOS, so the character only changes poses.")) }
             }
         }
     }
@@ -506,6 +520,7 @@ struct RunnerLegend: View {
         var caption: String
     }
     var entries: [Entry]
+    var character: RunnerCharacter
     var reduceMotion: Bool
 
     static func entries(_ motion: RunnerMotion) -> [Entry] {
@@ -542,7 +557,7 @@ struct RunnerLegend: View {
         HStack(alignment: .top, spacing: 8) {
             // Equal columns, wide enough for the longest caption ("10분간 활동 없음": 75.6 pt at 11, 68.9 at 10).
             ForEach(entries, id: \.pose) {
-                LegendTile(entry: $0, reduceMotion: reduceMotion, captionSize: captionSize).frame(width: captionSize == 11 ? 76 : 70)
+                LegendTile(entry: $0, character: character, reduceMotion: reduceMotion, captionSize: captionSize).frame(width: captionSize == 11 ? 76 : 70)
             }
         }
         .fixedSize()
@@ -551,6 +566,7 @@ struct RunnerLegend: View {
 
 private struct LegendTile: View {
     var entry: RunnerLegend.Entry
+    var character: RunnerCharacter
     var reduceMotion: Bool
     var captionSize: CGFloat
     @State private var frame = 0
@@ -560,7 +576,7 @@ private struct LegendTile: View {
     var body: some View {
         VStack(spacing: 4) {
             ZStack {
-                Image(nsImage: Runner.image(pose: entry.pose, frame: frame)).interpolation(.none)
+                Image(nsImage: Runner.image(pose: entry.pose, frame: frame, character: character)).interpolation(.none)
                 if let step = fx ?? RunnerAnimator.stillFX(entry.pose), !playing || fx != nil,
                    let mask = Runner.fxMask(pose: entry.pose, step: step) {
                     Image(nsImage: mask).renderingMode(.template).interpolation(.none).foregroundColor(.secondary)
@@ -841,7 +857,7 @@ private struct MetricRows: View {
                 .accessibilityAction(named: loc("아래로 이동", "Move down")) { preferences.move(id, by: 1) }
                 Spacer(minLength: 0)
             }
-            .help(locked ? loc("고양이를 숨긴 상태에서는 최소 한 항목을 표시해야 합니다", "With the cat hidden, at least one item must stay visible")
+            .help(locked ? loc("캐릭터를 숨긴 상태에서는 최소 한 항목을 표시해야 합니다", "With the character hidden, at least one item must stay visible")
                   : loc("끌어서 순서를 바꿉니다", "Drag to reorder"))
             .contentShape(Rectangle())
             // The row itself moves while dragging; no dimming, since a drag cancelled outside never reports back.

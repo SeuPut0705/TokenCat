@@ -23,6 +23,8 @@ final class Preferences: ObservableObject {
     @Published var visible: Set<MetricID> { didSet { persist(); keepSomethingVisible() } }
     @Published var animationSource: RunnerMotion { didSet { persist() } }
     @Published var showRunner: Bool { didSet { persist(); keepSomethingVisible() } }
+    /// The menu bar character. A change switches `Runner.character` at once (the shell sets it at launch).
+    @Published var character: RunnerCharacter { didSet { persist(); Runner.character = character } }
     @Published var statusBarLayout: StatusBarLayout { didSet { persist(); keepSomethingVisible() } }
     /// Opt-in notifications; both default off.
     @Published var notifyTurnComplete: Bool { didSet { persist() } }
@@ -53,6 +55,7 @@ final class Preferences: ObservableObject {
         animationSource = RunnerMotion.stored(defaults.string(forKey: "animationSource"),
                                               confirmed: defaults.bool(forKey: RunnerMotion.confirmedKey))
         showRunner = defaults.object(forKey: "showRunner") as? Bool ?? true
+        character = RunnerCharacter(rawValue: defaults.string(forKey: "runnerCharacter") ?? "") ?? .cat
         statusBarLayout = StatusBarLayout(rawValue: defaults.string(forKey: "statusBarLayout") ?? "") ?? .compact
         notifyTurnComplete = defaults.bool(forKey: "notifyTurnComplete")
         notifyInput = defaults.bool(forKey: "notifyInput")
@@ -70,6 +73,7 @@ final class Preferences: ObservableObject {
         defaults.set(animationSource.rawValue, forKey: "animationSource")
         defaults.set(true, forKey: RunnerMotion.confirmedKey)
         defaults.set(showRunner, forKey: "showRunner")
+        defaults.set(character.rawValue, forKey: "runnerCharacter")
         defaults.set(statusBarLayout.rawValue, forKey: "statusBarLayout")
         defaults.set(notifyTurnComplete, forKey: "notifyTurnComplete")
         defaults.set(notifyInput, forKey: "notifyInput")
@@ -99,17 +103,18 @@ final class Preferences: ObservableObject {
         guard id != target, let from = order.firstIndex(of: id), let to = order.firstIndex(of: target) else { return }
         order.move(fromOffsets: [from], toOffset: to > from ? to + 1 : to)
     }
-    /// The display, cat and notification choices that "기본값으로 되돌리기" covers; login item and permission are not here.
+    /// The display, character and notification choices that "기본값으로 되돌리기" covers; login item and permission are not here.
     struct Snapshot: Equatable {
-        var order: [MetricID], visible: Set<MetricID>, animationSource: RunnerMotion, showRunner: Bool
+        var order: [MetricID], visible: Set<MetricID>, animationSource: RunnerMotion, showRunner: Bool, character: RunnerCharacter
         var statusBarLayout: StatusBarLayout, notifyTurnComplete: Bool, notifyInput: Bool, notifyInputSound: Bool, notifyUpdate: Bool
     }
     static let defaultSnapshot = Snapshot(order: MetricID.allCases, visible: Set(MetricID.allCases), animationSource: .activity,
-                                          showRunner: true, statusBarLayout: .compact, notifyTurnComplete: false, notifyInput: false,
-                                          notifyInputSound: false, notifyUpdate: false)
+                                          showRunner: true, character: .cat, statusBarLayout: .compact, notifyTurnComplete: false,
+                                          notifyInput: false, notifyInputSound: false, notifyUpdate: false)
     var snapshot: Snapshot {
-        Snapshot(order: order, visible: visible, animationSource: animationSource, showRunner: showRunner, statusBarLayout: statusBarLayout,
-                 notifyTurnComplete: notifyTurnComplete, notifyInput: notifyInput, notifyInputSound: notifyInputSound, notifyUpdate: notifyUpdate)
+        Snapshot(order: order, visible: visible, animationSource: animationSource, showRunner: showRunner, character: character,
+                 statusBarLayout: statusBarLayout, notifyTurnComplete: notifyTurnComplete, notifyInput: notifyInput,
+                 notifyInputSound: notifyInputSound, notifyUpdate: notifyUpdate)
     }
     /// Applies `snapshot` and registers the previous values with `undoManager`, so ⌘Z (and ⇧⌘Z) step back and forth (T-6).
     func restore(_ snapshot: Snapshot, undoManager: UndoManager? = nil) {
@@ -118,6 +123,7 @@ final class Preferences: ObservableObject {
         order = snapshot.order
         visible = snapshot.visible
         showRunner = snapshot.showRunner
+        character = snapshot.character
         animationSource = snapshot.animationSource
         notifyTurnComplete = snapshot.notifyTurnComplete
         notifyInput = snapshot.notifyInput
@@ -126,8 +132,52 @@ final class Preferences: ObservableObject {
         undoManager?.registerUndo(withTarget: self) { $0.restore(previous, undoManager: undoManager) }
         undoManager?.setActionName(loc("기본값으로 되돌리기", "Restore Defaults"))
     }
-    /// Display, cat and notification choices only; login item, automatic update checks and notification permission are untouched.
+    /// Display, character and notification choices only; login item, automatic update checks and notification permission are untouched.
     func reset(undoManager: UndoManager? = nil) { restore(Self.defaultSnapshot, undoManager: undoManager) }
+
+    /// The display preset the drawn bar matches (a Mac without a battery ignores the battery item); nil is "사용자 지정".
+    var preset: DisplayPreset? {
+        DisplayPreset.allCases.first { preset in
+            statusBarLayout == preset.layout && showRunner
+                && (preset.items.map { shownItems == $0.filter { $0 != .battery || hasBattery } } ?? true)
+        }
+    }
+    func apply(_ preset: DisplayPreset) {
+        statusBarLayout = preset.layout
+        showRunner = true
+        guard let items = preset.items else { return }
+        order = items + order.filter { !items.contains($0) }
+        visible = Set(items)
+    }
+}
+
+/// One-pick menu bar setups (Settings › 메뉴 막대). They set only the layout, the shown items with their order and the
+/// character's visibility; fixed, not user-defined. `items` nil leaves the item list alone (the minimal layout ignores it).
+enum DisplayPreset: String, CaseIterable, Identifiable {
+    case minimal, aiFocus, systemMonitor, everythingInline
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .minimal: return loc("최소", "Minimal")
+        case .aiFocus: return loc("AI 집중", "AI Focus")
+        case .systemMonitor: return loc("시스템 모니터", "System Monitor")
+        case .everythingInline: return loc("전체 한 줄", "Everything Inline")
+        }
+    }
+    var layout: StatusBarLayout {
+        switch self {
+        case .minimal: return .minimal
+        case .aiFocus, .systemMonitor: return .compact
+        case .everythingInline: return .inline
+        }
+    }
+    var items: [MetricID]? {
+        switch self {
+        case .minimal: return nil
+        case .aiFocus: return [.ai, .cpu, .memory]
+        case .systemMonitor, .everythingInline: return MetricID.allCases
+        }
+    }
 }
 
 /// Clients whose config TokenCat changed and that have not sent a reading since.
@@ -608,6 +658,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        Runner.character = model.preferences.character
         installMainMenu()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
@@ -649,6 +700,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.updateStatus()
+                self.statusView?.needsDisplay = true // a new character draws the same pose and frame
                 self.planRunner()
                 self.updater.setAutomatic(self.model.preferences.autoCheckUpdates)
             }
@@ -1151,8 +1203,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         menu.addItem(submenu(loc("표시 방식", "Layout"), StatusBarLayout.allCases.map {
             menuItem($0.title, #selector(selectLayout(_:)), value: $0.rawValue, checked: preferences.statusBarLayout == $0)
         }))
-        menu.addItem(menuItem(loc("고양이 표시", "Show Cat"), #selector(toggleRunner), checked: preferences.showRunner,
-                              enabled: !preferences.showRunner || preferences.canHideRunner))
+        menu.addItem(submenu(loc("캐릭터", "Character"), RunnerCharacter.allCases.map {
+            menuItem($0.title, #selector(selectCharacter(_:)), value: $0.rawValue, checked: preferences.character == $0)
+        } + [.separator(), menuItem(loc("메뉴 막대에 표시", "Show in Menu Bar"), #selector(toggleRunner), checked: preferences.showRunner,
+                                    enabled: !preferences.showRunner || preferences.canHideRunner)]))
         menu.addItem(submenu(loc("움직임 기준", "Motion Source"), RunnerMotion.allCases.map {
             menuItem($0.title, #selector(selectMotion(_:)), value: $0.rawValue, checked: preferences.animationSource == $0)
         }))
@@ -1184,6 +1238,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
     @objc private func selectLayout(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String, let layout = StatusBarLayout(rawValue: raw) { model.preferences.statusBarLayout = layout }
+    }
+    @objc private func selectCharacter(_ sender: NSMenuItem) {
+        if let raw = sender.representedObject as? String, let character = RunnerCharacter(rawValue: raw) { model.preferences.character = character }
     }
     @objc private func selectMotion(_ sender: NSMenuItem) {
         if let raw = sender.representedObject as? String, let motion = RunnerMotion(rawValue: raw) { model.preferences.animationSource = motion }

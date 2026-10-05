@@ -97,6 +97,12 @@ func runPreferenceChecks() -> [String] {
     let stored = Preferences(defaults: defaults)
     check(stored.notifyInputSound && stored.notifyUpdate && !stored.autoCheckUpdates && stored.dismissedUpdateVersion == "0.9.1",
           "The input sound, new-version notification, automatic check or dismissed version did not persist")
+    // Character: persisted, followed by the runner at once, part of reset; an unknown stored id falls back to the cat.
+    guarded.character = .penguin
+    check(Preferences(defaults: defaults).character == .penguin && Runner.character == .penguin
+          && Runner.image(pose: .walk, frame: 0) === Runner.image(pose: .walk, frame: 0, character: .penguin)
+          && Runner.image(pose: .walk, frame: 0, character: .penguin) !== Runner.image(pose: .walk, frame: 0, character: .cat),
+          "The character did not persist, or the runner did not switch to its own frames")
     let before = guarded.snapshot
     let undo = UndoManager()
     undo.groupsByEvent = false
@@ -104,6 +110,7 @@ func runPreferenceChecks() -> [String] {
     guarded.reset(undoManager: undo)
     undo.endUndoGrouping()
     check(guarded.snapshot == Preferences.defaultSnapshot && guarded.order == MetricID.allCases && guarded.visible == Set(MetricID.allCases)
+          && guarded.character == .cat && Runner.character == .cat
           && guarded.animationSource == .activity && guarded.showRunner && guarded.statusBarLayout == .compact && !guarded.notifyInput
           && !guarded.notifyTurnComplete && !guarded.notifyInputSound && !guarded.notifyUpdate && defaults.double(forKey: "unrelatedKey") == 1_234
           && !guarded.autoCheckUpdates && guarded.dismissedUpdateVersion == "0.9.1",
@@ -112,8 +119,34 @@ func runPreferenceChecks() -> [String] {
     let undone = guarded.snapshot
     undo.redo()
     check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .ai] && before.notifyInputSound && before.notifyUpdate
+          && before.character == .penguin
           && guarded.snapshot == Preferences.defaultSnapshot && undo.undoActionName == "기본값으로 되돌리기",
           "⌘Z after reset did not restore the previous order and all four notification toggles, or ⇧⌘Z did not reapply")
+    defaults.set("unicorn", forKey: "runnerCharacter")
+    check(Preferences(defaults: defaults).character == .cat, "An unknown stored character did not fall back to the cat")
+
+    // Display presets: each one applied is the one matched; the defaults are 시스템 모니터; a hand edit is 사용자 지정.
+    let presets = Preferences(defaults: defaults)
+    presets.reset()
+    let matchedDefault = presets.preset
+    var applied: [DisplayPreset?] = []
+    for preset in DisplayPreset.allCases.reversed() {
+        presets.apply(preset)
+        applied.append(presets.preset)
+    }
+    let aiFocus = (presets.order.prefix(3) == [.ai, .cpu, .memory], presets.visible == [.ai, .cpu, .memory])
+    presets.apply(.minimal)
+    let minimalKeepsItems = presets.visible == [.ai, .cpu, .memory]
+    presets.statusBarLayout = .compact
+    presets.setVisible(.disk, true)
+    check(matchedDefault == .systemMonitor && applied == DisplayPreset.allCases.reversed().map(Optional.some) && aiFocus == (true, true)
+          && minimalKeepsItems && presets.preset == nil,
+          "Display presets did not match after applying, the defaults are not 시스템 모니터, or a hand edit was not 사용자 지정")
+    presets.apply(.systemMonitor)
+    presets.hasBattery = false
+    presets.setVisible(.battery, false)
+    check(presets.preset == .systemMonitor, "On a Mac without a battery, the undrawn battery item turned 시스템 모니터 into 사용자 지정")
+    presets.reset()
     print("Preference checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }
@@ -485,8 +518,9 @@ func runShellChecks() -> [String] {
           "Announcements are not limited to one per 5 s with the most urgent held text")
 
     // Settings (T-1, T-3): tab order and symbols, collector and client status rows.
-    check(SettingsPane.allCases.map(\.title) == ["일반", "메뉴 막대", "고양이", "실측", "정보"] && SettingsPane.allCases.allSatisfy { $0.image != nil },
-          "Settings tabs are not 일반 · 메뉴 막대 · 고양이 · 실측 · 정보 with a symbol each")
+    check(SettingsPane.allCases.map(\.title) == ["일반", "메뉴 막대", "캐릭터", "실측", "정보"] && SettingsPane.allCases.allSatisfy { $0.image != nil }
+          && SettingsPane(rawValue: "cat") == .character,
+          "Settings tabs are not 일반 · 메뉴 막대 · 캐릭터 · 실측 · 정보 with a symbol each, or the remembered 'cat' tab is lost")
     check(TelemetryStatusRow.collector(.receiving) == (.receiving, "수신 중 · 127.0.0.1:16493")
           && TelemetryStatusRow.collector(.waiting).text == "수신 대기 · 127.0.0.1:16493"
           && TelemetryStatusRow.collector(.busyOtherApp) == (.problem, "꺼짐 · 다른 앱이 16493 포트 사용 중")
@@ -514,7 +548,7 @@ func runShellChecks() -> [String] {
               == (.received, "Claude 데스크톱 앱 기록 · 12분 전", nil),
           "Claude limit row is not checked empty status line → skipped → received → waiting → none")
     AppLanguage.with(.en) {
-        check(SettingsPane.allCases.map(\.title) == ["General", "Menu Bar", "Cat", "Telemetry", "About"]
+        check(SettingsPane.allCases.map(\.title) == ["General", "Menu Bar", "Character", "Telemetry", "About"]
               && TelemetryStatusRow.collector(.busyOtherApp).text == "Off · another app is using port 16493"
               && client(false, false, at.addingTimeInterval(-30), at).text == "Last received <1m ago"
               && limits([], true, at.addingTimeInterval(-180)).text == "Last received 3m ago"

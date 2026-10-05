@@ -109,7 +109,7 @@ enum IconArt {
         let surface = Canvas(width: size, height: size)
         drawTile(surface.cg, size: Double(size), effects: size >= 32, inset: 0)
         var bitmap = surface.bitmap()
-        let head = RunnerArt.bitmap(RunnerArt.headGrid(RunnerArt.head))
+        let head = RunnerArt.bitmap(RunnerArt.headGrid(RunnerCatArt.head))
         bitmap.draw(size == 16 ? head : head.scaledNearest(2), x: size == 16 ? 2 : 4, y: size == 16 ? 3 : 5)
         return bitmap
     }

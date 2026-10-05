@@ -7,6 +7,23 @@ enum RunnerPose: String, CaseIterable {
     case sit, sleep, walk, run, alert, yawn, content
 }
 
+/// Menu bar characters. All share runner-v2.json (poses, frame counts, timing, fx); only the sprite sheet differs:
+/// the cat keeps runner-v2@1x/@2x.png, the others use runner-<id>@1x/@2x.png. The pixel heads stay the cat's (brand).
+enum RunnerCharacter: String, CaseIterable, Identifiable {
+    case cat, dog, hamster, penguin, robot
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .cat: return loc("고양이", "Cat")
+        case .dog: return loc("강아지", "Dog")
+        case .hamster: return loc("햄스터", "Hamster")
+        case .penguin: return loc("펭귄", "Penguin")
+        case .robot: return loc("로봇", "Robot")
+        }
+    }
+    var sheet: String { self == .cat ? "runner-v2" : "runner-\(rawValue)" }
+}
+
 /// Pixel head variants for the popover header, the first-run card and the about pane (B-3).
 enum RunnerHead: String, CaseIterable {
     case normal, blink, alert, sleep
@@ -34,11 +51,23 @@ enum Runner {
     static let headSize = NSSize(width: 12, height: 11)
     static let expectedFrames: [RunnerPose: Int] = [.sit: 2, .sleep: 2, .walk: 4, .run: 6, .alert: 2, .yawn: 1, .content: 2]
     private static let cell = (width: 30, height: 18)
-    private static let cache = ArtworkCache()
+    /// The character `image` draws by default. `Preferences.character` sets it; callers redraw.
+    static var character = RunnerCharacter.cat
+    /// Decoded once per character, on first use.
+    private static var caches: [RunnerCharacter: ArtworkCache] = [:]
+    private static var cache: ArtworkCache { artwork(character) }
+
+    private static func artwork(_ character: RunnerCharacter) -> ArtworkCache {
+        if let cached = caches[character] { return cached }
+        let loaded = ArtworkCache(character: character)
+        caches[character] = loaded
+        return loaded
+    }
 
     static func frames(_ pose: RunnerPose) -> Int { expectedFrames[pose] ?? 1 }
 
-    static func image(pose: RunnerPose, frame: Int) -> NSImage {
+    static func image(pose: RunnerPose, frame: Int, character: RunnerCharacter = Runner.character) -> NSImage {
+        let cache = artwork(character)
         let images = cache.frames[pose] ?? [cache.blank]
         return images[((frame % images.count) + images.count) % images.count]
     }
@@ -46,7 +75,7 @@ enum Runner {
     /// The 12 × 11 pt pixel head (`app-head-<variant>@1x/@2x.png`: 12 × 11 and 24 × 22 px, nearest, alpha 0/255).
     /// Draw it at whole multiples only (2 pt per art pixel = 24 × 22 pt) with interpolation off. `sleep` has the same
     /// closed eyes as `blink`, like the menu bar sleep head; `alert` has the input pose's wide eyes.
-    static func headImage(_ variant: RunnerHead) -> NSImage { cache.heads[variant] ?? NSImage(size: headSize) }
+    static func headImage(_ variant: RunnerHead) -> NSImage { artwork(.cat).heads[variant] ?? NSImage(size: headSize) }
 
     /// Effect layer for `pose` at animation `step` (the sleep z): a template mask, alpha 0/255, in the same 32 × 20 pt
     /// frame as `image(pose:frame:)`. Draw it at the sprite's snapped origin filled with `secondaryLabelColor`
@@ -66,7 +95,12 @@ enum Runner {
         cache.timings[pose] ?? RunnerTiming(durations: Array(repeating: 0.125, count: frames(pose)))
     }
 
-    static func resourceErrors() -> [String] { cache.errors }
+    /// Artwork errors of `characters` (the self-test: all), each message once; a character whose sheet fails shows the cat
+    /// and says so here. The launch gate asks only for the cat, so a broken optional sheet falls back instead of quitting.
+    static func resourceErrors(_ characters: [RunnerCharacter] = RunnerCharacter.allCases) -> [String] {
+        var seen = Set<String>()
+        return characters.flatMap { artwork($0).errors }.filter { seen.insert($0).inserted }
+    }
 
     private struct Manifest: Decodable {
         struct Size: Decodable { var width: Int; var height: Int }
@@ -100,16 +134,21 @@ enum Runner {
         var blank = NSImage(size: Runner.size)
         var errors: [String] = []
 
-        init() {
+        init(character: RunnerCharacter) {
             for pose in RunnerPose.allCases { frames[pose] = Array(repeating: blank, count: Runner.frames(pose)) }
-            loadRunner()
-            loadHeads()
+            loadRunner(character)
+            if character == .cat { loadHeads() }
+            if !errors.isEmpty, character != .cat {
+                let failed = errors
+                self = Runner.artwork(.cat)
+                errors = failed + [loc("\(character.sheet): 시트를 쓸 수 없어 고양이로 표시합니다.", "\(character.sheet): sheet unusable, showing the cat instead.")]
+            }
             if !errors.isEmpty {
                 FileHandle.standardError.write(Data(("TokenCat artwork: " + errors.joined(separator: "; ") + "\n").utf8))
             }
         }
 
-        private mutating func loadRunner() {
+        private mutating func loadRunner(_ character: RunnerCharacter) {
             guard let url = Bundle.main.url(forResource: "runner-v2", withExtension: "json"),
                   let data = try? Data(contentsOf: url),
                   let manifest = try? JSONDecoder().decode(Manifest.self, from: data) else {
@@ -145,20 +184,23 @@ enum Runner {
             for pose in RunnerPose.allCases where rows[pose] == nil {
                 errors.append(loc("runner-v2.json: \(pose.rawValue) 자세가 없습니다.", "runner-v2.json: the \(pose.rawValue) pose is missing."))
             }
+            // Every character uses this manifest; only the cat's sheets are named in it.
+            let sheet = character.sheet
+            let sheets = character == .cat ? manifest.sheets : ["1": sheet + "@1x.png", "2": sheet + "@2x.png"]
             guard errors.isEmpty,
-                  let low = Self.load(manifest.sheets["1"], errors: &errors),
-                  let high = Self.load(manifest.sheets["2"], errors: &errors) else { return }
+                  let low = Self.load(sheets["1"], errors: &errors),
+                  let high = Self.load(sheets["2"], errors: &errors) else { return }
 
             let columns = low.width / Runner.cell.width, rowCount = low.height / Runner.cell.height
             guard low.width == columns * Runner.cell.width, low.height == rowCount * Runner.cell.height else {
-                errors.append(loc("runner-v2 시트: @1x는 30×18 셀의 배수여야 합니다.", "runner-v2 sheet: @1x must be a multiple of 30×18 cells."))
+                errors.append(loc("\(sheet) 시트: @1x는 30×18 셀의 배수여야 합니다.", "\(sheet) sheet: @1x must be a multiple of 30×18 cells."))
                 return
             }
-            guard Self.checkPair(low, high, loc("runner-v2 시트", "runner-v2 sheet"), errors: &errors) else { return }
+            guard Self.checkPair(low, high, loc("\(sheet) 시트", "\(sheet) sheet"), errors: &errors) else { return }
 
             for (pose, entry) in rows {
                 guard entry.row >= 0, entry.row < rowCount, entry.frames <= columns else {
-                    errors.append(loc("runner-v2 시트: \(pose.rawValue) 행이 시트 밖에 있습니다.", "runner-v2 sheet: the \(pose.rawValue) row is outside the sheet."))
+                    errors.append(loc("\(sheet) 시트: \(pose.rawValue) 행이 시트 밖에 있습니다.", "\(sheet) sheet: the \(pose.rawValue) row is outside the sheet."))
                     continue
                 }
                 var cells: [[UInt8]] = []
@@ -166,27 +208,27 @@ enum Runner {
                     let cellPixels = Self.cell(low, column: column, row: entry.row, scale: 1)
                     let opaque = stride(from: 3, to: cellPixels.count, by: 4).contains { cellPixels[$0] != 0 }
                     if column < entry.frames && !opaque {
-                        errors.append(loc("runner-v2 시트: \(pose.rawValue) \(column + 1)번 프레임이 비었습니다.", "runner-v2 sheet: \(pose.rawValue) frame \(column + 1) is empty."))
+                        errors.append(loc("\(sheet) 시트: \(pose.rawValue) \(column + 1)번 프레임이 비었습니다.", "\(sheet) sheet: \(pose.rawValue) frame \(column + 1) is empty."))
                     }
                     if column >= entry.frames && opaque {
-                        errors.append(loc("runner-v2 시트: \(pose.rawValue) 행에 매니페스트보다 많은 프레임이 있습니다.",
-                                          "runner-v2 sheet: the \(pose.rawValue) row has more frames than the manifest."))
+                        errors.append(loc("\(sheet) 시트: \(pose.rawValue) 행에 매니페스트보다 많은 프레임이 있습니다.",
+                                          "\(sheet) sheet: the \(pose.rawValue) row has more frames than the manifest."))
                     }
                     if column < entry.frames { cells.append(cellPixels) }
                 }
                 for index in cells.indices where cells.count > 1 && cells[index] == cells[(index + 1) % cells.count] {
-                    errors.append(loc("runner-v2 시트: \(pose.rawValue) \(index + 1)번과 다음 프레임이 같습니다.",
-                                      "runner-v2 sheet: \(pose.rawValue) frame \(index + 1) is the same as the next one."))
+                    errors.append(loc("\(sheet) 시트: \(pose.rawValue) \(index + 1)번과 다음 프레임이 같습니다.",
+                                      "\(sheet) sheet: \(pose.rawValue) frame \(index + 1) is the same as the next one."))
                 }
                 frames[pose] = (0..<entry.frames).map { Self.frameImage(low: low, high: high, column: $0, row: entry.row) }
                 timings[pose] = RunnerTiming(durations: entry.durations, holdSequence: entry.holdSequence ?? [],
                                              doubleEvery: entry.doubleEvery, doubleGap: entry.doubleGap)
             }
-            loadEffects(manifest, rows: rows, sprite: low)
+            loadEffects(manifest, rows: rows, sprite: low, sheet: sheet)
         }
 
         /// The sleep z (K-2): glyphs from the fx atlas placed in cell coordinates, one template mask per step.
-        private mutating func loadEffects(_ manifest: Manifest, rows: [RunnerPose: Manifest.Pose], sprite: Pixels) {
+        private mutating func loadEffects(_ manifest: Manifest, rows: [RunnerPose: Manifest.Pose], sprite: Pixels, sheet: String) {
             guard let low = Self.load(manifest.fxSheets["1"], errors: &errors),
                   let high = Self.load(manifest.fxSheets["2"], errors: &errors),
                   Self.checkPair(low, high, loc("runner-v2-fx 시트", "runner-v2-fx sheet"), errors: &errors) else { return }
@@ -217,7 +259,7 @@ enum Runner {
                             && sprite.alpha(column * Runner.cell.width + x, entry.row * Runner.cell.height + y) != 0
                     }}}
                 }
-                if touches { errors.append(loc("\(name): 스프라이트와 1 px 간격이 없습니다.", "\(name): no 1 px gap from the sprite.")) }
+                if touches { errors.append(loc("\(name): 스프라이트(\(sheet))와 1 px 간격이 없습니다.", "\(name): no 1 px gap from the sprite (\(sheet)).")) }
                 steps[pose, default: [:]][effect.step, default: []].append((glyph, effect.x, effect.y))
             }
             for (pose, placed) in steps {

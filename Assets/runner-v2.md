@@ -1,6 +1,6 @@
 # TokenCat 러너 스프라이트 v2 (매니페스트 v3)
 
-- 생성 방식: 코드 안의 문자 격자(`Assets/Generator/RunnerArt.swift`)를 결정적으로 합성. 이미지 생성 서비스·네트워크 사용 없음.
+- 생성 방식: 코드 안의 문자 격자(캐릭터마다 `Assets/Generator/Runner<Name>Art.swift`, 공용 합성은 `RunnerArt.swift`)를 결정적으로 합성. 이미지 생성 서비스·네트워크 사용 없음.
 - 도구: Swift 6.4 `swiftc`, CoreGraphics/ImageIO(PNG 쓰기만). 보간·안티앨리어싱 없이 픽셀을 직접 씀.
 - 명령(저장소 루트):
 
@@ -10,7 +10,7 @@
 
   픽셀은 소스만으로 정해진다. 아래 bytes·SHA-256은 macOS 27.0.1·Swift 6.4에서 두 번 생성해 같음을 확인한 값이며, 다른 OS에서는 ImageIO PNG 인코더 차이로 바이트가 달라질 수 있다(픽셀은 같아야 한다).
 - 합성 검사: 네 이웃이 모두 채움(W·S·G·C·T)인 외곽선 픽셀이 생기면 생성기가 `isolated outline pixel at x,y`로 멈춘다. 2 px인 눈은 걸리지 않는다.
-- 저장 파일: `Assets/runner-v2@1x.png`, `@2x.png`(스프라이트), `Assets/runner-v2-fx@1x.png`, `@2x.png`(효과 글리프), `Assets/runner-v2.json`(매니페스트), `Assets/app-head-{normal,blink,alert,sleep}@1x.png`, `@2x.png`(픽셀 머리).
+- 저장 파일: `Assets/runner-v2@1x.png`, `@2x.png`(고양이 스프라이트), `Assets/runner-{dog,hamster,penguin,robot}@1x.png`, `@2x.png`(다른 캐릭터, 아래 「캐릭터 추가 규칙」), `Assets/runner-v2-fx@1x.png`, `@2x.png`(효과 글리프), `Assets/runner-v2.json`(매니페스트), `Assets/app-head-{normal,blink,alert,sleep}@1x.png`, `@2x.png`(픽셀 머리).
 
 ## 규격
 
@@ -33,6 +33,29 @@
 - 시간은 매니페스트가 유일한 출처이며 앱은 `Runner.timing(_:)`(`RunnerTiming`: `durations`, `holdSequence`, `doubleEvery`, `doubleGap`)으로만 읽는다. `holdSequence`가 있으면 1번 프레임의 연속 유지 시간이 이 순서로 순환하고, 없으면 `durations[0]`을 쓴다. `doubleEvery`가 N이면 N번째 깜빡임마다 감음(`durations[1]`) · 뜸(`doubleGap`) · 감음(`durations[1]`)으로 두 번 깜빡인다. 시간 값은 상태만 나타내며 속도가 아니다.
 - 입력 자세의 몸은 x 14–29로, 걷기보다 시각 무게가 약 5 px 오른쪽에 있다. 머리와 눈 위치는 같다.
 - 정면 앉기 가슴의 2 px 그늘 띠는 1x에서 목걸이 아래 넥타이처럼 보여서, 아래 두 줄(r15–16)의 1 px 앞발 사이 그늘로 줄였다(`work/runner-v2-menubar.png` 비교). 그늘은 목걸이 태그와 같은 열 23에 있어 태그와 앞발 사이가 한 줄로 이어진다.
+
+## 캐릭터 추가 규칙 (화가용)
+
+- 캐릭터마다 파일 하나: `Assets/Generator/RunnerCatArt.swift`(고양이, 작업 예시) · `RunnerDogArt.swift` · `RunnerHamsterArt.swift` · `RunnerPenguinArt.swift` · `RunnerRobotArt.swift`. 자기 파일만 고친다. 등록은 `RunnerArt.characters` 한 곳에만 있고(`id`, 출력 이름, `palette`, `poses`), 기존 캐릭터는 등록을 고칠 필요가 없다.
+- 각 파일(`enum Runner<Name>Art`)이 정의해야 하는 기호는 둘이다. 나머지 격자·도우미 이름은 자유이며 파일 안에만 둔다.
+  - `static let palette: [Character: RGBA]` — 문자 여섯 개, 모두 불투명:
+    `K` 외곽선·눈(합성기가 외곽선을 K로 씀, 가장 어두운 색) · `W` 주 털/몸 · `S` 그늘(귀 안쪽, 배 아래 줄) · `G` 먼 쪽 다리(W보다 어둡게, 몸 뒤로 읽히게) · `C` 목걸이/강조색 · `T` 태그/작은 하이라이트. 다른 문자나 반투명은 쓰지 않는다.
+  - `static let poses: RunnerArt.Poses` — `sit` 2 · `sleep` 2 · `walk` 4 · `run` 6 · `alert` 2 · `yawn` 1 · `content` 2 프레임. 프레임은 `[RunnerArt.Part]`(뒤에서 앞 순서). 생성기는 고양이와 프레임 수가 다르면 멈춘다. 시간·효과는 고양이의 매니페스트(`runner-v2.json`)를 같이 쓰므로 바꿀 수 없다.
+- `Part`: `rows`(문자 격자, `.`은 투명), `x`·`y`(셀 안 위치), `group`(`far`·`body`·`near`·`head` 칠 순서), `mergeInto`(이 그룹의 채움 위에는 외곽선을 긋지 않음), `outline`(기본 true: 1 px K 외곽선을 자동으로 두름. false면 K까지 직접 그린 완성 격자).
+- 셀 30 × 18 px. 앱은 1 pt 투명 여백을 더한 32 × 20 pt로 메뉴 막대에 재샘플링 없이 1:1(@2x는 정확한 2배 최근접)로 그린다. 고양이처럼 발은 16행에 닿고 17행은 비운다. 18 px 높이에서 머리·눈이 읽혀야 한다.
+- 자세가 전하는 것(속도가 아니라 AI 상태):
+  - `sit` 대기·쉬는 중. 2번은 눈만 감은 깜빡임.
+  - `sleep` 10분간 활동 없음. 웅크린 자세, 2번은 숨으로 등이 1 px 오름. z는 그리지 않는다(효과 레이어가 zS를 x 22–24·y 3–6, zL을 x 25–28·y 0–3에 그림). 두 잠 프레임 모두 x 21–29, y 0–7에는 픽셀을 두지 않는다(8방향 1 px 간격, 앱 검사).
+  - `walk` 진행·도구 실행. 4프레임 순환, 다리 교차와 1 px 들썩임.
+  - `run` 출력 기록 직후. 6프레임 질주.
+  - `alert` 입력 필요. 정면으로 이쪽을 보고 눈이 커짐. 1x에서 `sit`과 실루엣이 분명히 달라야 한다. 2번은 작은 움직임(꼬리 등).
+  - `yawn` 깨어날 때 한 번. 눈 감고 입 벌림.
+  - `content` 턴 완료 한 번. 꼬리·강조를 세움, 2번은 천천히 깜빡임.
+  - 공통: 1번 프레임이 정지 프레임(동작 줄이기). 이웃 프레임(마지막→첫 포함)은 서로 달라야 한다. 빈 프레임 금지.
+- 고립 픽셀 규칙: 상하좌우가 모두 채움(W·S·G·C·T)인 K 픽셀은 금지(어두운 막대에서 구멍처럼 보임). 생성기가 `isolated outline pixel at x,y (dog walk frame 2)`로 멈춘다. 눈은 1 × 2 또는 2 × 2로 그린다.
+- 지금 네 파일은 PLACEHOLDER다: 고양이 몸·다리·꼬리에 머리 격자와 팔레트만 바꿨다(`RunnerArt.catWithHeads`). 실제 그림으로 바꾸면 그 호출을 지우고, 마지막 placeholder가 사라지면 `catWithHeads`도 지운다.
+- 확인 순서: 생성기(위 명령) → `work/runner-<id>-contact-8x.png`(캐릭터별 8배, 밝은·어두운 배경, 잠 A·B·C) · `work/runner-lineup.png`(모든 캐릭터의 정지 프레임, 4배와 실제 크기) → `./build.sh` → `dist/TokenCat.app/Contents/MacOS/TokenCat --self-test`(모든 캐릭터 시트를 검사) → `--snapshot-menubar <png> --fixtures --character <id>`.
+- 앱: 선택은 `Preferences.character`(설정 › 캐릭터, 빠른 메뉴 › 캐릭터). 시트가 없거나 검사에 실패한 캐릭터는 고양이로 그리고 `Runner.resourceErrors()`에 남는다. 픽셀 머리와 앱 아이콘은 브랜드라 고양이만 쓴다.
 
 ## 효과 레이어 (잠의 z, K-2)
 
@@ -115,6 +138,7 @@
 - 스프라이트 시트: @1x가 셀의 배수, @2x가 정확히 두 배, 알파 0/255, @2x가 @1x의 최근접 확대와 픽셀 단위로 같음. 빈 프레임·초과 프레임 없음, 이웃 프레임(마지막→첫 프레임 포함)이 서로 다름.
 - 효과 시트: 같은 두 배·알파·최근접 검사, 글리프가 아틀라스와 셀 안에 있고 비어 있지 않음, 해당 자세의 모든 프레임 불투명 픽셀과 8방향 1 px 간격.
 - 픽셀 머리 네 개: 12 × 11 px, 비어 있지 않음, 두 배·알파·최근접 검사.
+- 캐릭터: `--self-test`는 다섯 캐릭터 시트를 모두 위 스프라이트·효과 간격 규칙으로 검사한다. 앱 시작 검사는 고양이(매니페스트·고양이 시트·효과·머리)만 막고, 다른 캐릭터 시트가 없거나 검사에 실패하면 고양이로 그리고 오류를 표준 오류에 남긴다.
 - 변조 확인(번들 리소스 사본으로 `Runner.swift`만 컴파일한 검사 실행): fx @2x를 sips로 재샘플링, zS를 스펙 위치 y 4로 되돌림, zS를 머리 위에 겹침, 머리 @2x 삭제, @1x 자리에 @2x 머리, v2 매니페스트, 음수 `holdSequence`, 빈 글리프, `content` 프레임 수 1, `doubleGap` 삭제·음수, `doubleEvery` 없이 `doubleGap`만 있음에서 각각 해당 오류가 나옴.
 - `drawFX` 확인(같은 방식의 검사 실행): @1x·@2x, 뒤집힌·보통 좌표계에서 잠 세 단계를 그려 마스크 픽셀만 지정 색(zS 8 · zL 10 px, @2x 32 · 40 px)이고 스프라이트 픽셀은 그대로이며 부분 알파가 없음을 확인함.
 

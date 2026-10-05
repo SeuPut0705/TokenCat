@@ -353,7 +353,7 @@ It means there's no measurement yet. TokenCat doesn't derive speeds from log tim
 
 <br>
 
-No. The bars are the amount recorded every 5 seconds, and with the default motion source the cat's pace is fixed for each state. To make it move with measured speed, choose 'Measured AI Speed' in Settings › Cat. It reacts only to measurements from the last 5 seconds.
+No. The bars are the amount recorded every 5 seconds, and with the default motion source the cat's pace is fixed for each state. To make it move with measured speed, choose 'Measured AI Speed' in Settings › Character. It reacts only to measurements from the last 5 seconds.
 
 </details>
 
