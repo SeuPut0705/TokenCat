@@ -301,6 +301,13 @@ TokenCat checks the measurement connection on every launch and adds it again if 
 
 ## Windows (preview)
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/windows-flyout-dark.png">
+    <img src="docs/images/en/windows-flyout-light.png" width="420" alt="The Windows dashboard from the CI render: 2 sessions need input, output tokens 7,800 with docs-site 55.6 generation tok/s, Codex and Claude limit rows, sessions and system metrics.">
+  </picture>
+</p>
+
 TokenCat also runs in the Windows notification area, starting with 0.11.0. It's a port of the Mac app's rules, with the same checks, but it has been tried on far fewer PCs, so please [report issues](https://github.com/SeuPut0705/TokenCat/issues) (don't attach `--diagnose` output: it includes project paths). How it's built is in [Details › Windows (preview)](docs/DETAILS.md#windows-preview).
 
 It runs on Windows 10 and 11 (x64). There's no installer.

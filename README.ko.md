@@ -301,6 +301,13 @@ TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다�
 
 ## Windows (미리보기)
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/windows-flyout-dark.png">
+    <img src="docs/images/ko/windows-flyout-light.png" width="420" alt="CI에서 렌더링한 Windows 상세 창: 입력 필요 2개, 출력 토큰 7,800과 지금 속도 docs-site 55.6 생성 tok/s, Codex·Claude 한도, 세션과 시스템 지표.">
+  </picture>
+</p>
+
 0.11.0부터 TokenCat은 Windows 알림 영역에서도 실행됩니다. Mac 앱의 규칙을 같은 검사와 함께 옮겼지만 써 본 PC가 훨씬 적으므로, 문제가 있으면 [이슈](https://github.com/SeuPut0705/TokenCat/issues)로 알려 주세요(`--diagnose` 출력은 프로젝트 경로가 들어 있으니 첨부하지 마세요). 만든 방식은 [자세한 동작 › Windows (미리보기)](docs/DETAILS.ko.md#windows-미리보기)에 있습니다.
 
 Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
