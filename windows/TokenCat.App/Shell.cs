@@ -124,7 +124,7 @@ sealed class Shell
     /// A second launch (payload-free hand-off) opens the dashboard at the primary work area's corner.
     public void OpenAtCorner()
     {
-        if (window is { IsVisible: true }) { window.Activate(); return; }
+        if (window is { IsVisible: true }) { Front(window); return; }
         var area = Forms.Screen.PrimaryScreen!.WorkingArea;
         ShowFlyout(new Drawing.Point(area.Right, area.Bottom));
     }
@@ -290,7 +290,7 @@ sealed class Shell
     {
         // Clicking the icon while the flyout is open first deactivates (hides) it; that same click must not reopen it.
         if (DateTime.UtcNow - hiddenAt < TimeSpan.FromMilliseconds(300)) return;
-        if (window is { IsVisible: true }) { window.Activate(); return; }
+        if (window is { IsVisible: true }) { Front(window); return; }
         ShowFlyout(Forms.Cursor.Position);
     }
 
@@ -319,7 +319,7 @@ sealed class Shell
     void OpenDashboard(string? focus = null)
     {
         Dashboard target;
-        if (window is { IsVisible: true }) { window.Activate(); target = window.Dashboard; }
+        if (window is { IsVisible: true }) { Front(window); target = window.Dashboard; }
         else
         {
             if (!flyout.IsVisible) OpenAtCorner();
@@ -339,7 +339,7 @@ sealed class Shell
         updater.DashboardOpened();
         window.Dashboard.Show(Input());
         window.Show();
-        window.Activate();
+        Front(window);
         window.Dashboard.Opened();
     }
 
@@ -359,8 +359,14 @@ sealed class Shell
         if (page is { } chosen) settings.Select(chosen);
         settings.Refresh(SettingsInput());
         settings.Show();
-        if (settings.WindowState == WindowState.Minimized) settings.WindowState = WindowState.Normal;
-        settings.Activate();
+        Front(settings);
+    }
+
+    /// Activate alone doesn't restore a minimized window: it would stay on the taskbar while the click shows nothing.
+    static void Front(Window target)
+    {
+        if (target.WindowState == WindowState.Minimized) target.WindowState = WindowState.Normal;
+        target.Activate();
     }
 
     void ShowAbout() => OpenSettings(SettingsPage.About);

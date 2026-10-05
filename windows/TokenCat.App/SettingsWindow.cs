@@ -132,6 +132,8 @@ sealed class SettingsView : Grid
     public void Select(SettingsPage chosen)
     {
         page = chosen;
+        var hadFocus = nav.IsKeyboardFocusWithin;
+        Button? current = null;
         nav.Children.Clear();
         foreach (var item in Enum.GetValues<SettingsPage>())
         {
@@ -141,7 +143,9 @@ sealed class SettingsView : Grid
                 Background = item == page ? Theme.Brush(Theme.Selection) : null }, () => Select(item), SettingsWindow.Titles(item));
             button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             nav.Children.Add(button);
+            if (item == page) current = button;
         }
+        if (hadFocus) current?.Focus();
         signature = null;
         selected(chosen);
         Refresh(input);
@@ -159,8 +163,29 @@ sealed class SettingsView : Grid
         };
         var built = Signature(content);
         if (built == signature) return;
+        // A press in progress keeps its button until the next tick; swapping it now would lose the click.
+        if (host.IsMouseCaptureWithin) return;
         signature = built;
+        // Keyboard focus moves to the element at the same position in the new page.
+        var focused = host.IsKeyboardFocusWithin && host.Content is DependencyObject old && Keyboard.FocusedElement is UIElement focus
+            ? Focusables(old).IndexOf(focus) : -1;
         host.Content = content;
+        if (focused < 0) return;
+        host.UpdateLayout();
+        Focusables(content).ElementAtOrDefault(focused)?.Focus();
+    }
+
+    /// Focusable elements in logical-tree order (the order Signature walks).
+    static List<UIElement> Focusables(DependencyObject root)
+    {
+        var found = new List<UIElement>();
+        void Walk(object node)
+        {
+            if (node is UIElement { Focusable: true } element) found.Add(element);
+            if (node is DependencyObject dependency) foreach (var child in LogicalTreeHelper.GetChildren(dependency)) Walk(child);
+        }
+        Walk(root);
+        return found;
     }
 
     /// Every text, state and enabled flag in the tree: equal signatures draw the same page.
@@ -209,7 +234,7 @@ sealed class SettingsView : Grid
 
     static TextBlock Caption(string text, Color? color = null)
     {
-        var block = Ui.Text(text, Font.Meta, color ?? Theme.Secondary);
+        var block = Ui.Text(Ui.KeepWords(text), Font.Meta, color ?? Theme.Secondary);
         block.TextWrapping = TextWrapping.Wrap;
         block.TextTrimming = TextTrimming.None;
         return block;

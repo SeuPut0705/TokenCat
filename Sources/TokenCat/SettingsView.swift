@@ -13,6 +13,8 @@ enum AppInfo {
     static var version: String { Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—" }
     static var build: String { Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—" }
     static var title: String { "TokenCat \(version) (\(build))" }
+    /// The binary the disconnect command names; settings fixtures pin the installed path so snapshots hold no local path.
+    static var executablePath = Bundle.main.executablePath ?? "/Applications/TokenCat.app/Contents/MacOS/TokenCat"
     static var privacy: String {
         loc("로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인과, 업데이트를 누를 때의 내려받기뿐입니다.",
             "TokenCat reads only metadata from local logs and local telemetry. It never stores or shows prompts or responses, never calls a model and never signs in to an account. It goes online only to check GitHub for updates and to download one when you click Update.")
@@ -711,8 +713,8 @@ private struct TelemetryPane: View {
                 LabeledContent(loc("Claude 한도", "Claude limits")) { statusLine(limits.row, limits.text, detail: limits.detail) }
             } footer: {
                 // Non-breaking hyphens (U+2011) keep the flag on one line; the footer is not selectable, so it is retyped.
-                settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 되돌리려면 터미널에서 /Applications/TokenCat.app/Contents/MacOS/TokenCat \u{2011}\u{2011}disconnect\u{2011}telemetry를 실행합니다.",
-                                   "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply. To undo it, run /Applications/TokenCat.app/Contents/MacOS/TokenCat \u{2011}\u{2011}disconnect\u{2011}telemetry in Terminal."))
+                settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 되돌리려면 터미널에서 \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry를 실행합니다.",
+                                   "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply. To undo it, run \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry in Terminal."))
             }
             if !files.isEmpty {
                 Section {

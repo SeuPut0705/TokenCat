@@ -458,18 +458,18 @@ public static class SessionPresentationChecks
               && expiredNotice?.Help.StartsWith("Codex: 이 버전에서 실측을 받지 못했습니다", StringComparison.Ordinal) == true,
               "a day without a receipt asks for a check");
         check(port?.Text == "실측 꺼짐 · 포트 사용 중" && conflict?.Text == "실측 꺼짐 · 설정 충돌"
-              && failed?.Kind == TelemetryNoticeKind.Failed && restart?.Text == "재시작 후 실측 표시" && restart?.IsProblem == false
+              && failed?.Kind == TelemetryNoticeKind.Failed && restart?.Text == "Codex · Claude Code 재시작 후 실측 표시" && restart?.IsProblem == false
               && restart?.Help.StartsWith("Codex · Claude Code를 새로 실행하면", StringComparison.Ordinal) == true, "telemetry notice causes");
         check(new[] { TelemetryCollectorState.Receiving, TelemetryCollectorState.Waiting, TelemetryCollectorState.Starting }
                   .All(collector => Notice(collector, null, none) == null)
-              && new[] { port, conflict, failed, restart, otherTokenCat, broken, expiredNotice }.All(notice => (notice?.Text.Count(ch => ch != ' ') ?? 0) <= 15),
+              && new[] { port, conflict, failed, otherTokenCat, broken, expiredNotice }.All(notice => (notice?.Text.Count(ch => ch != ' ') ?? 0) <= 15),
               "no notice while healthy; copy stays short");
         // The footer's one item, by priority.
         check(Footer(true, 20, 20, port) == new FooterStatus(FooterStatusKind.Loading, "준비 중")
               && Footer(false, 12, 5, port) == new FooterStatus(FooterStatusKind.AiDelay, "AI 수집 지연 12초")
               && Footer(false, 3, 4, port) == new FooterStatus(FooterStatusKind.SystemDelay, "시스템 수집 지연 4초")
               && Footer(false, 0, 0, port) == new FooterStatus(FooterStatusKind.Notice, "실측 꺼짐 · 포트 사용 중")
-              && Footer(false, 0, 0, restart).Text == "재시작 후 실측 표시" && Footer(false, 0, 0, null) == new FooterStatus(FooterStatusKind.Live, "실시간"),
+              && Footer(false, 0, 0, restart).Text == "Codex · Claude Code 재시작 후 실측 표시" && Footer(false, 0, 0, null) == new FooterStatus(FooterStatusKind.Live, "실시간"),
               "footer priority: AI delay, system delay, notice, live");
         var conflictFailure = new TelemetrySetupFailure.Conflict();
         check(OnboardingOutcome.Make(port, null, null, TelemetryCollectorState.BusyOtherApp) == new OnboardingOutcome.CollectorDown("실측 꺼짐 · 포트 사용 중")

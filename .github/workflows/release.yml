@@ -53,6 +53,11 @@ jobs:
             2) exists=false; echo "$tag 릴리스를 만듭니다 (build $build)." ;;
             *) exit "$status" ;;
           esac
+          # The release notes list the changes from this version's CHANGELOG.md entry.
+          if [[ $exists == false ]] && ! grep -qxF "## $version" CHANGELOG.md; then
+            echo "::error file=CHANGELOG.md::CHANGELOG.md에 '## $version' 항목이 없습니다."
+            exit 1
+          fi
           # The new release becomes /releases/latest, which the app compares against: it must be newer than the current one.
           if [[ $exists == false ]]; then
             latest=""
@@ -208,6 +213,7 @@ jobs:
             echo "A Windows preview that lives in the notification area is attached too · 알림 영역에서 실행되는 Windows 미리보기도 함께 올립니다."
             echo
             echo "## Changes · 변경 사항"
+            awk -v heading="## $VERSION" '$0 == heading { on = 1; next } on && /^## / { exit } on' CHANGELOG.md
             echo
             if [[ -n $previous ]]; then
               echo "Full comparison · 전체 비교: [$previous...$TAG]($repo_url/compare/$previous...$TAG)"
@@ -250,10 +256,10 @@ jobs:
 
           ## Install on Windows (preview)
 
-          Runs on Windows 10 and 11 (x64; Windows on Arm runs it under emulation). There's no installer.
+          Runs on Windows 10 and 11 (x64). There's no installer.
 
           1. Download **TokenCat-Windows.zip** below. If you right-click it and choose **Properties**, check **Unblock** and click **OK** before extracting, step 3 doesn't appear.
-          2. Extract \`TokenCat.exe\` to \`%LOCALAPPDATA%\Programs\TokenCat\` (paste it into the File Explorer address bar) and run it from there. Run from inside the zip or a temporary folder, it can't update itself.
+          2. Extract the whole zip (\`TokenCat.exe\` and \`LICENSE\`) to \`%LOCALAPPDATA%\Programs\TokenCat\` and run \`TokenCat.exe\` from there. In PowerShell, \`Expand-Archive "\$HOME\Downloads\TokenCat-Windows.zip" "\$env:LOCALAPPDATA\Programs\TokenCat"\` creates the folder. Run from inside the zip or a temporary folder, it can't update itself.
           3. The app isn't code-signed, so Microsoft Defender SmartScreen may show **Windows protected your PC**. Click **More info**, then **Run anyway** (the wording can differ between Windows versions). With **Smart App Control** on (Windows 11), unsigned apps are blocked with no way to allow a single one; TokenCat runs only with Smart App Control off.
           4. The cat appears in the notification area. Windows 11 puts new icons in the overflow (**^**): drag the cat onto the taskbar, or turn it on in **Settings › Personalization › Taskbar › Other system tray icons**, to keep it in view.
 
@@ -297,10 +303,10 @@ jobs:
 
           ## Windows에 설치 (미리보기)
 
-          Windows 10과 11(x64)에서 실행됩니다. Arm용 Windows에서는 에뮬레이션으로 실행됩니다. 설치 프로그램은 없습니다.
+          Windows 10과 11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 
           1. 아래 **TokenCat-Windows.zip**을 내려받습니다. 압축을 풀기 전에 파일을 우클릭해 **속성**에서 **차단 해제**를 체크하고 **확인**을 누르면 3단계가 나오지 않습니다.
-          2. \`TokenCat.exe\`를 \`%LOCALAPPDATA%\Programs\TokenCat\`(파일 탐색기 주소 표시줄에 붙여 넣기)에 풀고 그곳에서 실행합니다. 압축 파일 안이나 임시 폴더에서 실행하면 스스로 업데이트할 수 없습니다.
+          2. zip 전체(\`TokenCat.exe\`와 \`LICENSE\`)를 \`%LOCALAPPDATA%\Programs\TokenCat\`에 풀고 그곳에서 \`TokenCat.exe\`를 실행합니다. PowerShell에서 \`Expand-Archive "\$HOME\Downloads\TokenCat-Windows.zip" "\$env:LOCALAPPDATA\Programs\TokenCat"\`를 실행하면 폴더도 만듭니다. 압축 파일 안이나 임시 폴더에서 실행하면 스스로 업데이트할 수 없습니다.
           3. 코드 서명을 하지 않은 앱이라 Microsoft Defender SmartScreen이 **Windows의 PC 보호** 창을 띄울 수 있습니다. **추가 정보**를 누른 뒤 **실행**을 누릅니다(Windows 버전에 따라 문구가 다를 수 있습니다). Windows 11에서 **스마트 앱 컨트롤**이 켜져 있으면 서명하지 않은 앱을 하나만 허용할 방법이 없어, 스마트 앱 컨트롤을 꺼야 실행됩니다.
           4. 고양이는 알림 영역에 나타납니다. Windows 11은 새 아이콘을 숨겨진 아이콘(**^**)에 넣으므로, 고양이를 작업 표시줄로 끌어 놓거나 **설정 › 개인 설정 › 작업 표시줄 › 기타 시스템 트레이 아이콘**에서 켜면 계속 보입니다.
 

@@ -306,7 +306,7 @@ TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다�
 Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 
 1. [**TokenCat-Windows.zip 내려받기**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip) (Mac 앱과 같은 [최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest)의 첨부 파일). `TokenCat.exe` 하나와 `LICENSE`가 들어 있습니다.
-2. `TokenCat.exe`를 `%LOCALAPPDATA%\Programs\TokenCat`(권장, 파일 탐색기 주소 표시줄에 붙여 넣기)에 풀고 그곳에서 실행합니다. 압축 파일 안이나 임시 폴더에서 실행하면 스스로 업데이트하거나 로그인 시 열 수 없습니다.
+2. zip 전체(`TokenCat.exe`와 `LICENSE`)를 `%LOCALAPPDATA%\Programs\TokenCat`(권장)에 풀고 그곳에서 `TokenCat.exe`를 실행합니다. PowerShell에서 `Expand-Archive "$HOME\Downloads\TokenCat-Windows.zip" "$env:LOCALAPPDATA\Programs\TokenCat"`를 실행하면 폴더도 만듭니다. 압축 파일 안이나 임시 폴더에서 실행하면 스스로 업데이트하거나 로그인 시 열 수 없습니다.
 3. 코드 서명을 하지 않은 exe라 Microsoft Defender SmartScreen이 **Windows의 PC 보호** 창을 띄울 수 있습니다. **추가 정보**를 누른 뒤 **실행**을 누릅니다(영어 Windows에서는 **More info** → **Run anyway**). Windows 버전에 따라 문구가 다를 수 있으니 PC에 보이는 대로 따르세요. 압축을 풀기 전에 zip 파일 **속성**에서 **차단 해제**를 체크하면 이 창이 나오지 않습니다. Windows 11에서 **스마트 앱 컨트롤**이 켜져 있으면 서명하지 않은 앱을 하나만 허용할 방법이 없어, 이를 꺼야 실행됩니다.
 4. 처음에는 고양이가 숨겨진 아이콘(**^**) 안에 있을 수 있습니다. 계속 보이게 하려면 **^**에서 작업 표시줄로 끌어 놓거나, **설정 › 개인 설정 › 작업 표시줄 › 기타 시스템 트레이 아이콘**에서 켭니다.
 

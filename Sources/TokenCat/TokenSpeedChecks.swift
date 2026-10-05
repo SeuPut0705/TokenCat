@@ -73,6 +73,9 @@ func runTokenSpeedChecks() -> [String] {
     agent.agentID = "worker"
     let identified = TokenSpeed.apply([a, child], measurements: [agent])
     check("known agent attaches only to exact identity", identified.count == 2 && identified[0].speedMeasurement == nil && identified[1].speedMeasurement?.tokensPerSecond == 25)
+    var untracked = server
+    untracked.agentID = "untracked"
+    check("an untracked agent of a logged session adds no row", TokenSpeed.apply([a], measurements: [untracked]).count == 1)
     let modelOnly = reading(["serverTokenIntervalMs": 40])
     let detached = TokenSpeed.apply([a, b], measurements: [modelOnly])
     check("model-only observations stay independently identified", detached.count == 3 && detached.last?.project == "모델 실측" && detached[0].speedMeasurement == nil && detached[1].speedMeasurement == nil)

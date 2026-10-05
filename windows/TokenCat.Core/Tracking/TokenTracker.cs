@@ -132,11 +132,13 @@ public sealed class TokenTracker
     static IOrderedEnumerable<FileSystemInfo> Descending(IEnumerable<FileSystemInfo> entries) =>
         entries.OrderByDescending(entry => entry.Name, StringComparer.Ordinal);
 
-    /// The 32 newest logs by the enumeration's modification time (discovery ranking only; reads use a fresh query, rule 8).
+    /// The 32 newest logs by the enumeration's modification time (discovery ranking only; reads use a fresh query, rule 8),
+    /// plus up to 32 more modified since `since` (the retention hour), so a cold start opens them too.
     /// ponytail: NTFS may report a stale time for a log held open since before launch; tracked recent logs are retained,
     /// so it only matters with 32+ newer files.
-    static List<string> Recent(IEnumerable<FileSystemInfo> entries) =>
-        [.. entries.Where(IsLog).OrderByDescending(entry => entry.LastWriteTimeUtc).Take(32).Select(entry => entry.FullName)];
+    static List<string> Recent(IEnumerable<FileSystemInfo> entries, DateTime? since = null) =>
+        [.. entries.Where(IsLog).OrderByDescending(entry => entry.LastWriteTimeUtc)
+            .Where((entry, rank) => rank < 32 || (rank < 64 && entry.LastWriteTimeUtc >= since)).Select(entry => entry.FullName)];
 
     List<string> CodexFiles()
     {
@@ -164,7 +166,7 @@ public sealed class TokenTracker
                 subagents.AddRange(ClaudeSubagentFiles(Path.Combine(session.FullName, "subagents"), 2));
         }
         // Workflow agents create many files; they get their own cap so main sessions stay visible.
-        return [.. Recent(main), .. Recent(subagents)];
+        return [.. Recent(main), .. Recent(subagents, clock().UtcDateTime.AddHours(-1))];
     }
 
     static List<FileSystemInfo> ClaudeSubagentFiles(string directory, int remainingDepth)

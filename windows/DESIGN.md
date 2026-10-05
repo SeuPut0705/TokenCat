@@ -1,6 +1,6 @@
 # TokenCat for Windows — design (v1)
 
-Status: proposal. Spike built and checked on this Mac (macOS, .NET SDK 10.0.401). Nothing in the repo was changed.
+Status: implemented in 0.11.0 (`windows/`). Design record; code comments cite its § numbers; where it differs from the code, the code wins.
 Scope rule: port the mac app's specs, not its UI toolkit. One Core library holds every rule and every check; the Windows
 shell is thin. No third-party packages.
 
@@ -272,7 +272,7 @@ Icon size `N` comes from §2.5. Frame pixels come from Core `TrayFrame`, with in
 
   Bob uses spare rows when there are any, otherwise it shifts up. Cadence is always the manifest's (K-6). Nothing animates while the pose is
   held (same one-shot timer rule as `RunnerAnimator`).
-* **Corner dot** (both modes): 3×3 art px × k, bottom-right. Yellow `attention` = input, orange `warning` = API retry. Nothing else
+* **Corner dot** (both modes): 3×3 art px × the head scale `max(1, N / 12)` (body mode too, so it stays about 0.4 N), bottom-right. Yellow `attention` = input, orange `warning` = API retry. Nothing else
   (working/tool are motion). 1 art-px outline in the taskbar's opposite tone (`SystemUsesLightTheme`) for contrast.
 * Pause the timer on `SessionSwitch` lock and `PowerModes.Suspend`, and resume after.
 * Tooltip: `StatusBarContent.tooltip` text, truncated to 127 chars on a line boundary.
@@ -299,11 +299,11 @@ update item (`UpdateState.quickMenuTitle`) when present, **Settings…**, **Task
 
 ### 4.4 Settings window
 Normal WPF window with four pages (left nav):
-* **General**: start at login (with Run/StartupApproved status text), notifications (input, turn end), automatic updates.
+* **General**: start at login (with Run/StartupApproved status text), notifications (input, turn end), Restore Defaults.
 * **Character**: picker with live 2× preview, motion source with `caption`/`subtitle` texts.
-* **Telemetry**: collector state, connect/disconnect buttons (same `TelemetrySetup` calls as the CLI), backups folder button, Claude bridge
-  and desktop-history status.
-* **About**: version, check/install update, licence, GitHub link.
+* **Telemetry**: collector state with Retry Now, per-client status, Claude limits status, the `--disconnect-telemetry` command as text, and
+  buttons that show the backups folder and both config files in File Explorer. Connecting and disconnecting stay in the CLI.
+* **About**: version, privacy note, licence, Show Welcome Again, and Updates (automatic check, check/install update, new-version notice).
 
 Texts come from `SettingsView.swift`, minus the cut items.
 
@@ -338,8 +338,8 @@ windows/
                                    # win-x64, SelfContained, PublishSingleFile, IncludeNativeLibrariesForSelfExtract,
                                    # SatelliteResourceLanguages=en;ko, so `dotnet publish -c Release` = the release exe
     TokenCat.App.csproj app.manifest (PerMonitorV2, asInvoker) TokenCat.ico
-    Program.cs Shell.cs TrayIcon.cs Sprites.cs Dashboard.xaml(.cs) Flyout.xaml(.cs) DashboardWindow.xaml(.cs)
-    SettingsWindow.xaml(.cs) Theme.xaml Theme.cs WindowsSystemSampler.cs LoginItem.cs Notifications.cs Fixtures.cs Snapshot.cs
+    Program.cs Shell.cs TrayIcon.cs Native.cs Sprites.cs Theme.cs Flyout.xaml(.cs) Dashboard.cs SessionList.cs SettingsWindow.cs
+    WindowsSystemSampler.cs LoginItem.cs Fixtures.cs Snapshot.cs AppChecks.cs   # UI built in code; Flyout.xaml is the only XAML
 ```
 Assets are **not copied into the repo**. `TokenCat.App.csproj` embeds `../../Assets/runner-*@{1x,2x}.png`, `app-head-*`, `runner-v2-fx*`
 and `runner-v2.json` as `EmbeddedResource` with `LogicalName=%(Filename)%(Extension)`, excluding `runner-sheet-v1.png`. This is the same

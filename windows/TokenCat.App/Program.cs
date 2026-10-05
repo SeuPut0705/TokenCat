@@ -111,7 +111,13 @@ static class Program
     static int ConnectTelemetry(bool connect)
     {
         SettingsStore.Shared.Set(TelemetrySetup.OptOutKey, !connect);
-        if (connect && !TelemetryCollector.IsOwnCollectorRunning(TimeSpan.FromSeconds(1)))
+        // A failed write is silent in the store; an unsaved opt-out would let the next launch reconnect.
+        if (SettingsStore.Shared.Get<bool?>(TelemetrySetup.OptOutKey) != !connect)
+        {
+            Console.WriteLine(Loc("TokenCat 설정 파일을 저장하지 못해 아무것도 바꾸지 않았습니다.", "Couldn't save TokenCat's settings file, so nothing was changed."));
+            return 1;
+        }
+        if (connect &&!TelemetryCollector.IsOwnCollectorRunning(TimeSpan.FromSeconds(1)))
         {
             Console.WriteLine(Loc("실행 중인 TokenCat 로컬 수집기가 없습니다. 앱을 먼저 실행하세요.", "No TokenCat collector is running. Open the app first."));
             return 1;

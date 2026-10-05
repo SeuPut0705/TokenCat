@@ -59,6 +59,8 @@ public static class TokenSpeedChecks
         var agent = server with { AgentID = "worker" };
         var identified = TokenSpeed.Apply([a, child], [agent]);
         check("known agent attaches only to exact identity", identified.Count == 2 && identified[0].SpeedMeasurement == null && identified[1].SpeedMeasurement?.TokensPerSecond == 25);
+        var untracked = server with { AgentID = "untracked" };
+        check("an untracked agent of a logged session adds no row", TokenSpeed.Apply([a], [untracked]).Count == 1);
         var modelOnly = reading with { ServerTokenIntervalMs = 40 };
         var detached = TokenSpeed.Apply([a, b], [modelOnly]);
         check("model-only observations stay independently identified", detached.Count == 3 && detached[^1].Project == "모델 실측" && detached[0].SpeedMeasurement == null && detached[1].SpeedMeasurement == null);

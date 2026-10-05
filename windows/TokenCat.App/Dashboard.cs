@@ -112,7 +112,7 @@ sealed class Dashboard : UserControl
         header.Update(SessionPresentation.Header(state.Sessions.Counts, loading, state.Now, input.QuietSince, false));
 
         var notice = TelemetryNoticeFor(input);
-        // "감쌌습니다(출력 그대로)" only while the original status line command is known.
+        // The status line bridge note only while the original status line command is known.
         OnboardingOutcome? outcome = snapshot || input.OnboardingSeen ? null : OnboardingOutcome.Make(notice, input.SetupNote, input.SetupFailure,
             state.TelemetryState, input.ClaudeBridged == true && !input.ConnectNotes.Contains(TelemetrySetupNote.OriginalUnknown), input.OptedOut);
         if (!Equals(outcome, onboardingShown))
@@ -304,7 +304,7 @@ static class OnboardingCard
     static (string Title, string Detail, string? Tail) Telemetry(OnboardingOutcome outcome) => outcome switch
     {
         OnboardingOutcome.Added(var bridged) => (Loc("실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했습니다", "Added local telemetry to Codex and Claude Code settings"),
-            bridged ? Loc("Claude Code 상태 표시줄도 한도만 읽도록 감쌌습니다(출력 그대로)", "Also wrapped the Claude Code status line to read limits (output unchanged)")
+            bridged ? Loc("Claude Code 상태 표시줄에 한도만 읽는 브리지를 추가했습니다(출력 없음)", "Also added a status line bridge that only reads limits (prints nothing)")
                 : Loc("새로 실행할 때부터 적용됩니다", "Applies from the next launch"),
             bridged ? Loc("새로 실행할 때부터 적용", "Applies from the next launch") : null),
         OnboardingOutcome.Skipped(var reason) => (Loc("실측 연결을 건너뛰었습니다", "Skipped connecting telemetry"), reason, null),
@@ -376,6 +376,7 @@ static class OnboardingCard
 
     static TextBlock Wrap(TextBlock text)
     {
+        text.Text = Ui.KeepWords(text.Text);
         text.TextWrapping = TextWrapping.Wrap;
         text.TextTrimming = TextTrimming.None;
         return text;
@@ -396,7 +397,8 @@ sealed class FlowCard : Border
     readonly TextBlock caption = Ui.Text("", Font.Meta);
     readonly StackPanel captionRow;
     readonly Border lastSlot = new() { HorizontalAlignment = HorizontalAlignment.Right };
-    readonly Border lowerSlot = new() { Height = 18, Margin = new Thickness(0, 2, 0, 0) };
+    // 21 tall with -3 below: the metric font's descenders fit while the card keeps its 18 + 2 rhythm (like line 3 rows).
+    readonly Border lowerSlot = new() { Height = 21, Margin = new Thickness(0, 2, 0, -3) };
     readonly FlowChart chart = new() { Height = 61, Margin = new Thickness(0, 8, 0, 0) };
     object? lastKey, lowerKey;
 
@@ -513,15 +515,20 @@ sealed class FlowCard : Border
         chart.Set(flow.Hero, flow.Fresh, loading);
     }
 
-    /// "지금 속도 · TokenCat  52.3 요청 tok/s": the project drops first when the row is tight, then the label.
+    /// "지금 속도 · TokenCat  52.3 요청 tok/s": the label drops first when the row is tight, then the project.
     static FrameworkElement SpeedHeadlineView(SpeedHeadline headline, double room)
     {
-        TextBlock Value() => Ui.Line(Ui.Run(headline.Value, Font.Metric, headline.Known ? Theme.Label : Theme.Tertiary),
-            Ui.Run(" " + (headline.Kind ?? "tok/s"), Font.Micro, Theme.Secondary));
-        FrameworkElement Labelled(string label) => Dashboard.Row(6, Ui.Text(label, Font.Meta, Theme.Secondary), Value());
+        // The label is the line's first run, so it shares the value's baseline.
+        TextBlock Value(string? label = null)
+        {
+            var line = Ui.Line(Ui.Run(headline.Value, Font.Metric, headline.Known ? Theme.Label : Theme.Tertiary),
+                Ui.Run(" " + (headline.Kind ?? "tok/s"), Font.Micro, Theme.Secondary));
+            if (label is not null) line.Inlines.InsertBefore(line.Inlines.FirstInline, Ui.Run(label + " ", Font.Meta, Theme.Secondary));
+            return line;
+        }
         var view = Dashboard.Fit(room,
-            () => Labelled(headline.Project is { } project ? Loc("지금 속도 · ", "Speed now · ") + project : Loc("지금 속도", "Speed now")),
-            () => Labelled(Loc("지금 속도", "Speed now")), Value);
+            () => Value(headline.Project is { } project ? Loc("지금 속도 · ", "Speed now · ") + project : Loc("지금 속도", "Speed now")),
+            () => Value(headline.Project ?? Loc("지금 속도", "Speed now")), () => Value());
         view.ToolTip = headline.Help;
         System.Windows.Automation.AutomationProperties.SetName(view, Loc("지금 속도", "Speed now") + ", " + headline.Spoken);
         return view;
@@ -609,6 +616,8 @@ sealed class LimitRow : StackPanel
     public LimitRow()
     {
         Margin = new Thickness(0);
+        // 13 DIP value beside 11 DIP texts: raised by the ascent difference so all three share one baseline.
+        value.Margin = new Thickness(0, -2, 0, 0);
         var line = Dashboard.Spread(Dashboard.Row(6, title, value), details);
         line.Height = 16;
         var body = new StackPanel { Margin = new Thickness(Dashboard.Inset, 8, Dashboard.Inset, 8) };
@@ -708,9 +717,8 @@ sealed class SystemArea : StackPanel
         public Cell(string title, string help)
         {
             var label = Ui.Text(title, Font.Micro, Theme.Secondary);
-            label.Height = 12;
+            label.Height = 14;
             Value.Height = 16;
-            Value.Margin = new Thickness(0, 2, 0, 0);
             Children.Add(label);
             Children.Add(Value);
             Children.Add(Aux);
@@ -761,6 +769,8 @@ sealed class SystemArea : StackPanel
         for (var i = 0; i < order.Length; i++)
         {
             cells.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(widths[i] + (i < order.Length - 1 ? 12 : 0)) });
+            // The 12 DIP gap is the cell's margin, so the cell and its meter are widths[i] wide (the CPU peak mark uses it).
+            order[i].Margin = new Thickness(0, 0, i < order.Length - 1 ? 12 : 0, 0);
             Grid.SetColumn(order[i], i);
             cells.Children.Add(order[i]);
         }

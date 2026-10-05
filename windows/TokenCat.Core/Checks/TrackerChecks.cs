@@ -822,6 +822,21 @@ public static class TrackerChecks
             check(resumedReading.LastTurnDurationSeconds == 2 && resumedReading.LastOutputTokens == 100,
                   "Codex discovery omitted a resumed old-date file newer than 32 current-day files");
 
+            // A cold start also opens subagent logs past the newest 32 that changed within the hour, up to 64.
+            var burstFolder = Path.Combine(root, "burst", ".claude", "projects", "p", "s", "subagents");
+            Directory.CreateDirectory(burstFolder);
+            for (var index = 0; index < 36; index++)
+            {
+                var record = Assistant($"burst-{index}", 5, "2026-10-04T04:00:01Z", $"burst-{index}");
+                record["agentId"] = $"burst-{index}";
+                record["isSidechain"] = true;
+                var path = Path.Combine(burstFolder, $"agent-burst-{index}.jsonl");
+                File.WriteAllBytes(path, Line(record));
+                File.SetLastWriteTimeUtc(path, now.AddSeconds(-(index < 32 ? 60 : index < 35 ? 1_800 : 7_200)).UtcDateTime);
+            }
+            check(new TokenTracker(Path.Combine(root, "burst"), () => now).Sample().Count == 35,
+                  "Cold discovery dropped subagent logs from the last hour past the newest 32, or kept older ones");
+
             // Windows (DESIGN WP1): watcher hints use backslashes there; only agent-* logs under subagents\ are tracked.
             var hintHome = Path.Combine(root, "hints");
             var hintFolder = Path.Combine(hintHome, ".claude", "projects", "p");

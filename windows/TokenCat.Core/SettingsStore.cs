@@ -12,10 +12,13 @@ public sealed class SettingsStore(string path)
 
     static readonly Mutex WriteLock = new(false, @"Local\dev.seuput.TokenCat.settings");
 
-    /// Missing key or a value of another type → default. Ask for `bool?`/`int?` to tell "unset" from false/0.
+    /// Missing key, a value of another type or an unreadable file → default. Ask for `bool?`/`int?` to tell "unset" from false/0.
     public T? Get<T>(string key)
     {
-        if (Read()?[key] is not { } value) return default;
+        JsonObject? root;
+        try { root = Read(); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return default; }
+        if (root?[key] is not { } value) return default;
         try { return value.Deserialize<T>(Json.Options); }
         catch (JsonException) { return default; }
     }
@@ -51,6 +54,8 @@ public sealed class SettingsStore(string path)
             change(root);
             AppPaths.WriteAtomically(path, Json.Write(root));
         }
+        // Disk full, read-only or locked: the change is dropped, never thrown into the app. An unreadable file isn't overwritten.
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         finally { WriteLock.ReleaseMutex(); }
     }
 }

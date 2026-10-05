@@ -81,7 +81,7 @@ public static class StatusSummaryChecks
         var laterTip = StatusBarContent.Tooltip(busy with { CpuPercent = 81, UploadBytesPerSecond = 88_000 }, busyCounts, busyAI, true, true);
         check("tooltip omits per-second values and names the quick menu",
               tip == laterTip && !tip.Contains('%') && !tip.Contains("B/s") && tip.Contains("우클릭: 빠른 메뉴")
-              && tip.Contains("메모리 18 / 24 GB") && tip.Contains("입력 필요 1"));
+              && tip.Contains("메모리 18 / 24 GB") && tip.Contains("진행 중 1개") && tip.Contains("입력 필요 1"));
 
         // Quick menu (M-5): headline counts and up to three groups in urgency order, minutes only.
         TokenReading live(string id, string? project, A state, ToolCategory? category = null, double? turn = null, double last = -2) =>
@@ -116,7 +116,7 @@ public static class StatusSummaryChecks
                   && QuickMenuSummary.Minutes(3_900) == "1h 5m"
                   && QuickMenuSummary.Make(waitingOnly, new SessionCounts(waitingOnly), true, at).Rows.FirstOrDefault()?.Title
                      == "Unknown project — Waiting for log · no record for 3m"
-                  && englishTip.EndsWith("AI: Working 2 · Running tool 1 · Subagents 0 · Waiting for log 0 · Input needed 1\nClick: details · Right-click: quick menu",
+                  && englishTip.EndsWith("AI: Working 1 · Running tool 1 · Subagents 0 · Waiting for log 0 · Input needed 1\nClick: details · Right-click: quick menu",
                                          StringComparison.Ordinal)
                   && englishTip.Contains("Memory 18 / 24 GB"));
         });

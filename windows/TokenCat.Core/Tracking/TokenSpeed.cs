@@ -61,6 +61,8 @@ public static class TokenSpeed
             }
             else
             {
+                // An agent of a logged session whose own log isn't tracked: no nameless row for it.
+                if (measurement.AgentID is not null && sessionMatches.Count > 0) continue;
                 var key = string.Join(':', measurement.Provider.Id, measurement.SessionID ?? "model", measurement.AgentID ?? "", measurement.Model ?? "");
                 result.Add(new TokenReading(measurement.Provider, $"telemetry:{key}")
                 {

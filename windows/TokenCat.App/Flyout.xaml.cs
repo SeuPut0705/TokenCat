@@ -19,7 +19,11 @@ public partial class Flyout : Window
     internal void Rebuild(DashboardActions actions)
     {
         Dashboard = new Dashboard(actions);
-        Content = Dashboard;
+        // Taller than the work area (MaxHeight): scrolls instead of cutting off the footer.
+        Content = new System.Windows.Controls.ScrollViewer
+        {
+            Content = Dashboard, VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto, Focusable = false,
+        };
         Background = Theme.Brush(Theme.Background);
         if (IsLoaded) Native.StyleWindow(this, round: true);
     }

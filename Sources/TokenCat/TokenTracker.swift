@@ -124,10 +124,12 @@ final class TokenTracker {
             options: [.skipsHiddenFiles])) ?? []
     }
 
-    private func recent(_ urls: [URL]) -> [URL] {
-        urls.filter { $0.pathExtension == "jsonl" }
+    /// The 32 newest, plus up to 32 more modified since `cutoff` (the retention hour), so a cold start opens them too.
+    private func recent(_ urls: [URL], keepingSince cutoff: Date = .distantFuture) -> [URL] {
+        let dated: [(url: URL, modified: Date)] = urls.filter { $0.pathExtension == "jsonl" }
             .map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast) }
-            .sorted { $0.1 > $1.1 }.prefix(32).map { $0.0 }
+        return dated.sorted { $0.modified > $1.modified }.enumerated()
+            .filter { $0.offset < 32 || ($0.offset < 64 && $0.element.modified >= cutoff) }.map { $0.element.url }
     }
 
     private func codexFiles() -> [URL] {
@@ -157,7 +159,7 @@ final class TokenTracker {
             }
         }
         // Workflow agents create many files; they get their own cap so main sessions stay visible.
-        return recent(main) + recent(subagents)
+        return recent(main) + recent(subagents, keepingSince: clock().addingTimeInterval(-3_600))
     }
 
     private func claudeSubagentFiles(in directory: URL, remainingDepth: Int) -> [URL] {
@@ -1190,9 +1192,32 @@ final class TokenLogParser {
         number(value).flatMap { $0 <= limit ? $0 : nil }
     }
 
-    private static func date(_ value: Any?) -> Date? {
-        if let string = value as? String { return fractionalDate.date(from: string) ?? plainDate.date(from: string) }
+    static func date(_ value: Any?) -> Date? {
+        if let string = value as? String { return utcDate(string) ?? fractionalDate.date(from: string) ?? plainDate.date(from: string) }
         if let seconds = number(value), seconds > 0 { return Date(timeIntervalSince1970: seconds) }
         return nil
+    }
+
+    /// `yyyy-MM-ddTHH:mm:ss[.f{1,3}]Z` from 1970 with in-range fields, the shape both clients write, computed directly
+    /// (ISO8601DateFormatter costs ~45 µs a call) to the same Date bit for bit; anything else goes to the formatters.
+    private static func utcDate(_ string: String) -> Date? {
+        let c = Array(string.utf8)
+        guard [20, 22, 23, 24].contains(c.count), c[4] == 45, c[7] == 45, c[10] == 84, c[13] == 58, c[16] == 58,
+              c[c.count - 1] == 90, c.count == 20 || c[19] == 46 else { return nil }
+        func digits(_ from: Int, _ to: Int) -> Int? {
+            var value = 0
+            for i in from..<to { guard (48...57).contains(c[i]) else { return nil }; value = value * 10 + Int(c[i] - 48) }
+            return value
+        }
+        guard let y = digits(0, 4), let m = digits(5, 7), let d = digits(8, 10),
+              let h = digits(11, 13), let mi = digits(14, 16), let s = digits(17, 19),
+              let fraction = c.count == 20 ? 0 : digits(20, c.count - 1),
+              y >= 1970, (1...12).contains(m), (1...31).contains(d), h < 24, mi < 60, s < 60 else { return nil }
+        // Days since 1970-01-01, proleptic Gregorian (days_from_civil); day 31 of a short month rolls over like the formatter.
+        let year = m <= 2 ? y - 1 : y, era = year / 400, yoe = year - era * 400
+        let doy = (153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1
+        let days = era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+        return Date(timeIntervalSince1970: Double(days * 86_400 + h * 3_600 + mi * 60 + s)
+                    + Double(fraction) / [1, 1, 10, 100, 1_000][c.count - 20])
     }
 }

@@ -21,7 +21,7 @@ English · [한국어](README.ko.md)
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/hero-dark.png">
-    <img src="docs/images/en/hero-light.png" width="800" alt="The dashboard open under TokenCat's macOS menu bar item (a yellow question mark and a session count of 3). It shows a bar chart of output tokens over the last 5 minutes and Speed now (55.6 generation tok/s), the Codex weekly limit and the Claude 5-hour limit, two sessions needing input and one working, and system metrics, with the Character settings window on the left.">
+    <img src="docs/images/en/hero-light.png" width="800" alt="The dashboard open under TokenCat's macOS menu bar item (a yellow question mark and a session count of 3). It shows a bar chart of output tokens over the last 5 minutes and Speed now (docs-site 55.6 generation tok/s), the Codex weekly limit and the Claude 5-hour limit, two sessions needing input and one working, and system metrics, with the Character settings window on the left.">
   </picture>
 </p>
 
@@ -54,7 +54,7 @@ The numbers are shown as they are. Token counts are the values actually recorded
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-flow-dark.png">
-    <img src="docs/images/en/popover-flow-light.png" width="468" alt="The top of the dashboard: 7,800 tok of output in the last 5 minutes with a per-client breakdown, Speed now 55.6 generation tok/s, the reason for waiting on input, 5-second bars, and rows for the Codex weekly limit at 28% used and the Claude 5-hour limit at 42% used.">
+    <img src="docs/images/en/popover-flow-light.png" width="468" alt="The top of the dashboard: 7,800 tok of output in the last 5 minutes with a per-client breakdown, Speed now docs-site 55.6 generation tok/s, the reason for waiting on input, 5-second bars, and rows for the Codex weekly limit at 28% used and the Claude 5-hour limit at 42% used.">
   </picture>
 </p>
 
@@ -306,7 +306,7 @@ TokenCat also runs in the Windows notification area, starting with 0.11.0. It's 
 It runs on Windows 10 and 11 (x64). There's no installer.
 
 1. [**Download TokenCat-Windows.zip**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip) (attached to the same [latest release](https://github.com/SeuPut0705/TokenCat/releases/latest) as the Mac app). It holds a single `TokenCat.exe` and `LICENSE`.
-2. Extract `TokenCat.exe` to `%LOCALAPPDATA%\Programs\TokenCat` (recommended; paste the path into the File Explorer address bar) and run it from there. Run from inside the zip or a temporary folder, it can't update itself or open at login.
+2. Extract the whole zip (`TokenCat.exe` and `LICENSE`) to `%LOCALAPPDATA%\Programs\TokenCat` (recommended) and run `TokenCat.exe` from there. In PowerShell, `Expand-Archive "$HOME\Downloads\TokenCat-Windows.zip" "$env:LOCALAPPDATA\Programs\TokenCat"` creates the folder. Run from inside the zip or a temporary folder, it can't update itself or open at login.
 3. The exe isn't code-signed, so Microsoft Defender SmartScreen may show **Windows protected your PC**. Click **More info**, then **Run anyway** (on Korean Windows, **추가 정보** → **실행**). The wording can differ between Windows versions, so follow what your PC shows. Checking **Unblock** in the zip's **Properties** before extracting skips this prompt. With **Smart App Control** on (Windows 11), unsigned apps are blocked with no per-app exception, so TokenCat runs only with it off.
 4. The cat may sit in the hidden icons (**^**) at first. To keep it in view, drag it from **^** onto the taskbar, or turn it on in **Settings › Personalization › Taskbar › Other system tray icons**.
 

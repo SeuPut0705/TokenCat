@@ -384,9 +384,10 @@ public static class RunnerChecks
               "the body is not centred at a whole scale with frames wrapping, or the z is not in the taskbar's text tone");
         var input = TrayFrame.Body(sheet, Sit, 0, null, 0, 32, StateDot.Attention, true);
         var retry = TrayFrame.Body(sheet, Sit, 0, null, 0, 32, StateDot.Warning, false);
-        check(Pixel(input, 32, 29, 29) == (0x00, 0xCC, 0xFF, 255) && Pixel(input, 32, 27, 27) == (0, 0, 0, 255) && Pixel(input, 32, 31, 31) == (0, 0, 0, 255)
-              && Pixel(retry, 32, 30, 30) == (0x0A, 0x9F, 0xFF, 255) && Pixel(retry, 32, 27, 31) == (255, 255, 255, 255) && Count(input) == 25,
-              "the corner dot is not 3×3 art px with a 1 px outline in the taskbar's text tone");
+        check(Pixel(input, 32, 24, 24) == (0x00, 0xCC, 0xFF, 255) && Pixel(input, 32, 29, 29) == (0x00, 0xCC, 0xFF, 255)
+              && Pixel(input, 32, 23, 27) == (0, 0, 0, 255) && Pixel(input, 32, 31, 31) == (0, 0, 0, 255)
+              && Pixel(retry, 32, 26, 26) == (0x0A, 0x9F, 0xFF, 255) && Pixel(retry, 32, 22, 31) == (255, 255, 255, 255) && Count(input) == 100,
+              "the corner dot is not 3×3 art px at the head scale (2 at 32 px) with a 1 art-px outline in the taskbar's text tone");
 
         var head = Sheet(12, 11, [(0, 0), (11, 10)]);
         var rest = TrayFrame.Head(head, 0, null, 0, 16, StateDot.None, true);

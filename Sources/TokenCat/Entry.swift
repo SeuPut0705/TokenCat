@@ -402,6 +402,7 @@ enum TokenCatMain {
         let login = option("--login", ["requires-approval": SMAppService.Status.requiresApproval, "enabled": .enabled])
         let notifications = option("--notifications", ["denied": UNAuthorizationStatus.denied, "authorized": .authorized])
         if fixtures {
+            AppInfo.executablePath = "/Applications/TokenCat.app/Contents/MacOS/TokenCat"
             // The menu bar preview draws the same sample as the menu bar fixtures, with no AI session.
             model.system = fixtureSystem
             model.hasSample = true

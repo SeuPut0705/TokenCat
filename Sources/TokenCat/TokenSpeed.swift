@@ -143,6 +143,8 @@ enum TokenSpeed {
                 }
                 result[index].speedMeasurement = speed
             } else {
+                // An agent of a logged session whose own log is not tracked gets no orphan row.
+                if measurement.agentID != nil, !sessionMatches.isEmpty { continue }
                 let key = [measurement.provider.rawValue, measurement.sessionID ?? "model", measurement.agentID ?? "", measurement.model ?? ""].joined(separator: ":")
                 var reading = TokenReading(source: measurement.provider, id: "telemetry:\(key)",
                     sessionID: measurement.sessionID, agentID: measurement.agentID,

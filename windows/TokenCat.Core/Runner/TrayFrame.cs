@@ -36,7 +36,8 @@ public static class TrayFrame
         Blit(pixels, icon, sheet, Wrap(frame, RunnerManifest.Frames(pose)) * Cell, (int)pose * Row, Cell, Row, 1, x0, y0, k, null);
         if (fx is { Width: >= Cell })
             Blit(pixels, icon, fx, Wrap(fxStep, fx.Width / Cell) * Cell, 0, Cell, Row, 1, x0, y0, k, Ink(lightTaskbar));
-        Dot(pixels, icon, k, dot, lightTaskbar);
+        // At the head scale, not the body's: the dot keeps the same share of the icon from 150 % to 200 % and up.
+        Dot(pixels, icon, HeadScale(icon), dot, lightTaskbar);
         return pixels;
     }
 

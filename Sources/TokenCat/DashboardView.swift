@@ -692,7 +692,7 @@ struct FlowCard: View {
 }
 
 /// "지금 속도 · TokenCat  52.3 요청 tok/s": the value in `metric`, one step under the hero and above the last record.
-/// The project drops first when the row is tight, then the label; help and VoiceOver always name the session.
+/// The label drops first when the row is tight, then the project; help and VoiceOver always name the session.
 private struct SpeedHeadlineView: View {
     var headline: SpeedHeadline
     @Environment(\.tokenCatHighContrast) private var high
@@ -700,7 +700,7 @@ private struct SpeedHeadlineView: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             labelled(headline.project.map { loc("지금 속도 · ", "Speed now · ") + $0 } ?? loc("지금 속도", "Speed now"))
-            labelled(loc("지금 속도", "Speed now"))
+            labelled(headline.project ?? loc("지금 속도", "Speed now"))
             value
         }
         .help(headline.help)
@@ -1938,7 +1938,7 @@ struct SystemArea: View {
                 }
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     percentText(value).fixedSize()
-                    Image(systemName: "exclamationmark.triangle.fill").font(TCFont.micro).foregroundStyle(pressure.color)
+                    Image(systemName: pressure == .critical ? "exclamationmark.octagon.fill" : "exclamationmark.triangle.fill").font(TCFont.micro).foregroundStyle(pressure.color)
                 }
             }
         } aux: {

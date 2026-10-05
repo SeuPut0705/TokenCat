@@ -148,8 +148,9 @@ enum StatusBarContent {
     }
 
     private static func aiCountLine(_ counts: SessionCounts, _ ai: StatusAISummary) -> String {
-        loc("진행 중 \(ai.running)개 · 도구 실행 \(counts.toolMembers) · 하위 에이전트 \(counts.runningSubagents) · 로그 대기 \(counts.waiting)",
-            "Working \(ai.running) · Running tool \(counts.toolMembers) · Subagents \(counts.runningSubagents) · Waiting for log \(counts.waiting)")
+        // Working + input needed = the bar's count, matching the popover header.
+        loc("진행 중 \(ai.running - ai.input)개 · 도구 실행 \(counts.toolMembers) · 하위 에이전트 \(counts.runningSubagents) · 로그 대기 \(counts.waiting)",
+            "Working \(ai.running - ai.input) · Running tool \(counts.toolMembers) · Subagents \(counts.runningSubagents) · Waiting for log \(counts.waiting)")
             + (ai.input > 0 ? loc(" · 입력 필요 \(ai.input)", " · Input needed \(ai.input)") : "")
     }
 
@@ -843,7 +844,7 @@ func runStatusBarChecks() -> [String] {
     let question = TokenReading(source: .claude, id: "question", sessionID: "q1", active: true, activityState: .input, sampledAt: at)
     check("input outranks tool and counts once per group",
           ai([question, tool])?.activityState == .input && ai([question, tool])?.value == "2"
-          && ai([question, tool])?.detail.contains("입력 필요 1") == true)
+          && ai([question, tool])?.detail.contains("진행 중 1개") == true && ai([question, tool])?.detail.contains("입력 필요 1") == true)
     var parent = TokenReading(source: .claude, id: "claude:parent", sessionID: "s1", active: true, activityState: .working, sampledAt: at)
     var child = TokenReading(source: .claude, id: "claude:child", sessionID: "s1", agentID: "a1", isSubagent: true,
                              active: true, activityState: .tool, sampledAt: at)
@@ -1071,7 +1072,7 @@ func runStatusBarChecks() -> [String] {
               && QuickMenuSummary.minutes(3_900) == "1h 5m"
               && QuickMenuSummary.make(groups: waitingOnly, counts: SessionCounts(waitingOnly), hasTokenSample: true, now: at).rows.first?.title
                 == "Unknown project — Waiting for log · no record for 3m"
-              && tip.hasSuffix("AI: Working 2 · Running tool 1 · Subagents 0 · Waiting for log 0 · Input needed 1\nClick: details · Right-click: quick menu")
+              && tip.hasSuffix("AI: Working 1 · Running tool 1 · Subagents 0 · Waiting for log 0 · Input needed 1\nClick: details · Right-click: quick menu")
               && tip.contains("Memory 18 / 24 GB") && ai([stale])?.detail.hasPrefix("AI: 1 waiting for log · Working 0 ·") == true)
     }
 

@@ -958,10 +958,47 @@ func runTrackerChecks() -> [String] {
         let resumedReading = TokenTracker(homeDirectory: resumedHome, now: { now }).sample()[0]
         check(resumedReading.lastTurnDurationSeconds == 2 && resumedReading.lastOutputTokens == 100,
               "Codex discovery omitted a resumed old-date file newer than 32 current-day files")
+
+        // A cold start also opens subagent logs past the newest 32 that changed within the hour, up to 64.
+        let burstFolder = root.appendingPathComponent("burst/.claude/projects/p/s/subagents")
+        try FileManager.default.createDirectory(at: burstFolder, withIntermediateDirectories: true)
+        for index in 0..<36 {
+            var record = assistant("burst-\(index)", 5, "2026-10-04T04:00:01Z", "burst-\(index)")
+            record["agentId"] = "burst-\(index)"
+            record["isSidechain"] = true
+            let url = burstFolder.appendingPathComponent("agent-burst-\(index).jsonl")
+            try line(record).write(to: url)
+            let age: TimeInterval = index < 32 ? 60 : index < 35 ? 1_800 : 7_200
+            try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-age)], ofItemAtPath: url.path)
+        }
+        check(TokenTracker(homeDirectory: root.appendingPathComponent("burst"), now: { now }).sample().count == 35,
+              "Cold discovery dropped subagent logs from the last hour past the newest 32, or kept older ones")
     } catch {
         checks += 1
         failures.append("Incremental file fixture error: \(error.localizedDescription)")
     }
+    // Fast timestamp path: bit for bit what the two ISO8601DateFormatters give, and their result for every other shape.
+    let fractionalFormatter = ISO8601DateFormatter()
+    fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let plainFormatter = ISO8601DateFormatter()
+    var stamps = ["2026-10-04T10:00:00Z", "2026-10-04T10:00:00.1Z", "2026-10-04T10:00:00.12Z", "2026-10-04T10:00:00.123Z",
+                  "2026-10-04T10:00:00.1234Z", "2026-10-04T10:00:00.123456789Z", "2026-10-04T10:00:00+09:00",
+                  "2026-10-04T10:00:00.5-05:30", "2026-10-04T10:00:00+0900", "2024-02-29T23:59:59.999Z", "2026-02-30T00:00:00Z",
+                  "2026-04-31T12:00:00Z", "2100-02-29T00:00:00Z", "2026-10-04T24:00:00Z", "2026-10-04T23:59:60Z",
+                  "2026-10-04T10:60:00Z", "2026-13-04T10:00:00Z", "2026-00-04T10:00:00Z", "2026-10-00T10:00:00Z",
+                  "1969-12-31T23:59:59.999Z", "1970-01-01T00:00:00Z", "0001-01-01T00:00:00Z", "2026-10-04T10:00:00z",
+                  "2026-10-04T10:00:00", "2026-10-04 10:00:00Z", " 2026-10-04T10:00:00Z", "2026-10-04T10:00:00.Z",
+                  "2026-1x-04T10:00:00Z", "", "garbage"]
+    for index in 0..<600 {
+        let n = index &* 7_919
+        stamps.append(String(format: "%04ld-%02ld-%02ldT%02ld:%02ld:%02ld", 1970 + n % 131, 1 + n % 12, 1 + n % 31, n % 24, n % 60, n / 7 % 60)
+                      + ["", ".\(n % 10)", String(format: ".%02ld", n % 100), String(format: ".%03ld", n % 1_000)][index % 4] + "Z")
+    }
+    let mismatched = stamps.filter { stamp in
+        TokenLogParser.date(stamp)?.timeIntervalSinceReferenceDate
+            != (fractionalFormatter.date(from: stamp) ?? plainFormatter.date(from: stamp))?.timeIntervalSinceReferenceDate
+    }
+    check(mismatched.isEmpty, "Timestamp fast path differs from ISO8601DateFormatter: \(mismatched.prefix(3))")
     print("Tracker checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

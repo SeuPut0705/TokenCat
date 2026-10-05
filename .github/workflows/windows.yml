@@ -1,6 +1,6 @@
 # Builds and checks the Windows app (windows/, DESIGN.md §10.1) on a Windows runner: everything the Mac cannot run (tray icon
 # handles, the PowerShell/Git Bash statusLine bridge, renaming a running exe, the version resource) is checked here.
-# The release job lives in release.yml (windows/release.yml.patch adds it at integration).
+# The release build is the `windows` job in release.yml.
 name: Windows
 
 on:

@@ -212,6 +212,8 @@ static class AppChecks
             && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-720), true, at) == (SettingsView.StatusRow.Received, "Claude 데스크톱 앱 기록 · 12분 전", null),
             "Claude limit row is not checked empty status line → skipped → received → waiting → none");
         check(LoginItem.Describe(LoginItem.State.NotRegistered) == "꺼짐 · 켤 때만 시작 프로그램에 등록합니다", "Korean startup app captions changed");
+        check(Ui.KeepWords("권장합니다 Claude 데스크톱") == "권\u2060장\u2060합\u2060니\u2060다 Claude 데\u2060스\u2060크\u2060톱",
+            "Korean captions can still break inside a word");
         With(AppLanguage.En, () =>
         {
             check(SettingsPageTitles() == "General · Character · Telemetry · About"

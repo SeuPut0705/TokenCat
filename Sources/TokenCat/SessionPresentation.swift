@@ -821,7 +821,7 @@ enum SessionPresentation {
                                              "\(names(expired)): no telemetry received with this version. If it's still missing after a restart, check the connection in Settings.") + open)
         }
         guard !restart.isEmpty else { return nil }
-        return TelemetryNotice(kind: .restart, text: loc("재시작 후 실측 표시", "Restart to show speed"),
+        return TelemetryNotice(kind: .restart, text: loc("\(names(restart)) 재시작 후 실측 표시", "Restart \(names(restart)) to show speed"),
                                help: loc("\(names(restart))를 새로 실행하면 속도가 표시됩니다. 진행 중인 작업은 재시작하지 않습니다.",
                                          "Restart \(names(restart)) to show speed. TokenCat doesn't restart running work.") + open)
     }

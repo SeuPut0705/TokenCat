@@ -73,9 +73,10 @@ public static class StatusBarContent
         return index < 0 ? (text, "") : (text[..index], text[index..]);
     }
 
+    /// `Running` includes the input groups; they are named once, at the end (working + input = the tray count).
     static string AICountLine(SessionCounts counts, StatusAISummary ai) =>
-        Loc($"진행 중 {ai.Running}개 · 도구 실행 {counts.ToolMembers} · 하위 에이전트 {counts.RunningSubagents} · 로그 대기 {counts.Waiting}",
-            $"Working {ai.Running} · Running tool {counts.ToolMembers} · Subagents {counts.RunningSubagents} · Waiting for log {counts.Waiting}")
+        Loc($"진행 중 {ai.Running - ai.Input}개 · 도구 실행 {counts.ToolMembers} · 하위 에이전트 {counts.RunningSubagents} · 로그 대기 {counts.Waiting}",
+            $"Working {ai.Running - ai.Input} · Running tool {counts.ToolMembers} · Subagents {counts.RunningSubagents} · Waiting for log {counts.Waiting}")
         + (ai.Input > 0 ? Loc($" · 입력 필요 {ai.Input}", $" · Input needed {ai.Input}") : "");
 
     /// The tray tooltip: only slow-changing context; live values stay in the flyout. The App truncates it to 127 chars.

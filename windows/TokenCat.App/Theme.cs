@@ -168,7 +168,7 @@ static class Ui
         {
             Content = chrome, Cursor = System.Windows.Input.Cursors.Hand, Focusable = true, ToolTip = string.IsNullOrEmpty(help) ? null : help,
             Padding = new Thickness(0),
-            Template = PlainTemplate(),
+            Template = PlainTemplate(), FocusVisualStyle = FocusRing(),
         };
         System.Windows.Automation.AutomationProperties.SetName(button, help);
         button.MouseEnter += (_, _) => chrome.Background = Theme.Brush(Theme.Hover);
@@ -194,14 +194,34 @@ static class Ui
             Child = Text(title, Font.Meta), Padding = new Thickness(8, 2, 8, 2), CornerRadius = new CornerRadius(5),
             Background = Theme.Brush(Theme.Primary(0.1)),
         };
-        var button = new Button { Content = chrome, Template = PlainTemplate(), Cursor = System.Windows.Input.Cursors.Hand, ToolTip = help };
+        var button = new Button { Content = chrome, Template = PlainTemplate(), FocusVisualStyle = FocusRing(), Cursor = System.Windows.Input.Cursors.Hand, ToolTip = help };
         button.MouseEnter += (_, _) => chrome.Background = Theme.Brush(Theme.Primary(0.15));
         button.MouseLeave += (_, _) => chrome.Background = Theme.Brush(Theme.Primary(0.1));
         button.Click += (_, _) => click();
         return button;
     }
 
-    /// Content only, with a dashed focus ring for keyboard focus.
+    /// Keyboard focus in the label colour: Aero2's default black dotted ring can't be seen on the dark background. Built per
+    /// call, so a theme change (which rebuilds the views) picks up the new colour.
+    static Style FocusRing()
+    {
+        var ring = new FrameworkElementFactory(typeof(System.Windows.Shapes.Rectangle));
+        ring.SetValue(System.Windows.Shapes.Shape.StrokeProperty, Theme.Brush(Theme.Label));
+        ring.SetValue(System.Windows.Shapes.Shape.StrokeThicknessProperty, 1.5);
+        ring.SetValue(System.Windows.Shapes.Rectangle.RadiusXProperty, 4.0);
+        ring.SetValue(System.Windows.Shapes.Rectangle.RadiusYProperty, 4.0);
+        ring.SetValue(FrameworkElement.MarginProperty, new Thickness(-2));
+        var style = new Style();
+        style.Setters.Add(new Setter(Control.TemplateProperty, new ControlTemplate { VisualTree = ring }));
+        return style;
+    }
+
+    /// Korean wraps between words as on the mac; WPF would break between any two syllables. A WORD JOINER (U+2060) between
+    /// Hangul syllables leaves only the spaces as break points.
+    public static string KeepWords(string text) =>
+        Lang.Current == AppLanguage.Ko ? System.Text.RegularExpressions.Regex.Replace(text, "(?<=[가-힣])(?=[가-힣])", "\u2060") : text;
+
+    /// Content only; FocusRing draws keyboard focus.
     static ControlTemplate? plain;
     public static ControlTemplate PlainTemplate()
     {

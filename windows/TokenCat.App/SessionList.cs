@@ -221,10 +221,12 @@ sealed class SessionList : Border
 
     void OnKey(object sender, KeyEventArgs e)
     {
-        switch (e.Key)
+        // Shift+F10 arrives as a system key; other system keys (Alt+Space: the window menu) are left alone.
+        var key = e.Key == Key.System && e.SystemKey == Key.F10 ? Key.F10 : e.Key;
+        switch (key)
         {
             case Key.Up or Key.Down:
-                Move(e.Key == Key.Up ? -1 : 1);
+                Move(key == Key.Up ? -1 : 1);
                 e.Handled = true;
                 break;
             case Key.Enter or Key.Space when selectedId is not null:
@@ -234,6 +236,12 @@ sealed class SessionList : Border
             case Key.C when Keyboard.Modifiers == ModifierKeys.Control:
                 if (selectedId is { } id && shown.Item(id)?.Reading is { } reading
                     && (reading.IsSubagent ? reading.AgentID ?? reading.SessionID : reading.SessionID) is { } text) Shell.Copy(text);
+                e.Handled = true;
+                break;
+            // The row menu from the keyboard (Apps key, Shift+F10), at the pointer like a right-click.
+            case Key.Apps or Key.F10 when (key == Key.Apps || Keyboard.Modifiers == ModifierKeys.Shift)
+                                          && selectedId is { } row && shown.Item(row)?.Reading is { } target:
+                OpenMenu(target);
                 e.Handled = true;
                 break;
         }
@@ -531,7 +539,8 @@ sealed class LiveRow : RowShell
     readonly TextBlock number = Ui.Line();
     readonly TextBlock client = Ui.Text("", Font.Meta, Theme.Secondary);
     readonly TextBlock trailing = Ui.Text("", Font.MetaMono);
-    readonly Border line3 = new() { Height = 12, Margin = new Thickness(Dashboard.GlyphX, 2, 0, 0) };
+    // 15 tall for MetaMono's descenders (a comma, a g), drawn 3 into the bottom padding so the row stays 58.
+    readonly Border line3 = new() { Height = 15, Margin = new Thickness(Dashboard.GlyphX, 2, 0, -3) };
     object? line3Key;
 
     public LiveRow()

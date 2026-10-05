@@ -961,7 +961,7 @@ public static class SessionPresentation
                 Loc($"{Names(expired)}: 이 버전에서 실측을 받지 못했습니다. 새로 실행한 뒤에도 그대로면 설정에서 연결 상태를 확인하세요.",
                     $"{Names(expired)}: no telemetry received with this version. If it's still missing after a restart, check the connection in Settings.") + open);
         if (restart.Count == 0) return null;
-        return new TelemetryNotice(TelemetryNoticeKind.Restart, Loc("재시작 후 실측 표시", "Restart to show speed"),
+        return new TelemetryNotice(TelemetryNoticeKind.Restart, Loc($"{Names(restart)} 재시작 후 실측 표시", $"Restart {Names(restart)} to show speed"),
             Loc($"{Names(restart)}를 새로 실행하면 속도가 표시됩니다. 진행 중인 작업은 재시작하지 않습니다.",
                 $"Restart {Names(restart)} to show speed. TokenCat doesn't restart running work.") + open);
     }

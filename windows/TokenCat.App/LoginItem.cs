@@ -21,7 +21,8 @@ static class LoginItem
         get
         {
             using var run = Registry.CurrentUser.OpenSubKey(RunKey);
-            if (run?.GetValue(Name) is not string) return State.NotRegistered;
+            // A value for another path (this exe was moved) won't start this copy: off, and turning it on writes this path.
+            if (run?.GetValue(Name) is not string value || !value.Equals(Command, StringComparison.OrdinalIgnoreCase)) return State.NotRegistered;
             using var approved = Registry.CurrentUser.OpenSubKey(ApprovedKey);
             // 02 enabled, 03 disabled (06/07 seen too): the low bit set means disabled.
             return approved?.GetValue(Name) is byte[] { Length: > 0 } flags && (flags[0] & 1) == 1 ? State.DisabledInTaskManager : State.Enabled;

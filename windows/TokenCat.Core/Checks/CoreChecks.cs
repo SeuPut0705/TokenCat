@@ -62,6 +62,12 @@ public static class CoreChecks
             a.Set("j", 2);
             check(a.Get<int?>("k") == 1 && a.Get<int?>("j") == 2 && !text(File.ReadAllBytes(file)).StartsWith('\uFEFF')
                   && Directory.GetFiles(folder.FullName).Length == 1, "a BOM settings file loses keys, or a temp file is left behind");
+            // A path under a file can't be written (as with a full disk or a read-only folder): skipped, not thrown.
+            var blocked = new SettingsStore(Path.Combine(file, "settings.json"));
+            bool skipped;
+            try { blocked.Set("k", true); skipped = blocked.Get<bool?>("k") == null; }
+            catch (Exception) { skipped = false; }
+            check(skipped, "a settings write that fails (disk full, read-only, locked) throws into the app");
 
             // AppPaths.
             var nested = Path.Combine(folder.FullName, "new", "file.json");
