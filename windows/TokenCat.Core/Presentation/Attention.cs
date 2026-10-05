@@ -13,6 +13,10 @@ public sealed record AttentionSignal(string Id, TokenSource Source, string? Proj
     public double? DurationSeconds { get; init; }
     /// The lead's newest record: with `Id`, the key that keeps a turn end from replaying the cat's content.
     public DateTimeOffset? EndedAt { get; init; }
+    /// Every member waiting for the person waits for a plan approval (ExitPlanMode).
+    public bool Plan { get; init; }
+    /// The character's `content` is a completed turn (Assets/runner-v2.md): an interruption or API error plays nothing.
+    public string? ContentKey => Ended == TokenActivityState.Complete ? $"{Id}@{EndedAt?.ToUnixTimeMilliseconds() ?? 0}" : null;
 
     public static List<AttentionSignal> Make(IReadOnlyList<SessionGroup> groups) => groups
         .Where(group => group.State != SessionDisplayState.Measurement)
@@ -25,9 +29,12 @@ public sealed record AttentionSignal(string Id, TokenSource Source, string? Proj
             var live = group.Members.Any(member => member.State.IsRunning) || input;
             var ended = !live && !lead.Active && lead.ActivityState is TokenActivityState.Complete or TokenActivityState.Interrupted
                 ? lead.ActivityState : (TokenActivityState?)null;
+            var plan = input && group.Members.Where(member => member.Reading.ActivityState == TokenActivityState.Input)
+                .All(member => SessionPresentation.IsPlanApproval(member.Reading));
             return new AttentionSignal(group.Id, lead.Source, lead.Project, lead.Model, live, input)
             {
                 Ended = ended, OutputTokens = lead.LastOutputTokens, DurationSeconds = lead.LastTurnDurationSeconds, EndedAt = lead.LastActivity,
+                Plan = plan,
             };
         }).ToList();
 }
@@ -41,7 +48,7 @@ public sealed record AttentionEvent(AttentionKind Kind, AttentionSignal Signal)
     {
         get
         {
-            var what = Kind == AttentionKind.Input ? Loc("입력 필요", "Input needed")
+            var what = Kind == AttentionKind.Input ? Signal.Plan ? Loc("계획 승인 대기", "Waiting for plan approval") : Loc("입력 필요", "Input needed")
                 : Signal.Ended == TokenActivityState.Interrupted ? Loc("턴 중단", "Turn interrupted") : Loc("턴 완료", "Turn complete");
             return what + " · " + (Signal.Project is { Length: > 0 } project ? project : Loc("프로젝트 미확인", "Unknown project"));
         }
@@ -50,12 +57,12 @@ public sealed record AttentionEvent(AttentionKind Kind, AttentionSignal Signal)
     /// "Claude Code · claude-opus-5-5".
     public string Subtitle => string.Join(" · ", new[] { Signal.Source.Title, Signal.Model }.Where(part => !string.IsNullOrEmpty(part)));
 
-    /// Completion "12,480 tok · 4분 12초" (never divided), input "답변하면 계속됩니다", interruption nothing.
+    /// Completion "12,480 tok · 4분 12초" (never divided), input "답변하면 계속됩니다" (a plan "승인하면 계속됩니다"), interruption nothing.
     public string Body
     {
         get
         {
-            if (Kind == AttentionKind.Input) return Loc("답변하면 계속됩니다", "Reply to continue");
+            if (Kind == AttentionKind.Input) return Signal.Plan ? Loc("승인하면 계속됩니다", "Approve to continue") : Loc("답변하면 계속됩니다", "Reply to continue");
             if (Signal.Ended != TokenActivityState.Complete) return "";
             return string.Join(" · ", new[]
             {

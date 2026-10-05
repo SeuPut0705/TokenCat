@@ -116,9 +116,13 @@ public static class StatusSummaryChecks
                   && QuickMenuSummary.Minutes(3_900) == "1h 5m"
                   && QuickMenuSummary.Make(waitingOnly, new SessionCounts(waitingOnly), true, at).Rows.FirstOrDefault()?.Title
                      == "Unknown project — Waiting for log · no record for 3m"
-                  && englishTip.EndsWith("AI: Working 1 · Running tool 1 · Subagents 0 · Waiting for log 0 · Input needed 1\nClick: details · Right-click: quick menu",
-                                         StringComparison.Ordinal)
-                  && englishTip.Contains("Memory 18 / 24 GB"));
+                  && englishTip.StartsWith("TokenCat\nAI: Working 1 · Running tool 1 · Subagents 0 · Waiting for log 0 · Input needed 1\nMemory 18 / 24 GB",
+                                           StringComparison.Ordinal)
+                  && englishTip.EndsWith("\nClick: details · Right-click: quick menu", StringComparison.Ordinal));
+            // The tray keeps whole lines under 128 characters: with storage too, the AI line and its input count still fit.
+            var fullTip = StatusBarContent.Tooltip(busy with { DiskUsedBytes = 1_000_000_000_000, DiskTotalBytes = 2_000_000_000_000 }, busyCounts, busyAI, true, true);
+            check($"the English tooltip keeps 'Input needed' within 127 characters: {fullTip}",
+                  fullTip.IndexOf("Input needed 1\n", StringComparison.Ordinal) is >= 0 and var end && end + "Input needed 1".Length <= 127);
         });
         return c.Done();
     }

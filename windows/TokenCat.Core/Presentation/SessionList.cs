@@ -313,7 +313,7 @@ public sealed record SessionListModel
         }
         return new SessionListModel
         {
-            Blocks = blocks, Counts = new SessionCounts(groups), UsageLimit = SessionPresentation.UsageLimit(readings),
+            Blocks = blocks, Counts = new SessionCounts(groups), UsageLimit = SessionPresentation.UsageLimit(readings, now),
             HiddenGroups = ordered.Count - shown.Count, HiddenChildren = hiddenChildren, OlderCount = olderCount,
             ShowsSpeedColumn = showsSpeedColumn,
         }.Measured();

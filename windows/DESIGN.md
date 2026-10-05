@@ -191,7 +191,7 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
   `AllowSetForegroundWindow(ASFW_ANY)`, `Set()`s `EventWaitHandle(@"Local\dev.seuput.TokenCat.open")` and exits. Only the process the
   user just launched holds foreground rights, so without that call the first instance's flyout opens behind other windows and never gets
   `Deactivated`. The first instance waits on the event and opens the flyout (payload-free, like the mac hand-off; anchored at the primary
-  work area's bottom-right corner). `AbandonedMutexException` counts as acquired. CLI flags never take the mutex. (In the spike.)
+  work area's corner on the taskbar's side). `AbandonedMutexException` counts as acquired. CLI flags never take the mutex. (In the spike.)
 * Theme: `HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize` has `SystemUsesLightTheme` (taskbar, which drives the tray dot
   outline) and `AppsUseLightTheme` (flyout and settings). Re-read on `SystemEvents.UserPreferenceChanged`. **WPF Fluent `ThemeMode` is still
   "in progress" in .NET 10**, so don't depend on it. Use our own two token dictionaries. [learn.microsoft.com wpf whats-new net100]
@@ -245,7 +245,7 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
 | WSL logs, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` | Parity with mac. WSL also needs polling over `\\wsl.localhost` (no change notifications) and a collector reachable from WSL2 NAT. | Extra roots in `AppPaths`; the empty state names WSL in v1 (§2.2) |
 | Memory pressure level | No Windows equivalent | Shows "—" (spec: unknown is "—") |
 | Persistent toasts, notification sound toggle | Packages/AUMID | Windows App SDK if wanted |
-| VoiceOver announcements (`AnnouncementGate`) | UIA live regions are extra work | `AutomationProperties.LiveSetting` later. v1 gives every control an `AutomationProperties.Name` built from the existing `spoken` texts. |
+| VoiceOver announcements (`AnnouncementGate`) | UIA live regions are extra work | `AutomationProperties.LiveSetting` later. v1 gives every control an `AutomationProperties.Name` built from the existing `spoken` texts (rows, limits and the header status get their own peers: Panel and Border have none), and ↑↓ announces the selected row with `RaiseNotificationEvent`. |
 | Increase Contrast variants | — | `SystemParameters.HighContrast` → system colours only |
 | Docs generators (`--snapshot-menubar/-settings/-fixtures`, `docs/Generator`) | mac produces the docs | — |
 | arm64-native exe, code signing | Size, cost | Open questions 4, 5 |
@@ -275,7 +275,8 @@ Icon size `N` comes from §2.5. Frame pixels come from Core `TrayFrame`, with in
 * **Corner dot** (both modes): 3×3 art px × the head scale `max(1, N / 12)` (body mode too, so it stays about 0.4 N), bottom-right. Yellow `attention` = input, orange `warning` = API retry. Nothing else
   (working/tool are motion). 1 art-px outline in the taskbar's opposite tone (`SystemUsesLightTheme`) for contrast.
 * Pause the timer on `SessionSwitch` lock and `PowerModes.Suspend`, and resume after.
-* Tooltip: `StatusBarContent.tooltip` text, truncated to 127 chars on a line boundary.
+* Tooltip: `StatusBarContent.tooltip` text, truncated to 127 chars on a line boundary. The AI line comes before memory and storage, so
+  the cut drops those first and "Input needed" stays.
 
 ### 4.2 Left click → flyout (dashboard)
 Borderless (`WindowStyle=None`, `ResizeMode=NoResize`, **no** `AllowsTransparency`: that makes a layered, software-rendered window),
@@ -287,7 +288,8 @@ size with `GetWindowRect`, then clamp above/centred on the cursor into `Screen.F
 WPF `Left/Top` are DIPs of the window's *current* monitor, so they misplace it across mixed-DPI monitors. The working area excludes the
 taskbar, so any taskbar edge works without `SHAppBarMessage`.
 Toggle: `MouseClick` with `Button == Left` only (§2.5). It hides on `Deactivated` and Esc. Clicking the icon while it is open first
-deactivates (hides) it, so a click within 300 ms of a hide does nothing instead of reopening. The spike has exactly this
+deactivates (hides) it, so a click within 300 ms of a hide does nothing instead of reopening. A double-click's second press hides it
+and raises `MouseDoubleClick`, not `MouseClick`, so that event shows it again. The spike has exactly this
 (`Native.ShowAt`). Sections and order are the mac `DashboardView.body`. Fonts: Segoe UI Variable/Segoe UI
 with `Typography.NumeralAlignment="Tabular"` for "mono" digits. Korean falls back to Malgun Gothic automatically.
 
@@ -295,7 +297,7 @@ with `Typography.NumeralAlignment="Tabular"` for "mono" digits. Korean falls bac
 Disabled headline (`QuickMenuSummary.headline`), session rows with the state colour square (click focuses that group in the flyout),
 separator, **Open**, **Open as window**, separator, **Character ▸** (5, checked), **Motion source ▸** (4, checked), separator,
 update item (`UpdateState.quickMenuTitle`) when present, **Settings…**, **Task Manager**, **About TokenCat**, separator, **Quit TokenCat**.
-"Layout" and "Show in menu bar" are cut. `Application.SetColorMode(SystemColorMode.System)` at start should make the menu follow dark mode (PC check).
+"Layout" and "Show in menu bar" are cut. `Application.SetColorMode(SystemColorMode.System)` at start and again after a light/dark change should make the menu follow dark mode (PC check).
 
 ### 4.4 Settings window
 Normal WPF window with four pages (left nav):
@@ -569,11 +571,10 @@ jobs:
       - uses: actions/checkout@v7                     # same major as release.yml
       - uses: actions/setup-dotnet@v6                 # latest major as of 2026-10 (v6.0.0)
         with: { global-json-file: windows/global.json }
-      - run: dotnet run --project windows/TokenCat.Checks -c Release   # Core suites incl. the open-writer log case (rule 8)
       - run: dotnet publish windows/TokenCat.App -c Release -o publish # csproj sets win-x64/single-file; output = TokenCat.exe only
       - shell: pwsh
         run: Compress-Archive -Path publish/TokenCat.exe, LICENSE -DestinationPath TokenCat-Windows.zip   # flat entries, as released
-      - run: ./publish/TokenCat.exe --self-test
+      - run: ./publish/TokenCat.exe --self-test                         # App checks + Core suites incl. the open-writer log case (rule 8)
       - run: ./publish/TokenCat.exe --telemetry-lifecycle-checks       # real loopback + bridge command via Git Bash and PowerShell
       - run: ./publish/TokenCat.exe --update-selftest TokenCat-Windows.zip   # the real zip: extract, validate, rename-replace, relaunch
       - run: ./publish/TokenCat.exe --snapshot snapshots
@@ -584,9 +585,10 @@ Bash on the runner is `bash -eo pipefail`. Git Bash waits for GUI-subsystem chil
 GDI check in `--self-test` only creates and destroys HICONs, so it needs no visible tray. Hosted runners may have no Explorer taskbar.
 
 ### 10.2 `release.yml` change (applied at integration, after the parallel polish task has landed)
-* New job `windows` (`needs: version`, `if: exists == 'false'`, `runs-on: windows-latest`). Steps: checkout, setup-dotnet, Checks,
+* New job `windows` (`needs: version`, `if: exists == 'false'`, `runs-on: windows-latest`). Steps: checkout, setup-dotnet, build,
   `dotnet publish … -r win-x64`, `--self-test`, then assert `(Get-Item publish/TokenCat.exe).VersionInfo.ProductVersion == $VERSION`
-  (pwsh step). Then the same `Compress-Archive` step as §10.1, `--update-selftest TokenCat-Windows.zip`, and `actions/upload-artifact@v7`
+  (pwsh step). Then the same `Compress-Archive` step as §10.1, `--update-selftest TokenCat-Windows.zip`,
+  `--telemetry-lifecycle-checks`, `--snapshot snapshots` (a crash blocks the release), and `actions/upload-artifact@v7`
   (`windows-release`, 1 day).
 * Existing `release` job: `needs: [version, windows]`, plus `actions/download-artifact@v8` before "초안 릴리스 만들기". `gh release create
   "$TAG" TokenCat.zip TokenCat-Windows.zip …`. "초안 자산 확인" and "게시 결과 확인" loop over both names with their own SHA-256. Release
@@ -710,7 +712,7 @@ public static class TrayFrame { public static int? BodyScale(int icon); public s
   public static byte[] Head(PixelSheet head, int bob, PixelSheet? fx, int fxStep, int icon, StateDot dot, bool lightTaskbar); }
 public sealed class RunnerAnimator { public RunnerAnimator(RunnerManifest m, Func<DateTimeOffset> clock);
   public void Apply(RunnerPlan plan); public (RunnerPose Pose, int Frame, int? FxStep) Current { get; }
-  public TimeSpan? NextDelay(); public void Advance(); public bool PlayContent(); public void Stop(); }
+  public void Advance(); public bool PlayContent(); public void Stop(); }
 public struct RunnerDirector { /* Observe, Plan, QuietSince as Swift */ }
 public sealed class Updater { /* Start(bool automatic), CheckNow, Install, DashboardOpened, SystemDidWake, State, StateChanged event */ }
 public static class UpdateInstaller { Blocker, Verify, Extract, Validate, Replace, Relaunch, FinishAfterUpdate(int pid), SelfTest(string zip) }

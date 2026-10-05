@@ -31,21 +31,25 @@ public static class Json
     public static ReadOnlySpan<byte> StripBom(ReadOnlySpan<byte> bytes) =>
         bytes.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]) ? bytes[3..] : bytes;
 
+    /// Foundation nests about 512 levels; the default 64 would drop a deep tool input or a whole batch.
+    static readonly JsonDocumentOptions Depth = new() { MaxDepth = 512 };
+
     /// `try? JSONSerialization.jsonObject(with:)`: null when the bytes are not JSON.
     public static JsonElement? Parse(ReadOnlySpan<byte> bytes)
     {
         try
         {
-            using var document = JsonDocument.Parse(StripBom(bytes).ToArray());
+            using var document = JsonDocument.Parse(StripBom(bytes).ToArray(), Depth);
             return document.RootElement.Clone();
         }
         catch (JsonException) { return null; }
     }
 
-    /// For edits (the Claude settings.json rewrite, SettingsStore): null when the bytes are not JSON.
+    /// For edits (the Claude settings.json rewrite, SettingsStore): null when the bytes are not JSON or repeat a key at any
+    /// depth. Readers disagree on which copy counts (Node keeps the last), so a rewrite could drop the one in effect.
     public static JsonNode? ParseNode(ReadOnlySpan<byte> bytes)
     {
-        try { return JsonNode.Parse(StripBom(bytes)); }
+        try { return JsonNode.Parse(StripBom(bytes), documentOptions: Depth with { AllowDuplicateProperties = false }); }
         catch (JsonException) { return null; }
     }
 

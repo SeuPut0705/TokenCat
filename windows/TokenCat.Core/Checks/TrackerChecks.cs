@@ -627,11 +627,38 @@ public static class TrackerChecks
                     Assistant("closed-1", 100, "2026-10-04T03:59:01Z", "closed-a"),
                     J("""{"type":"system","subtype":"stop_hook_summary","parentUuid":"closed-a","timestamp":"2026-10-04T03:59:02Z"}""")),
                 .. Spaces(4_096)]);
+            // A prompt with a pasted image is one line well past 64 KB; the backward scan still finds it.
+            File.WriteAllBytes(Path.Combine(claudeLongFolder, "image.jsonl"), [
+                .. Lines(J(Fill("""{"type":"user","uuid":"image-human","timestamp":"2026-10-04T04:00:00Z","sessionId":"image-claude","message":{"content":[{"type":"text"},{"type":"image","source":{"data":"<data>"}}]}}""",
+                        ("<data>", new string('A', 200_000)))),
+                    Assistant("image-1", 300, "2026-10-04T04:00:01Z", "image-a")),
+                .. Spaces(4_096),
+                .. Line(Assistant("image-2", 50, "2026-10-04T04:00:07Z", "image-b"))]);
             var claudeLong = new TokenTracker(claudeLongHome, () => longNow, initialTailBytes: 512).Sample();
+            check(claudeLong.FirstOrDefault(r => r.SessionID == "image-claude")?.CurrentTurnOutputTokens == 350,
+                  "Claude long turn: a human input line over 64 KB (a pasted image) was skipped, so the turn's output read unknown");
             var openClaude = claudeLong.FirstOrDefault(r => r.SessionID == "long-claude");
             check(openClaude?.Active == true && openClaude?.CurrentTurnOutputTokens == 450 && openClaude?.CurrentTurnStartedAt == At("2026-10-04T04:00:00Z"),
                   "Claude long turn: output before the tail was reported unknown instead of read from the human input");
             check(!claudeLong.Any(r => r.SessionID == "closed-claude"), "Claude long turn: a closed turn before the tail was replayed");
+
+            // A record stamped 2 h ahead (or a clock set back): the next turn still counts and stays live.
+            var futureFolder = Path.Combine(root, "future-record", ".claude", "projects", "future");
+            Directory.CreateDirectory(futureFolder);
+            var futureFile = Path.Combine(futureFolder, "future.jsonl");
+            File.WriteAllBytes(futureFile, Lines(
+                J("""{"type":"user","uuid":"f-human","timestamp":"2026-10-04T04:00:00Z","sessionId":"future","message":{"content":[{"type":"text"}]}}"""),
+                ClaudeReply("f-1", 50, "2026-10-04T04:00:01Z", "f-a", """[{"type":"text"}]""", stop: "end_turn"),
+                J("""{"type":"system","subtype":"informational","uuid":"f-late","timestamp":"2026-10-04T06:00:00Z"}""")));
+            var futureNow = At("2026-10-04T04:00:10Z");
+            var futureTracker = new TokenTracker(Path.Combine(root, "future-record"), () => futureNow);
+            futureTracker.Sample();
+            File.AppendAllBytes(futureFile, Lines(
+                J("""{"type":"user","uuid":"f-human-2","timestamp":"2026-10-04T04:00:20Z","sessionId":"future","message":{"content":[{"type":"text"}]}}"""),
+                ClaudeReply("f-2", 300, "2026-10-04T04:00:21Z", "f-b", """[{"type":"tool_use","id":"f-tool"}]""", stop: "tool_use")));
+            futureNow = At("2026-10-04T04:00:22Z");
+            check(futureTracker.Sample().FirstOrDefault() is { Active: true, ActivityState: TokenActivityState.Tool, CurrentTurnOutputTokens: 300 },
+                  "A record stamped in the future hid the next turn or kept it from being live");
 
             var abortedHome = Path.Combine(root, "restored-interruption");
             var abortedFolder = Path.Combine(abortedHome, ".codex", "sessions", "2026", "10", "04");
@@ -834,8 +861,16 @@ public static class TrackerChecks
                 File.WriteAllBytes(path, Line(record));
                 File.SetLastWriteTimeUtc(path, now.AddSeconds(-(index < 32 ? 60 : index < 35 ? 1_800 : 7_200)).UtcDateTime);
             }
-            check(new TokenTracker(Path.Combine(root, "burst"), () => now).Sample().Count == 35,
-                  "Cold discovery dropped subagent logs from the last hour past the newest 32, or kept older ones");
+            var burst = new TokenTracker(Path.Combine(root, "burst"), () => now);
+            check(burst.Sample().Count == 35, "Cold discovery dropped subagent logs from the last hour past the newest 32, or kept older ones");
+            // A write to a log the caps left out waits for the periodic rescan; only a log discovery has not seen reruns it.
+            var unseen = Path.Combine(burstFolder, "agent-burst-new.jsonl");
+            File.WriteAllBytes(unseen, Line(Assistant("burst-new", 5, "2026-10-04T04:00:01Z", "burst-new")));
+            File.SetLastWriteTimeUtc(unseen, now.AddSeconds(-30).UtcDateTime);
+            burst.NoteChanged([Path.Combine(burstFolder, "agent-burst-35.jsonl")]);
+            var capped = burst.Sample().Count;
+            burst.NoteChanged([unseen]);
+            check(capped == 35 && burst.Sample().Count == 36, "A write to a log outside the discovery caps reran discovery, or a new log did not");
 
             // Windows (DESIGN WP1): watcher hints use backslashes there; only agent-* logs under subagents\ are tracked.
             var hintHome = Path.Combine(root, "hints");

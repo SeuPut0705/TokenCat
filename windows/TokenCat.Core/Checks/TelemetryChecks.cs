@@ -296,7 +296,7 @@ public static class TelemetryChecks
         check(Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 3000000000\r\n\r\n")) == 413
               && Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: ;application/json\r\nContent-Length: 2\r\n\r\n{}") is HttpDecision.Request,
               "Content-Length or Content-Type parsing differs from Swift's Int and split rules");
-        check(collector.LastReceivedAt != null && collector.State == TelemetryCollectorState.Receiving && collector.Status == "실측 수신 중",
+        check(collector.State == TelemetryCollectorState.Receiving && collector.Status == "실측 수신 중",
               "A successful export did not update connection freshness");
         check(new TelemetryCollector().State == TelemetryCollectorState.Waiting
               && TelemetryCollectorState.BusyTokenCat.Status != TelemetryCollectorState.BusyOtherApp.Status,
@@ -320,7 +320,7 @@ public static class TelemetryChecks
               "Claude status line limits were not decoded");
         var kept = Json(status.ClaudeLimits);
         check(!new[] { "private-project", "status-session", "claude-opus", "cost", "transcript", "spend" }.Any(kept.Contains)
-              && status.Snapshot().Count == 0 && status.LastBatchAt.Count == 0 && status.LastReceivedAt == null && status.State == TelemetryCollectorState.Waiting
+              && status.Snapshot().Count == 0 && status.LastBatchAt.Count == 0 && status.State == TelemetryCollectorState.Waiting
               && status.Diagnostics().Entries.Count == 0, "The status line copy kept more than the limits or posed as an OTLP export");
         var invalidWindows = Bytes("""{"rate_limits":{"five_hour":{"used_percentage":142,"resets_at":1790007980},"seven_day":{"used_percentage":true,"resets_at":1790300000000}}}""");
         check(status.Ingest(Bytes("""{"cwd":"/tmp"}"""), TelemetryHttp.ClaudeStatusPath) && status.Ingest(invalidWindows, TelemetryHttp.ClaudeStatusPath)

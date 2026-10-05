@@ -374,11 +374,11 @@ final class TelemetrySetup {
 
     /// Edited Claude Code settings without TokenCat's env: a key still holding TokenCat's value gets the backup's value back
     /// (or goes when the backup had none), and a content-logging switch TokenCat set to "0" gets its backed-up value back.
-    /// Every other key stays. Nil when one of TokenCat's keys now holds a value that is neither TokenCat's nor the backup's,
-    /// or when the status line TokenCat wrapped (`bridged`) still runs the bridge in any spelling: its record must outlive
-    /// this attempt.
+    /// Every other key stays. Nil when a key repeats (a rewrite would keep the copy Claude Code ignores), when one of
+    /// TokenCat's keys now holds a value that is neither TokenCat's nor the backup's, or when the status line TokenCat
+    /// wrapped (`bridged`) still runs the bridge in any spelling: its record must outlive this attempt.
     private func revertClaude(_ current: Data, backup: Data?, bridged: Bool) -> Data? {
-        guard var settings = (try? JSONSerialization.jsonObject(with: current)) as? [String: Any],
+        guard var settings = (try? JSONSerialization.jsonObject(with: current)) as? [String: Any], !Self.hasDuplicateKeys(current, settings),
               !bridged || !(((settings["statusLine"] as? [String: Any])?["command"] as? String).map(Self.runsBridge) ?? false) else { return nil }
         guard settings["env"] != nil else { return current }
         guard var env = settings["env"] as? [String: Any] else { return nil }
@@ -438,8 +438,8 @@ final class TelemetrySetup {
         let failed = loc(" Claude Code 상태 표시줄은 되돌리지 못했습니다.", " Couldn't restore the Claude Code status line.")
             + (files.fileExists(atPath: bridgeOriginal.path) ? loc(" 원래 명령은 ~/Library/Application Support/TokenCat/\(Self.statusLineOriginalName)에 있습니다.",
                                                                    " The original command is in ~/Library/Application Support/TokenCat/\(Self.statusLineOriginalName).") : "")
-        guard let current = try? read(url),
-              let settings = try? JSONSerialization.jsonObject(with: current) as? [String: Any] else { return kept }
+        guard let current = try? read(url), let settings = try? JSONSerialization.jsonObject(with: current) as? [String: Any],
+              !Self.hasDuplicateKeys(current, settings) else { return kept }
         guard (settings["statusLine"] as? [String: Any])?["command"] as? String == Self.statusLineCommand else {
             removeBridgeIfUnused()
             return kept
@@ -635,7 +635,8 @@ final class TelemetrySetup {
     private func claudeConfiguration(_ original: Data?, bridgedBefore: Bool) throws -> ClaudePlan {
         var object: [String: Any] = [:]
         if let original {
-            guard let decoded = try? JSONSerialization.jsonObject(with: original), let dictionary = decoded as? [String: Any] else {
+            guard let decoded = try? JSONSerialization.jsonObject(with: original), let dictionary = decoded as? [String: Any],
+                  !Self.hasDuplicateKeys(original, decoded) else {
                 throw TelemetrySetupError.invalid(loc("Claude Code settings.json 형식이 올바르지 않아 변경하지 않았습니다.",
                                                       "Claude Code settings.json isn't in a valid format, so it wasn't changed."))
             }
@@ -709,6 +710,22 @@ final class TelemetrySetup {
         plan.data = try plan.originalCommand.flatMap { Self.replacingLiteral($0, with: Self.statusLineCommand, in: envOnly, expecting: object) }
             ?? settingsData(object, original: original)
         return plan
+    }
+
+    /// Claude Code (JSON.parse) keeps the last of duplicate keys and JSONSerialization the first, so a rewrite would drop the
+    /// value in use. Every ':' outside strings is one object member; fewer parsed members means a duplicate at some depth.
+    private static func hasDuplicateKeys(_ data: Data, _ parsed: Any) -> Bool {
+        var colons = 0, inString = false, escaped = false
+        for byte in data {
+            if inString {
+                if escaped { escaped = false } else if byte == UInt8(ascii: "\\") { escaped = true } else if byte == UInt8(ascii: "\"") { inString = false }
+            } else if byte == UInt8(ascii: "\"") { inString = true } else if byte == UInt8(ascii: ":") { colons += 1 }
+        }
+        func members(_ value: Any) -> Int {
+            if let object = value as? [String: Any] { return object.count + object.values.reduce(0) { $0 + members($1) } }
+            return (value as? [Any])?.reduce(0) { $0 + members($1) } ?? 0
+        }
+        return colons != members(parsed)
     }
 
     /// The original bytes when nothing changed, so an applied connection is never rewritten.

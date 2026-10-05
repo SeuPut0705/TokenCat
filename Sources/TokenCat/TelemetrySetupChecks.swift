@@ -140,6 +140,15 @@ func runTelemetrySetupChecks() -> [String] {
         let duplicateHome = try fixture("duplicate-key", codex: duplicateCodex, claude: originalClaude)
         check(rejected { _ = try TelemetrySetup(home: duplicateHome).connect() } && data(duplicateHome, ".claude/settings.json") == Data(originalClaude.utf8),
               "Duplicate Codex exporter keys caused a partial connection")
+        // Claude Code reads the last duplicate and JSONSerialization the first: a rewrite would drop the env in use.
+        for (index, duplicated) in ["{\"env\":{\"OLD\":\"1\"},\"model\":\"opus\",\"env\":{\"ANTHROPIC_BASE_URL\":\"http://in-use\"}}",
+                                    "{\"env\":{\"A\":\"1\",\"A\":\"2\"}}"].enumerated() {
+            let duplicateClaude = try fixture("duplicate-json-\(index)", codex: originalCodex, claude: duplicated)
+            check(rejected { _ = try TelemetrySetup(home: duplicateClaude).connect() }
+                  && data(duplicateClaude, ".claude/settings.json") == Data(duplicated.utf8)
+                  && data(duplicateClaude, ".codex/config.toml") == Data(originalCodex.utf8),
+                  "Duplicate Claude settings.json keys were rewritten to JSONSerialization's choice")
+        }
         let headerClaude = "{\"env\":{\"OTEL_EXPORTER_OTLP_HEADERS\":{\"authorization\":\"fixture-only\"}}}"
         let headerHome = try fixture("invalid-headers", codex: originalCodex, claude: headerClaude)
         check(rejected { _ = try TelemetrySetup(home: headerHome).connect() } && data(headerHome, ".codex/config.toml") == Data(originalCodex.utf8),
@@ -212,6 +221,15 @@ func runTelemetrySetupChecks() -> [String] {
               && (object(refusedHome, ".claude/settings.json")?["env"] as? [String: Any])?["OTEL_LOGS_EXPORTER"] as? String == "none"
               && statusLine(refusedHome) == nil && data(refusedHome, support + "/telemetry-connection.json") != nil,
               "A TokenCat key the person changed was reverted, or the refusal touched more than the status line")
+        // A key repeated after the connection: Claude Code reads the last copy, so the restore is refused and the file stays.
+        let repeatedHome = try fixture("key-level-repeated", codex: plainCodex, claude: originalClaude)
+        _ = try TelemetrySetup(home: repeatedHome).connect()
+        let twice = data(repeatedHome, ".claude/settings.json")!.dropLast(2) + Data(#","env":{"ANTHROPIC_BASE_URL":"http://in-use"}}"#.utf8)
+        try twice.write(to: repeatedHome.appendingPathComponent(".claude/settings.json"))
+        var repeatedRefusal = ""
+        do { _ = try TelemetrySetup(home: repeatedHome).disconnect() } catch { repeatedRefusal = error.localizedDescription }
+        check(repeatedRefusal.hasPrefix("연결 후 Claude Code 설정이 수정돼") && data(repeatedHome, ".claude/settings.json") == twice,
+              "Disconnecting a settings.json with a repeated key rewrote it to JSONSerialization's choice")
         // An edited file whose status line could not go back (here an unreadable record) still runs the bridge: the
         // connection record stays for another try instead of being deleted under it.
         let stuckHome = try fixture("key-level-stuck", codex: plainCodex, claude: originalClaude)

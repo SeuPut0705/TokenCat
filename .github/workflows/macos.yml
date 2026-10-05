@@ -1,0 +1,42 @@
+# Builds the macOS app and runs its checks on pushes and pull requests that touch the Swift code or its inputs, so a
+# compile error or a failing check shows up before a version bump. The release build is the `release` job in release.yml.
+name: macOS
+
+on:
+  push:
+    branches: [main]
+    paths: ['Sources/**', 'Assets/**', 'build.sh', 'Package.swift', '.github/workflows/macos.yml']
+  pull_request:
+    paths: ['Sources/**', 'Assets/**', 'build.sh', 'Package.swift', '.github/workflows/macos.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: 빌드와 검사
+    # Same image as the release job, so its compiler is the one that builds the release.
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 빌드
+        run: |
+          swift --version
+          ./build.sh
+
+      - name: 자체 검사
+        run: dist/TokenCat.app/Contents/MacOS/TokenCat --self-test
+
+      - name: 텔레메트리 수명 주기 검사 (루프백)
+        run: dist/TokenCat.app/Contents/MacOS/TokenCat --telemetry-lifecycle-checks

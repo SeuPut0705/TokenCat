@@ -75,16 +75,6 @@ public static class StateGlyphKinds
             SessionDisplayState.Complete or SessionDisplayState.Idle => StateGlyphKind.Idle,
             _ => null,
         };
-
-        /// The phase mark (`SessionCounts.Phase` / `StatusAISummary.Phase`); null draws no mark. Output is an event, not a mark.
-        public static StateGlyphKind? FromPhase(TokenActivityState phase) => phase switch
-        {
-            TokenActivityState.Input => StateGlyphKind.Input,
-            TokenActivityState.Tool => StateGlyphKind.Tool,
-            TokenActivityState.Working => StateGlyphKind.Working,
-            TokenActivityState.Stale => StateGlyphKind.Waiting,
-            _ => null,
-        };
     }
 }
 
@@ -96,7 +86,6 @@ public sealed record SessionGroup(SessionMember Lead)
     public IReadOnlyList<SessionMember> Children { get; init; } = [];
     public string Id => Lead.Reading.Id;
     public IReadOnlyList<SessionMember> Members => [Lead, .. Children];
-    public bool IsOrphan => Lead.Reading.IsSubagent;
 
     public SessionDisplayState State => Lead.State == SessionDisplayState.Measurement
         ? SessionDisplayState.Measurement
@@ -695,22 +684,28 @@ public static class SessionPresentation
         { } m => Loc($"{m}분", $"{m}-minute"),
     };
 
-    /// Replay-proof: the newest reset window wins, then the highest percentage inside it.
+    /// Replay-proof per window length: its newest reset wins, then the highest percentage inside it. Among windows that have
+    /// not reset the higher use wins (a tie goes to the longer window); when all have reset, the latest reset.
     /// Without any reset time the windows cannot be told apart, so only the newest record counts.
-    public static UsageLimitSummary? UsageLimit(IReadOnlyList<TokenReading> readings)
+    public static UsageLimitSummary? UsageLimit(IReadOnlyList<TokenReading> readings, DateTimeOffset now)
     {
         var limits = readings.Where(reading => reading.Source == TokenSource.Codex).Select(reading => reading.RateLimit)
             .OfType<TokenRateLimit>().Where(limit => double.IsFinite(limit.UsedPercent)).ToList();
         if (limits.Count == 0) return null;
-        var newest = limits.Max(limit => limit.ResetsAt ?? DateTimeOffset.MinValue);
-        if (newest == DateTimeOffset.MinValue)
+        if (limits.All(limit => limit.ResetsAt is null))
         {
             var last = limits.MaxBy(limit => limit.RecordedAt)!;
             return new UsageLimitSummary(last.UsedPercent, last.WindowMinutes, null, last.RecordedAt);
         }
-        var window = limits.Where(limit => Math.Abs(Seconds(limit.ResetsAt ?? DateTimeOffset.MinValue, newest)) <= 60).ToList();
-        if (window.MaxBy(limit => limit.UsedPercent) is not { } top) return null;
-        return new UsageLimitSummary(top.UsedPercent, top.WindowMinutes, top.ResetsAt, window.Max(limit => limit.RecordedAt));
+        var windows = limits.Where(limit => limit.ResetsAt is not null).GroupBy(limit => limit.WindowMinutes).Select(group =>
+        {
+            var newest = group.Max(limit => limit.ResetsAt!.Value);
+            var window = group.Where(limit => Math.Abs(Seconds(limit.ResetsAt!.Value, newest)) <= 60).ToList();
+            var top = window.MaxBy(limit => limit.UsedPercent)!;
+            return new UsageLimitSummary(top.UsedPercent, top.WindowMinutes, top.ResetsAt, window.Max(limit => limit.RecordedAt));
+        }).ToList();
+        var live = windows.Where(window => window.ResetsAt > now).ToList();
+        return live.Count > 0 ? live.MaxBy(window => (window.UsedPercent, window.WindowMinutes ?? 0)) : windows.MaxBy(window => (window.ResetsAt, window.WindowMinutes ?? 0));
     }
 
     /// Claude's two windows reduced like Codex's: the higher use among windows that have not reset (a tie goes to the
@@ -825,16 +820,6 @@ public static class SessionPresentation
         if (!showsColumn || restart.Contains(reading.Source)) return null;
         var slot = Speed(reading, now);
         return slot.Known || state.ExpectsSpeed ? slot : null;
-    }
-
-    /// Spoken elapsed time: "1시간 5분" / "1 hour 5 minutes", minutes past a minute, else seconds.
-    public static string? SpokenDuration(DateTimeOffset? start, DateTimeOffset now)
-    {
-        if (start is not { } at) return null;
-        var seconds = Math.Max(0, (int)Seconds(now, at));
-        if (seconds >= 3_600)
-            return Format.Span(seconds / 3_600, Format.TimeUnit.Hour, spoken: true) + " " + Format.Span(seconds / 60 % 60, Format.TimeUnit.Minute, spoken: true);
-        return seconds >= 60 ? Format.Span(seconds / 60, Format.TimeUnit.Minute, spoken: true) : Format.Span(seconds, Format.TimeUnit.Second, spoken: true);
     }
 
     // Header, flow caption, footer
@@ -983,15 +968,6 @@ public static class SessionPresentation
     public static string TelemetryReceipt(IReadOnlyDictionary<TokenSource, DateTimeOffset> lastReceived, DateTimeOffset now) =>
         Loc("실측 수신: ", "Telemetry received: ")
         + string.Join(" · ", Sources.Select(source => $"{source.Title} {HelpAge(lastReceived.TryGetValue(source, out var at) ? at : null, now)}"));
-
-    /// Newest measurement per client from the readings, for a model that does not track receipts itself.
-    public static Dictionary<TokenSource, DateTimeOffset> MeasuredAt(IReadOnlyList<TokenReading> readings)
-    {
-        var result = new Dictionary<TokenSource, DateTimeOffset>();
-        foreach (var reading in readings)
-            if (reading.SpeedMeasurement?.At is { } at && (!result.TryGetValue(reading.Source, out var known) || at > known)) result[reading.Source] = at;
-        return result;
-    }
 
     /// Expanded-list date captions from the model clock.
     public static string DaySection(DateTimeOffset date, DateTimeOffset now, DayCalendar calendar)

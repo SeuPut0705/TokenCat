@@ -9,6 +9,9 @@ final class TokenTracker {
     private let discoveryInterval: TimeInterval
     private var lastDiscovery: Date?
     private var files: [String: TokenFileCursor] = [:]
+    /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out ranks again at the
+    /// periodic rescan instead of rerunning discovery on each file event.
+    private var known = Set<String>()
     private let manager = FileManager.default
     static let recentOutputWindow: TimeInterval = 600
 
@@ -31,7 +34,7 @@ final class TokenTracker {
     func noteChanged(paths: [String]) {
         // Workflow journals and other side files under subagents/ are never tracked.
         func candidate(_ path: String) -> Bool {
-            path.hasSuffix(".jsonl") && files[path] == nil
+            path.hasSuffix(".jsonl") && files[path] == nil && !known.contains(path)
                 && (!path.contains("/subagents/") || (path as NSString).lastPathComponent.hasPrefix("agent-"))
         }
         if paths.contains(where: candidate) { lastDiscovery = nil }
@@ -44,7 +47,7 @@ final class TokenTracker {
             lastDiscovery = now
         }
         // One pool per file: a cold start parses MBs of tails, and without it every temporary lives until the sample ends.
-        for file in files.values { autoreleasepool { file.read(tailLimit: initialTailBytes) } }
+        for file in files.values { autoreleasepool { file.read(tailLimit: initialTailBytes, now: now) } }
         return files.values.compactMap { file -> TokenReading? in
             let parser = file.parser
             guard parser.lastActivity != nil else { return nil }
@@ -98,6 +101,7 @@ final class TokenTracker {
     }
 
     private func discover(now: Date) {
+        known.removeAll(keepingCapacity: true)
         let roots: [(TokenSource, [URL])] = [
             (.codex, codexFiles()), (.claude, claudeFiles())
         ]
@@ -128,6 +132,7 @@ final class TokenTracker {
     private func recent(_ urls: [URL], keepingSince cutoff: Date = .distantFuture) -> [URL] {
         let dated: [(url: URL, modified: Date)] = urls.filter { $0.pathExtension == "jsonl" }
             .map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast) }
+        known.formUnion(dated.map(\.url.path))
         return dated.sorted { $0.modified > $1.modified }.enumerated()
             .filter { $0.offset < 32 || ($0.offset < 64 && $0.element.modified >= cutoff) }.map { $0.element.url }
     }
@@ -212,7 +217,9 @@ private final class TokenFileCursor {
                               ownSessionID: ownSession)
     }
 
-    func read(tailLimit: Int) {
+    func read(tailLimit: Int, now: Date) {
+        // Every sample, so liveness and the replay filter recover once records are stamped by a sane clock again.
+        parser.clampClock(to: now.addingTimeInterval(5))
         // stat(2), not attributesOfItem: this runs for every tracked log on every tick, and the latter also reads xattrs.
         var info = stat()
         guard stat(url.path, &info) == 0 else { return }
@@ -286,7 +293,8 @@ private final class TokenFileCursor {
         return found
     }
 
-    /// Visits complete lines newest first. Lines over 64 KB and an unterminated last record are skipped.
+    /// Visits complete lines newest first. Lines over `maximumLineBytes` (the forward limit; a prompt with a pasted image
+    /// runs past 64 KB) and an unterminated last record are skipped.
     private func scanLinesBackward(handle: FileHandle, size: UInt64, lowerBound: UInt64,
                                    visit: (Data, UInt64) -> Bool) throws {
         var end = size
@@ -302,7 +310,7 @@ private final class TokenFileCursor {
                 let newline = chunk[..<cursor].lastIndex(of: 10)
                 let lineStart = newline.map { chunk.index(after: $0) } ?? chunk.startIndex
                 if !dropping {
-                    if partial.count + chunk.distance(from: lineStart, to: cursor) <= 65_536 {
+                    if partial.count + chunk.distance(from: lineStart, to: cursor) <= maximumLineBytes {
                         var assembled = Data(chunk[lineStart..<cursor])
                         assembled.append(partial)
                         partial = assembled
@@ -498,6 +506,13 @@ final class TokenLogParser {
         case .claude: consumeClaude(record, date: date, previousLog: lastLogAt)
         }
         if let date { lastLogAt = max(lastLogAt ?? date, date) }
+    }
+
+    /// A record stamped ahead of the clock (or a clock set back) must not keep the newest times in the future: the session
+    /// would stop counting as live and Claude's 10-minute replay filter would drop every new record.
+    func clampClock(to ceiling: Date) {
+        lastLogAt = lastLogAt.map { min($0, ceiling) }
+        lastActivity = lastActivity.map { min($0, ceiling) }
     }
 
     func consumeMetadata(_ data: Data) {

@@ -577,18 +577,25 @@ enum SessionPresentation {
         }
     }
 
-    /// Replay-proof: the newest reset window wins, then the highest percentage inside it.
+    /// Replay-proof per window length: the newest reset wins, then the highest percentage inside it. Across windows (each
+    /// session logs only its fuller one), the higher use among those not reset wins like Claude's; all reset, the latest.
     /// Without any reset time the windows cannot be told apart, so only the newest record counts.
-    static func usageLimit(_ tokens: [TokenReading]) -> UsageLimitSummary? {
+    static func usageLimit(_ tokens: [TokenReading], now: Date) -> UsageLimitSummary? {
         let limits = tokens.filter { $0.source == .codex }.compactMap(\.rateLimit).filter { $0.usedPercent.isFinite }
         guard let newest = limits.map({ $0.resetsAt ?? .distantPast }).max() else { return nil }
         if newest == .distantPast, let last = limits.max(by: { $0.recordedAt < $1.recordedAt }) {
             return UsageLimitSummary(usedPercent: last.usedPercent, windowMinutes: last.windowMinutes, resetsAt: nil, recordedAt: last.recordedAt)
         }
-        let window = limits.filter { abs(($0.resetsAt ?? .distantPast).timeIntervalSince(newest)) <= 60 }
-        guard let top = window.max(by: { $0.usedPercent < $1.usedPercent }) else { return nil }
-        return UsageLimitSummary(usedPercent: top.usedPercent, windowMinutes: top.windowMinutes, resetsAt: top.resetsAt,
-                                 recordedAt: window.map(\.recordedAt).max() ?? top.recordedAt)
+        let windows = Dictionary(grouping: limits.filter { $0.resetsAt != nil }, by: \.windowMinutes).values.compactMap { group -> UsageLimitSummary? in
+            guard let newest = group.compactMap(\.resetsAt).max() else { return nil }
+            let window = group.filter { abs(($0.resetsAt ?? .distantPast).timeIntervalSince(newest)) <= 60 }
+            guard let top = window.max(by: { $0.usedPercent < $1.usedPercent }) else { return nil }
+            return UsageLimitSummary(usedPercent: top.usedPercent, windowMinutes: top.windowMinutes, resetsAt: top.resetsAt,
+                                     recordedAt: window.map(\.recordedAt).max() ?? top.recordedAt)
+        }
+        let live = windows.filter { ($0.resetsAt ?? .distantPast) > now }
+        return live.max { ($0.usedPercent, $0.windowMinutes ?? 0) < ($1.usedPercent, $1.windowMinutes ?? 0) }
+            ?? windows.max { ($0.resetsAt ?? .distantPast, $0.windowMinutes ?? 0) < ($1.resetsAt ?? .distantPast, $1.windowMinutes ?? 0) }
     }
 
     /// Claude's two windows reduced like Codex's: the higher use among windows that have not reset (a tie goes to the
@@ -1186,7 +1193,7 @@ struct SessionListModel {
 
         var model = SessionListModel()
         model.counts = SessionCounts(groups)
-        model.usageLimit = SessionPresentation.usageLimit(tokens)
+        model.usageLimit = SessionPresentation.usageLimit(tokens, now: now)
         model.hiddenGroups = ordered.count - shown.count
         func measuredSpeed(_ reading: TokenReading) -> Bool {
             reading.speedMeasurement?.tokensPerSecond != nil && !restart.contains(reading.source)

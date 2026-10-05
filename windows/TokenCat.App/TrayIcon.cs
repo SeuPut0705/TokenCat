@@ -22,7 +22,11 @@ sealed class TrayIcon : IDisposable
     /// Left button only: WinForms raises Click and MouseClick for the right button too (§2.5).
     public void OnLeftClick(Action action) => icon.MouseClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) action(); };
 
+    /// A double-click's second press arrives as a double-click, never as a second click (WinForms skips MouseClick).
+    public void OnLeftDoubleClick(Action action) => icon.MouseDoubleClick += (_, e) => { if (e.Button == Forms.MouseButtons.Left) action(); };
+
     public void OnBalloonClick(Action action) => icon.BalloonTipClicked += (_, _) => action();
+
 
     public bool Visible { set => icon.Visible = value; }
 

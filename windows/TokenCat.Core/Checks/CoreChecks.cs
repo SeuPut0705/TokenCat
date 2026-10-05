@@ -16,6 +16,10 @@ public static class CoreChecks
         check(Json.Parse([0xEF, 0xBB, 0xBF, .. "{\"a\":1}"u8])?.Field("a")?.Number == 1 && Json.Parse("{"u8) == null
               && Json.Parse("{} x"u8) == null && Json.ParseNode([0xEF, 0xBB, 0xBF, .. "{\"a\":1}"u8])?["a"]?.GetValue<int>() == 1,
               "a UTF-8 BOM is not skipped or invalid JSON is accepted");
+        var deep = Encoding.UTF8.GetBytes(new string('[', 100) + new string(']', 100));
+        check(Json.Parse(deep) is not null && Json.ParseNode(deep) is not null && Json.ParseNode("""{"env":{"A":"1"},"env":{"B":"2"}}"""u8) == null
+              && Json.ParseNode("""{"env":{"A":"1","A":"2"}}"""u8) == null,
+              "JSON nested 100 deep is dropped, or a settings edit accepts a repeated key");
         var source = """{"b":{"z":1,"Y":[0.10,1e2,true,"🐱"]},"a":"홍길동 & <x> + 'y' C:/p\\q","A":null,"e":{},"f":[]}"""u8;
         const string sorted = "{\n  \"A\": null,\n  \"a\": \"홍길동 & <x> + 'y' C:/p\\\\q\",\n  \"b\": {\n    \"Y\": [\n      0.10,\n      1e2,\n"
                               + "      true,\n      \"\\uD83D\\uDC31\"\n    ],\n    \"z\": 1\n  },\n  \"e\": {},\n  \"f\": []\n}\n";

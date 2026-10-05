@@ -1,5 +1,7 @@
 import Foundation
+import SwiftUI
 
+@MainActor
 func runSessionPresentationChecks() -> [String] {
     var failures: [String] = []
     var checks = 0
@@ -411,12 +413,20 @@ func runSessionPresentationChecks() -> [String] {
     replayed.rateLimit = TokenRateLimit(usedPercent: 95, windowMinutes: 10_080, resetsAt: at(-day), recordedAt: at(-5))
     var claudeLimit = question
     claudeLimit.rateLimit = TokenRateLimit(usedPercent: 99, windowMinutes: 300, resetsAt: at(10 * day), recordedAt: now)
-    let usage = SessionPresentation.usageLimit([limited, lower, replayed, claudeLimit])
+    let usage = SessionPresentation.usageLimit([limited, lower, replayed, claudeLimit], now: now)
     check(usage?.usedPercent == 28 && usage?.recordedAt == at(-60) && usage?.title == "Codex 주간 한도" && usage?.value(now: now) == "28% 사용"
           && usage?.detail(now: now) == "5일 11시간 후 초기화 · 1분 전 기록 기준", "usage limit is replay-proof and never Claude")
+    // Each session logs only its fuller window: an older session's weekly reset is later but must not hide a fuller 5-hour one.
+    var fiveHour = command
+    fiveHour.rateLimit = TokenRateLimit(usedPercent: 99, windowMinutes: 300, resetsAt: at(2 * 3_600), recordedAt: at(-60))
+    var weekly = limited
+    weekly.rateLimit = TokenRateLimit(usedPercent: 70, windowMinutes: 10_080, resetsAt: at(3 * day), recordedAt: at(-1_800))
+    check(SessionPresentation.usageLimit([weekly, fiveHour], now: now)?.windowMinutes == 300
+          && SessionPresentation.usageLimit([weekly, fiveHour], now: at(3 * 3_600))?.usedPercent == 70,
+          "Codex windows of different lengths: the fuller live one wins, not the latest reset")
     let expired = UsageLimitSummary(usedPercent: 64, windowMinutes: 300, resetsAt: at(-10), recordedAt: at(-7_000))
     check(expired.value(now: now) == "—" && expired.detail(now: now) == "초기화됨 · 다음 Codex 기록 대기" && expired.isOld(now: now)
-          && SessionPresentation.usageLimit([question]) == nil && SessionPresentation.windowLabel(300) == "5시간"
+          && SessionPresentation.usageLimit([question], now: now) == nil && SessionPresentation.windowLabel(300) == "5시간"
           && SessionPresentation.windowLabel(2_880) == "2일" && SessionPresentation.countdown(to: at(42 * 60), now: now) == "42분",
           "expired windows, labels and countdowns")
     check(!(usage?.help(now: now).contains("예상") ?? true) && !(usage?.detail(now: now).contains("소진") ?? true)
@@ -428,7 +438,7 @@ func runSessionPresentationChecks() -> [String] {
     undatedOld.rateLimit = TokenRateLimit(usedPercent: 97, windowMinutes: 10_080, resetsAt: nil, recordedAt: at(-3 * day))
     var undatedNew = command
     undatedNew.rateLimit = TokenRateLimit(usedPercent: 12, windowMinutes: 10_080, resetsAt: nil, recordedAt: at(-600))
-    let undated = SessionPresentation.usageLimit([undatedOld, undatedNew])
+    let undated = SessionPresentation.usageLimit([undatedOld, undatedNew], now: now)
     check(undated?.usedPercent == 12 && undated?.recordedAt == at(-600) && undated?.resetsAt == nil
           && undated?.detail(now: now) == "10분 전 기록 기준" && undated?.isShown(now: now) == true,
           "without reset times the newest record wins, not the highest")
@@ -541,6 +551,33 @@ func runSessionPresentationChecks() -> [String] {
     check([TelemetryCollectorState.receiving, .waiting, .starting].allSatisfy { SessionPresentation.telemetryNotice(state: $0, note: nil, restart: []) == nil }
           && [port, conflict, failed, otherTokenCat, broken, expiredNotice].allSatisfy { ($0?.text.filter { $0 != " " }.count ?? 0) <= 15 },
           "no notice while healthy; copy stays short")
+    // Rendered: every footer notice beside every update line fits the 388 pt footer in both languages (the update line
+    // drops its text first), so a longer notice cannot widen the whole dashboard past the panel.
+    var wideFooters: [String] = []
+    let footerWidth = DashboardLayout.width - 2 * DashboardLayout.gutter
+    for language in [AppLanguage.ko, .en] {
+        AppLanguage.with(language) {
+            let notices = [TelemetryCollectorState.busyTokenCat, .busyOtherApp, .failed].map { SessionPresentation.telemetryNotice(state: $0, note: nil, restart: []) }
+                + [SessionPresentation.telemetryNotice(state: .waiting, note: "-", failure: .conflict, restart: []),
+                   SessionPresentation.telemetryNotice(state: .waiting, note: "-", failure: .writeFailed(restored: false), restart: []),
+                   SessionPresentation.telemetryNotice(state: .waiting, note: nil, restart: [], expired: [.claude, .codex]),
+                   SessionPresentation.telemetryNotice(state: .receiving, note: nil, restart: [.claude, .codex])]
+            for notice in notices {
+                for install in [UpdateState.Install.none, .downloading(0.45), .failed(.network)] {
+                    let update = SnapshotFixtures.update(install).notice(dismissed: nil)
+                    let status = SessionPresentation.footerStatus(loading: false, tokenDelay: 0, systemDelay: 0, notice: notice)
+                    let renderer = ImageRenderer(content: DashboardFooter(status: status, notice: notice, help: "", open: {}, update: update)
+                        .buttonStyle(HoverButtonStyle()))
+                    renderer.proposedSize = ProposedViewSize(width: footerWidth, height: nil)
+                    renderer.scale = 1
+                    if CGFloat(renderer.cgImage?.width ?? .max) > footerWidth {
+                        wideFooters.append("\(language.rawValue) \(status.text) + \(update?.text ?? "")")
+                    }
+                }
+            }
+        }
+    }
+    check(wideFooters.isEmpty, "footer wider than the dashboard: \(wideFooters.joined(separator: "; "))")
     // The footer's one item, by priority.
     func footer(_ loading: Bool, _ ai: Int, _ system: Int, _ notice: TelemetryNotice?) -> FooterStatus {
         SessionPresentation.footerStatus(loading: loading, tokenDelay: ai, systemDelay: system, notice: notice)
@@ -616,13 +653,16 @@ func runSessionPresentationChecks() -> [String] {
     detailed.lastOutputTokens = 7_493
     detailed.lastTurnDurationSeconds = 252
     let details = SessionPresentation.detailItems(detailed, state: .tool)
-    check(details.map(\.label) == ["세션 ID", "모델", "도구", "마지막 완료 턴", "기록 시점"]
-          && details.map(\.value) == ["C", "gpt-6.1-sol · high", "명령 실행 · exec", "7,493 tok · 4:12", "Codex는 응답 완료 시 기록"]
+    let detailLabels: [String] = details.map(\.label), detailValues: [String] = details.map(\.value)
+    let detailHeight: CGFloat = 16 + 15 * 5 + 0.5
+    check(detailLabels == ["세션 ID", "모델", "도구", "마지막 완료 턴", "기록 시점"]
+          && detailValues == ["C", "gpt-6.1-sol · high", "명령 실행 · exec", "7,493 tok · 4:12", "Codex는 응답 완료 시 기록"]
           && details[0].copy == "C" && details[1].copy == nil
-          && SessionPresentation.detailHeight(detailed, state: .tool) == 16 + 15 * 5 + 0.5
-          && SessionPresentation.detailItems(claudeChild, state: .working).map(\.label) == ["세션 ID", "에이전트", "기록 시점"]
-          && SessionPresentation.detailItems(claudeChild, state: .working).last?.value == "Claude Code는 메시지 완료 시 기록",
+          && SessionPresentation.detailHeight(detailed, state: .tool) == detailHeight,
           "inline detail lines and height")
+    let childDetails = SessionPresentation.detailItems(claudeChild, state: .working)
+    check(childDetails.map(\.label) == ["세션 ID", "에이전트", "기록 시점"] && childDetails.last?.value == "Claude Code는 메시지 완료 시 기록",
+          "inline detail lines for a subagent")
 
     // System and header mappings.
     check(MemoryPressure(1) == .normal && MemoryPressure(2) == .warning && MemoryPressure(4) == .critical && MemoryPressure(nil) == .unknown

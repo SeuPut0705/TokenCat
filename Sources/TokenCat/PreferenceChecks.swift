@@ -446,6 +446,8 @@ func runShellChecks() -> [String] {
     let interrupted = tracker.update([signal, codex]).first
     check(interrupted?.title == "턴 중단 · 프로젝트 미확인" && interrupted?.subtitle == "Codex" && interrupted?.body == "",
           "An interrupted turn is not reported as 중단 without a project, model or body")
+    check(interrupted?.signal.contentKey == nil && finished.first?.signal.contentKey != nil,
+          "An interrupted turn (Esc or API error) played the cat's turn-complete content")
     AppLanguage.with(.en) {
         check(asked.first?.title == "Input needed · TokenCat" && asked.first?.body == "Reply to continue"
               && finished.first?.title == "Turn complete · TokenCat" && finished.first?.body == "12,480 tok · 4m 12s"
@@ -485,6 +487,11 @@ func runShellChecks() -> [String] {
     let signals = AttentionSignal.make(groups)
     check(signals.count == 1 && signals.first?.input == true && signals.first?.live == true && signals.first?.ended == nil,
           "A subagent waiting for input does not keep its top-level group live, or telemetry rows were included")
+    var planReading = TokenReading(source: .claude, id: "claude:plan", sessionID: "r", project: "demo", active: true, activityState: .input, sampledAt: at)
+    planReading.toolName = "ExitPlanMode"
+    let planEvent = AttentionSignal.make(SessionPresentation.groups([planReading], now: at)).first.map { AttentionEvent.input($0) }
+    check(signals.first?.plan == false && planEvent?.title == "계획 승인 대기 · demo" && planEvent?.body == "승인하면 계속됩니다",
+          "A plan approval was notified as 입력 필요 · 답변하면 계속됩니다")
     func staleChildGroup(_ child: TokenActivityState, leadActive: Bool, lead: TokenActivityState) -> [SessionGroup] {
         SessionPresentation.groups([
             TokenReading(source: .claude, id: "claude:lead", sessionID: "q", project: "demo", model: "m", active: leadActive,

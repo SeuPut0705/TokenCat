@@ -28,15 +28,6 @@ public sealed record StatusAISummary
         Waiting = counts.Waiting;
         Phase = Input > 0 ? TokenActivityState.Input : counts.Phase;
     }
-
-    public static string PhaseTitle(TokenActivityState phase) => phase switch
-    {
-        TokenActivityState.Input => Loc("입력 필요", "Input needed"),
-        TokenActivityState.Tool => Loc("도구 실행", "Running tool"),
-        TokenActivityState.Working => Loc("진행", "Working"),
-        TokenActivityState.Stale => Loc("로그 대기", "Waiting for log"),
-        _ => Loc("활동 없음", "No activity"),
-    };
 }
 
 public static class StatusBarContent
@@ -91,7 +82,8 @@ public static class StatusBarContent
             return (u / factor).ToString(format, CultureInfo.InvariantCulture) + " / " + (t / factor).ToString(format, CultureInfo.InvariantCulture)
                    + (tera ? " TB" : " GB");
         }
-        var lines = new List<string> { "TokenCat" };
+        // The AI line before memory and storage: the App keeps whole lines under 128 characters, and "Input needed" must survive.
+        var lines = new List<string> { "TokenCat", hasTokenSample ? Loc("AI ", "AI: ") + AICountLine(counts, ai) : Loc("AI 기록 확인 중", "Reading AI records") };
         if (hasSample)
         {
             var parts = new[]
@@ -101,7 +93,6 @@ public static class StatusBarContent
             }.OfType<string>().ToList();
             if (parts.Count > 0) lines.Add(string.Join(" · ", parts));
         }
-        lines.Add(hasTokenSample ? Loc("AI ", "AI: ") + AICountLine(counts, ai) : Loc("AI 기록 확인 중", "Reading AI records"));
         lines.Add(Loc("클릭: 세션 상세 · 우클릭: 빠른 메뉴", "Click: details · Right-click: quick menu"));
         return string.Join("\n", lines);
     }

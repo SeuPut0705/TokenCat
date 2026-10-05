@@ -148,6 +148,15 @@ public static class TelemetrySetupChecks
             var duplicateHome = Fixture("duplicate-key", "[otel]\nexporter = 'none'\nexporter = 'none'\n", originalClaude);
             check(Rejected(() => Setup(duplicateHome).Connect()) && Same(Data(duplicateHome, claudeFile), Bytes(originalClaude)),
                   "Duplicate Codex exporter keys caused a partial connection");
+            // Claude Code reads the last duplicate and JSONSerialization the first: a rewrite would drop the env in use.
+            string[] duplicatedClaude = ["""{"env":{"OLD":"1"},"model":"opus","env":{"ANTHROPIC_BASE_URL":"http://in-use"}}""", """{"env":{"A":"1","A":"2"}}"""];
+            for (var index = 0; index < duplicatedClaude.Length; index++)
+            {
+                var duplicateClaude = Fixture($"duplicate-json-{index}", originalCodex, duplicatedClaude[index]);
+                check(Rejected(() => Setup(duplicateClaude).Connect()) && Same(Data(duplicateClaude, claudeFile), Bytes(duplicatedClaude[index]))
+                      && Same(Data(duplicateClaude, codexFile), Bytes(originalCodex)),
+                      "Duplicate Claude settings.json keys were rewritten to JSONSerialization's choice");
+            }
             var headerHome = Fixture("invalid-headers", originalCodex, """{"env":{"OTEL_EXPORTER_OTLP_HEADERS":{"authorization":"fixture-only"}}}""");
             check(Rejected(() => Setup(headerHome).Connect()) && Same(Data(headerHome, codexFile), Bytes(originalCodex)),
                   "Malformed existing exporter authentication was ignored");
@@ -217,6 +226,14 @@ public static class TelemetrySetupChecks
                   && Text(Object(refusedHome, claudeFile)?["env"]?["OTEL_LOGS_EXPORTER"]) == "none"
                   && StatusLine(refusedHome) is null && Data(refusedHome, manifestFile) is not null,
                   "A TokenCat key the person changed was reverted, or the refusal touched more than the status line");
+            // A key repeated after the connection: Claude Code reads the last copy, so the restore is refused and the file stays.
+            var repeatedHome = Fixture("key-level-repeated", plainCodex, originalClaude);
+            Setup(repeatedHome).Connect();
+            byte[] twice = [.. Data(repeatedHome, claudeFile)![..^2], .. Bytes(""","env":{"ANTHROPIC_BASE_URL":"http://in-use"}}""")];
+            Put(repeatedHome, claudeFile, twice);
+            check(Refusal(() => Setup(repeatedHome).Disconnect()).StartsWith("연결 후 Claude Code 설정이 수정돼", StringComparison.Ordinal)
+                  && Same(Data(repeatedHome, claudeFile), twice),
+                  "Disconnecting a settings.json with a repeated key rewrote it to JSONSerialization's choice");
             // An edited file whose status line could not go back still runs the bridge: the connection record stays for
             // another try instead of being deleted under it. (Swift breaks the record; here the settings write is refused.)
             var stuckHome = Fixture("key-level-stuck", plainCodex, originalClaude);

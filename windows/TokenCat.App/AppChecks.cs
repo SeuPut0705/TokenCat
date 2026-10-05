@@ -1,4 +1,9 @@
+using System.IO;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
+using System.Windows.Automation.Provider;
+using System.Windows.Controls;
 using System.Windows.Media;
 using static TokenCat.Lang;
 
@@ -26,7 +31,89 @@ static class AppChecks
         guarded("glyphs", () => Glyphs(check));
         guarded("settings rows", () => SettingsRows(check));
         guarded("fixtures", () => FixtureChecks(check));
+        guarded("automation", () => Automation(check));
         return c.Done();
+    }
+
+    /// What Narrator reads (UI Automation): rows, limits and the header by name, the detail with its copy buttons, switches and
+    /// choices with their state, text buttons by their visible words. Also the keyboard selection's outline and the footer refit.
+    static void Automation(Action<bool, string> check)
+    {
+        static AutomationPeer? Peer(UIElement element) => UIElementAutomationPeer.CreatePeerForElement(element);
+        static IEnumerable<DependencyObject> Tree(DependencyObject root) =>
+            LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>().SelectMany(child => Tree(child).Prepend(child));
+        static Dashboard Shown(string name)
+        {
+            var fixture = Fixtures.All().First(fixture => fixture.Name == name);
+            var view = new Dashboard(DashboardActions.None, snapshot: true, selection: fixture.Selection, detail: fixture.Detail, expanded: fixture.Expanded);
+            view.Show(Fixtures.Input(fixture));
+            return view;
+        }
+
+        var selection = Shown("keyboard-selection");
+        var rows = Tree(selection).OfType<RowShell>().ToList();
+        check(rows.Count > 1 && rows.All(row => Peer(row) is { } peer && peer.GetAutomationControlType() == AutomationControlType.ListItem && peer.GetName().Length > 0)
+              && rows.Count(row => row.Children[0] is Border { BorderThickness.Left: 1.5 }) == 1,
+              "session rows are named list items in UI Automation, and only the keyboard selection is outlined");
+        var status = Tree(selection).OfType<TrimLine>().FirstOrDefault(line => AutomationProperties.GetName(line).Length > 0);
+        var limit = new LimitRow();
+        limit.Update(Fixtures.Limits()[0], Fixtures.Now);
+        check(status is not null && Peer(status) is { } statusPeer && statusPeer.GetName() == "세션 상태" && statusPeer.GetHelpText().Length > 0
+              && statusPeer.GetChildren()?.Any(child => child.GetAutomationControlType() == AutomationControlType.Text) == true
+              && Peer(limit) is { } limitPeer && limitPeer.GetAutomationControlType() == AutomationControlType.Text && limitPeer.GetName().StartsWith("Codex"),
+              "the header status and limit rows reach UI Automation by name");
+        var detail = Tree(Shown("detail-open")).OfType<DetailView>().FirstOrDefault();
+        check(detail is not null && Peer(detail)?.GetName() == "세션 상세"
+              && Peer(detail)?.GetChildren()?.Any(child => child.GetAutomationControlType() == AutomationControlType.Button) == true,
+              "the inline detail is named and keeps its copy buttons in UI Automation");
+
+        static ToggleState? Toggle(UIElement element) => (Peer(element)?.GetPattern(PatternInterface.Toggle) as IToggleProvider)?.ToggleState;
+        var on = SettingsView.Switch(true, _ => { }, "턴 완료");
+        check(Toggle(on) == ToggleState.On && Toggle(SettingsView.Switch(false, _ => { }, "턴 완료")) == ToggleState.Off && Peer(on)?.GetName() == "턴 완료",
+              "settings switches report on/off to UI Automation");
+        var store = Path.Combine(Path.GetTempPath(), $"tokencat-appchecks-{Guid.NewGuid():N}.json");
+        try
+        {
+            var actions = new SettingsActions(new Preferences(new SettingsStore(store)), () => { }, _ => { }, () => { }, _ => { });
+            var page = Tree(new SettingsView(Fixtures.Settings(), actions, SettingsPage.Character, _ => { }, snapshot: true)).ToList();
+            var choices = page.OfType<RadioButton>().ToList();
+            check(choices.Select(choice => AutomationProperties.GetName(choice))
+                      .SequenceEqual([.. Enum.GetValues<RunnerCharacter>().Select(character => character.Title), .. Enum.GetValues<RunnerMotion>().Select(motion => motion.Title)])
+                  && choices.Count(choice => choice.IsChecked == true) == 2
+                  && page.OfType<Button>().Count(button => AutomationProperties.GetItemStatus(button) == "현재 페이지") == 1,
+                  "character and motion choices are radio buttons named by their titles, and the current settings page is announced");
+        }
+        finally { File.Delete(store); }
+
+        var link = Ui.Link("백업 보기", () => { }, "원본 백업");
+        check(AutomationProperties.GetName(Ui.SmallButton("지금 다시 시도", () => { })) == "지금 다시 시도" && AutomationProperties.GetName(link) == "백업 보기"
+              && Equals(link.ToolTip, "원본 백업"), "text buttons are named by their visible words, with the help as a tooltip");
+
+        var footer = new Footer(DashboardActions.None);
+        var failed = Fixtures.Update("failed", Fixtures.Now).Notice(null);
+        footer.Update(new FooterStatus(FooterStatusKind.Live, "실시간"), null, "", failed);
+        var trailing = (Border)footer.Children[1];
+        var first = trailing.Child;
+        footer.Update(new FooterStatus(FooterStatusKind.AiDelay, "AI 기록 지연 · 수집기 응답 없음"), null, "", failed);
+        var refitted = trailing.Child;
+        footer.Update(new FooterStatus(FooterStatusKind.AiDelay, "AI 수집 지연 12초"), null, "", failed);
+        var counting = trailing.Child;
+        footer.Update(new FooterStatus(FooterStatusKind.AiDelay, "AI 수집 지연 13초"), null, "", failed);
+        check(first is not null && !ReferenceEquals(first, refitted) && ReferenceEquals(counting, trailing.Child),
+              "the footer's update item is not fitted again when the status beside it changes, or is rebuilt as a delay counts");
+        var overlaps = new List<string>();
+        foreach (var language in new[] { AppLanguage.Ko, AppLanguage.En })
+            With(language, () =>
+            {
+                var shown = Tree(Shown("restart-needed")).OfType<Footer>().Single();
+                var widths = shown.Children.OfType<FrameworkElement>().Select(side =>
+                {
+                    side.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                    return side.DesiredSize.Width;
+                }).ToList();
+                if (widths.Sum() + 12 > Dashboard.PanelWidth - 2 * Dashboard.Gutter + 0.5) overlaps.Add($"{language.Code} {string.Join(" + ", widths)}");
+            });
+        check(overlaps.Count == 0, "the restart notice and a failed update overlap in the footer: " + string.Join("; ", overlaps));
     }
 
     /// Every embedded PNG decodes with the manifest's dimensions; pixel art keeps alpha 0 or 255.
@@ -212,6 +299,17 @@ static class AppChecks
             && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-720), true, at) == (SettingsView.StatusRow.Received, "Claude 데스크톱 앱 기록 · 12분 전", null),
             "Claude limit row is not checked empty status line → skipped → received → waiting → none");
         check(LoginItem.Describe(LoginItem.State.NotRegistered) == "꺼짐 · 켤 때만 시작 프로그램에 등록합니다", "Korean startup app captions changed");
+        const string command = "\"C:\\Users\\me\\AppData\\Local\\Programs\\TokenCat\\TokenCat.exe\"";
+        check(LoginItem.StateFor(null, null, command) == LoginItem.State.NotRegistered
+              && LoginItem.StateFor("\"C:\\Other\\TokenCat.exe\"", null, command) == LoginItem.State.NotRegistered
+              && LoginItem.StateFor(command.ToLowerInvariant(), new byte[] { 0x02, 0, 0, 0 }, command) == LoginItem.State.Enabled
+              && LoginItem.StateFor(command, new byte[] { 0x03, 0, 0, 0 }, command) == LoginItem.State.DisabledInTaskManager,
+              "a startup entry for another path is not off, or Task Manager's switch is misread");
+        var screen = new System.Drawing.Rectangle(0, 0, 1920, 1080);
+        check(Shell.Corner(new(0, 0, 1920, 1032), screen) == new System.Drawing.Point(1920, 1032)
+              && Shell.Corner(new(0, 48, 1920, 1032), screen) == new System.Drawing.Point(1920, 48)
+              && Shell.Corner(new(62, 0, 1858, 1080), screen) == new System.Drawing.Point(62, 1080),
+              "the flyout opened from the menu or a notification is not at the taskbar's corner");
         check(Ui.KeepWords("권장합니다 Claude 데스크톱") == "권\u2060장\u2060합\u2060니\u2060다 Claude 데\u2060스\u2060크\u2060톱",
             "Korean captions can still break inside a word");
         With(AppLanguage.En, () =>

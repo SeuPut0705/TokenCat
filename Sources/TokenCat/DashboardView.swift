@@ -96,7 +96,8 @@ private func copyToPasteboard(_ text: String) {
     NSPasteboard.general.setString(text, forType: .string)
 }
 
-/// Hover and keyboard selection for one row: x = 4–384, radius 6, no animation.
+/// Hover and keyboard selection for one row: x = 4–384, radius 6, no animation. The fill alone is under 3:1 against the
+/// container, so the selection, the list's only keyboard indicator, also gets a 1.5 pt accent border.
 private struct RowChrome: ViewModifier {
     var selected: Bool
     @State private var hovering = false
@@ -106,6 +107,12 @@ private struct RowChrome: ViewModifier {
         let fill = selected ? TCColor.selection(keyWindow: active == .key) : (hovering ? TCColor.hover(contrast: high) : Color.clear)
         return content
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(fill).padding(.horizontal, DashboardLayout.rowInset))
+            .overlay {
+                if selected {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 1.5)
+                        .padding(.horizontal, DashboardLayout.rowInset)
+                }
+            }
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
     }
@@ -1133,9 +1140,14 @@ struct SessionList: View {
         }
     }
 
+    /// Keyboard focus stays on the list, so VoiceOver would say nothing: the selected row is read out here.
     private func select(_ id: String, in rows: [String]) {
         selectedID = id
         selectedIndex = rows.firstIndex(of: id) ?? 0
+        guard let item = model.sessions.item(id) else { return }
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: SessionPresentation.spokenLabel(item.reading, state: item.state),
+                                        .priority: NSAccessibilityPriorityLevel.high.rawValue])
     }
 
     /// Keeps the selection by id through reorders; a vanished row hands it to the nearest position.
@@ -1210,9 +1222,12 @@ private struct OlderRow: View {
             .font(TCFont.metaMedium).toneSecondary()
             .frame(maxWidth: .infinity).frame(height: SessionListModel.olderHeight)
             .background(selected ? TCColor.selection(keyWindow: true) : (hovering ? TCColor.hover(contrast: high) : .clear))
+            .overlay { if selected { Rectangle().strokeBorder(Color(nsColor: .controlAccentColor), lineWidth: 1.5) } }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        // ↑↓ and Return reach it inside the list, where a Tab stop would show no focus.
+        .focusable(false)
         .onHover { hovering = $0 }
         .accessibilityLabel(loc("이전 기록 더 보기", "Show earlier records")).accessibilityValue("\(count)" + loc("개", ""))
         .accessibilityAddTraits(selected ? .isSelected : [])
@@ -1301,6 +1316,7 @@ struct SessionBlockView: View {
                         .rowChrome(selected: context.selectedID == block.moreID)
                 }
                 .buttonStyle(.plain)
+                .focusable(false)
                 .id(block.moreID)
                 .help(loc("실행 중인 하위 에이전트는 모두 보여주고, 로그 대기 하위는 실행 중인 하위가 없을 때만 \(SessionListModel.collapsedChildren)개까지 보여줍니다",
                           "Shows every running subagent. Subagents waiting for log appear only when none are running, up to \(SessionListModel.collapsedChildren)"))
@@ -1320,7 +1336,9 @@ struct SessionBlockView: View {
         case .live:
             LiveSessionRow(item: item, childCount: block.childCount, context: context)
         case .measurement:
-            MeasurementRow(reading: item.reading, now: context.now, selected: context.selectedID == item.id).onTapGesture { context.tap(item.id) }
+            MeasurementRow(reading: item.reading, now: context.now, selected: context.selectedID == item.id)
+                .onTapGesture { context.tap(item.id) }
+                .accessibilityAction { context.tap(item.id) }
         default:
             // Input and retry children are running, so every one of them is in `children`.
             let urgent = block.state == .input || block.state == .retrying
@@ -1778,6 +1796,8 @@ struct SessionDetail: View {
     var item: SessionRowItem
     var indent: CGFloat
     @Environment(\.tokenCatHighContrast) private var high
+    /// The copy buttons' own focus: inside the list `isFocused` reports the list, so `HoverButtonStyle` cannot ring them.
+    @FocusState private var copyFocus: String?
     var body: some View {
         let items = SessionPresentation.detailItems(item.reading, state: item.state)
         VStack(alignment: .leading, spacing: 0) {
@@ -1793,6 +1813,12 @@ struct SessionDetail: View {
                         if let copy = detail.copy {
                             Button { copyToPasteboard(copy) } label: { Image(systemName: "doc.on.doc").font(TCFont.meta).frame(width: 18, height: 15) }
                                 .buttonStyle(HoverButtonStyle(ring: false))
+                                .focused($copyFocus, equals: detail.id)
+                                .overlay {
+                                    if copyFocus == detail.id {
+                                        RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(Color(nsColor: .keyboardFocusIndicatorColor), lineWidth: 2)
+                                    }
+                                }
                                 .help(loc("복사", "Copy")).accessibilityLabel(loc("\(detail.label) 복사", "Copy \(detail.label)"))
                         }
                         Spacer(minLength: 0)
@@ -2054,7 +2080,7 @@ struct DashboardFooter: View {
 }
 
 /// The footer's quiet update line: secondary text, accent text buttons, ✕ hides it for that version only.
-/// The failure's short reason drops first when the row is narrow.
+/// The failure's short reason drops first when the row is narrow, then the text itself (to help; a failure keeps its ⚠).
 struct UpdateFooterItem: View {
     var notice: UpdateNotice
     var action: (UpdateCommand) -> Void
@@ -2063,19 +2089,22 @@ struct UpdateFooterItem: View {
         ViewThatFits(in: .horizontal) {
             row(detail: true)
             row(detail: false)
+            row(detail: false, text: false).help(notice.text)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(loc("업데이트", "Update"))
     }
 
-    private func row(detail: Bool) -> some View {
+    private func row(detail: Bool, text: Bool = true) -> some View {
         HStack(spacing: 0) {
             HStack(spacing: 4) {
                 if case .failed = notice.kind {
                     Image(systemName: "exclamationmark.triangle.fill").font(TCFont.meta).foregroundStyle(TCColor.warning)
                 }
-                Text(detail ? ([notice.text] + [notice.detail].compactMap { $0 }).joined(separator: " · ") : notice.text)
-                    .font(TCFont.metaMono).toneSecondary().lineLimit(1)
+                if text {
+                    Text(detail ? ([notice.text] + [notice.detail].compactMap { $0 }).joined(separator: " · ") : notice.text)
+                        .font(TCFont.metaMono).toneSecondary().lineLimit(1)
+                }
             }
             .fixedSize()
             .help(notice.help)

@@ -48,7 +48,8 @@ sealed class Shell
     bool setupInFlight, locked, suspended, quitting;
     DateTimeOffset? quietSince;
     string? balloonGroup;
-    DateTime hiddenAt = DateTime.MinValue;
+    /// A `Stopwatch` timestamp: the wall clock set back must not swallow tray clicks for that long.
+    long hiddenAt;
     Drawing.Point anchor;
 
     public Shell(Application app)
@@ -71,6 +72,12 @@ sealed class Shell
     public void Start()
     {
         tray.OnLeftClick(TrayClicked);
+        // The second press of a double-click hid the flyout the first one opened: show it again, without the click guard.
+        tray.OnLeftDoubleClick(() => dispatcher.BeginInvoke(DispatcherPriority.Background, () =>
+        {
+            if (window is { IsVisible: true }) Front(window);
+            else if (!flyout.IsVisible) ShowFlyout(Forms.Cursor.Position);
+        }));
         tray.OnBalloonClick(() => OpenDashboard(balloonGroup));
         // Built at open, like the mac quick menu. WinForms pre-cancels opening an empty strip, so un-cancel it once filled.
         trayMenu.Opening += (_, e) => { HideFlyout(); Menus.Fill(trayMenu, BuildTrayMenu); e.Cancel = false; };
@@ -103,6 +110,7 @@ sealed class Shell
         SystemEvents.DisplaySettingsChanged += OnDisplayChanged;
         SystemEvents.SessionSwitch += OnSessionSwitch;
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.TimeChanged += OnTimeChanged;
 
         tray.Visible = true;
         RenderTray();
@@ -121,13 +129,18 @@ sealed class Shell
         }
     }
 
-    /// A second launch (payload-free hand-off) opens the dashboard at the primary work area's corner.
+    /// A second launch (payload-free hand-off) opens the dashboard at the primary work area's corner on the taskbar's side
+    /// (Windows 10 allows it on any edge); Place clamps it into the work area.
     public void OpenAtCorner()
     {
         if (window is { IsVisible: true }) { Front(window); return; }
-        var area = Forms.Screen.PrimaryScreen!.WorkingArea;
-        ShowFlyout(new Drawing.Point(area.Right, area.Bottom));
+        var screen = Forms.Screen.PrimaryScreen!;
+        ShowFlyout(Corner(screen.WorkingArea, screen.Bounds));
     }
+
+    /// The work area's corner nearest the taskbar: the edge where it is inset from the screen, else bottom-right.
+    internal static Drawing.Point Corner(Drawing.Rectangle area, Drawing.Rectangle bounds) =>
+        new(area.Left > bounds.Left ? area.Left : area.Right, area.Top > bounds.Top ? area.Top : area.Bottom);
 
     void OnPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e) => dispatcher.BeginInvoke(() =>
     {
@@ -135,6 +148,8 @@ sealed class Shell
         if (dark != Theme.Dark)
         {
             Theme.Dark = dark;
+            // WinForms menus read the mode once per call; Theme.Dark is already set, so the re-entrant change skips this.
+            Forms.Application.SetColorMode(Forms.SystemColorMode.System);
             flyout.Rebuild(actions);
             window?.Rebuild(actions);
             settings?.Rebuild();
@@ -143,6 +158,9 @@ sealed class Shell
         tray.Resize(); // the dot outline follows the taskbar tone
         PlanRunner(); // animation effects may have been turned off
     });
+
+    /// .NET caches the local time zone: a new one would otherwise show 오늘/어제 and times in the old zone until restart.
+    void OnTimeChanged(object? sender, EventArgs e) => TimeZoneInfo.ClearCachedData();
 
     void OnDisplayChanged(object? sender, EventArgs e) => dispatcher.BeginInvoke(() => { tray.Resize(); RenderTray(); });
 
@@ -260,8 +278,7 @@ sealed class Shell
     /// A confirmed turn end plays the character's `content` once per signal and event time, whatever the toggles (K-5).
     void TurnEnded(AttentionSignal signal)
     {
-        var key = $"{signal.Id}@{signal.EndedAt?.ToUnixTimeMilliseconds() ?? 0}";
-        if (playedContent.Contains(key)) return;
+        if (signal.ContentKey is not { } key || playedContent.Contains(key)) return;
         playedContent.Add(key);
         if (playedContent.Count > 64) playedContent.RemoveRange(0, playedContent.Count - 64);
         if (preferences.AnimationSource != RunnerMotion.Activity) return;
@@ -289,7 +306,7 @@ sealed class Shell
     void TrayClicked()
     {
         // Clicking the icon while the flyout is open first deactivates (hides) it; that same click must not reopen it.
-        if (DateTime.UtcNow - hiddenAt < TimeSpan.FromMilliseconds(300)) return;
+        if (Stopwatch.GetElapsedTime(hiddenAt) < TimeSpan.FromMilliseconds(300)) return;
         if (window is { IsVisible: true }) { Front(window); return; }
         ShowFlyout(Forms.Cursor.Position);
     }
@@ -310,7 +327,7 @@ sealed class Shell
     {
         if (!flyout.IsVisible) return;
         flyout.Hide();
-        hiddenAt = DateTime.UtcNow;
+        hiddenAt = Stopwatch.GetTimestamp();
         // "…로 업데이트했습니다" shows for one showing of the dashboard.
         updater.ClearUpdatedNote();
     }
@@ -503,6 +520,7 @@ sealed class Shell
         SystemEvents.DisplaySettingsChanged -= OnDisplayChanged;
         SystemEvents.SessionSwitch -= OnSessionSwitch;
         SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        SystemEvents.TimeChanged -= OnTimeChanged;
         animator.Stop();
         updater.Stop();
         monitor.Stop();

@@ -36,6 +36,8 @@ public static class ShellChecks
         var interrupted = tracker.Update([signal, codex]).FirstOrDefault();
         check(interrupted?.Title == "턴 중단 · 프로젝트 미확인" && interrupted?.Subtitle == "Codex" && interrupted?.Body == "",
               "An interrupted turn is not reported as 중단 without a project, model or body");
+        check(interrupted?.Signal.ContentKey is null && finished[0].Signal.ContentKey is not null,
+              "An interrupted turn (Esc or API error) played the cat's turn-complete content");
         With(AppLanguage.En, () => check(asked[0].Title == "Input needed · TokenCat" && asked[0].Body == "Reply to continue"
                                          && finished[0].Title == "Turn complete · TokenCat" && finished[0].Body == "12,480 tok · 4m 12s"
                                          && interrupted?.Title == "Turn interrupted · Unknown project" && AttentionEvent.Duration(3_725) == "1h 2m",
@@ -62,6 +64,11 @@ public static class ShellChecks
         var signals = AttentionSignal.Make(groups);
         check(signals.Count == 1 && signals[0].Input && signals[0].Live && signals[0].Ended == null,
               "A subagent waiting for input does not keep its top-level group live, or telemetry rows were included");
+        var planned = AttentionSignal.Make(SessionPresentation.Groups([new TokenReading(TokenSource.Claude, "claude:plan")
+            { SessionID = "plan", Project = "demo", Active = true, ActivityState = A.Input, ToolName = "ExitPlanMode", SampledAt = at }], at));
+        var approval = new AttentionEvent(AttentionKind.Input, planned[0]);
+        check(approval.Title == "계획 승인 대기 · demo" && approval.Body == "승인하면 계속됩니다" && !signals[0].Plan,
+              "A plan approval is announced as a question, or a question as a plan approval");
         List<SessionGroup> staleChildGroup(A child, bool leadActive, A lead) => SessionPresentation.Groups([
             new TokenReading(TokenSource.Claude, "claude:lead") { SessionID = "q", Project = "demo", Model = "m", Active = leadActive, ActivityState = lead, SampledAt = at },
             new TokenReading(TokenSource.Claude, "claude:stale-child")

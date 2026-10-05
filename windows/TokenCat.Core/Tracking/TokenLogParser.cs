@@ -95,6 +95,13 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
         if (date is { } at) LastLogAt = Max(LastLogAt, at);
     }
 
+    /// Caps the newest record and activity times at `latest` (the tracker's now + 5 s), before each read.
+    public void Clamp(DateTimeOffset latest)
+    {
+        if (LastLogAt > latest) LastLogAt = latest;
+        if (LastActivity > latest) LastActivity = latest;
+    }
+
     public void ConsumeMetadata(ReadOnlySpan<byte> line)
     {
         if (Record(line) is { } record) ConsumeMetadata(record);

@@ -14,6 +14,9 @@ public sealed class TokenTracker
     readonly double discoveryInterval;
     DateTimeOffset? lastDiscovery;
     Dictionary<string, TokenFileCursor> files = new(StringComparer.Ordinal);
+    /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out ranks again at the
+    /// periodic rescan instead of rerunning discovery on each file event.
+    readonly HashSet<string> known = new(StringComparer.Ordinal);
 
     public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 5)
     {
@@ -34,7 +37,7 @@ public sealed class TokenTracker
         bool Candidate(string path)
         {
             var normalized = path.Replace('\\', '/');
-            return path.EndsWith(".jsonl", StringComparison.Ordinal) && !files.ContainsKey(path)
+            return path.EndsWith(".jsonl", StringComparison.Ordinal) && !files.ContainsKey(path) && !known.Contains(path)
                 && (!normalized.Contains("/subagents/", StringComparison.Ordinal)
                     || normalized[(normalized.LastIndexOf('/') + 1)..].StartsWith("agent-", StringComparison.Ordinal));
         }
@@ -49,7 +52,7 @@ public sealed class TokenTracker
             Discover(now);
             lastDiscovery = now;
         }
-        foreach (var file in files.Values) file.Read(initialTailBytes);
+        foreach (var file in files.Values) file.Read(initialTailBytes, now);
         var readings = new List<TokenReading>();
         foreach (var file in files.Values)
         {
@@ -102,6 +105,7 @@ public sealed class TokenTracker
 
     void Discover(DateTimeOffset now)
     {
+        known.Clear();
         var retained = new HashSet<string>(StringComparer.Ordinal);
         foreach (var (source, paths) in new[] { (TokenSource.Codex, CodexFiles()), (TokenSource.Claude, ClaudeFiles()) })
             foreach (var path in paths)
@@ -136,9 +140,13 @@ public sealed class TokenTracker
     /// plus up to 32 more modified since `since` (the retention hour), so a cold start opens them too.
     /// ponytail: NTFS may report a stale time for a log held open since before launch; tracked recent logs are retained,
     /// so it only matters with 32+ newer files.
-    static List<string> Recent(IEnumerable<FileSystemInfo> entries, DateTime? since = null) =>
-        [.. entries.Where(IsLog).OrderByDescending(entry => entry.LastWriteTimeUtc)
+    List<string> Recent(IEnumerable<FileSystemInfo> entries, DateTime? since = null)
+    {
+        var logs = entries.Where(IsLog).ToList();
+        known.UnionWith(logs.Select(entry => entry.FullName));
+        return [.. logs.OrderByDescending(entry => entry.LastWriteTimeUtc)
             .Where((entry, rank) => rank < 32 || (rank < 64 && entry.LastWriteTimeUtc >= since)).Select(entry => entry.FullName)];
+    }
 
     List<string> CodexFiles()
     {
@@ -221,8 +229,10 @@ sealed class TokenFileCursor(string path, TokenSource source)
             ownSession);
     }
 
-    public void Read(int tailLimit)
+    public void Read(int tailLimit, DateTimeOffset now)
     {
+        // A future record (one bad timestamp, or the clock set back) must not keep later records filtered or a live turn stale.
+        Parser.Clamp(now.AddSeconds(5));
         // A fresh attribute query every tick, never enumeration data: NTFS updates a directory entry's size lazily while
         // a writer keeps the file open (rule 8). The creation time stands in for the mac's dev-ino.
         // ponytail: NTFS can tunnel a creation time for 15 s; use the file ID (GetFileInformationByHandle) if a replaced
@@ -315,7 +325,8 @@ sealed class TokenFileCursor(string path, TokenSource source)
         return found;
     }
 
-    /// Visits complete lines newest first. Lines over 64 KB and an unterminated last record are skipped.
+    /// Visits complete lines newest first. Lines over `MaximumLineBytes` (the forward limit; a prompt with a pasted image
+    /// runs past 64 KB) and an unterminated last record are skipped.
     static void ScanLinesBackward(FileStream handle, long size, long lowerBound, Func<byte[], long, bool> visit)
     {
         var end = size;
@@ -333,7 +344,7 @@ sealed class TokenFileCursor(string path, TokenSource source)
                 var lineStart = newline + 1;
                 if (!dropping)
                 {
-                    if (partial.Length + cursor - lineStart <= 65_536) partial = [.. chunk.AsSpan(lineStart, cursor - lineStart), .. partial];
+                    if (partial.Length + cursor - lineStart <= MaximumLineBytes) partial = [.. chunk.AsSpan(lineStart, cursor - lineStart), .. partial];
                     else
                     {
                         partial = [];

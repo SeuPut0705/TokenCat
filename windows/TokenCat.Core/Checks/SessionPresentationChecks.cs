@@ -92,7 +92,7 @@ public static class SessionPresentationChecks
               "Claude agent folds under its session");
         check(group("codex:root")?.Children.Select(member => member.Reading.Id).SequenceEqual(["codex:child"]) == true,
               "Codex child folds by parentSessionID");
-        check(group("claude:orphan")?.IsOrphan == true && group("codex:cross") is not null, "orphans and other-source children stay top-level");
+        check(group("claude:orphan")?.Lead.Reading.IsSubagent == true && group("codex:cross") is not null, "orphans and other-source children stay top-level");
         check(group("telemetry:claude:S1")?.Children.Count == 0 && groups.Count == 5, "telemetry never groups");
         check(group("codex:root")?.State == S.Working && group("claude:p")?.State == S.Tool, "group state follows its most active member");
         var quietLead = reading("claude:q", session: "S7", state: A.Stale, last: -1_000);
@@ -347,12 +347,18 @@ public static class SessionPresentationChecks
         var lower = limited with { RateLimit = limited.RateLimit! with { UsedPercent = 21, RecordedAt = at(-60) } };
         var replayed = limited with { RateLimit = new TokenRateLimit(95, 10_080, at(-day), at(-5)) };
         var claudeLimit = question with { RateLimit = new TokenRateLimit(99, 300, at(10 * day), now) };
-        var usage = UsageLimit([limited, lower, replayed, claudeLimit]);
+        var usage = UsageLimit([limited, lower, replayed, claudeLimit], now);
         check(usage?.UsedPercent == 28 && usage?.RecordedAt == at(-60) && usage?.Title == "Codex 주간 한도" && usage?.Value(now) == "28% 사용"
               && usage?.Detail(now) == "5일 11시간 후 초기화 · 1분 전 기록 기준", "usage limit is replay-proof and never Claude");
+        // Each window length keeps its own newest reset: an older session's weekly record never hides a newer 5-hour one.
+        var weeklyOld = command with { RateLimit = new TokenRateLimit(70, 10_080, at(3 * day), at(-1_800)) };
+        var fiveHourNew = command with { RateLimit = new TokenRateLimit(99, 300, at(4 * 3_600), at(-60)) };
+        check(UsageLimit([weeklyOld, fiveHourNew], now) is { UsedPercent: 99, WindowMinutes: 300 }
+              && UsageLimit([weeklyOld, fiveHourNew with { RateLimit = fiveHourNew.RateLimit! with { ResetsAt = at(-60) } }], now)?.UsedPercent == 70,
+              "a near-full 5-hour window is hidden by another session's weekly window, or a reset one outranks a live one");
         var expired = new UsageLimitSummary(64, 300, at(-10), at(-7_000));
         check(expired.Value(now) == "—" && expired.Detail(now) == "초기화됨 · 다음 Codex 기록 대기" && expired.IsOld(now)
-              && UsageLimit([question]) == null && WindowLabel(300) == "5시간" && WindowLabel(2_880) == "2일"
+              && UsageLimit([question], now) == null && WindowLabel(300) == "5시간" && WindowLabel(2_880) == "2일"
               && Countdown(at(42 * 60), now) == "42분", "expired windows, labels and countdowns");
         check(!(usage?.Help(now).Contains("예상") ?? true) && !(usage?.Detail(now).Contains("소진") ?? true) && usage?.Help(now).Contains("Claude") == false,
               "no forecast in limit copy, and no claim that Claude limits are missing");
@@ -361,7 +367,7 @@ public static class SessionPresentationChecks
         // Old Codex logs carry no reset time: different weeks cannot be told apart, so only the newest record counts.
         var undatedOld = command with { RateLimit = new TokenRateLimit(97, 10_080, null, at(-3 * day)) };
         var undatedNew = command with { RateLimit = new TokenRateLimit(12, 10_080, null, at(-600)) };
-        var undated = UsageLimit([undatedOld, undatedNew]);
+        var undated = UsageLimit([undatedOld, undatedNew], now);
         check(undated?.UsedPercent == 12 && undated?.RecordedAt == at(-600) && undated?.ResetsAt == null
               && undated?.Detail(now) == "10분 전 기록 기준" && undated?.IsShown(now) == true, "without reset times the newest record wins, not the highest");
         var staleUndated = new UsageLimitSummary(40, 300, null, at(-6 * 3_600));
@@ -435,8 +441,6 @@ public static class SessionPresentationChecks
         check(RecordAge(at(-3), now) == "방금" && RecordAge(at(-9.9), now) == "방금" && RecordAge(at(-10), now) == "10초 전"
               && RecordAge(at(-47), now) == "40초 전" && RecordAge(at(-200), now) == "3분 전" && RecordAge(at(3), now) == "방금",
               "record ages: 방금, 10 s steps, then minutes");
-        check(SpokenDuration(at(-45), now) == "45초" && SpokenDuration(at(-252), now) == "4분" && SpokenDuration(at(-3_900), now) == "1시간 5분",
-              "spoken durations read minutes past a minute");
 
         // Footer telemetry notice by collector state, never by matching status text.
         var port = Notice(TelemetryCollectorState.BusyOtherApp, null, none);
@@ -485,11 +489,7 @@ public static class SessionPresentationChecks
               "after --disconnect-telemetry the card does not claim the settings were added");
         var restartSlot = Speed(question, now, restartNeeded: true);
         check(restartSlot.Value == "—" && restartSlot.Help == "실측 연결됨 · Claude Code를 새로 실행하면 속도가 표시됩니다", "restart-needed speed help");
-        var codexMeasured = command with
-        {
-            SpeedMeasurement = new TokenSpeedMeasurement(new TelemetryReading { Provider = TokenSource.Codex, At = at(-130) }) with { ServerTokenIntervalMs = 20 },
-        };
-        check(TelemetryReceipt(MeasuredAt([codexMeasured, question]), now) == "실측 수신: Codex 2분 전 · Claude Code 기록 없음"
+        check(TelemetryReceipt(new Dictionary<TokenSource, DateTimeOffset> { [TokenSource.Codex] = at(-130) }, now) == "실측 수신: Codex 2분 전 · Claude Code 기록 없음"
               && TelemetryReceipt(new Dictionary<TokenSource, DateTimeOffset> { [TokenSource.Claude] = at(-30) }, now)
                  == "실측 수신: Codex 기록 없음 · Claude Code 1분 이내", "telemetry receipt per provider");
 
@@ -670,7 +670,7 @@ public static class SessionPresentationChecks
         DateTimeOffset around(double offset) => localized.AddSeconds(offset);
         var localizedRetry = new TokenRetryState(2, 10, around(4), false, localized);
         check(Countdown(around(7_980), localized) == "2시간 13분" && HelpAge(around(-45), localized) == "1분 이내"
-              && RecordAge(around(-3), localized) == "방금" && SpokenDuration(around(-3_900), localized) == "1시간 5분"
+              && RecordAge(around(-3), localized) == "방금"
               && RetryText(localizedRetry, localized, api: true) == "API 재시도 2/10 · 4초 후", "Korean formatting changed");
         With(AppLanguage.En, () =>
         {
@@ -679,8 +679,6 @@ public static class SessionPresentationChecks
                   && Countdown(around(30), localized) == "<1m", "English countdowns");
             check(HelpAge(around(-45), localized) == "<1m ago" && HelpAge(around(-200), localized) == "3m ago"
                   && RecordAge(around(-3), localized) == "just now" && RecordAge(around(-47), localized) == "40s ago", "English help and record ages");
-            check(SpokenDuration(around(-3_900), localized) == "1 hour 5 minutes" && SpokenDuration(around(-1), localized) == "1 second",
-                  "English relative and spoken spans");
             check(RetryText(localizedRetry, localized) == "Retry 2/10 · in 4s" && RetryText(localizedRetry, localized, api: true) == "API retry 2/10 · in 4s",
                   "English retry text");
             check(OnboardingOutcome.Make(null, OnboardingOutcome.NotePrefix + "reason", conflictFailure, TelemetryCollectorState.Waiting)

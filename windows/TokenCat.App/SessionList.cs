@@ -1,4 +1,6 @@
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
@@ -261,6 +263,10 @@ sealed class SessionList : Border
         selectedIndex = Math.Max(0, navigation.ToList().IndexOf(id));
         Refresh();
         Dispatcher.BeginInvoke(() => cache.GetValueOrDefault("block:" + BlockOf(id))?.BringIntoView());
+        // Keyboard focus stays on the list, so Narrator hears the newly selected row only from this notification.
+        if (shown.Item(id) is { } item)
+            UIElementAutomationPeer.CreatePeerForElement(scroll)?.RaiseNotificationEvent(AutomationNotificationKind.ActionCompleted,
+                AutomationNotificationProcessing.MostRecent, SessionPresentation.SpokenLabel(item.Reading, item.State), "tokencat.selection");
     }
 
     void Activate()
@@ -360,6 +366,11 @@ sealed class TrimLine : Panel
         foreach (var child in children) if (child is not null) Children.Add(child);
     }
 
+    /// A named line (the header status) reaches UI Automation with its name and help, its sentence still readable inside;
+    /// an unnamed one stays transparent (a detail line's copy button is the detail's child).
+    protected override AutomationPeer? OnCreateAutomationPeer() =>
+        string.IsNullOrEmpty(AutomationProperties.GetName(this)) ? base.OnCreateAutomationPeer() : new FrameworkElementAutomationPeer(this);
+
     protected override Size MeasureOverride(Size available)
     {
         double used = 0, height = 0;
@@ -391,6 +402,14 @@ sealed class TrimLine : Panel
         }
         return final;
     }
+}
+
+/// UI Automation for a panel that speaks as one element by its AutomationProperties name and help text. WPF gives Panel and
+/// Border no peer, so without one their names never reach Narrator; the children are hidden, the name already says them.
+sealed class LeafPeer(FrameworkElement owner, AutomationControlType type) : FrameworkElementAutomationPeer(owner)
+{
+    protected override AutomationControlType GetAutomationControlTypeCore() => type;
+    protected override List<AutomationPeer>? GetChildrenCore() => null;
 }
 
 /// Hover and keyboard selection for one row: inset 4 each side, radius 6; click opens the detail, right-click the menu.
@@ -426,7 +445,15 @@ abstract class RowShell : Grid
         System.Windows.Automation.AutomationProperties.SetName(this, spoken);
     }
 
-    void Paint() => fill.Background = selected ? Theme.Brush(Theme.Selection) : IsMouseOver ? Theme.Brush(Theme.Hover) : null;
+    protected override AutomationPeer OnCreateAutomationPeer() => new LeafPeer(this, AutomationControlType.ListItem);
+
+    /// The selection fill is faint (1.4:1), so the keyboard selection also gets an accent outline (at least 3:1).
+    void Paint()
+    {
+        fill.Background = selected ? Theme.Brush(Theme.Selection) : IsMouseOver ? Theme.Brush(Theme.Hover) : null;
+        fill.BorderBrush = Theme.Brush(Theme.Accent);
+        fill.BorderThickness = new Thickness(selected ? 1.5 : 0);
+    }
 }
 
 /// A lead row, its children, the inline details and the tree guide that joins them (S-5).
@@ -452,7 +479,7 @@ sealed class BlockView : Grid
         switch (lead.Kind)
         {
             case SessionRowKind.Live:
-                items.Add(Reconcile.Item("live:" + lead.Id, () => new LiveRow(), (LiveRow row) => row.Update(lead, block.ChildCount, context)));
+                items.Add(Reconcile.Item("live:" + lead.Id, () => new LiveRow(), (LiveRow row) => row.Update(lead, context)));
                 break;
             case SessionRowKind.Measurement:
                 items.Add(Reconcile.Item("measure:" + lead.Id, () => new MeasurementRow(), (MeasurementRow row) => row.Update(lead, context)));
@@ -463,14 +490,14 @@ sealed class BlockView : Grid
                 var liveChildren = urgent ? block.Children.Count(child => child.State == block.State)
                     : block.State.IsRunning ? block.RunningChildren : block.WaitingChildren;
                 items.Add(Reconcile.Item("idle:" + lead.Id, () => new IdleRow(),
-                    (IdleRow row) => row.Update(lead, block.ChildCount, block.State, liveChildren, context)));
+                    (IdleRow row) => row.Update(lead, block.State, liveChildren, context)));
                 break;
         }
-        if (context.DetailId == lead.Id) items.Add(Detail(lead, Dashboard.TextX, context));
+        if (context.DetailId == lead.Id) items.Add(Detail(lead, Dashboard.TextX));
         foreach (var child in block.Children)
         {
             items.Add(Reconcile.Item("child:" + child.Id, () => new ChildRow(), (ChildRow row) => row.Update(child, lead.Reading, context)));
-            if (context.DetailId == child.Id) items.Add(Detail(child, Dashboard.ChildTextX, context));
+            if (context.DetailId == child.Id) items.Add(Detail(child, Dashboard.ChildTextX));
         }
         if (block.MoreCount > 0)
             items.Add(Reconcile.Item("more", () => new MoreRow(expand), (MoreRow row) => row.Update(block, context)));
@@ -503,7 +530,7 @@ sealed class BlockView : Grid
         guide.Data = geometry;
     }
 
-    static Reconcile.Entry Detail(SessionRowItem item, double indent, RowContext context) =>
+    static Reconcile.Entry Detail(SessionRowItem item, double indent) =>
         Reconcile.Item("detail:" + item.Id, () => new DetailView(), (DetailView view) => view.Update(item, indent));
 }
 
@@ -561,7 +588,7 @@ sealed class LiveRow : RowShell
         Body.Children.Add(stack);
     }
 
-    public void Update(SessionRowItem item, int childCount, RowContext context)
+    public void Update(SessionRowItem item, RowContext context)
     {
         var reading = item.Reading;
         var now = context.Now;
@@ -681,7 +708,7 @@ sealed class IdleRow : RowShell
         Body.Children.Add(line);
     }
 
-    public void Update(SessionRowItem item, int childCount, SessionDisplayState groupState, int liveChildren, RowContext context)
+    public void Update(SessionRowItem item, SessionDisplayState groupState, int liveChildren, RowContext context)
     {
         var reading = item.Reading;
         var now = context.Now;
@@ -913,13 +940,23 @@ sealed class OlderRow : Border
         Paint();
     }
 
-    void Paint() => Background = selected ? Theme.Brush(Theme.Selection) : IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent;
+    protected override AutomationPeer OnCreateAutomationPeer() => new LeafPeer(this, AutomationControlType.ListItem);
+
+    void Paint()
+    {
+        Background = selected ? Theme.Brush(Theme.Selection) : IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent;
+        BorderBrush = Theme.Brush(Theme.Accent);
+        BorderThickness = new Thickness(selected ? 1.5 : 0);
+    }
 }
 
 /// The inline detail under a row (S-6): a two-column grid, 15 DIP lines, 8 above and below, a rule on top.
 sealed class DetailView : StackPanel
 {
     object? key;
+
+    /// Its name reaches Narrator, and the copy buttons stay reachable as its children.
+    protected override AutomationPeer OnCreateAutomationPeer() => new FrameworkElementAutomationPeer(this);
 
     public void Update(SessionRowItem item, double indent)
     {

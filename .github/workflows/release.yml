@@ -90,11 +90,10 @@ jobs:
         with:
           global-json-file: windows/global.json
 
-      - name: 빌드와 검사
+      - name: 빌드
         run: |
           dotnet --info
           dotnet build windows/TokenCat.Windows.slnx -c Release -warnaserror
-          dotnet run --project windows/TokenCat.Checks -c Release --no-build
 
       - name: 게시
         run: |
@@ -104,6 +103,7 @@ jobs:
             exit 1
           fi
 
+      # App checks plus the Core suites (the same Suites.RunAll as TokenCat.Checks).
       - name: 자체 검사
         run: ./publish/TokenCat.exe --self-test
 
@@ -126,6 +126,13 @@ jobs:
       # The updater's steps on this very zip: extract rules, version, rename-replace, relaunch, cleanup.
       - name: 업데이트 자체 검사
         run: ./publish/TokenCat.exe --update-selftest TokenCat-Windows.zip
+
+      - name: 텔레메트리 수명 주기 검사
+        run: ./publish/TokenCat.exe --telemetry-lifecycle-checks
+
+      # Renders the fixture dashboard and Settings offscreen: the only step that caught the 0.11.0 first-run card crash.
+      - name: 스냅숏
+        run: ./publish/TokenCat.exe --snapshot snapshots
 
       - uses: actions/upload-artifact@v7
         with:
@@ -166,6 +173,7 @@ jobs:
       - name: 자체 검사
         run: |
           "$APP/Contents/MacOS/TokenCat" --self-test
+          "$APP/Contents/MacOS/TokenCat" --telemetry-lifecycle-checks
           if /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null; then
             /usr/bin/arch -x86_64 "$APP/Contents/MacOS/TokenCat" --self-test
           else

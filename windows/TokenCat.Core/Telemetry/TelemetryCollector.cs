@@ -70,7 +70,6 @@ public sealed class TelemetryCollector : IDisposable
 
     /// When the next automatic start attempt runs after a failure; null when none is scheduled.
     public DateTimeOffset? NextRetryAt { get { lock (gate) return retryAt; } }
-    public DateTimeOffset? LastReceivedAt { get { lock (gate) return receivedAt; } }
     /// Newest batch per client, decoded or not: proof that a restarted client exports here.
     public IReadOnlyDictionary<TokenSource, DateTimeOffset> LastBatchAt { get { lock (gate) return new Dictionary<TokenSource, DateTimeOffset>(batches); } }
     /// Newest Claude usage-limit windows received from the status line bridge in this process.

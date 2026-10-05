@@ -57,8 +57,6 @@ public sealed record SystemSnapshot
     /// "AC Power" / "Battery Power" as on mac, so `Format.Power` is shared.
     public string? PowerSource { get; init; }
     public bool BatteryPresent { get; init; }
-    /// macOS memory pressure level (1 normal, 2 warning, 4 critical). Always null on Windows (DESIGN §3.2).
-    public int? MemoryPressure { get; init; }
     public DateTimeOffset SampledAt { get; init; } = DateTimeOffset.UtcNow;
 }
 

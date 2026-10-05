@@ -255,7 +255,8 @@ static class Fixtures
         var waitingSpeed = Reading("rs01", TokenSource.Claude, "TokenCat", "claude-opus-5-5", TokenActivityState.Working, last: -3, output: 1_024,
             outputs: Outputs((-50, 1_024))) with { Context = new TokenContextUsage(96_000, null, At(-50), null) };
         var reset = docs with { RateLimit = Limit(64, -600, -7_000), ActivityState = TokenActivityState.Complete, Active = false, LastActivity = At(-7_000) };
-        var restart = new Fixture("restart-needed") { Tokens = [waitingSpeed, reset], Restart = new HashSet<TokenSource> { TokenSource.Claude, TokenSource.Codex } };
+        // The longest footer: both clients in the restart notice beside a failed update (it keeps only its buttons).
+        var restart = new Fixture("restart-needed") { Tokens = [waitingSpeed, reset], Restart = new HashSet<TokenSource> { TokenSource.Claude, TokenSource.Codex }, Update = "failed" };
         var port = new Fixture("port-busy") { Tokens = [waitingSpeed, Idle("p1", "notes-app", -400)], Telemetry = TelemetryCollectorState.BusyOtherApp };
         // Another TokenCat holds the collector.
         var busy = new Fixture("collector-busy") { Tokens = [waitingSpeed], Telemetry = TelemetryCollectorState.BusyTokenCat };

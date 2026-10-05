@@ -269,11 +269,12 @@ final class DashboardModel: ObservableObject {
     private var tokensInFlight = false
     private var tokenRefreshPending = false
     private var tokenRefreshScheduled = false
-    private var lastTokenSampleStart: Date?
+    /// `systemUptime`, like the `asyncAfter` deadlines: a wall clock set back must not stall sampling for that long.
+    private var lastTokenSampleStart: TimeInterval?
     private var changedPaths: [String] = []
     private var running = false
     private var generation: UInt64 = 0
-    private var lastFolderCheck: Date?
+    private var lastFolderCheck: TimeInterval?
     private var folderCheckInFlight = false
     /// Log folders that existed at the previous check; nil until the first check after start.
     private var foldersSeen: Set<String>?
@@ -375,7 +376,7 @@ final class DashboardModel: ObservableObject {
     private func checkLogFolders() {
         guard running, !folderCheckInFlight else { return }
         folderCheckInFlight = true
-        lastFolderCheck = Date()
+        lastFolderCheck = ProcessInfo.processInfo.systemUptime
         let currentGeneration = generation
         tokenQueue.async { [weak self] in
             guard let self else { return }
@@ -404,16 +405,16 @@ final class DashboardModel: ObservableObject {
         guard running else { return }
         refreshSystem()
         refreshTokens()
-        if lastFolderCheck.map({ Date().timeIntervalSince($0) >= Self.folderCheckInterval }) ?? true { checkLogFolders() }
+        if lastFolderCheck.map({ ProcessInfo.processInfo.systemUptime - $0 >= Self.folderCheckInterval }) ?? true { checkLogFolders() }
     }
     private func refreshTokens() {
         guard running else { return }
         if tokensInFlight { tokenRefreshPending = true; return }
-        if let last = lastTokenSampleStart, Date().timeIntervalSince(last) < Self.minimumTokenInterval {
+        if let last = lastTokenSampleStart, ProcessInfo.processInfo.systemUptime - last < Self.minimumTokenInterval {
             guard !tokenRefreshScheduled else { return }
             tokenRefreshScheduled = true
             let currentGeneration = generation
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.minimumTokenInterval - Date().timeIntervalSince(last)) { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.minimumTokenInterval - (ProcessInfo.processInfo.systemUptime - last)) { [weak self] in
                 guard let self else { return }
                 self.tokenRefreshScheduled = false
                 guard self.generation == currentGeneration else { return }
@@ -424,7 +425,7 @@ final class DashboardModel: ObservableObject {
         let currentGeneration = generation
         let paths = changedPaths
         changedPaths.removeAll()
-        lastTokenSampleStart = Date()
+        lastTokenSampleStart = ProcessInfo.processInfo.systemUptime
         tokensInFlight = true
         tokenQueue.async { [weak self] in
             guard let self else { return }
@@ -641,7 +642,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private var screensAsleep = false
     private var sessionActive = true
     private var statusWindowVisible = true
-    private var popoverClosedAt: Date?
+    /// `systemUptime`: a wall clock set back must not swallow status item clicks for that long.
+    private var popoverClosedAt: TimeInterval?
     /// The app in front when the popover opened; it gets focus back when the popover closes on its own (M-6).
     private var previousApp: NSRunningApplication?
     private var terminating = false
@@ -886,8 +888,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
 
     /// A confirmed turn end plays the cat's `content` once per signal and event time, whatever the notification toggles (K-5).
     private func turnEnded(_ signal: AttentionSignal) {
-        let key = "\(signal.id)@\(signal.endedAt?.timeIntervalSince1970 ?? 0)"
-        guard !playedContent.contains(key) else { return }
+        guard let key = signal.contentKey, !playedContent.contains(key) else { return }
         playedContent.append(key)
         if playedContent.count > 64 { playedContent.removeFirst(playedContent.count - 64) }
         guard model.preferences.showRunner, model.preferences.animationSource == .activity else { return }
@@ -926,7 +927,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
         if popover.isShown { popover.performClose(nil); return }
         // A transient popover may already have closed on this click's mouse-down; do not reopen it on mouse-up.
-        if let closed = popoverClosedAt, Date().timeIntervalSince(closed) < 0.3, NSApp.currentEvent?.type == .leftMouseUp { return }
+        if let closed = popoverClosedAt, ProcessInfo.processInfo.systemUptime - closed < 0.3, NSApp.currentEvent?.type == .leftMouseUp { return }
         showPopover()
     }
 
@@ -959,7 +960,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     }
 
     func popoverDidClose(_ notification: Notification) {
-        popoverClosedAt = Date()
+        popoverClosedAt = ProcessInfo.processInfo.systemUptime
         // "…로 업데이트했습니다" shows for one showing of the dashboard.
         updater.clearUpdatedNote()
         statusItem.button?.highlight(false)

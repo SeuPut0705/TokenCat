@@ -252,7 +252,7 @@ public static class RunnerChecks
         publisher.Advance();
         publisher.Stop();
         check(armings is [{ } first, { } second, null] && Math.Abs(first.TotalSeconds - 0.15) < 0.0001 && Math.Abs(second.TotalSeconds - 0.15) < 0.0001
-              && publisher.NextDelay() is null && publisher.Current == (Walk, 1, null),
+              && publisher.Current == (Walk, 1, null),
               "Scheduled does not arm once per frame and stop on Stop, or a repeated plan re-armed the timer");
 
         // Windows: activity from groups ignores measurement-only groups (RunnerAnimator.swift RunnerActivity.init).

@@ -238,8 +238,6 @@ public sealed class RunnerAnimator
 
     /// What to draw now; FxStep is the z glyph step while sleeping.
     public (RunnerPose Pose, int Frame, int? FxStep) Current => (Shown.Pose, Frame, Fx);
-    /// Time until Advance(); null holds the frame (no timer).
-    public TimeSpan? NextDelay() => armed && ScheduledDelay is { } delay ? TimeSpan.FromSeconds(delay) : null;
 
     public bool IsTimerRunning => armed;
     public bool IsPlayingOneShot => oneShot.Count > 0;

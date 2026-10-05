@@ -732,7 +732,17 @@ func runTrackerChecks() -> [String] {
         closedTurn.append(Data(repeating: 32, count: 4_096))
         closedTurn.append(10)
         try closedTurn.write(to: claudeLongFolder.appendingPathComponent("closed.jsonl"))
+        // A prompt with a pasted image is one line well past 64 KB; the backward scan still finds it.
+        var imageTurn = compact(["type": "user", "uuid": "image-human", "timestamp": "2026-10-04T04:00:00Z", "sessionId": "image-claude",
+                                 "message": ["content": [["type": "text"], ["type": "image", "source": ["data": String(repeating: "A", count: 200_000)]]]]])
+        imageTurn.append(compact(assistant("image-1", 300, "2026-10-04T04:00:01Z", "image-a")))
+        imageTurn.append(Data(repeating: 32, count: 4_096))
+        imageTurn.append(10)
+        imageTurn.append(compact(assistant("image-2", 50, "2026-10-04T04:00:07Z", "image-b")))
+        try imageTurn.write(to: claudeLongFolder.appendingPathComponent("image.jsonl"))
         let claudeLong = TokenTracker(homeDirectory: claudeLongHome, now: { longNow }, initialTailBytes: 512).sample()
+        check(claudeLong.first(where: { $0.sessionID == "image-claude" })?.currentTurnOutputTokens == 350,
+              "Claude long turn: a human input line over 64 KB (a pasted image) was skipped, so the turn's output read unknown")
         let openClaude = claudeLong.first(where: { $0.sessionID == "long-claude" })
         check(openClaude?.active == true && openClaude?.currentTurnOutputTokens == 450
               && openClaude?.currentTurnStartedAt == ISO8601DateFormatter().date(from: "2026-10-04T04:00:00Z"),
@@ -882,6 +892,29 @@ func runTrackerChecks() -> [String] {
         check(retainTracker.sample().contains(where: { $0.sessionID == "quiet" && $0.currentTurnOutputTokens == 10 }),
               "Discovery evicted a quiet session that is still in a turn")
 
+        // A record stamped two hours ahead (a briefly wrong clock) must not freeze the session: the next turn still counts.
+        let futureFolder = root.appendingPathComponent("future-record/.claude/projects/future")
+        try FileManager.default.createDirectory(at: futureFolder, withIntermediateDirectories: true)
+        let futureLog = futureFolder.appendingPathComponent("future.jsonl")
+        var futureBody = line(claudeUser("f-in", "2026-10-04T04:00:00Z", content: "first", extra: ["origin": ["kind": "human"]]))
+        futureBody.append(line(claudeReply("f-1", 50, "2026-10-04T04:00:01Z", "f-a", blocks: [["type": "text"]], stop: "end_turn")))
+        futureBody.append(line(claudeReply("f-2", 5, "2026-10-04T06:00:00Z", "f-b", blocks: [["type": "text"]], stop: "end_turn")))
+        try futureBody.write(to: futureLog)
+        var futureNow = now
+        let futureTracker = TokenTracker(homeDirectory: root.appendingPathComponent("future-record"), now: { futureNow })
+        _ = futureTracker.sample()
+        let futureAppend = try FileHandle(forWritingTo: futureLog)
+        try futureAppend.seekToEnd()
+        try futureAppend.write(contentsOf: line(claudeUser("f-next", "2026-10-04T04:00:20Z", content: "next", extra: ["origin": ["kind": "human"]])))
+        try futureAppend.write(contentsOf: line(claudeReply("f-3", 300, "2026-10-04T04:00:25Z", "f-c", blocks: [["type": "tool_use", "id": "f-tool"]])))
+        try futureAppend.close()
+        futureNow = now.addingTimeInterval(23)
+        _ = futureTracker.sample()
+        futureNow = now.addingTimeInterval(24)
+        let afterFuture = futureTracker.sample().first
+        check(afterFuture?.active == true && afterFuture?.currentTurnOutputTokens == 300 && afterFuture?.activityState == .tool,
+              "A future-stamped record froze the session: the next turn was dropped as a replay")
+
         // A tool result over the 1 MB line limit still completes its call.
         let bigHome = root.appendingPathComponent("oversized")
         let bigFolder = bigHome.appendingPathComponent(".claude/projects/big")
@@ -971,8 +1004,20 @@ func runTrackerChecks() -> [String] {
             let age: TimeInterval = index < 32 ? 60 : index < 35 ? 1_800 : 7_200
             try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-age)], ofItemAtPath: url.path)
         }
-        check(TokenTracker(homeDirectory: root.appendingPathComponent("burst"), now: { now }).sample().count == 35,
-              "Cold discovery dropped subagent logs from the last hour past the newest 32, or kept older ones")
+        let burst = TokenTracker(homeDirectory: root.appendingPathComponent("burst"), now: { now })
+        check(burst.sample().count == 35, "Cold discovery dropped subagent logs from the last hour past the newest 32, or kept older ones")
+        // A write to a log the caps left out waits for the periodic rescan; only a log discovery has not seen reruns it.
+        let unseen = burstFolder.appendingPathComponent("agent-burst-new.jsonl")
+        try line(assistant("burst-new", 5, "2026-10-04T04:00:01Z", "burst-new")).write(to: unseen)
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-30)], ofItemAtPath: unseen.path)
+        // The path as listed (and as FSEvents names it): /private/var, not the temporary directory's /var.
+        let left = try FileManager.default.contentsOfDirectory(at: burstFolder, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent == "agent-burst-35.jsonl" }?.path
+        burst.noteChanged(paths: [left ?? ""])
+        let capped = burst.sample().count
+        burst.noteChanged(paths: [unseen.path])
+        check(left != nil && capped == 35 && burst.sample().count == 36,
+              "A write to a log outside the discovery caps reran discovery, or a new log did not")
     } catch {
         checks += 1
         failures.append("Incremental file fixture error: \(error.localizedDescription)")

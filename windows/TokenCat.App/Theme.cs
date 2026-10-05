@@ -1,5 +1,6 @@
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Documents;
 using System.Windows.Media;
 using Microsoft.Win32;
@@ -42,7 +43,6 @@ static class Theme
     /// tertiaryLabelColor: decoration only.
     public static Color Tertiary => Dark ? Rgb(0xFFFFFF, 64) : Rgb(0x000000, 66);
     public static Color Hover => Primary(0.05);
-    public static Color Pressed => Primary(0.08);
     /// Windows 11's default accent. ponytail: fixed; read the user's accent (UISettings) if anyone asks.
     public static Color Accent => Dark ? Rgb(0x60CDFF) : Rgb(0x005FB8);
     public static Color Selection => Alpha(Accent, 0.16);
@@ -161,15 +161,19 @@ static class Ui
     };
 
     /// A borderless button whose content turns primary on hover, inside a circle or a 5 DIP rounded rectangle.
-    public static Button HoverButton(UIElement content, Action click, string help, bool circle = false)
+    public static Button HoverButton(UIElement content, Action click, string help, bool circle = false) => Hover(new Button(), content, click, help, circle);
+
+    /// HoverButton on any button kind: a ToggleButton reports on/off and a RadioButton its selection to UI Automation.
+    public static T Hover<T>(T button, UIElement content, Action click, string help, bool circle = false) where T : ButtonBase
     {
         var chrome = new Border { Child = content, CornerRadius = new CornerRadius(circle ? 99 : 5), Background = Brushes.Transparent };
-        var button = new Button
-        {
-            Content = chrome, Cursor = System.Windows.Input.Cursors.Hand, Focusable = true, ToolTip = string.IsNullOrEmpty(help) ? null : help,
-            Padding = new Thickness(0),
-            Template = PlainTemplate(), FocusVisualStyle = FocusRing(),
-        };
+        button.Content = chrome;
+        button.Cursor = System.Windows.Input.Cursors.Hand;
+        button.Focusable = true;
+        button.ToolTip = string.IsNullOrEmpty(help) ? null : help;
+        button.Padding = new Thickness(0);
+        button.Template = PlainTemplate();
+        button.FocusVisualStyle = FocusRing();
         System.Windows.Automation.AutomationProperties.SetName(button, help);
         button.MouseEnter += (_, _) => chrome.Background = Theme.Brush(Theme.Hover);
         button.MouseLeave += (_, _) => chrome.Background = Brushes.Transparent;
@@ -183,6 +187,8 @@ static class Ui
         var text = Text(title, Font.MetaMedium, emphasized ? Theme.Accent : Theme.Label);
         text.TextDecorations = TextDecorations.Underline;
         var button = HoverButton(text, click, help);
+        // Named by its visible words (WCAG 2.5.3); `help` stays the tooltip and help text.
+        System.Windows.Automation.AutomationProperties.SetName(button, title);
         return button;
     }
 
@@ -195,6 +201,8 @@ static class Ui
             Background = Theme.Brush(Theme.Primary(0.1)),
         };
         var button = new Button { Content = chrome, Template = PlainTemplate(), FocusVisualStyle = FocusRing(), Cursor = System.Windows.Input.Cursors.Hand, ToolTip = help };
+        // The content is a Border, which gives UI Automation no text: name it by its title.
+        System.Windows.Automation.AutomationProperties.SetName(button, title);
         button.MouseEnter += (_, _) => chrome.Background = Theme.Brush(Theme.Primary(0.15));
         button.MouseLeave += (_, _) => chrome.Background = Theme.Brush(Theme.Primary(0.1));
         button.Click += (_, _) => click();
@@ -227,7 +235,7 @@ static class Ui
     {
         if (plain is not null) return plain;
         var presenter = new FrameworkElementFactory(typeof(ContentPresenter));
-        plain = new ControlTemplate(typeof(Button)) { VisualTree = presenter };
+        plain = new ControlTemplate(typeof(ButtonBase)) { VisualTree = presenter };
         plain.Seal();
         return plain;
     }

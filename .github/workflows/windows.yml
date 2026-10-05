@@ -38,10 +38,6 @@ jobs:
       - name: 빌드 (경고는 오류)
         run: dotnet build windows/TokenCat.Windows.slnx -c Release -warnaserror
 
-      # Core suites, including the open-writer log case (rule 8) and the updater's rename steps on NTFS.
-      - name: Core 검사
-        run: dotnet run --project windows/TokenCat.Checks -c Release --no-build
-
       # The csproj sets win-x64, self-contained and single-file: the output must be exactly TokenCat.exe.
       - name: 게시 (win-x64 단일 파일)
         run: |
@@ -66,6 +62,8 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path publish/TokenCat.exe, LICENSE -DestinationPath TokenCat-Windows.zip
 
+      # App checks plus the Core suites (the same Suites.RunAll as TokenCat.Checks), including the open-writer log case
+      # (rule 8) and the updater's rename steps on NTFS.
       - name: 자체 검사
         run: ./publish/TokenCat.exe --self-test
 

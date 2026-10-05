@@ -15,12 +15,18 @@ struct AttentionSignal: Equatable {
     var durationSeconds: Double?
     /// The lead's newest record: with `id`, the key that keeps a turn end from replaying the cat's `content`.
     var endedAt: Date? = nil
+    /// Every member waiting for input is a plan approval, so the notification says "승인" like the rest of the app.
+    var plan = false
+
+    /// The cat's `content` is a completed turn (Assets/runner-v2.md): an interruption or API error plays nothing.
+    var contentKey: String? { ended == .complete ? "\(id)@\(endedAt?.timeIntervalSince1970 ?? 0)" : nil }
 
     static func make(_ groups: [SessionGroup]) -> [AttentionSignal] {
         groups.compactMap { group in
             guard group.state != .measurement else { return nil }
             let lead = group.lead.reading
-            let input = group.members.contains { $0.reading.activityState == .input }
+            let waiting = group.members.filter { $0.reading.activityState == .input }
+            let input = !waiting.isEmpty
             // A subagent waiting for a log (stale) neither holds back the lead's completion nor,
             // when it later times out, produces a late one.
             let live = group.members.contains { $0.state.isRunning } || input
@@ -28,7 +34,8 @@ struct AttentionSignal: Equatable {
                 ? lead.activityState : nil
             return AttentionSignal(id: group.id, source: lead.source, project: lead.project, model: lead.model, live: live,
                                    input: input, ended: ended, outputTokens: lead.lastOutputTokens,
-                                   durationSeconds: lead.lastTurnDurationSeconds, endedAt: lead.lastActivity)
+                                   durationSeconds: lead.lastTurnDurationSeconds, endedAt: lead.lastActivity,
+                                   plan: input && waiting.allSatisfy { SessionPresentation.isPlanApproval($0.reading) })
         }
     }
 }
@@ -45,7 +52,7 @@ enum AttentionEvent: Equatable {
     var title: String {
         let what: String
         switch self {
-        case .input: what = loc("입력 필요", "Input needed")
+        case .input(let signal): what = signal.plan ? loc("계획 승인 대기", "Waiting for plan approval") : loc("입력 필요", "Input needed")
         case .finished(let signal): what = signal.ended == .interrupted ? loc("턴 중단", "Turn interrupted") : loc("턴 완료", "Turn complete")
         }
         return what + " · " + (signal.project.flatMap { $0.isEmpty ? nil : $0 } ?? loc("프로젝트 미확인", "Unknown project"))
@@ -53,10 +60,10 @@ enum AttentionEvent: Equatable {
     /// "Claude Code · claude-opus-5-5".
     var subtitle: String { [signal.source.title, signal.model].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · ") }
     /// Completion "12,480 tok · 4분 12초" / "12,480 tok · 4m 12s" (never divided), input "답변하면 계속됩니다" /
-    /// "Reply to continue", interruption nothing.
+    /// "Reply to continue" (a plan "승인하면 계속됩니다" / "Approve to continue"), interruption nothing.
     var body: String {
         switch self {
-        case .input: return loc("답변하면 계속됩니다", "Reply to continue")
+        case .input(let signal): return signal.plan ? loc("승인하면 계속됩니다", "Approve to continue") : loc("답변하면 계속됩니다", "Reply to continue")
         case .finished(let signal):
             guard signal.ended == .complete else { return "" }
             return [signal.outputTokens.flatMap { $0 > 0 ? "\(Format.tokens($0)) tok" : nil }, signal.durationSeconds.flatMap(Self.duration)]

@@ -29,7 +29,7 @@ sealed class Dashboard : UserControl
     public const double PanelWidth = 420, Gutter = 16, Block = 12, TitleGap = 8, Inset = 12, InsetVertical = 10,
         GlyphX = 12, TextX = 28, GuideX = 17, ChildTextX = 44;
 
-    readonly bool panel, snapshot;
+    readonly bool snapshot;
     readonly DashboardActions actions;
     readonly Header header;
     readonly Border onboardingSlot = new() { Margin = new Thickness(0, Block, 0, 0) };
@@ -47,7 +47,6 @@ sealed class Dashboard : UserControl
         bool expanded = false)
     {
         this.actions = actions;
-        this.panel = panel;
         this.snapshot = snapshot;
         header = new Header(actions, panel, interactive: !snapshot);
         flow = new FlowCard();
@@ -627,6 +626,9 @@ sealed class LimitRow : StackPanel
         Children.Add(body);
     }
 
+    protected override System.Windows.Automation.Peers.AutomationPeer OnCreateAutomationPeer() =>
+        new LeafPeer(this, System.Windows.Automation.Peers.AutomationControlType.Text);
+
     public void Update(UsageLimitSummary limit, DateTimeOffset now)
     {
         var expired = limit.Expired(now);
@@ -727,6 +729,10 @@ sealed class SystemArea : StackPanel
             ToolTip = string.IsNullOrEmpty(help) ? null : help;
             System.Windows.Automation.AutomationProperties.SetName(this, title);
         }
+
+        /// The title as its name; the value texts stay readable inside (CPU, storage and battery have no spoken value).
+        protected override System.Windows.Automation.Peers.AutomationPeer OnCreateAutomationPeer() =>
+            new System.Windows.Automation.Peers.FrameworkElementAutomationPeer(this);
     }
 
     public SystemArea(Action open)
@@ -867,11 +873,11 @@ sealed class Footer : Grid
             {
                 FooterStatusKind.Loading => Item(Dashboard.Dot(Theme.Idle), status.Text, false),
                 FooterStatusKind.AiDelay or FooterStatusKind.SystemDelay => Item(Dashboard.Dot(Theme.Warning), status.Text, true),
-                FooterStatusKind.Notice => Ui.HoverButton(new Border { Padding = new Thickness(5, 0, 5, 0), Child = Item(
+                FooterStatusKind.Notice => Named(Ui.HoverButton(new Border { Padding = new Thickness(5, 0, 5, 0), Child = Item(
                     Ui.Icon(notice?.IsProblem ?? true ? Ui.WarningIcon : Ui.InfoIcon, 11, notice?.IsProblem ?? true ? Theme.Warning : Theme.Secondary),
-                    status.Text, notice?.IsProblem ?? true) }, actions.OpenTelemetrySettings, notice?.Help ?? help),
-                _ => Ui.HoverButton(new Border { Padding = new Thickness(5, 0, 5, 0), Child = Item(Dashboard.Dot(Theme.Activity), status.Text, false) },
-                    actions.OpenTelemetrySettings, help),
+                    status.Text, notice?.IsProblem ?? true) }, actions.OpenTelemetrySettings, notice?.Help ?? help), status.Text),
+                _ => Named(Ui.HoverButton(new Border { Padding = new Thickness(5, 0, 5, 0), Child = Item(Dashboard.Dot(Theme.Activity), status.Text, false) },
+                    actions.OpenTelemetrySettings, help), status.Text),
             };
             if (status.Kind is FooterStatusKind.Notice or FooterStatusKind.Live) leading.Margin = new Thickness(-5, 0, 0, 0);
             else leading.Margin = new Thickness(0);
@@ -880,13 +886,24 @@ sealed class Footer : Grid
         else if (status.Kind is FooterStatusKind.AiDelay or FooterStatusKind.SystemDelay) Ui.Help(leading, help);
         else if (leading.Child is Button button) Ui.Help(button, status.Kind == FooterStatusKind.Notice ? notice?.Help ?? help : help);
 
-        if (!Equals(update, trailingKey))
+        // The update item is fitted beside the status: a longer status later (port busy, restart needed) fits it again. Keyed
+        // by the room, not the status, so a delay counting seconds does not rebuild its buttons every tick.
+        leading.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - leading.DesiredSize.Width - 12;
+        var fit = (update, Math.Round(room));
+        if (!Equals(fit, trailingKey))
         {
-            trailingKey = update;
-            leading.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - leading.DesiredSize.Width - 12;
-            trailing.Child = update is null ? null : Dashboard.Fit(room, () => UpdateItem(update, true), () => UpdateItem(update, false));
+            trailingKey = fit;
+            trailing.Child = update is null ? null : Dashboard.Fit(room, () => UpdateItem(update, true), () => UpdateItem(update, false),
+                () => UpdateItem(update, false, text: false));
         }
+    }
+
+    /// A text button is named by its visible words (WCAG 2.5.3); the help stays its tooltip.
+    static Button Named(Button button, string title)
+    {
+        System.Windows.Automation.AutomationProperties.SetName(button, title);
+        return button;
     }
 
     static FrameworkElement Item(UIElement mark, string text, bool primary)
@@ -898,18 +915,19 @@ sealed class Footer : Grid
     }
 
     /// The quiet update line: secondary text, accent text buttons, ✕ hides it for that version only.
-    FrameworkElement UpdateItem(UpdateNotice notice, bool detail)
+    /// The failure's short reason drops first when the row is narrow, then the text itself (to the tooltip; a failure keeps its ⚠).
+    FrameworkElement UpdateItem(UpdateNotice notice, bool detail, bool text = true)
     {
         var failed = notice.Kind == UpdateNoticeKind.Failed;
         var label = Dashboard.Row(4, failed ? Ui.Icon(Ui.WarningIcon, 11, Theme.Warning) : null,
-            Ui.Text(detail ? string.Join(" · ", new[] { notice.Text, notice.Detail }.OfType<string>()) : notice.Text, Font.MetaMono, Theme.Secondary));
-        label.ToolTip = notice.Help;
+            text ? Ui.Text(detail ? string.Join(" · ", new[] { notice.Text, notice.Detail }.OfType<string>()) : notice.Text, Font.MetaMono, Theme.Secondary) : null);
+        label.ToolTip = text ? notice.Help : notice.Text;
         label.Margin = new Thickness(0, 0, 2, 0);
         label.VerticalAlignment = VerticalAlignment.Center;
         var row = Dashboard.Row(0, label);
         Button TextButton(string title, string help, UpdateCommand command) =>
-            Ui.HoverButton(new Border { Padding = new Thickness(5, 0, 5, 0), Height = 18, Child = Ui.Text(title, Font.MetaMedium, Theme.Accent) },
-                () => actions.Update(command), help);
+            Named(Ui.HoverButton(new Border { Padding = new Thickness(5, 0, 5, 0), Height = 18, Child = Ui.Text(title, Font.MetaMedium, Theme.Accent) },
+                () => actions.Update(command), help), title);
         Button Close(string help) => Ui.HoverButton(new Border { Width = 18, Height = 18, Child = Centered(Ui.Icon(Ui.Close, 9, Theme.Secondary)) },
             () => actions.Update(UpdateCommand.Dismiss), help, circle: true);
         switch (notice.Kind)

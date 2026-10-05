@@ -365,7 +365,9 @@ enum SnapshotFixtures {
         reset.activityState = .complete
         reset.active = false
         reset.lastActivity = at(-7_000)
-        let restart = Fixture(name: "restart-needed", tokens: [waitingSpeed, reset], restart: [.claude, .codex], pressure: 2)
+        // The longest footer: both clients in the restart notice beside a failed update (it keeps only its buttons).
+        let restart = Fixture(name: "restart-needed", tokens: [waitingSpeed, reset], restart: [.claude, .codex], pressure: 2,
+                              update: update(.failed(.network)))
         let port = Fixture(name: "port-busy", tokens: [waitingSpeed, idle("p1", project: "notes-app", ago: -400)],
                            telemetry: .busyOtherApp, pressure: 4)
         // Another TokenCat holds the collector (the AI delay, which would take the footer first, is under update-available).
@@ -407,7 +409,7 @@ enum SnapshotFixtures {
         let claudeOnly = Fixture(name: "claude-only", tokens: [claudeRun, claudeTool, idle("cl03", project: "notes-app", ago: -2_400)],
                                  claudeLimits: claudeLimits(fiveHour: (87, 3_600 + 20 * 60), weekly: (46, 4 * 86_400 + 2 * 3_600), recorded: -40))
 
-        // 18–20. The footer's update line: a new version, the download, and a failure beside a telemetry problem (the longest pair).
+        // 18–20. The footer's update line: a new version, the download, and a failure beside a telemetry problem (the longest pair is under restart-needed).
         let working = [waitingSpeed, idle("u1", project: "notes-app", ago: -400)]
         let available = Fixture(name: "update-available", tokens: working, lag: 12, update: update())
         let downloading = Fixture(name: "update-downloading", tokens: working, update: update(.downloading(0.45)))

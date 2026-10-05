@@ -23,8 +23,6 @@ static class AppInfo
     public static string Privacy => Loc("로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인과, 업데이트를 누를 때의 내려받기뿐입니다.",
         "TokenCat reads only metadata from local logs and local telemetry. It never stores or shows prompts or responses, never calls a model and never signs in to an account. It goes online only to check GitHub for updates and to download one when you click Update.");
 
-    public const string Copyright = "Copyright © 2026 TokenCat contributors · MIT License";
-
     /// The release zip puts LICENSE next to TokenCat.exe.
     public static string License()
     {
@@ -142,6 +140,8 @@ sealed class SettingsView : Grid
             var button = Ui.HoverButton(new Border { Child = row, Padding = new Thickness(10, 7, 10, 7), CornerRadius = new CornerRadius(5),
                 Background = item == page ? Theme.Brush(Theme.Selection) : null }, () => Select(item), SettingsWindow.Titles(item));
             button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+            // The current page is drawn only as a fill: say it too.
+            System.Windows.Automation.AutomationProperties.SetItemStatus(button, item == page ? Loc("현재 페이지", "Current page") : "");
             nav.Children.Add(button);
             if (item == page) current = button;
         }
@@ -278,7 +278,8 @@ sealed class SettingsView : Grid
             HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left, Margin = new Thickness(3, 0, 3, 0) };
         var track = new Border { Width = 36, Height = 20, CornerRadius = new CornerRadius(10), Child = knob,
             Background = Theme.Brush(on ? Theme.Accent : Theme.Primary(0.25)) };
-        var button = Ui.HoverButton(track, () => set(!on), help ?? name);
+        // A ToggleButton, so UI Automation reports on/off (a plain Button only invokes).
+        var button = Ui.Hover(new System.Windows.Controls.Primitives.ToggleButton { IsChecked = on }, track, () => set(!on), help ?? name);
         button.IsEnabled = enabled;
         button.Opacity = enabled ? 1 : 0.4;
         button.Tag = on ? "on" : "off";
@@ -286,8 +287,8 @@ sealed class SettingsView : Grid
         return button;
     }
 
-    /// One choice per row with a check on the selected one (a themed radio list).
-    static FrameworkElement Choices<T>(IReadOnlyList<T> values, T current, Func<T, UIElement> label, Action<T> choose)
+    /// One choice per row with a check on the selected one (a themed radio list: RadioButtons, so the choice is announced).
+    static FrameworkElement Choices<T>(IReadOnlyList<T> values, T current, Func<T, string> title, Func<T, UIElement> label, Action<T> choose)
     {
         var stack = new StackPanel();
         foreach (var value in values)
@@ -295,8 +296,8 @@ sealed class SettingsView : Grid
             var chosen = EqualityComparer<T>.Default.Equals(value, current);
             var check = Ui.Icon(Ui.Check, 12, chosen ? Theme.Accent : Colors.Transparent);
             check.Width = 18;
-            var row = Ui.HoverButton(new Border { Child = Dashboard.Row(6, check, label(value)), Padding = new Thickness(4, 4, 4, 4) },
-                () => choose(value), value?.ToString() ?? "");
+            var row = Ui.Hover(new RadioButton { IsChecked = chosen, GroupName = typeof(T).Name },
+                new Border { Child = Dashboard.Row(6, check, label(value)), Padding = new Thickness(4, 4, 4, 4) }, () => choose(value), title(value));
             row.HorizontalContentAlignment = HorizontalAlignment.Stretch;
             row.Tag = chosen ? "chosen" : null;
             stack.Children.Add(row);
@@ -312,11 +313,11 @@ sealed class SettingsView : Grid
         var login = input.Login;
         var temporary = LoginItem.IsTemporary;
         UIElement? startupFooter = temporary
-            ? Caption(Loc("압축 파일 안에서 실행 중이라 켤 수 없습니다. 먼저 %LOCALAPPDATA%\\Programs\\TokenCat 폴더에 압축을 푸세요.",
-                "Running from inside the zip, so this can't be turned on. Extract it to %LOCALAPPDATA%\\Programs\\TokenCat first."))
+            ? Caption(Loc("압축 파일 안에서 실행 중이라 켤 수 없습니다. TokenCat을 종료하고 %LOCALAPPDATA%\\Programs\\TokenCat 폴더에 압축을 푼 뒤 거기서 다시 열어 켜세요.",
+                "Running from inside the zip, so this can't be turned on. Quit TokenCat, extract it to %LOCALAPPDATA%\\Programs\\TokenCat, then open it from there and turn this on."))
             : LoginItem.IsInRecommendedFolder ? null
-            : Caption(Loc("TokenCat.exe를 %LOCALAPPDATA%\\Programs\\TokenCat 폴더로 옮긴 뒤 켜는 것을 권장합니다. 다른 위치의 앱을 옮기면 등록이 풀릴 수 있습니다.",
-                "Move TokenCat.exe to %LOCALAPPDATA%\\Programs\\TokenCat before turning this on. A copy elsewhere loses its registration when it's moved."));
+            : Caption(Loc("TokenCat을 종료하고 TokenCat.exe를 %LOCALAPPDATA%\\Programs\\TokenCat 폴더로 옮긴 뒤 거기서 다시 열어 켜는 것을 권장합니다. 다른 위치의 앱을 옮기면 등록이 풀릴 수 있습니다.",
+                "Quit TokenCat, move TokenCat.exe to %LOCALAPPDATA%\\Programs\\TokenCat, then open it from there before turning this on. A copy elsewhere loses its registration when it's moved."));
         var reset = Ui.SmallButton(Loc("기본값으로 되돌리기…", "Restore Defaults…"), () =>
         {
             var answer = MessageBox.Show(Window.GetWindow(this),
@@ -364,9 +365,9 @@ sealed class SettingsView : Grid
     {
         var preferences = actions.Preferences;
         var reduceMotion = !SystemParameters.ClientAreaAnimation;
-        var characters = Choices(Enum.GetValues<RunnerCharacter>(), preferences.Character, character =>
+        var characters = Choices(Enum.GetValues<RunnerCharacter>(), preferences.Character, character => character.Title, character =>
             Dashboard.Row(8, Sprites.Sprite(character, RunnerPose.Walk, 0, 1), Ui.Text(character.Title, Font.Body)), character => preferences.Character = character);
-        var motions = Choices(Enum.GetValues<RunnerMotion>(), preferences.AnimationSource, motion => Ui.Text(motion.Title, Font.Body),
+        var motions = Choices(Enum.GetValues<RunnerMotion>(), preferences.AnimationSource, motion => motion.Title, motion => Ui.Text(motion.Title, Font.Body),
             motion => preferences.AnimationSource = motion);
         motions.ToolTip = preferences.AnimationSource.Caption;
         var entries = LegendEntries(preferences.AnimationSource);
@@ -416,7 +417,7 @@ sealed class SettingsView : Grid
         var row = new StackPanel { Orientation = Orientation.Horizontal };
         foreach (var entry in entries)
         {
-            var still = entry.Pose == RunnerPose.Sleep ? 2 : (int?)null;
+            var still = RunnerAnimator.StillFx(entry.Pose);
             var image = new Border { Child = Sprites.Sprite(character, entry.Pose, 0, 1, still, Theme.Secondary) };
             var tile = new Border { Width = 64, Height = 36, CornerRadius = new CornerRadius(6), Background = Theme.Brush(Theme.Primary(0.05)), Child = image };
             image.HorizontalAlignment = HorizontalAlignment.Center;
