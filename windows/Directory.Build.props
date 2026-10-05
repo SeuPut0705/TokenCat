@@ -1,0 +1,20 @@
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Format.Tokens groups digits with ko-KR and dates use Lang.Culture: keep ICU culture data. -->
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- One version source for both apps: build.sh's CFBundleShortVersionString. The updater compares it with
+         FileVersionInfo.ProductVersion, so no "+commit" suffix and no fallback to 1.0.0. -->
+    <TokenCatBuildScript>$(MSBuildThisFileDirectory)../build.sh</TokenCatBuildScript>
+    <TokenCatVersion Condition="Exists('$(TokenCatBuildScript)')">$([System.Text.RegularExpressions.Regex]::Match($([System.IO.File]::ReadAllText('$(TokenCatBuildScript)')), 'CFBundleShortVersionString&lt;/key&gt;&lt;string&gt;([0-9.]+)').Groups[1].Value)</TokenCatVersion>
+    <Version>$(TokenCatVersion)</Version>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+  </PropertyGroup>
+  <!-- Checked on TokenCatVersion: the SDK fills an empty Version with 1.0.0 later in evaluation. -->
+  <Target Name="TokenCatVersionGuard" BeforeTargets="PrepareForBuild" Condition="'$(TokenCatVersion)' == ''">
+    <Error Text="TokenCat version not found: $(TokenCatBuildScript) is missing or has no CFBundleShortVersionString." />
+  </Target>
+</Project>

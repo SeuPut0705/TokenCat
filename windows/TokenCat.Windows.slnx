@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="TokenCat.App/TokenCat.App.csproj" />
+  <Project Path="TokenCat.Checks/TokenCat.Checks.csproj" />
+  <Project Path="TokenCat.Core/TokenCat.Core.csproj" />
+</Solution>

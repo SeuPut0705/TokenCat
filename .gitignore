@@ -3,3 +3,5 @@ work/
 dist/
 .DS_Store
 .claude/worktrees/
+windows/**/bin/
+windows/**/obj/

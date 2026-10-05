@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <!-- NotifyIcon and ContextMenuStrip only. -->
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>TokenCat</AssemblyName>
+    <RootNamespace>TokenCat</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>TokenCat.ico</ApplicationIcon>
+    <!-- Mac/Linux hosts: restore the Windows Desktop targeting pack. Harmless on Windows. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Korean framework strings (WPF text box menu, WinForms dialogs) for ko users; others dropped. -->
+    <SatelliteResourceLanguages>en;ko</SatelliteResourceLanguages>
+    <!-- The release artifact is exactly what `dotnet publish -c Release` gives: one TokenCat.exe, no pdb, no loose native dlls.
+         Uncompressed on purpose (DESIGN §0, open question 3). Release exes must be built on Windows (§1 #11). -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <RepoAssets>$(MSBuildThisFileDirectory)../../Assets/</RepoAssets>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- UseWindowsForms adds global usings that collide with WPF (Application, MessageBox, Color...). Alias them instead. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../TokenCat.Core/TokenCat.Core.csproj" />
+    <!-- Same artwork as the mac bundle (build.sh's list), embedded at build so the exe stays one file and the repo keeps
+         one copy. Read with GetManifestResourceStream("runner-v2@1x.png") etc. -->
+    <EmbeddedResource Include="$(RepoAssets)runner-*@1x.png;$(RepoAssets)runner-*@2x.png;$(RepoAssets)app-head-*.png;$(RepoAssets)runner-v2.json"
+                      Exclude="$(RepoAssets)runner-sheet-v1.png" LogicalName="%(Filename)%(Extension)" />
+  </ItemGroup>
+</Project>

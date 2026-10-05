@@ -1,0 +1,9 @@
+<!-- WP0 skeleton (WP5 owns it): borderless, no AllowsTransparency (layered windows render in software), 420 px wide. -->
+<Window x:Class="TokenCat.Flyout" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None" ResizeMode="NoResize" ShowInTaskbar="False" Topmost="True" Width="420" SizeToContent="Height"
+        Background="{DynamicResource {x:Static SystemColors.WindowBrushKey}}">
+  <Border Padding="16">
+    <TextBlock x:Name="Header" FontSize="13" Foreground="{DynamicResource {x:Static SystemColors.WindowTextBrushKey}}" />
+  </Border>
+</Window>
