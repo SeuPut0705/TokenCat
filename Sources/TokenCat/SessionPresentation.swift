@@ -222,7 +222,10 @@ struct UsageLimitSummary: Equatable {
     func value(now: Date) -> String { expired(now: now) ? "—" : loc("\(percentText)% 사용", "\(percentText)% used") }
     /// More than 10 minutes since the client reported it: the value is shown weaker.
     func isOld(now: Date) -> Bool { now.timeIntervalSince(recordedAt) > 600 }
-    private var waitingText: String { loc("초기화됨 · 다음 \(source.title) 기록 대기", "Reset · waiting for a \(source.title) record") }
+    private var waitingText: String {
+        let name = source == .codex ? "Codex" : "Claude"
+        return loc("초기화됨 · 다음 \(name) 기록 대기", "Reset · waiting for a \(name) record")
+    }
     /// Help and VoiceOver wording.
     func detail(now: Date, spoken: Bool = false) -> String {
         if expired(now: now) { return waitingText }
@@ -358,6 +361,11 @@ enum SessionPresentation {
             } else {
                 groups.append(SessionGroup(lead: member))
             }
+        }
+        // A lead quiet past its allowance while a subagent still runs is waiting on that subagent (a long Agent call).
+        for i in groups.indices where [.waiting, .unfinished].contains(groups[i].lead.state)
+            && groups[i].children.contains(where: { $0.state.isRunning }) {
+            groups[i].lead.state = .tool
         }
         return groups
     }
@@ -772,9 +780,9 @@ enum SessionPresentation {
         }
         if counts.tool > 0 {
             let tool = toolTitle(counts.leadingToolCategory)
-            return FlowCaption(text: loc("\(tool) 중 · 응답 후 기록", "\(tool) · records after reply"), help: help)
+            return FlowCaption(text: loc("\(tool) 중 · 응답 후 기록", "\(tool) · logged after reply"), help: help)
         }
-        if counts.working > 0 { return FlowCaption(text: loc("진행 중 · 응답 후 기록", "Working · records after reply"), help: help) }
+        if counts.working > 0 { return FlowCaption(text: loc("진행 중 · 응답 후 기록", "Working · logged after reply"), help: help) }
         let minutes = counts.waitingSince.map { max(1, Int(now.timeIntervalSince($0)) / 60) } ?? 1
         return FlowCaption(text: loc("로그 대기 · \(minutes)분째 기록 없음", "Waiting for log · no record for \(Format.span(minutes, .minute, spoken: spoken))"), help: help)
     }
@@ -813,7 +821,7 @@ enum SessionPresentation {
                                              "\(names(expired)): no telemetry received with this version. If it's still missing after a restart, check the connection in Settings.") + open)
         }
         guard !restart.isEmpty else { return nil }
-        return TelemetryNotice(kind: .restart, text: loc("재시작 후 실측 표시", "Telemetry after restart"),
+        return TelemetryNotice(kind: .restart, text: loc("재시작 후 실측 표시", "Restart to show speed"),
                                help: loc("\(names(restart))를 새로 실행하면 속도가 표시됩니다. 진행 중인 작업은 재시작하지 않습니다.",
                                          "Restart \(names(restart)) to show speed. TokenCat doesn't restart running work.") + open)
     }
@@ -1170,9 +1178,9 @@ struct SessionListModel {
         }.sorted { $0.id < $1.id }
         let pinnedGroups = input + running + waiting + measured
         let pinned = Set(pinnedGroups.map(\.id))
-        let rest = groups.filter { !pinned.contains($0.id) }.sorted {
-            $0.lastActivity != $1.lastActivity ? $0.lastActivity > $1.lastActivity : $0.id < $1.id
-        }
+        // Keys first: `lastActivity` scans every member, too slow to recompute per comparison on each sample.
+        let keyed: [(group: SessionGroup, at: Date)] = groups.filter { !pinned.contains($0.id) }.map { ($0, $0.lastActivity) }
+        let rest = keyed.sorted { $0.at != $1.at ? $0.at > $1.at : $0.group.id < $1.group.id }.map(\.group)
         let ordered = pinnedGroups + rest
         let shown = expanded ? ordered : Array(ordered.prefix(max(pinned.count, collapsedMinimum)))
 

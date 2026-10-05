@@ -167,6 +167,8 @@ final class LocalTelemetryCollector {
     private var readyCallback: (() -> Void)?
     private var stored: [String: TelemetryRecord] = [:]
     private var latest: [String: (record: TelemetryRecord, touched: UInt64)] = [:]
+    /// `snapshot()` until the next ingest changes `stored` or `latest`; the app polls it every sample.
+    private var cachedSnapshot: [TelemetryReading]?
     private var touches: UInt64 = 0
     private var diagnosticCounts = ["logs": 0, "metrics": 0, "traces": 0]
     private var diagnosticReadingCounts = ["logs": 0, "metrics": 0, "traces": 0]
@@ -203,14 +205,17 @@ final class LocalTelemetryCollector {
     var isRunning: Bool { lock.withLock { ready } }
     func snapshot() -> [TelemetryReading] {
         lock.withLock {
+            if let cachedSnapshot { return cachedSnapshot }
             var union = stored
             for entry in latest.values {
                 // A request re-delivered after eviction keeps its measured version.
                 if let current = union[entry.record.key], current.hasRate || !entry.record.hasRate { continue }
                 union[entry.record.key] = entry.record
             }
-            return union.sorted { a, b in a.value.reading.at == b.value.reading.at
+            let readings = union.sorted { a, b in a.value.reading.at == b.value.reading.at
                 ? a.key < b.key : a.value.reading.at > b.value.reading.at }.map { $0.value.reading }
+            cachedSnapshot = readings
+            return readings
         }
     }
     func diagnostics() -> TelemetryDiagnostics {
@@ -404,6 +409,7 @@ final class LocalTelemetryCollector {
         let diagnostics = TelemetryDecoder.diagnostics(root, path: path)
         let providers = TelemetryDecoder.providers(root, path: path)
         lock.withLock {
+            cachedSnapshot = nil
             for provider in providers { batches[provider] = Date() }
             diagnosticReadingCounts[signal] = min(diagnosticReadingCounts[signal] ?? 0, Int.max - records.count) + records.count
             for entry in diagnostics { TelemetryDecoder.merge(entry, into: &diagnosticEntries) }

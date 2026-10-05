@@ -78,8 +78,8 @@ enum Runner {
     static func headImage(_ variant: RunnerHead) -> NSImage { artwork(.cat).heads[variant] ?? NSImage(size: headSize) }
 
     /// Effect layer for `pose` at animation `step` (the sleep z): a template mask, alpha 0/255, in the same 32 × 20 pt
-    /// frame as `image(pose:frame:)`. Draw it at the sprite's snapped origin filled with `secondaryLabelColor`
-    /// (Increase Contrast `labelColor`, highlighted the selected text colour) in its own transparency layer with a
+    /// frame as `image(pose:frame:)`. Draw it at the sprite's snapped origin filled with `StatusBarContentView.secondaryColor`
+    /// (labelColor at 72%), or opaque `labelColor` with Increase Contrast or while the item is open, in its own transparency layer with a
     /// `sourceIn` fill (the menu bar's `drawRunner`), SwiftUI as `Image(nsImage:)` with `.renderingMode(.template)` and
     /// `.interpolation(.none)` over the sprite. nil draws nothing. The sprite has no z since K-2, so every place that shows
     /// a sleeping cat draws this after the sprite.

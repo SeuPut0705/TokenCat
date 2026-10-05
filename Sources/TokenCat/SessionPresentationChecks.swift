@@ -104,6 +104,11 @@ func runSessionPresentationChecks() -> [String] {
     check(group("claude:orphan")?.isOrphan == true && group("codex:cross") != nil, "orphans and other-source children stay top-level")
     check(group("telemetry:claude:S1")?.children.isEmpty == true && groups.count == 5, "telemetry never groups")
     check(group("codex:root")?.state == .working && group("claude:p")?.state == .tool, "group state follows its most active member")
+    let quietLead = reading("claude:q", session: "S7", state: .stale, last: -1_000)
+    let busyChild = reading("claude:q/agent-c", session: "S7", agent: "c1", subagent: true, active: true, state: .tool, last: -10)
+    check(SessionPresentation.groups([quietLead, busyChild], now: now).first?.lead.state == .tool
+          && SessionPresentation.groups([quietLead], now: now).first?.lead.state == .waiting,
+          "a lead quiet past its allowance waits on its running subagent, not on its log")
     check(SessionPresentation.agentLabel(codexChild) == "sample_runner" && SessionPresentation.agentLabel(claudeChild) == "b1234567",
           "agent labels")
     check(SessionPresentation.childProjectSuffix(codexChild, parent: codexParent) == "sample-chat"
@@ -456,7 +461,7 @@ func runSessionPresentationChecks() -> [String] {
     let allReset = SessionPresentation.claudeUsageLimit(ClaudeUsageLimits(fiveHour: claudeWindow(77, resetsIn: -1_200, received: -9_000),
                                                                           sevenDay: claudeWindow(58, resetsIn: -600, received: -9_000)), now: now)
     check(allReset?.expired(now: now) == true && allReset?.value(now: now) == "—" && allReset?.title == "Claude 주간 한도"
-          && allReset?.details(now: now) == ["초기화됨 · 다음 Claude Code 기록 대기"] && allReset?.isShown(now: now) == true
+          && allReset?.details(now: now) == ["초기화됨 · 다음 Claude 기록 대기"] && allReset?.isShown(now: now) == true
           && SessionPresentation.claudeUsageLimit(ClaudeUsageLimits(fiveHour: claudeWindow(77, resetsIn: -day - 1)), now: now)?.isShown(now: now) == false
           && SessionPresentation.claudeUsageLimit(ClaudeUsageLimits(), now: now) == nil,
           "reset Claude windows read like Codex's: a dash for a day, then gone")
@@ -553,6 +558,8 @@ func runSessionPresentationChecks() -> [String] {
           && OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .waiting, bridged: true) == .added(bridged: true)
           && OnboardingCard.outcome(notice: conflict, note: "이유", failure: .conflict, state: .waiting, bridged: true) == .skipped("이유"),
           "first-run outcome says only what happened")
+    check(OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .receiving, optedOut: true)
+          == .skipped("--disconnect-telemetry로 연결을 해제한 상태입니다"), "after --disconnect-telemetry the card does not claim the settings were added")
     let restartSlot = SessionPresentation.speed(question, now: now, restartNeeded: true)
     check(restartSlot.value == "—" && restartSlot.help == "실측 연결됨 · Claude Code를 새로 실행하면 속도가 표시됩니다",
           "restart-needed speed help")

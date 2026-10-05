@@ -142,6 +142,14 @@ func runPreferenceChecks() -> [String] {
     check(matchedDefault == .systemMonitor && applied == DisplayPreset.allCases.reversed().map(Optional.some) && aiFocus == (true, true)
           && minimalKeepsItems && presets.preset == nil,
           "Display presets did not match after applying, the defaults are not 시스템 모니터, or a hand edit was not 사용자 지정")
+    let custom = presets.snapshot
+    let presetUndo = UndoManager()
+    presetUndo.groupsByEvent = false
+    presetUndo.beginUndoGrouping()
+    presets.apply(.aiFocus, undoManager: presetUndo)
+    presetUndo.endUndoGrouping()
+    presetUndo.undo()
+    check(presets.snapshot == custom, "⌘Z after a preset did not bring back the custom order and items")
     presets.apply(.systemMonitor)
     presets.hasBattery = false
     presets.setVisible(.battery, false)
@@ -444,7 +452,7 @@ func runShellChecks() -> [String] {
               && interrupted?.title == "Turn interrupted · Unknown project" && AttentionEvent.duration(3_725) == "1h 2m"
               && Notifier.describe(.denied) == "TokenCat notifications are off in System Settings"
               && Notifier.describeSound(.authorized, .enabled, on: true) == "On · input needed alerts play the default sound"
-              && LoginItem.describe(.requiresApproval) == "Needs approval in System Settings > General > Login Items",
+              && LoginItem.describe(.requiresApproval) == "Needs approval in System Settings › General › Login Items",
               "English notifications or login item captions are wrong")
     }
     check(AttentionEvent.duration(3_725) == "1시간 2분" && AttentionEvent.duration(5) == "5초"

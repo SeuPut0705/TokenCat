@@ -380,7 +380,7 @@ final class StatusBarContentView: NSView {
         let isHighlighted = highlighted || (superview as? NSStatusBarButton)?.isHighlighted == true
         let palette = Palette(label: .labelColor,
                               secondary: Self.secondaryColor(contrast: contrast),
-                              tertiary: contrast ? .secondaryLabelColor : .tertiaryLabelColor,
+                              tertiary: NSColor.labelColor.withAlphaComponent(contrast ? 0.72 : 0.45),
                               contrast: contrast, stateColours: !isHighlighted)
         var x = edge
         if showRunner {
@@ -586,8 +586,8 @@ final class StatusBarContentView: NSView {
         }
     }
 
-    /// The inline symbols' only dimming (M-3): 0.55, Increase Contrast 0.75.
-    static func symbolFraction(contrast: Bool) -> CGFloat { contrast ? 0.75 : 0.55 }
+    /// The inline symbols' only dimming (M-3), the captions' alpha (`secondaryColor`): 0.72, Increase Contrast 0.8.
+    static func symbolFraction(contrast: Bool) -> CGFloat { contrast ? 0.8 : 0.72 }
 
     /// Opaque label colour of the current drawing appearance; the cache key carries the appearance and contrast.
     private func symbol(_ name: String, contrast: Bool) -> NSImage? {
@@ -966,9 +966,9 @@ func runStatusBarChecks() -> [String] {
         let background = pixels.pixel(1, 1).luma
         for x in 12..<44 { for y in 0..<pixels.height { symbolContrast = max(symbolContrast, contrast(background, pixels.pixel(x, y).luma)) } }
     }
-    check("the inline symbol reaches 3.5:1 on a light bar (got \(String(format: "%.2f", symbolContrast)):1), dimmed once by 0.55 (0.75 contrast)",
-          symbolContrast >= 3.5 && StatusBarContentView.symbolFraction(contrast: false) == 0.55
-          && StatusBarContentView.symbolFraction(contrast: true) == 0.75)
+    check("the inline symbol reaches 3.5:1 on a light bar (got \(String(format: "%.2f", symbolContrast)):1), dimmed once by 0.72 (0.8 contrast)",
+          symbolContrast >= 3.5 && StatusBarContentView.symbolFraction(contrast: false) == 0.72
+          && StatusBarContentView.symbolFraction(contrast: true) == 0.8)
 
     // The sleep z: a template mask at the sprite's snapped origin, label-coloured, nothing outside the mask (K-2).
     let fxView = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))

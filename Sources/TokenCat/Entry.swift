@@ -276,14 +276,8 @@ enum TokenCatMain {
         app.run()
     }
 
-    /// Synthetic states only (no local logs, host names or paths): rows are AI states, columns light/dark × normal/highlighted.
-    private static func menuBarFixtures(layout: StatusBarLayout, showRunner: Bool) -> NSImage? {
-        let suite = "dev.seuput.TokenCat.MenuFixtures.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suite) else { return nil }
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let preferences = Preferences(defaults: defaults)
-        preferences.statusBarLayout = layout
-        let at = Date()
+    /// The synthetic system sample of the menu bar fixtures and the Settings preview.
+    private static var fixtureSystem: SystemSnapshot {
         var system = SystemSnapshot()
         system.cpuPercent = 18
         system.memoryUsedBytes = 17_900_000_000
@@ -294,6 +288,18 @@ enum TokenCatMain {
         system.batteryPercent = 76
         system.uploadBytesPerSecond = 1_499
         system.downloadBytesPerSecond = 3_100_000
+        return system
+    }
+
+    /// Synthetic states only (no local logs, host names or paths): rows are AI states, columns light/dark × normal/highlighted.
+    private static func menuBarFixtures(layout: StatusBarLayout, showRunner: Bool) -> NSImage? {
+        let suite = "dev.seuput.TokenCat.MenuFixtures.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else { return nil }
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let preferences = Preferences(defaults: defaults)
+        preferences.statusBarLayout = layout
+        let at = Date()
+        let system = fixtureSystem
         func reading(_ index: Int, _ state: TokenActivityState) -> TokenReading {
             var reading = TokenReading(source: index % 2 == 0 ? .claude : .codex, id: "fixture-\(index)", sessionID: "f\(index)",
                                        project: "demo", model: "model-a", active: state != .stale,
@@ -361,7 +367,7 @@ enum TokenCatMain {
     /// Renders the real Settings window (toolbar tabs and the selected pane) off screen; ImageRenderer cannot draw
     /// AppKit-backed Form controls. `--pane general|menubar|cat|telemetry|about|all` (default all; `--focus telemetry`
     /// is the telemetry pane; `cat` is the 캐릭터 tab) stacks the chosen panes vertically. `--character <id>` draws that character. The tab choice is kept in a throwaway defaults domain.
-    /// `--fixtures` uses synthetic state instead of this Mac's logs and preferences: the collector off with a retry in
+    /// `--fixtures` uses synthetic state instead of this Mac's logs and preferences: the menu bar fixtures' system sample, the collector off with a retry in
     /// 25 s, Codex waiting for a relaunch, the Claude limit bridge received 50 s ago, version 0.9.1 available (checked
     /// 3 min ago), default preferences, the login item not registered and notification permission not asked yet.
     /// `--update-failure network|translocated|not-writable|no-digest|invalid-bundle` adds that failed install to it;
@@ -396,6 +402,10 @@ enum TokenCatMain {
         let login = option("--login", ["requires-approval": SMAppService.Status.requiresApproval, "enabled": .enabled])
         let notifications = option("--notifications", ["denied": UNAuthorizationStatus.denied, "authorized": .authorized])
         if fixtures {
+            // The menu bar preview draws the same sample as the menu bar fixtures, with no AI session.
+            model.system = fixtureSystem
+            model.hasSample = true
+            model.tokensSampledAt = model.now
             model.telemetryState = .busyOtherApp
             model.telemetryNextRetryAt = model.now.addingTimeInterval(25)
             model.telemetryRestartNeeded = [.codex]

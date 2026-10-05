@@ -222,6 +222,7 @@ struct DashboardView: View {
     var selection: String? = nil
     var detail: String? = nil
     @AppStorage("onboardingSeen") private var onboardingSeen = false
+    @AppStorage(TelemetrySetup.optOutKey) private var telemetryOptedOut = false
     /// The flow card had records during this showing; it collapses again only at the next showing (F-5).
     @State private var flowOpened = false
     @Environment(\.colorSchemeContrast) private var contrast
@@ -238,7 +239,8 @@ struct DashboardView: View {
                 OnboardingCard(outcome: OnboardingCard.outcome(notice: telemetryNotice, note: model.telemetrySetupNote,
                                                                failure: model.telemetrySetupFailure, state: model.telemetryState,
                                                                bridged: model.claudeBridged == true
-                                                                   && !model.telemetryConnectNotes.contains(.originalUnknown)),
+                                                                   && !model.telemetryConnectNotes.contains(.originalUnknown),
+                                                               optedOut: telemetryOptedOut),
                                settings: actions.openTelemetrySettings, dismiss: { onboardingSeen = true })
                     .padding(.top, DashboardLayout.block)
             }
@@ -399,8 +401,9 @@ struct OnboardingCard: View {
     static var notePrefix: String { loc("실측 연결: ", "Telemetry: ") }
 
     static func outcome(notice: TelemetryNotice?, note: String?, failure: TelemetrySetupFailure?, state: TelemetryCollectorState,
-                        bridged: Bool = false) -> Outcome {
+                        bridged: Bool = false, optedOut: Bool = false) -> Outcome {
         if let notice, notice.collectorDown { return .collectorDown(notice.text) }
+        if optedOut { return .skipped(loc("--disconnect-telemetry로 연결을 해제한 상태입니다", "Disconnected with --disconnect-telemetry")) }
         if let note {
             let reason = note.replacingOccurrences(of: notePrefix, with: "")
             return failure == .conflict || failure == .invalid ? .skipped(reason) : .failed(reason)
@@ -454,8 +457,8 @@ struct OnboardingCard: View {
                     "Reads only metadata such as models, token counts, tool types and project folders"))
             row("slider.horizontal.3", telemetry.title, telemetry.detail, tail: telemetry.tail, links: true)
             row("hand.raised", loc("모델 호출·계정 로그인을 하지 않습니다", "Doesn't call models or sign in to accounts"),
-                loc("인터넷 요청은 GitHub 새 버전 확인뿐입니다(설정 › 정보에서 끄기)",
-                    "Only goes online to check GitHub for new versions (turn off in Settings › About)"))
+                loc("인터넷 요청은 GitHub 새 버전 확인과 업데이트를 누를 때의 내려받기뿐입니다(설정 › 정보에서 확인 끄기)",
+                    "Only goes online to check GitHub for new versions and to download one when you click Update (turn off checks in Settings › About)"))
         }
         .padding(12)
         .buttonStyle(.automatic)
@@ -956,7 +959,7 @@ struct SessionList: View {
     private func rows(_ list: SessionListModel) -> some View {
         let goal = target(list)
         let height = min(SessionListModel.maxViewport, max(goal, viewportFloor))
-        let overflows = list.height(showOlder: showOlder) + detailExtra(list) > height + 0.5
+        let overflows = presentation == .panel || list.height(showOlder: showOlder) + detailExtra(list) > height + 0.5
         let surface = Group {
             if scrolls {
                 ScrollViewReader { proxy in
@@ -1493,9 +1496,10 @@ struct LiveSessionRow: View {
             .padding(.leading, DashboardLayout.textX)
             if item.showsDetail {
                 ViewThatFits(in: .horizontal) {
-                    line3(record, contextSlot, speed, short: false, age: true)
-                    line3(record, contextSlot, speed, short: true, age: true)
-                    line3(record, contextSlot, speed, short: true, age: false)
+                    line3(record, contextSlot, speed, shortContext: false, shortSpeed: false, age: true)
+                    line3(record, contextSlot, speed, shortContext: false, shortSpeed: true, age: true)
+                    line3(record, contextSlot, speed, shortContext: true, shortSpeed: true, age: true)
+                    line3(record, contextSlot, speed, shortContext: true, shortSpeed: true, age: false)
                 }
                 .frame(height: 12)
                 .padding(.leading, DashboardLayout.glyphX)
@@ -1526,12 +1530,13 @@ struct LiveSessionRow: View {
     }
 
     /// Starts at the glyph column: the last-record dot hangs there, its text sits on the text column.
-    private func line3(_ record: TokenOutputEvent?, _ contextSlot: ContextSlot?, _ speed: SpeedSlot?, short: Bool, age: Bool) -> some View {
+    private func line3(_ record: TokenOutputEvent?, _ contextSlot: ContextSlot?, _ speed: SpeedSlot?, shortContext: Bool, shortSpeed: Bool,
+                       age: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             if let record { LastRecordLabel(record: record, now: now, age: age) }
             Spacer(minLength: 8)
-            if let contextSlot { ContextLabel(slot: contextSlot, short: short) }
-            if let speed { SpeedLabel(slot: speed, short: short).padding(.leading, contextSlot == nil ? 0 : 10) }
+            if let contextSlot { ContextLabel(slot: contextSlot, short: shortContext) }
+            if let speed { SpeedLabel(slot: speed, short: shortSpeed).padding(.leading, contextSlot == nil ? 0 : 10) }
         }
     }
 
@@ -1612,7 +1617,7 @@ struct IdleSessionRow: View {
             .padding(.leading, 6)
             .layoutPriority(1)
             Spacer(minLength: 8)
-            if !followsGroup, let last = reading.lastOutputTokens {
+            if !followsGroup, stateWord == nil, let last = reading.lastOutputTokens {
                 (Text(loc("마지막 턴 ", "Last turn ")).font(TCFont.micro) + Text(Format.compactTokens(last)).font(TCFont.metaMono))
                     .toneSecondary().lineLimit(1).fixedSize().padding(.trailing, 10)
                     .help(SessionPresentation.lastTurnSummary(reading) ?? "")
@@ -1921,12 +1926,19 @@ struct SystemArea: View {
                                               "Memory: app, wired and compressed / physical memory\nBar color follows memory pressure"),
                     spoken: "\(Format.percent(value)), \(Format.capacity(system.memoryUsedBytes, system.memoryTotalBytes)), "
                         + loc("메모리 압력 \(pressure.title)", "memory pressure: \(pressure.title)")) {
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                percentText(value).fixedSize()
-                if pressure == .warning || pressure == .critical {
-                    Text(pressure.title).font(TCFont.micro).padding(.horizontal, 3)
-                        .background(pressure.color.opacity(0.15), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
-                        .fixedSize()
+            // The named pill when it fits the column (Korean), otherwise a warning mark; VoiceOver still reads the name.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    percentText(value).fixedSize()
+                    if pressure == .warning || pressure == .critical {
+                        Text(pressure.title).font(TCFont.micro).padding(.horizontal, 3)
+                            .background(pressure.color.opacity(0.15), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+                            .fixedSize()
+                    }
+                }
+                HStack(alignment: .firstTextBaseline, spacing: 4) {
+                    percentText(value).fixedSize()
+                    Image(systemName: "exclamationmark.triangle.fill").font(TCFont.micro).foregroundStyle(pressure.color)
                 }
             }
         } aux: {

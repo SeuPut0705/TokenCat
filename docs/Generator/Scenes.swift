@@ -234,8 +234,8 @@ func menubarStates(_ theme: Theme, minimal: MenuMatrix) -> CGImage {
         ("도구 실행", "Running tool", loc("파란 사각 · 걷기", "Blue square · walk")),
         ("방금 기록", "Just recorded", loc("출력 기록 · 달리기", "Output recorded · run")),
         ("입력 필요", "Input needed", loc("노란 ? · 정면 앉기", "Yellow ? · sit facing you")),
-        ("로그 대기", "Waiting for log", loc("회색 반원 · 앉기", "Grey half circle · sit")),
-        ("활동 없음", "No activity", loc("흐린 0 · 잠", "Faint 0 · sleep")),
+        ("로그 대기", "Waiting for log", loc("회색 반원 · 앉기", "Gray half circle · sit")),
+        ("활동 없음", "No activity", loc("흐린 0 · 잠", "Faded 0 · sleep")),
     ]
     let cell = minimal.cell(0, .light).size
     let pad: CGFloat = 48, gap: CGFloat = 48

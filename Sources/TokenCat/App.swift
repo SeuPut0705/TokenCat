@@ -142,7 +142,10 @@ final class Preferences: ObservableObject {
                 && (preset.items.map { shownItems == $0.filter { $0 != .battery || hasBattery } } ?? true)
         }
     }
-    func apply(_ preset: DisplayPreset) {
+    /// Registers the previous setup with `undoManager`, so ⌘Z brings back a custom order and items.
+    func apply(_ preset: DisplayPreset, undoManager: UndoManager? = nil) {
+        let previous = snapshot
+        undoManager?.registerUndo(withTarget: self) { $0.restore(previous, undoManager: undoManager) }
         statusBarLayout = preset.layout
         showRunner = true
         guard let items = preset.items else { return }
@@ -161,7 +164,7 @@ enum DisplayPreset: String, CaseIterable, Identifiable {
         case .minimal: return loc("최소", "Minimal")
         case .aiFocus: return loc("AI 집중", "AI Focus")
         case .systemMonitor: return loc("시스템 모니터", "System Monitor")
-        case .everythingInline: return loc("전체 한 줄", "Everything Inline")
+        case .everythingInline: return loc("전체 한 줄", "All on One Line")
         }
     }
     var layout: StatusBarLayout {
@@ -1115,10 +1118,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
     }
 
-    /// "새 버전 알림": silent, once per version, not while the dashboard already shows the notice.
+    /// "새 버전 알림": silent, once per version, not while the dashboard or Settings (where "지금 확인" is) already shows it.
     private func updateDiscovered(_ release: UpdateRelease) {
         let preferences = model.preferences
-        guard preferences.notifyUpdate, !dashboardVisible, release.version != preferences.dismissedUpdateVersion else { return }
+        guard preferences.notifyUpdate, !dashboardVisible, settingsWindow?.isKeyWindow != true,
+              release.version != preferences.dismissedUpdateVersion else { return }
         notifier.postUpdate(release)
     }
 

@@ -368,8 +368,8 @@ enum SnapshotFixtures {
         let restart = Fixture(name: "restart-needed", tokens: [waitingSpeed, reset], restart: [.claude, .codex], pressure: 2)
         let port = Fixture(name: "port-busy", tokens: [waitingSpeed, idle("p1", project: "notes-app", ago: -400)],
                            telemetry: .busyOtherApp, pressure: 4)
-        // The footer's widest pair: a second TokenCat holds the collector while AI collection lags.
-        let busy = Fixture(name: "collector-busy", tokens: [waitingSpeed], telemetry: .busyTokenCat, lag: 12)
+        // Another TokenCat holds the collector (the AI delay, which would take the footer first, is under update-available).
+        let busy = Fixture(name: "collector-busy", tokens: [waitingSpeed], telemetry: .busyTokenCat)
 
         // 12. Increase Contrast over the hardest-to-see marks.
         let ring = [idle("c1", project: "sample-chat", ago: -2_000, state: .unfinished), idle("c2", project: "notes-app", ago: -2_400, state: .interrupted)]
@@ -409,7 +409,7 @@ enum SnapshotFixtures {
 
         // 18–20. The footer's update line: a new version, the download, and a failure beside a telemetry problem (the longest pair).
         let working = [waitingSpeed, idle("u1", project: "notes-app", ago: -400)]
-        let available = Fixture(name: "update-available", tokens: working, update: update())
+        let available = Fixture(name: "update-available", tokens: working, lag: 12, update: update())
         let downloading = Fixture(name: "update-downloading", tokens: working, update: update(.downloading(0.45)))
         let failed = Fixture(name: "update-failed", tokens: working, telemetry: .busyOtherApp, update: update(.failed(.network)))
         return [input, retry, tools, context, grouped, dates, empty, noFolders, loading, restart, port, busy, contrast,

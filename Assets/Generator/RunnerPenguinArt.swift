@@ -1,8 +1,8 @@
 import Foundation
 
 /// The penguin: a front-facing little blue penguin (slate back and flippers, white face and belly, orange beak and feet)
-/// that waddles for walk and belly-slides for run. Frames are whole 30 × 18 grids composed into parts: `o` foot
-/// (C, merges into the body), `n` flipper (W, outlined over the body), the rest body letters (K inside = eyes).
+/// that turns to its right to waddle for walk and belly-slide for run. Frames are whole 30 × 18 grids composed into
+/// parts: `o` foot (C, merges into the body), `n` flipper (W, outlined over the body), the rest body letters (K inside = eyes).
 /// No far limb is ever visible, so G is unused. Rules: Assets/runner-v2.md › 캐릭터 추가 규칙.
 enum RunnerPenguinArt {
     typealias Part = RunnerArt.Part
@@ -69,9 +69,6 @@ enum RunnerPenguinArt {
     ])
 
     static let feet = at(16, ["............ooo......ooo"])
-    /// Waddle: the raised foot tucks one row up at the body's corner.
-    static let feetLeftUp = at(15, ["...........ooo", ".....................ooo"])
-    static let feetRightUp = at(15, ["......................ooo", "............ooo"])
 
     static let eyesShut = at(7, [
         "...............T....T",
@@ -94,7 +91,7 @@ enum RunnerPenguinArt {
                                           ".........................nn", ".........................nn", "..........................n"])
     static let flippersDown = over(flipperLeftDown, flipperRightDown)
 
-    /// Yawn stretch and waddle balance: held out low.
+    /// Yawn stretch: held out low.
     static let flipperLeftOut = at(10, ["..........nn", ".........nnn", "........nn", "........n"])
     static let flipperRightOut = at(10, ["........................nn", "........................nnn",
                                          "..........................nn", "...........................n"])
@@ -132,6 +129,33 @@ enum RunnerPenguinArt {
 
     static let sleepBreath = over(sleepRows, at(8, [".............WWWWWW"]))
 
+    // MARK: Walk: upright waddle in profile, facing right like the slide
+
+    //                     0         1         2
+    //                     012345678901234567890123456789
+    static let profile = at(3, [
+        ".............WWWWWWW",
+        "...........WWWWWWWWWWW",
+        "..........WWWWWWWWWWWW", // 5
+        "..........WWWWWWWWWTTKT",
+        "..........WWWWWWWWTTTKTCC",
+        "..........WWWWWWWWTTTTTC",
+        "..........WWWWWWWWTTTTTT",
+        ".........WWWWWWWWWTTTTTTT", // 10
+        ".........WWWWWWWWWTTTTTTT",
+        ".........WWWWWWWWWTTTTTTT",
+        ".........WWWWWWWWWTTTTTTT",
+        "..........WWWWWWWWSTTTTT",
+        "...........WWWWWSSSSSS", // 15
+    ])
+
+    /// Stride: one foot planted, the other raised a row at the body's back or front corner.
+    static let strideBack = at(15, ["..........oo", "...................ooo"])
+    static let strideFront = at(15, ["......................oo", ".............ooo"])
+    static let feetTogether = at(16, ["..............ooo.ooo"])
+    /// Near flipper held out behind for balance, rooted at the shoulder (x 13–14, row 10).
+    static let flipBalance = at(10, [".............nn", "...........nnnn", ".........nnnn", ".......nnnn"])
+
     // MARK: Run: belly slide facing right
 
     static let slide = at(8, [
@@ -156,20 +180,16 @@ enum RunnerPenguinArt {
 
     // MARK: Poses
 
-    /// Waddle: the head and shoulders (rows 3–9) lean `dx` over the planted body, then feet and flippers.
-    static func waddle(_ dx: Int, _ tops: [String]...) -> [String] {
-        tops.reduce(over(band(stand, 10..<16), band(stand, 3..<10), dx: dx)) { over($0, $1) }
-    }
-
     static let sitFrame = over(stand, feet, flippersDown)
     static let sit = [sitFrame, over(sitFrame, eyesShut)]
     static let sleep = [sleepRows, sleepBreath]
-    /// Lean left, pass (one pixel up on planted feet), lean right, pass.
-    static let pass = over(over(blank, stand, flippersDown, dy: -1), feet)
+    /// Step with the head leaning forward, pass (body one pixel up on planted feet, the flipper left a row lower),
+    /// step upright, pass.
+    static let pass = over(over(blank, profile, dy: -1), feetTogether, flipBalance)
     static let walk = [
-        waddle(-1, feetRightUp, flipperLeftDown, flipperRightOut),
+        over(over(band(profile, 10..<16), band(profile, 3..<10), dx: 1), strideBack, flipBalance),
         pass,
-        waddle(1, feetLeftUp, flipperRightDown, flipperLeftOut),
+        over(profile, strideFront, flipBalance),
         pass,
     ]
     static let run = [

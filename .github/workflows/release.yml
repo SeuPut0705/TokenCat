@@ -145,12 +145,6 @@ jobs:
             echo "## Changes · 변경 사항"
             echo
             if [[ -n $previous ]]; then
-              # Commit subjects since the previous release, newest first, capped so the page stays readable.
-              git log --no-merges --format='- %s' "$previous..HEAD" > "$RUNNER_TEMP/changes.txt"
-              count=$(wc -l < "$RUNNER_TEMP/changes.txt" | tr -d ' ')
-              head -n 30 "$RUNNER_TEMP/changes.txt"
-              if (( count > 30 )); then echo "- $((count - 30)) more · 외 $((count - 30))개"; fi
-              echo
               echo "Full comparison · 전체 비교: [$previous...$TAG]($repo_url/compare/$previous...$TAG)"
             else
               echo "This is the first release. Changes so far are in the [commit history]($repo_url/commits/$TAG)."

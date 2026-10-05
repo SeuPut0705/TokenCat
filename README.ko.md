@@ -107,7 +107,7 @@ Codex와 Claude Code의 하위 에이전트를 정확한 부모 세션 식별자
 출력 카드 맨 아래에 클라이언트마다 한 줄씩, 마지막으로 받은 사용률과 초기화까지 남은 시간, 받은 지 얼마나 됐는지를 보여 줍니다. 85% 이상은 주황, 95% 이상은 빨강이고 초기화 시각이 지나면 `—`로 바뀝니다. 실시간 잔여량이나 소진 예측은 아닙니다.
 
 - **Codex**: Codex 로그에 기록된 사용률입니다.
-- **Claude**: Claude Code는 사용 한도를 로그에 남기지 않고 상태 표시줄 명령에만 넘겨 줍니다. 그래서 TokenCat은 상태 표시줄 명령을 [브리지](docs/DETAILS.ko.md#claude-사용-한도와-상태-표시줄-브리지)로 감싸 그 안의 5시간·주간 한도만 받습니다. Claude.ai 구독 계정에서, 연결 뒤 새로 실행한 Claude Code가 응답을 한 번 받은 뒤부터 보이며, Claude Code가 상태 표시줄을 다시 그릴 때만 갱신됩니다. Claude 데스크톱 앱에서 쓴 Claude Code는 상태 표시줄을 실행하지 않으므로, 데스크톱 앱이 약 15분마다 남기는 사용량 기록(`~/Library/Application Support/Claude/plan-usage-history.json`, 읽기만 함)의 마지막 5시간·주간 사용률도 씁니다. 이 기록에는 초기화 시각이 없어 `N분 전 기록`만 보이고, 기록 뒤 창 길이(5시간·7일)가 지나면 초기화된 것으로 봅니다. 창마다 두 출처 가운데 더 최근 값을 쓰며, 초기화 전인 두 창 가운데 사용률이 높은 쪽을 보이고 다른 창은 초기화 시각을 알 때 도움말에 적습니다.
+- **Claude**: Claude Code가 상태 표시줄 명령에만 넘기는 5시간·주간 한도로, TokenCat이 그 명령을 [브리지](docs/DETAILS.ko.md#claude-사용-한도와-상태-표시줄-브리지)로 감싸 받습니다(Claude.ai 구독 계정). Claude 데스크톱 앱에서 쓴 Claude Code는 상태 표시줄을 실행하지 않으므로, 데스크톱 앱이 약 15분마다 남기는 사용량 기록도 읽습니다.
 
 ### 메뉴 막대는 원하는 만큼
 
@@ -171,12 +171,6 @@ AI 숫자는 진행 중이거나 입력을 기다리는 최상위 세션 수이�
   </picture>
 </p>
 
-- **일반**: 로그인 시 열기, 알림(턴 완료, 입력 필요, 입력 필요 알림 소리). 로그인 항목과 알림은 모두 기본으로 꺼져 있고, 켤 때만 로그인 항목에 등록하거나 알림 권한을 묻습니다.
-- **메뉴 막대**: 라이트·다크 1:1 미리보기, 프리셋, 표시 방식, 항목 표시·순서.
-- **캐릭터**: 캐릭터 선택, 표시 여부, 움직임 기준, 상태별 자세 범례.
-- **실측**: 수집기 상태와 재시도, 클라이언트별 수신 여부, Claude 한도(상태 표시줄 브리지·Claude 데스크톱 앱 기록) 수신 여부, 백업 폴더·설정 파일 Finder에서 보기.
-- **정보**: 버전, 개인정보 문구, MIT 라이선스, 처음 안내 다시 보기, 업데이트(새 버전 자동 확인, 상태 줄과 `업데이트`·`지금 확인`, 실패하면 `다시 시도` 또는 `릴리스 페이지 열기`, 새 버전 알림). 새 버전 자동 확인만 기본으로 켜져 있고, 새 버전 알림은 켤 때만 알림 권한을 묻습니다.
-
 알림에는 프로젝트, 클라이언트·모델, 토큰 수, 소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다. 상세 화면이 보이는 동안에는 보내지 않습니다. 새 버전 알림은 버전마다 한 번, 소리 없이 보내며, 더 새 버전이 나오거나 업데이트하면 이전 알림을 지웁니다.
 
 ### 언어
@@ -188,7 +182,7 @@ AI 숫자는 진행 중이거나 입력을 기다리는 최상위 세션 수이�
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/popover-onboarding-dark.png">
-    <img src="docs/images/ko/popover-onboarding-light.png" width="468" alt="처음 실행 안내 카드. 대화 본문은 저장하지 않는다, 실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했다, Claude Code 상태 표시줄은 한도만 읽도록 감쌌다, 모델 호출과 계정 로그인을 하지 않고 인터넷 요청은 GitHub 새 버전 확인뿐이라는 세 줄과 백업 보기·설정 열기 링크.">
+    <img src="docs/images/ko/popover-onboarding-light.png" width="468" alt="처음 실행 안내 카드. 대화 본문은 저장하지 않는다, 실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했다, Claude Code 상태 표시줄은 한도만 읽도록 감쌌다, 모델 호출과 계정 로그인을 하지 않고 인터넷 요청은 GitHub 새 버전 확인과 업데이트를 누를 때의 내려받기뿐이라는 세 줄과 백업 보기·설정 열기 링크.">
   </picture>
 </p>
 
@@ -266,7 +260,7 @@ open dist/TokenCat.app
 ### 처음 실행하면
 
 1. 메뉴 막대에 고양이가 나타납니다. Dock 아이콘은 없으며, 실행 중에 앱을 다시 열면 설정 창이 열립니다.
-2. 로컬 수집기가 준비되면 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 로컬 실측 전송 설정을 **자동으로** 추가합니다. Claude Code는 사용 한도를 받기 위해 `statusLine` 명령도 브리지 스크립트로 바꾸고, 원래 명령은 `~/Library/Application Support/TokenCat/claude-statusline-command`에 두어 브리지가 그대로 실행합니다. 원본 설정 파일은 `~/Library/Application Support/TokenCat/telemetry-backups/`에 먼저 백업하며, 인증·모델·훅 같은 다른 설정과 파일 권한은 그대로 둡니다. 수집기가 준비되지 않으면 설정을 바꾸지 않습니다.
+2. 로컬 수집기가 준비되면 [설치](#설치)의 안내대로 설정을 바꿉니다. 수집기가 준비되지 않으면 아무것도 바꾸지 않습니다.
 3. 두 클라이언트는 **다음에 새로 실행할 때부터** 실측과 Claude 사용 한도를 보냅니다. 진행 중인 작업은 재시작하지 않습니다. 세션 상태와 토큰 수는 로그에서 읽으므로 바로 보입니다.
 
 <p align="center">
@@ -284,7 +278,7 @@ TokenCat은 GitHub의 최신 릴리스를 스스로 확인하고, 설치는 사�
 
 - **확인**: 설정 › 정보 › 업데이트의 `새 버전 자동 확인`(기본 켜짐)이 켜져 있으면 실행 직후, 이후 15분마다, Mac이 잠자기에서 깬 뒤, 마지막 확인이 5분 넘게 지난 상태에서 상세 화면을 열 때 확인합니다. 끄면 `지금 확인`을 누를 때만 확인합니다.
 - **알림**: 새 버전이 있으면 상세 화면 아래쪽에 `새 버전 1.0.0`과 `업데이트` 버튼이 한 줄로 조용히 나타나고, 우클릭 빠른 메뉴에 `업데이트 1.0.0 설치…`가 생깁니다. 줄의 닫기 버튼은 그 버전 알림만 숨깁니다. 시스템 알림도 받으려면 `새 버전 알림`을 켜세요(기본 꺼짐).
-- **설치**: `업데이트`를 누르면 `TokenCat.zip`을 내려받고(`업데이트 내려받는 중 45%`), GitHub가 기록한 SHA-256과 맞는지 확인한 뒤 앱을 바꾸고(`설치 중…`) 다시 실행합니다. 다시 열리면 `1.0.0로 업데이트했습니다`를 한 번 보여 줍니다. 실패하면 `업데이트 실패`와 릴리스 페이지 열기가 나오고, 다시 해서 나아질 수 있는 실패에는 `다시 시도`도 나옵니다. 설치 중에 종료하면 설치 단계를 마친 뒤 종료합니다.
+- **설치**: `업데이트`를 누르면 `TokenCat.zip`을 내려받고(`업데이트 내려받는 중 45%`), GitHub가 기록한 SHA-256과 맞는지 확인한 뒤 앱을 바꾸고(`설치 중…`) 다시 실행합니다. 다시 열리면 `1.0.0으로 업데이트했습니다`를 한 번 보여 줍니다. 실패하면 `업데이트 실패`와 릴리스 페이지 열기가 나오고, 다시 해서 나아질 수 있는 실패에는 `다시 시도`도 나옵니다. 설치 중에 종료하면 설치 단계를 마친 뒤 종료합니다.
 
 설정 값과 실측 백업은 앱 밖에 있어 업데이트 뒤에도 그대로입니다. 직접 받으려면 [설치](#설치)를 다시 하거나 [터미널로 설치](#터미널로-설치)의 명령을 실행합니다. 직접 받거나 옮긴 앱은 실행 중인 TokenCat을 먼저 종료한 뒤 여세요. 실행 중이면 새로 연 앱은 기존 앱의 패널만 열고 끝납니다.
 
@@ -300,7 +294,7 @@ TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다�
    /Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry
    ```
 
-   연결한 뒤 바뀌지 않은 설정 파일은 원본 바이트로 되돌리고 브리지 스크립트를 지웁니다. 그사이 수정된 파일(Codex의 폴더 신뢰 기록, Claude Code의 설정 저장 포함)은 지금 파일을 백업 폴더에 `before-disconnect-<시각>-…`으로 남긴 뒤 TokenCat이 넣은 항목만 되돌리고 다른 변경은 그대로 둡니다. Codex는 TokenCat이 끝에 붙인 `[otel]` 표(그대로일 때), Claude Code는 `env`에서 아직 TokenCat 값을 가진 `OTEL_*`·`CLAUDE_CODE_*` 항목(원래 값이 있었으면 그 값으로, 없었으면 지움)과 TokenCat이 `0`으로 바꾼 본문 로깅 항목, TokenCat 브리지 명령 그대로인 `statusLine`(원래 없었으면 지움)입니다. TokenCat 항목이 다른 값으로 바뀌었거나 원래 Codex 설정에 `[otel]` 표가 있었거나 수정된 설정의 `statusLine`을 되돌리지 못했으면 두 파일 모두 자동으로 되돌리지 않고 `statusLine`만 되돌리므로, 나머지는 백업 폴더의 원본을 보고 직접 정리합니다. 그 뒤에도 `statusLine.command`가 `claude-statusline.sh`를 가리키면(되돌리지 못했다는 안내가 나왔거나 명령 표기가 달라진 경우) `~/Library/Application Support/TokenCat/claude-statusline-command`에 적힌 원래 명령으로 직접 바꿉니다. 원래 `statusLine` 객체는 같은 폴더 `telemetry-connection.json`의 `statusLine.original`에도 있으며, 이 값이 없으면 원래 상태 표시줄이 없었던 것이니 `statusLine` 키를 지웁니다. 복구는 클라이언트를 다음에 실행할 때부터 적용됩니다.
+   연결한 뒤 바뀌지 않은 설정 파일은 원본 바이트로 되돌립니다. 그사이 수정된 파일은 TokenCat이 넣은 항목만 되돌리고, 지금 파일은 `~/Library/Application Support/TokenCat/telemetry-backups/`에 남깁니다. 명령은 한 일과 백업을 보고 직접 정리할 파일을 알려 주며, 복구는 클라이언트를 다음에 실행할 때부터 적용됩니다. `~/.claude/settings.json`의 `statusLine.command`가 아직 `claude-statusline.sh`를 가리키면 `~/Library/Application Support/TokenCat/claude-statusline-command`에 적힌 명령으로 바꿉니다(이 파일이 없으면 `statusLine`을 지웁니다). 정확한 규칙은 [자세한 동작 › 토큰 지표](docs/DETAILS.ko.md#토큰-지표)에 있습니다.
 4. 앱을 지웁니다. 복구를 마쳤다면 `~/Library/Application Support/TokenCat/`(백업·브리지)과 설정 값(`defaults delete dev.seuput.TokenCat`, Claude 한도 기록 포함)도 지울 수 있습니다. `~/.claude/settings.json`이 아직 `claude-statusline.sh`를 가리키면 이 폴더를 지우지 마세요. 원래 명령이 함께 사라지고 Claude Code 상태 표시줄이 실행에 실패합니다.
 
 ## 작동 방식
@@ -476,14 +470,6 @@ mkdir -p work && swiftc -O docs/Generator/*.swift -o work/docs-generator && work
 
 전체 명령과 검사 범위는 [자세한 동작 › 검증 명령](docs/DETAILS.ko.md#검증-명령)에 있습니다.
 
-### 릴리스
-
-1. `build.sh`의 `CFBundleShortVersionString`(예: `0.10.1`)을 올리고 `CFBundleVersion`을 1 늘립니다.
-2. main에 푸시하면 GitHub Actions의 [릴리스 워크플로](.github/workflows/release.yml)가 macOS 러너에서 빌드하고 `--self-test`, universal·버전·서명 확인을 거쳐 `TokenCat.zip`을 초안 릴리스에 올립니다. GitHub가 기록한 자산 SHA-256이 zip과 같을 때만 `v0.10.1` 태그의 최신 릴리스로 게시합니다. 같은 태그가 이미 있으면 아무것도 하지 않고, 새 버전이 현재 최신 릴리스보다 높지 않으면 멈춥니다.
-3. 실행 중인 TokenCat은 다음 확인 때(보통 15분 안) 새 버전을 알립니다.
-
-Actions 탭에서 워크플로를 직접 실행할 수도 있습니다(main 브랜치만). 영어·한국어 릴리스 노트에는 이전 태그 이후 커밋 제목, 설치·Gatekeeper 안내, 처음 실행 때 바뀌는 설정과 되돌리는 명령, `TokenCat.zip`의 SHA-256이 들어갑니다.
-
 ### 프로젝트 구조
 
 | 경로 (`Sources/TokenCat/` 기준) | 내용 |
@@ -505,17 +491,6 @@ Actions 탭에서 워크플로를 직접 실행할 수도 있습니다(main 브�
 | `*Checks.swift`, `SnapshotFixtures.swift` | `--self-test` 검사와 합성 스냅숏 |
 
 저장소 루트의 [`Assets/`](Assets)에는 스프라이트·아이콘과 이를 만드는 Swift 코드(`Assets/Generator/`)가, [`docs/Generator/`](docs/Generator/README.md)에는 README 미리보기 이미지 생성기가 있습니다.
-
-### 자산
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/app-icon-dark.png">
-    <img src="docs/images/app-icon-light.png" width="638" alt="앱 아이콘 256·128·64·32·16 px과 32 px, 16 px 픽셀 아이콘 확대.">
-  </picture>
-</p>
-
-앱 아이콘과 메뉴 막대 고양이는 [`Assets/Generator`](Assets/Generator)의 Swift 코드로 결정적으로 생성하며, 팔레트는 한 곳에서 정합니다. 생성 명령과 측정값은 [`Assets/runner-v2.md`](Assets/runner-v2.md), [`Assets/app-icon-v2.md`](Assets/app-icon-v2.md)에 있습니다.
 
 ## 라이선스
 

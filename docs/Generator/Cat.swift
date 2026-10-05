@@ -154,7 +154,7 @@ func posesSheet(_ theme: Theme, runner: Runner, bars: [Theme: UInt32]) -> CGImag
         ("sit", 0, nil, loc("앉기", "Sit"), loc("로그 대기", "Waiting for log")),
         ("sleep", 0, 2, loc("잠", "Sleep"), loc("10분간 활동 없음", "Idle 10 min")),
         ("yawn", 0, nil, loc("하품", "Yawn"), loc("깨어날 때 한 번", "Once on waking")),
-        ("content", 0, nil, loc("만족", "Happy"), loc("턴 완료 때 한 번", "Once per finished turn")),
+        ("content", 0, nil, loc("만족", "Content"), loc("턴 완료 때 한 번", "Once per finished turn")),
     ]
     let scale = 6, cell = runner.manifest.cell
     let tile = CGSize(width: cell.width * scale + 20, height: cell.height * scale + 20)

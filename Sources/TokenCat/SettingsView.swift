@@ -238,6 +238,8 @@ private struct SettingsLabel: View {
     var subtitle: String?
     var subtitleColor: Color = .secondary
     var warning = false
+    /// A disabled control's label is not dimmed by Form on its own.
+    @Environment(\.isEnabled) private var isEnabled
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -246,7 +248,7 @@ private struct SettingsLabel: View {
                     Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(TCColor.warning)
                         .accessibilityHidden(true)
                 }
-                Text(title)
+                Text(title).foregroundStyle(isEnabled ? HierarchicalShapeStyle.primary : .secondary)
             }
             if let subtitle {
                 Text(subtitle).font(.system(size: 11)).foregroundStyle(subtitleColor).fixedSize(horizontal: false, vertical: true)
@@ -448,12 +450,14 @@ private struct MenuBarPane: View {
     @ObservedObject var preferences: Preferences
     @ObservedObject var model: DashboardModel
     @ObservedObject var state: SettingsState
+    @Environment(\.undoManager) private var undoManager
 
     var body: some View {
         Form {
             Section {
                 MenuBarPreview(model: model, preferences: preferences, pose: state.runnerPose)
-                Picker(loc("프리셋", "Preset"), selection: Binding(get: { preferences.preset }, set: { $0.map(preferences.apply) })) {
+                Picker(loc("프리셋", "Preset"), selection: Binding(get: { preferences.preset },
+                                                                set: { $0.map { preferences.apply($0, undoManager: undoManager) } })) {
                     ForEach(DisplayPreset.allCases) { Text($0.title).tag(DisplayPreset?.some($0)) }
                     if preferences.preset == nil { Text(loc("사용자 지정", "Custom")).tag(DisplayPreset?.none) }
                 }
@@ -528,7 +532,7 @@ struct RunnerLegend: View {
         case .activity:
             return [Entry(pose: .walk, name: loc("걷기", "Walk"), caption: loc("진행·도구 실행", "Working · tool")),
                     Entry(pose: .run, name: loc("달리기", "Run"), caption: loc("출력 기록 직후", "Just recorded")),
-                    Entry(pose: .alert, name: loc("정면 앉기", "Sit facing you"), caption: loc("입력 필요", "Input needed")),
+                    Entry(pose: .alert, name: loc("정면 보기", "Facing you"), caption: loc("입력 필요", "Input needed")),
                     Entry(pose: .sit, name: loc("앉기", "Sit"), caption: loc("대기·쉬는 중", "Waiting · idle")),
                     Entry(pose: .sleep, name: loc("잠", "Sleep"), caption: loc("10분간 활동 없음", "Idle 10 min"))]
         case .cpu:
@@ -706,8 +710,9 @@ private struct TelemetryPane: View {
                                                              received: newest?.receivedAt, desktop: newest?.resetsAt == nil, now: model.now)
                 LabeledContent(loc("Claude 한도", "Claude limits")) { statusLine(limits.row, limits.text, detail: limits.detail) }
             } footer: {
-                settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.",
-                                   "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply."))
+                // Non-breaking hyphens (U+2011) keep the flag on one line; the footer is not selectable, so it is retyped.
+                settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 되돌리려면 터미널에서 /Applications/TokenCat.app/Contents/MacOS/TokenCat \u{2011}\u{2011}disconnect\u{2011}telemetry를 실행합니다.",
+                                   "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply. To undo it, run /Applications/TokenCat.app/Contents/MacOS/TokenCat \u{2011}\u{2011}disconnect\u{2011}telemetry in Terminal."))
             }
             if !files.isEmpty {
                 Section {

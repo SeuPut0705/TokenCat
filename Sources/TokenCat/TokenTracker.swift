@@ -263,7 +263,8 @@ private final class TokenFileCursor {
                 guard !data.isEmpty else { break }
                 offset += UInt64(data.count)
                 budget -= data.count
-                consume(data)
+                // Per chunk, so a long open turn read at once does not pile up its parsed objects.
+                autoreleasepool { consume(data) }
             }
         } catch { return }
     }
@@ -274,7 +275,7 @@ private final class TokenFileCursor {
         let lowerBound = size > 16_777_216 ? size - 16_777_216 : 0
         var found: UInt64?
         try? scanLinesBackward(handle: handle, size: size, lowerBound: lowerBound) { line, lineOffset in
-            switch parser.claudeTurnBoundary(in: line) {
+            switch autoreleasepool(invoking: { parser.claudeTurnBoundary(in: line) }) {
             case .start?: found = lineOffset; return true
             case .end?: return true
             case nil: return false
@@ -491,8 +492,8 @@ final class TokenLogParser {
         consumeMetadata(record)
         let date = Self.date(record["timestamp"])
         switch source {
-        case .codex: consumeCodex(record)
-        case .claude: consumeClaude(record, previousLog: lastLogAt)
+        case .codex: consumeCodex(record, date: date)
+        case .claude: consumeClaude(record, date: date, previousLog: lastLogAt)
         }
         if let date { lastLogAt = max(lastLogAt ?? date, date) }
     }
@@ -761,12 +762,13 @@ final class TokenLogParser {
         } else { completion = nil }
     }
 
-    private func consumeCodex(_ record: [String: Any]) {
+    /// `date` is the record's parsed `timestamp`.
+    private func consumeCodex(_ record: [String: Any], date: Date?) {
         let type = record["type"] as? String
         let payload = record["payload"] as? [String: Any] ?? [:]
         if type == "session_meta" { return }
         if type == "token_usage_record" {
-            consumeCodexUsageRecord(payload, date: Self.date(record["timestamp"]))
+            consumeCodexUsageRecord(payload, date: date)
             return
         }
         if type == "turn_context" {
@@ -785,7 +787,7 @@ final class TokenLogParser {
         }
         // A compaction finished at this time. Forked logs replay the parent's before any own turn.
         if type == "compacted" {
-            if ownUsageSnapshot, let date = Self.date(record["timestamp"]) { compactedAt = max(compactedAt ?? date, date) }
+            if ownUsageSnapshot, let date { compactedAt = max(compactedAt ?? date, date) }
             return
         }
         if type == "response_item", !ignoringInheritedTurn,
@@ -807,12 +809,11 @@ final class TokenLogParser {
             }
             if let phase {
                 observedState = phase
-                if let date = Self.date(record["timestamp"]) { lastActivity = max(lastActivity ?? date, date) }
+                if let date { lastActivity = max(lastActivity ?? date, date) }
             }
             return
         }
         guard type == "event_msg", let event = payload["type"] as? String else { return }
-        let date = Self.date(record["timestamp"])
         switch event {
         case "task_started":
             let id = payload["turn_id"] as? String
@@ -966,10 +967,9 @@ final class TokenLogParser {
         }
     }
 
-    private func consumeClaude(_ record: [String: Any], previousLog: Date?) {
+    private func consumeClaude(_ record: [String: Any], date: Date?, previousLog: Date?) {
         if record["isSidechain"] as? Bool == true && !isSubagent { return }
         let type = record["type"] as? String
-        let date = Self.date(record["timestamp"])
         // Restored or branched sessions re-append earlier records with their original uuids
         // and timestamps; replaying them would rewind the turn.
         if let uuid = record["uuid"] as? String {

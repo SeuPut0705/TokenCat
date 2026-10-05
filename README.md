@@ -107,7 +107,7 @@ Click a row or press Return to expand its session ID, model, running tool and re
 At the bottom of the output card, one line per client shows the last usage percentage received, the time until it resets, and how long ago it was received. 85% or more is orange, 95% or more is red, and once the reset time passes it changes to `—`. It isn't a live balance or a forecast of when you'll run out.
 
 - **Codex**: the usage percentage recorded in the Codex logs.
-- **Claude**: Claude Code doesn't write usage limits to its logs; it only passes them to the status line command. So TokenCat wraps the status line command with a [bridge](docs/DETAILS.md#claude-usage-limits-and-the-status-line-bridge) and takes only the 5-hour and weekly limits from it. They appear for Claude.ai subscription accounts once a Claude Code launched after connecting has received one response, and they update only when Claude Code redraws its status line. Claude Code in the Claude desktop app doesn't run the status line, so TokenCat also uses the last 5-hour and weekly percentages from the usage history the desktop app writes about every 15 minutes (`~/Library/Application Support/Claude/plan-usage-history.json`, read only). That history has no reset time, so only `Recorded 5m ago` is shown, and a window counts as reset once its length (5 hours or 7 days) has passed since the record. For each window the more recent of the two sources wins; of the two windows that haven't reset, the one with higher usage is shown, and the other is given in the help when its reset time is known.
+- **Claude**: the 5-hour and weekly limits that Claude Code passes only to its status line command, which TokenCat wraps with a [bridge](docs/DETAILS.md#claude-usage-limits-and-the-status-line-bridge) (Claude.ai subscription accounts). Claude Code in the Claude desktop app doesn't run the status line, so TokenCat also reads the usage history the desktop app writes about every 15 minutes.
 
 ### As much menu bar as you want
 
@@ -160,7 +160,7 @@ The cat is pixel art drawn 1:1, without blur, in a 32 × 20 pt cell. The dashboa
 
 Besides the cat, you can pick a dog, hamster, penguin or robot in Settings › Character or in the quick menu's Character submenu. All five share the same poses and pace, so only the look changes; the dashboard header and the app icon keep the cat.
 
-Presets set up the menu bar in one step: **Minimal**, **AI Focus** (AI, CPU and memory on two lines), **System Monitor** (every item on two lines) or **Everything Inline** (every item on one line). Choose one in Settings › Menu Bar › Preset. Picking a preset also shows the character again, and when the layout or items no longer match any preset, the picker shows **Custom**.
+Presets set up the menu bar in one step: **Minimal**, **AI Focus** (AI, CPU and memory on two lines), **System Monitor** (every item on two lines) or **All on One Line** (every item on one line). Choose one in Settings › Menu Bar › Preset. Picking a preset also shows the character again, and when the layout or items no longer match any preset, the picker shows **Custom**.
 
 ### Settings and notifications
 
@@ -170,12 +170,6 @@ Presets set up the menu bar in one step: **Minimal**, **AI Focus** (AI, CPU and 
     <img src="docs/images/en/settings-light.png" width="796" alt="The five tabs of the Settings window: General (open at login, notifications), Menu Bar (with the System Monitor preset), Character, Telemetry (an example of another app using the port, and Claude limit reception), and About (an Updates section with Check for updates automatically, New version 1.0.0 with Update and Check Now buttons, and Notify about new versions).">
   </picture>
 </p>
-
-- **General**: Open TokenCat at login, and notifications (Turn complete, Input needed, Sound for input needed alerts). The login item and all notifications are off by default; TokenCat registers the login item or asks for notification permission only when you turn one on.
-- **Menu Bar**: 1:1 light and dark previews, preset, layout, and item visibility and order.
-- **Character**: the character, whether it's shown, the motion source, and a legend of poses by state.
-- **Telemetry**: collector status and retry, whether each client's measurements are arriving, whether Claude limits are arriving (status line bridge, Claude desktop app history), and Show in Finder for the backup folder and config files.
-- **About**: version, privacy statement, MIT License, Show Welcome Again, and Updates (Check for updates automatically, a status line with `Update` and `Check Now`, `Try Again` or `Open Release Page` on failure, and Notify about new versions). Only Check for updates automatically is on by default, and Notify about new versions asks for notification permission only when you turn it on.
 
 Notifications include only the project, client and model, token count and duration, never the question or response text. They aren't sent while the dashboard is visible. A new-version notification is sent once per version, without sound, and the previous one is removed when a newer version appears or you update.
 
@@ -188,7 +182,7 @@ Screens, menus, notifications, help, VoiceOver labels and command-line output ar
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-onboarding-dark.png">
-    <img src="docs/images/en/popover-onboarding-light.png" width="468" alt="The first-launch card with three lines: conversation text isn't stored; local telemetry was added to the Codex and Claude Code settings for measurements, and the Claude Code status line was wrapped to read only the limits; no model calls or account sign-ins, and the only internet request is the GitHub new-version check. Below are Show backup and Open settings links.">
+    <img src="docs/images/en/popover-onboarding-light.png" width="468" alt="The first-launch card with three lines: conversation text isn't stored; local telemetry was added to the Codex and Claude Code settings for measurements, and the Claude Code status line was wrapped to read only the limits; no model calls or account sign-ins, and it goes online only to check GitHub for new versions and to download one when you click Update. Below are Show backup and Open settings links.">
   </picture>
 </p>
 
@@ -222,7 +216,7 @@ TokenCat has only an ad-hoc signature, without an Apple Developer ID signature o
 
 1. Open `TokenCat.app`. When a window says it can't be opened, click **Done**. Don't click **Move to Trash**.
 2. Open **System Settings › Privacy & Security** and scroll down to the **Security** section.
-3. Next to the message “TokenCat” was blocked to protect your Mac, click **Open Anyway**. This button appears only for about an hour after you tried to open the app.
+3. Next to the message "“TokenCat” was blocked to protect your Mac.", click **Open Anyway**. This button appears only for about an hour after you tried to open the app.
 4. In the window that appears, click **Open Anyway** again and confirm with your Mac password or Touch ID.
 
 **macOS 13–14**
@@ -266,7 +260,7 @@ open dist/TokenCat.app
 ### On first launch
 
 1. The cat appears in the menu bar. There's no Dock icon, and opening the app again while it's running opens the Settings window.
-2. Once the local collector is ready, TokenCat **automatically** adds local telemetry settings to Codex `~/.codex/config.toml` and Claude Code `~/.claude/settings.json`. For Claude Code, it also replaces the `statusLine` command with the bridge script to receive usage limits, and keeps the original command in `~/Library/Application Support/TokenCat/claude-statusline-command`, which the bridge runs unchanged. The original config files are backed up to `~/Library/Application Support/TokenCat/telemetry-backups/` first, and other settings such as authentication, models and hooks, as well as file permissions, are left alone. If the collector isn't ready, no settings are changed.
+2. Once the local collector is ready, TokenCat makes the settings changes in the note under [Install](#install). If the collector isn't ready, nothing is changed.
 3. Both clients send measurements and Claude usage limits **from their next launch**. Work in progress isn't restarted. Session state and token counts come from the logs, so they show right away.
 
 <p align="center">
@@ -300,7 +294,7 @@ TokenCat checks the measurement connection on every launch and adds it again if 
    /Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry
    ```
 
-   Config files that haven't changed since connecting are restored to their original bytes, and the bridge script is removed. For files modified in the meantime (including Codex's folder trust records and settings saved by Claude Code), the current file is kept in the backup folder as `before-disconnect-<time>-…`, then only the entries TokenCat added are reverted and other changes are left alone. For Codex, that's the `[otel]` table TokenCat appended at the end (if it's unchanged); for Claude Code, it's the `OTEL_*` and `CLAUDE_CODE_*` entries in `env` that still hold TokenCat's values (restored to their original values, or removed if there were none), the text logging entries TokenCat set to `0`, and a `statusLine` that's still exactly the TokenCat bridge command (removed if there was none originally). If a TokenCat entry was changed to a different value, the original Codex settings already had an `[otel]` table, or the `statusLine` of a modified settings file couldn't be reverted, neither file is reverted automatically and only the `statusLine` is restored, so clean up the rest by hand using the originals in the backup folder. If `statusLine.command` still points to `claude-statusline.sh` after that (because you were told it couldn't be reverted, or the command is written differently), change it by hand to the original command written in `~/Library/Application Support/TokenCat/claude-statusline-command`. The original `statusLine` object is also in `statusLine.original` of `telemetry-connection.json` in the same folder; if that value is missing, there was no status line originally, so remove the `statusLine` key. The restore takes effect the next time each client launches.
+   Config files unchanged since connecting are restored to their original bytes. In files edited since, only TokenCat's entries are reverted, and the current copy is kept in `~/Library/Application Support/TokenCat/telemetry-backups/`. The command says what it did, including any file left for you to clean up from the backups, and the restore takes effect the next time each client launches. If `statusLine.command` in `~/.claude/settings.json` still points to `claude-statusline.sh`, replace it with the command in `~/Library/Application Support/TokenCat/claude-statusline-command` (or remove `statusLine` if that file doesn't exist). The exact rules are in [Details › Token metrics](docs/DETAILS.md#token-metrics).
 4. Delete the app. Once the restore is done, you can also delete `~/Library/Application Support/TokenCat/` (backups and bridge) and the settings (`defaults delete dev.seuput.TokenCat`, which includes the Claude limit records). Don't delete that folder while `~/.claude/settings.json` still points to `claude-statusline.sh`: the original command would go with it, and the Claude Code status line would fail to run.
 
 ## How it works
@@ -465,7 +459,7 @@ dist/TokenCat.app/Contents/MacOS/TokenCat --snapshot-menubar work/menubar-states
 dist/TokenCat.app/Contents/MacOS/TokenCat --snapshot-settings work/settings.png --pane all --fixtures
 ```
 
-Pick the language of snapshots and command-line output with `--language en|ko`. The README images are regenerated from the synthetic snapshots above and `Assets/` alone, and images with text are made per language in `docs/images/en/` and `docs/images/ko/`. See [`docs/Generator`](docs/Generator/README.md) for how.
+Pick the language of snapshots and command-line output with `--language en|ko`. The README images are regenerated from the synthetic snapshots above and `Assets/` alone, and images with text are made per language in `docs/images/en/` and `docs/images/ko/`. See [`docs/Generator`](docs/Generator/README.md) (Korean) for how.
 
 ```sh
 mkdir -p work && swiftc -O docs/Generator/*.swift -o work/docs-generator && work/docs-generator
@@ -475,14 +469,6 @@ mkdir -p work && swiftc -O docs/Generator/*.swift -o work/docs-generator && work
 > `--snapshot` without fixtures and `--diagnose` include real project names and paths from this Mac. Don't attach them to issues or docs.
 
 All commands and what they check are in [Details › Verification commands](docs/DETAILS.md#verification-commands).
-
-### Releases
-
-1. Bump `CFBundleShortVersionString` in `build.sh` (for example `0.10.1`) and increase `CFBundleVersion` by 1.
-2. Push to main, and the GitHub Actions [release workflow](.github/workflows/release.yml) builds on a macOS runner, runs `--self-test` and the universal, version and signature checks, and uploads `TokenCat.zip` to a draft release. It publishes the draft as the latest release with the `v0.10.1` tag only if the asset SHA-256 recorded by GitHub matches the zip. If the tag already exists, it does nothing, and it stops if the new version isn't higher than the current latest release.
-3. A running TokenCat announces the new version at its next check (usually within 15 minutes).
-
-You can also run the workflow by hand from the Actions tab (main branch only). The English and Korean release notes include commit subjects since the previous tag, install and Gatekeeper instructions, the settings changed on first launch and the command to undo them, and the SHA-256 of `TokenCat.zip`.
 
 ### Project layout
 
@@ -504,18 +490,7 @@ You can also run the workflow by hand from the Actions tab (main branch only). T
 | `Localization.swift` | Display language choice, English and Korean texts (`loc`) and time formats |
 | `*Checks.swift`, `SnapshotFixtures.swift` | `--self-test` checks and synthetic snapshots |
 
-[`Assets/`](Assets) at the repository root holds the sprites and icons and the Swift code that makes them (`Assets/Generator/`), and [`docs/Generator/`](docs/Generator/README.md) holds the generator for the README preview images.
-
-### Assets
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/app-icon-dark.png">
-    <img src="docs/images/app-icon-light.png" width="638" alt="The app icon at 256, 128, 64, 32 and 16 px, with enlargements of the 32 px and 16 px pixel icons.">
-  </picture>
-</p>
-
-The app icon and the menu bar cat are generated deterministically by the Swift code in [`Assets/Generator`](Assets/Generator), with the palette defined in one place. Generation commands and measurements are in [`Assets/runner-v2.md`](Assets/runner-v2.md) and [`Assets/app-icon-v2.md`](Assets/app-icon-v2.md).
+[`Assets/`](Assets) at the repository root holds the sprites and icons and the Swift code that makes them (`Assets/Generator/`), and [`docs/Generator/`](docs/Generator/README.md) (Korean) holds the generator for the README preview images.
 
 ## License
 
