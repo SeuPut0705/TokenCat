@@ -14,7 +14,7 @@ English · [한국어](README.ko.md)
   <a href="https://github.com/SeuPut0705/TokenCat/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/SeuPut0705/TokenCat?style=flat-square&label=release&color=4b55c8"></a>
   <img alt="macOS 13 or later" src="https://img.shields.io/badge/macOS-13%2B-4b55c8?style=flat-square">
   <img alt="Swift · AppKit · SwiftUI" src="https://img.shields.io/badge/Swift-AppKit%20%C2%B7%20SwiftUI-3b4252?style=flat-square">
-  <img alt="Privacy: local only" src="https://img.shields.io/badge/privacy-local%20only-4b55c8?style=flat-square">
+  <img alt="Privacy: local data" src="https://img.shields.io/badge/privacy-local%20data-4b55c8?style=flat-square">
   <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-3b4252?style=flat-square"></a>
 </p>
 
@@ -51,7 +51,7 @@ The numbers are shown as they are. Token counts are the values actually recorded
 
 - **Never miss an input request**: a session waiting for an answer or a plan approval shows a yellow `?` and a cat facing you. Notifications are available if you want them.
 - **Sessions and subagents in one list**: each session shows its progress, the kind of tool running, output this turn and context, and subagents are grouped under their parent.
-- **Local only**: no conversation text is stored, the measurement collector listens only on `127.0.0.1`, and TokenCat never calls a model or signs in to an account. It goes online only to check for and download updates from GitHub, and automatic checks can be turned off. To receive measurements, it automatically adds settings to Codex and Claude Code that send telemetry to this Mac, and wraps the Claude Code status line command with a TokenCat bridge, backing up the originals first.
+- **Your data stays local**: no conversation text is stored, the measurement collector listens only on `127.0.0.1`, and TokenCat never calls a model or signs in on its own. It goes online only to check for and download updates from GitHub and, with `Live usage limits` on (the default), to ask OpenAI and Anthropic for your usage limits with the sign-in Codex and Claude Code already saved; both can be turned off. To receive measurements, it automatically adds settings to Codex and Claude Code that send telemetry to this Mac, and wraps the Claude Code status line command with a TokenCat bridge, backing up the originals first.
 - **Native app**: Swift, AppKit and SwiftUI only, with no third-party packages. Targets macOS 13 and later.
 - **Windows preview**: a notification-area version for Windows 10 and 11 (x64) ships on the same release. See [Windows (preview)](#windows-preview).
 
@@ -110,14 +110,16 @@ Click a row or press Return to expand its session ID, model, running tool and re
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-limits-dark.png">
-    <img src="docs/images/en/popover-limits-light.png" width="468" alt="Seven states of the usage limit row: Codex weekly limit at 28% used, 87% in orange, 97% in red, and a dash after the reset; Claude 5-hour limit at 42% used, 91% in orange, and a dash for a Claude weekly limit that has reset.">
+    <img src="docs/images/en/popover-limits-light.png" width="468" alt="States of the usage limit row: Codex weekly limit at 28% used, 87% in orange, 97% in red, a dash after the reset, 31% checked live and 33% recorded 5 minutes ago; Claude 5-hour limit at 42% used, 91% in orange, a dash for a Claude weekly limit that has reset, and 48% checked live.">
   </picture>
 </p>
 
-At the bottom of the output card, one line per client shows the last usage percentage received, the time until it resets, and how long ago it was received. 85% or more is orange, 95% or more is red, and once the reset time passes it changes to `—`. It isn't a live balance or a forecast of when you'll run out.
+At the bottom of the output card, one line per client shows the usage percentage, the time until it resets, and how fresh the value is. 85% or more is orange, 95% or more is red, and once the reset time passes it changes to `—`. It isn't a forecast of when you'll run out.
 
-- **Codex**: the usage percentage recorded in the Codex logs.
-- **Claude**: the 5-hour and weekly limits that Claude Code passes only to its status line command, which TokenCat wraps with a [bridge](docs/DETAILS.md#claude-usage-limits-and-the-status-line-bridge) (Claude.ai subscription accounts). Claude Code in the Claude desktop app doesn't run the status line, so TokenCat also reads the usage history the desktop app writes about every 15 minutes.
+With **Live usage limits** on (the default, in Settings › Telemetry), TokenCat checks each account's limits every minute while that client has a running session or the dashboard is open, and every 10 minutes otherwise. A value checked within the last 2 minutes reads `… · live`; older values say how long ago they were recorded. Reset times are never made up: when none is given, none is shown. How it works and what is sent is in [Details › Live usage limits](docs/DETAILS.md#live-usage-limits).
+
+- **Codex**: the live check briefly runs the local `codex app-server` (the Codex CLI), which asks OpenAI with its own saved sign-in. The usage percentage recorded in the Codex logs is used too.
+- **Claude**: the live check sends Claude Code's saved sign-in token to Anthropic. Without a usable token, the existing sources still apply: the 5-hour and weekly limits that Claude Code passes only to its status line command, which TokenCat wraps with a [bridge](docs/DETAILS.md#claude-usage-limits-and-the-status-line-bridge) (Claude.ai subscription accounts), and the usage history the Claude desktop app writes about every 15 minutes (Claude Code in the desktop app doesn't run the status line).
 
 ### As much menu bar as you want
 
@@ -177,7 +179,7 @@ Presets set up the menu bar in one step: **Minimal**, **AI Focus** (AI, CPU and 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/settings-dark.png">
-    <img src="docs/images/en/settings-light.png" width="796" alt="The five tabs of the Settings window: General (open at login, notifications), Menu Bar (with the System Monitor preset), Character, Telemetry (an example of another app using the port, and Claude limit reception), and About (an Updates section with Check for updates automatically, New version 1.0.0 with Update and Check Now buttons, and Notify about new versions).">
+    <img src="docs/images/en/settings-light.png" width="796" alt="The five tabs of the Settings window: General (open at login, notifications), Menu Bar (with the System Monitor preset), Character, Telemetry (an example of another app using the port, Claude limit reception and the Live usage limits switch), and About (an Updates section with Check for updates automatically, New version 1.0.0 with Update and Check Now buttons, and Notify about new versions).">
   </picture>
 </p>
 
@@ -192,18 +194,20 @@ Screens, menus, notifications, help, VoiceOver labels and command-line output ar
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-onboarding-dark.png">
-    <img src="docs/images/en/popover-onboarding-light.png" width="468" alt="The first-launch card with three lines: conversation text isn't stored; local telemetry was added to the Codex and Claude Code settings for measurements, and the Claude Code status line was wrapped to read only the limits; no model calls or account sign-ins, and it goes online only to check GitHub for new versions and to download one when you click Update. Below are Show backup and Open settings links.">
+    <img src="docs/images/en/popover-onboarding-light.png" width="468" alt="The first-launch card with three lines: conversation text isn't stored; local telemetry was added to the Codex and Claude Code settings for measurements, and the Claude Code status line was wrapped to read only the limits; no model calls or account sign-ins, and it goes online only to check GitHub for new versions, download one, and check usage with OpenAI and Anthropic (can be turned off in Settings). Below are Show backup and Open settings links.">
   </picture>
 </p>
 
 On first launch, the card above tells you what TokenCat actually did and what it doesn't do.
 
 - **No conversation text is stored.** Only metadata from local logs is used, such as models, token counts, tool types and project folders. Tool inputs aren't read, and error messages in API retry records aren't stored either.
-- **The collector stays inside this Mac.** It accepts requests only on `127.0.0.1:16493` and rejects any request that carries a web page Origin. Received measurements are kept in memory up to a fixed count and never written to files. The only things from the collector that reach disk are the Claude limits' usage percentage, reset time and time received, stored in TokenCat's settings (UserDefaults) so they still show on the next launch. The Claude desktop app's usage history file is only read, and just the last record's percentages and time are stored in the same place.
+- **The collector stays inside this Mac.** It accepts requests only on `127.0.0.1:16493` and rejects any request that carries a web page Origin or a Host other than `127.0.0.1` or `localhost`. Received measurements are kept in memory up to a fixed count and never written to files. The only things from the collector that reach disk are the Claude limits' usage percentage, reset time and time received, stored in TokenCat's settings (UserDefaults) so they still show on the next launch. The Claude desktop app's usage history file is only read, and just the last record's percentages and time are stored in the same place.
 - **Connected with text logging off.** When TokenCat adds telemetry to the Codex and Claude Code settings, prompt and response text logging is turned off.
 - **The Claude Code status line is only wrapped.** Claude Code passes usage limits only to its status line command, so TokenCat replaces the `statusLine` command in `~/.claude/settings.json` with the TokenCat bridge (`~/Library/Application Support/TokenCat/claude-statusline.sh`). The bridge sends the status JSON that Claude Code passes it (working folder, session, model, cost, usage limits and so on) only to `127.0.0.1`, then runs the original command with the same input and returns its output and exit code unchanged. TokenCat keeps only the 5-hour and weekly limit numbers from that JSON and discards the rest. If there was no status line, it adds a bridge that prints nothing.
-- **No model calls, no account sign-ins.** TokenCat never calls any model and never signs in to any account.
-- **The only internet access is for updates.** TokenCat asks GitHub only for the latest release's version number, and sends no usage history, device information or identifiers. If you turn off `Check for updates automatically` in Settings › About, it asks only when you click `Check Now`. The new version is downloaded only when you click `Update`. All other communication stays inside this Mac (`127.0.0.1`).
+- **No model calls, no sign-ins of its own.** TokenCat never calls any model and never signs in to an account itself; the live usage check uses the sign-in Codex and Claude Code already saved.
+- **Internet access is for updates and usage limits only.** For updates, TokenCat asks GitHub only for the latest release's version number. If you turn off `Check for updates automatically` in Settings › About, it asks only when you click `Check Now`. The new version is downloaded only when you click `Update`.
+- **Live usage limits never store the token.** For Codex, TokenCat briefly runs the local `codex app-server`, which asks OpenAI with its own sign-in; TokenCat never reads Codex's tokens. For Claude, it reads the token Claude Code saved (the macOS Keychain or `~/.claude/.credentials.json`) and sends it only to `api.anthropic.com`. The token is kept in memory only and never written, logged or refreshed, and an expired one isn't sent. Turn it off with `Live usage limits` in Settings › Telemetry.
+- **Nothing else leaves this Mac.** Neither request carries usage history, device information or identifiers, and all other communication stays inside this Mac (`127.0.0.1`).
 - **Original settings are backed up first.** Before changing anything, TokenCat keeps the originals in a folder with restricted access, and it never overwrites an existing external telemetry destination that would conflict. If a config file changed after connecting, the disconnect command (`--disconnect-telemetry`) doesn't overwrite the whole file; it backs up the current file and reverts only the entries TokenCat added.
 - **Login item and notifications only when you turn them on.** Both are off by default. Updates are installed only when you click, too.
 
@@ -271,7 +275,7 @@ open dist/TokenCat.app
 
 1. The cat appears in the menu bar. Click it to see what TokenCat changed. There's no Dock icon, and opening the app again while it's running opens the Settings window. If a full menu bar hides the cat behind the notch, open the app again and choose Menu Bar › Preset › Minimal in Settings.
 2. Once the local collector is ready, TokenCat makes the settings changes in the note under [Install](#install). If the collector isn't ready, nothing is changed.
-3. Both clients send measurements and Claude usage limits **from their next launch**. Work in progress isn't restarted. Session state and token counts come from the logs, so they show right away.
+3. Both clients send measurements and Claude usage limits **from their next launch**. Work in progress isn't restarted. Session state and token counts come from the logs, and live usage limits are checked directly, so they show right away.
 
 <p align="center">
   <picture>
@@ -334,7 +338,7 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 - **Tray icon**: the character and its state. A yellow corner dot means input is needed, an orange one an API retry. Hover for a short summary, click for the dashboard with all the numbers, and right-click for the quick menu.
 - **Size follows the display scale**: at 100–175 % the icon is the cat head, which bobs while working; at 200 % and above it's the full-body character you picked.
 - **WSL isn't tracked**: only Codex and Claude Code running on Windows itself are collected (`%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.claude\projects`).
-- **Claude limits**: an existing Claude Code `statusLine` isn't wrapped, so Claude limits then come only from the Claude desktop app's usage history, if you use the desktop app.
+- **Claude limits**: an existing Claude Code `statusLine` isn't wrapped, so apart from the live check (which reads Claude Code's token from `%USERPROFILE%\.claude\.credentials.json`), Claude limits then come only from the Claude desktop app's usage history, if you use the desktop app.
 - **Language**: follows the Windows display language (Korean if it's Korean, English otherwise).
 
 **Updates** work as on the Mac: TokenCat checks GitHub (Settings › About › `Check for updates automatically`), shows `New version` with an `Update` button, downloads `TokenCat-Windows.zip`, verifies its SHA-256, swaps `TokenCat.exe` and relaunches. From inside the zip, a temporary folder or a folder you can't write to (such as Program Files), quit TokenCat and replace `TokenCat.exe` by hand instead.
@@ -360,8 +364,8 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 
 - **Logs** provide sessions, models, output tokens and progress. They're reflected only when the log is written, so for a client like Claude Code that writes at the end of a message, the numbers go up after the message completes. A session shows as working only within an allowance after its last record (10 minutes waiting for a model response, 15 minutes for a Claude Code tool, 120 seconds for a Codex tool); after that it changes to `Waiting for log`. This doesn't say whether the OS process is alive.
 - **Measurements** are attached to a session row only when the provider, session and agent identifiers match exactly. They're never linked by model name or closeness in time. Speeds are shown in separate units by basis.
-- **Claude usage limits** come from the status JSON that the bridge sends to the same collector (`/v1/claude/status`) whenever Claude Code draws its status line, reading only the 5-hour and weekly limits, and from the Claude desktop app's usage history file, reading only the last percentages and record time.
-- **Updates** are the only thing that leaves this Mac. TokenCat asks the GitHub API for the latest release and compares version numbers, and downloads the file only when you click `Update`. This runs separately from the collection paths in the diagram.
+- **Usage limits** come from the live check while `Live usage limits` is on (Codex through the local `codex app-server`, Claude from `api.anthropic.com` with Claude Code's saved token), from the Codex logs, from the status JSON that the bridge sends to the same collector (`/v1/claude/status`) whenever Claude Code draws its status line, reading only the 5-hour and weekly limits, and from the Claude desktop app's usage history file, reading only the last percentages and record time.
+- **Updates** and the **live usage limit check** are the only requests that leave this Mac. For updates, TokenCat asks the GitHub API for the latest release and compares version numbers, and downloads the file only when you click `Update`. Both run separately from the collection paths in the diagram.
 
 | Unit | Basis |
 |---|---|
@@ -387,7 +391,10 @@ That message appears because TokenCat isn't notarized by Apple. Allow it once fo
 
 <br>
 
-Only the update check. It's a GET request to `api.github.com` asking for this repository's latest release, and apart from what any HTTP request carries (IP address, a User-Agent such as `TokenCat/0.9.0`, and a language header fixed to `en`), it sends no usage history, device information or identifiers. It uses cache validation headers so an unchanged response isn't downloaded again, and when GitHub reports a rate limit it pauses until the given time. If you turn off `Check for updates automatically` in Settings › About, it checks only when you click. When you click `Update`, it downloads `TokenCat.zip` from GitHub at that moment. Logs, measurements and conversation content never leave this Mac.
+Two kinds of requests, and neither carries usage history, device information or identifiers. Logs, measurements and conversation content never leave this Mac.
+
+- **Update check**: a GET request to `api.github.com` asking for this repository's latest release, carrying only what any HTTP request carries (IP address, a User-Agent such as `TokenCat/0.9.0`, and a language header fixed to `en`). It uses cache validation headers so an unchanged response isn't downloaded again, and when GitHub reports a rate limit it pauses until the given time. If you turn off `Check for updates automatically` in Settings › About, it checks only when you click. When you click `Update`, it downloads `TokenCat.zip` from GitHub at that moment.
+- **Live usage limits** (on by default): for Codex, TokenCat starts the local `codex app-server` for a moment, which asks OpenAI for your limits with the Codex CLI's own sign-in. For Claude, it sends Claude Code's saved sign-in token in one GET to `https://api.anthropic.com/api/oauth/usage`; the token stays in memory and is never stored, logged or refreshed. Turn it off with `Live usage limits` in Settings › Telemetry.
 
 </details>
 
@@ -441,7 +448,9 @@ The Codex desktop app (codex-app-server) sends logs and traces, but TokenCat cou
 
 <br>
 
-Claude limits come from the `rate_limits` (5-hour and weekly) that Claude Code passes to the status line command. These are present only for Claude.ai subscription accounts, and only after the first response. So the row appears once TokenCat is running and a Claude Code launched after connecting has received one response and redrawn its status line. If you use the Claude desktop app, TokenCat also reads the usage history the desktop app writes about every 15 minutes, so the row appears once that history exists after you've used the app. A value, once received, carries over to the next launch; after its reset time, it shows `—` and `Reset` for a day and then hides. If `statusLine` isn't a command, connecting is skipped, and if you removed the bridge yourself, it isn't added again.
+With `Live usage limits` on (Settings › Telemetry), TokenCat asks Anthropic with Claude Code's saved sign-in, and opening the dashboard checks right away. On macOS, the first check may ask for access to the `Claude Code-credentials` Keychain item; if you deny it, TokenCat reads only `~/.claude/.credentials.json` for the rest of that run. TokenCat never refreshes the token, so an expired one isn't sent until Claude Code runs again and refreshes it.
+
+Without a usable token, Claude limits come from the `rate_limits` (5-hour and weekly) that Claude Code passes to the status line command. These are present only for Claude.ai subscription accounts, and only after the first response. So the row appears once TokenCat is running and a Claude Code launched after connecting has received one response and redrawn its status line. If you use the Claude desktop app, TokenCat also reads the usage history the desktop app writes about every 15 minutes, so the row appears once that history exists after you've used the app. A value, once received, carries over to the next launch; after its reset time, it shows `—` and `Reset` for a day and then hides. If `statusLine` isn't a command, connecting is skipped, and if you removed the bridge yourself, it isn't added again.
 
 </details>
 

@@ -4,11 +4,31 @@ The release workflow puts the `## <version>` entry into that version's release n
 
 ## 0.12.0
 
+**macOS and Windows**
+
+- Live usage limits (on by default, Settings › Telemetry) check the Codex and Claude limits with OpenAI and Anthropic using Codex and Claude Code's saved sign-in, every minute while in use and every 10 minutes otherwise, show fresh values as `live`, and keep the Claude token in memory only, never storing, logging or refreshing it. · 실시간 한도 확인(기본 켜짐, 설정 › 실측)이 Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic에 사용 중에는 1분, 평소에는 10분마다 Codex·Claude 한도를 확인해 새 값을 `실시간`으로 보이며, Claude 토큰은 메모리에만 두고 저장·기록·갱신하지 않습니다.
+- The collector rejects requests whose Host isn't `127.0.0.1` or `localhost`, so a web page using DNS rebinding can't read the readings. · 수집기가 Host가 `127.0.0.1`·`localhost`가 아닌 요청을 거부해, DNS 리바인딩을 쓰는 웹페이지가 실측 값을 읽지 못합니다.
+- Up to 256 recent logs stay tracked, so many subagents no longer make sessions flicker or get re-read. · 최근 로그를 256개까지 계속 추적해, 하위 에이전트가 많아도 세션이 깜빡이거나 다시 읽히지 않습니다.
+- The restart notice reads "Restart Codex and Claude Code for speed", and the Korean text calls the dashboard 상세 화면 everywhere, captions MCP tools as MCP 도구 실행 and fixes the particle in "HTTP 500 오류로". · 재시작 안내가 'Codex·Claude Code 재시작 후 속도 표시'로 바뀌고, 한국어 문구는 대시보드를 어디서나 상세 화면으로 부르며, MCP 도구 캡션을 'MCP 도구 실행'으로, 'HTTP 500 오류로'의 조사를 바로잡았습니다.
+
+**macOS**
+
+- The ⋯ menu in the dashboard header uses the same secondary tone as the gear. · 상세 화면 헤더의 ⋯ 메뉴가 톱니와 같은 보조 색을 씁니다.
+
 **Windows (preview)**
 
 - A widget on screen shows what the Mac menu bar shows, since the taskbar can't show text: the character, the AI status and session count, or the Two Lines and One Line layouts picked by preset in Settings › General. · 작업 표시줄에는 글자를 넣을 수 없어, Mac 메뉴 막대처럼 캐릭터와 AI 상태·세션 수를 보여 주는 위젯을 화면 위에 띄웁니다. 설정 › 일반의 프리셋으로 두 줄·한 줄 배치도 고를 수 있습니다.
 - Drag the widget anywhere: it snaps to screen edges, remembers its place for each monitor setup, never takes the focus and hides while a full-screen app is in front. Click opens the dashboard, right-click the quick menu. · 위젯은 끌어서 아무 곳에나 둘 수 있습니다. 화면 가장자리에 붙고, 모니터 구성마다 위치를 기억하며, 포커스를 가져가지 않고, 전체 화면 앱이 앞에 있는 동안에는 숨습니다. 클릭하면 상세 화면이, 우클릭하면 빠른 메뉴가 열립니다.
 - To hide it, choose Hide Widget from its right-click or tray menu, or turn off Show widget on screen in Settings › General. · 숨기려면 위젯이나 알림 영역 아이콘의 우클릭 메뉴에서 위젯 숨기기를 누르거나, 설정 › 일반에서 화면에 위젯 표시를 끕니다.
+- Divider lines and card borders one pixel thin no longer vanish at 100 % scaling. · 100 % 배율에서 1픽셀 두께의 구분선과 카드 테두리가 사라지지 않습니다.
+- The waiting status in Settings › Telemetry is drawn as an outline ring. · 설정 › 실측의 대기 상태를 빈 고리로 그립니다.
+- `TokenCat.exe` has crisp 16 and 32 px icons. · `TokenCat.exe`의 16·32 px 아이콘이 선명합니다.
+- Pressing Alt+F4 on the dashboard hides it instead of making the next open crash. · 상세 화면에서 Alt+F4를 누르면 숨기며, 다음에 열 때 종료되지 않습니다.
+- Titles and captions in the output card share a baseline. · 출력 카드의 제목과 캡션 기준선이 맞습니다.
+
+**Docs**
+
+- The README has macOS and Windows download buttons at the top and clearer first-launch and Windows install steps. · README 맨 위에 macOS·Windows 내려받기 버튼을 두고, 처음 열 때와 Windows 설치 순서를 더 알기 쉽게 고쳤습니다.
 
 ## 0.11.2
 
