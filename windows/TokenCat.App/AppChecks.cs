@@ -160,7 +160,9 @@ static class AppChecks
         check(stroked.SequenceEqual([StateGlyphKind.Working, StateGlyphKind.Unfinished]) && solid!.Thickness == 1.5 && solid.DashStyle.Dashes.Count == 0
             && dashes.Count == 2 && Math.Abs(dashes[0] - 2) < 1e-9 && Math.Abs(dashes[1] - 1.5) < 1e-9,
             "rings are 1.5 pt strokes; the unfinished ring is dashed 2 / 1.5");
-        bool Filled(StateGlyphKind kind, double x, double y) => GlyphView.Shape(kind, unit, out _).FillContains(new Point(x, y));
+        // WPF's default hit tolerance (0.25) is wider than the 0.5 pt gap between the bar and the ring.
+        bool Filled(StateGlyphKind kind, double x, double y) =>
+            GlyphView.Shape(kind, unit, out _).FillContains(new Point(x, y), 0.001, ToleranceType.Absolute);
         check(Filled(StateGlyphKind.Waiting, 2.5, 4) && !Filled(StateGlyphKind.Waiting, 5.5, 4) && Filled(StateGlyphKind.Waiting, 7.6, 4) && Filled(StateGlyphKind.Waiting, 4, 0.4),
             "log wait is a ring with its left half filled");
         check(Filled(StateGlyphKind.Interrupted, 4, 4) && !Filled(StateGlyphKind.Interrupted, 4, 2.2) && Filled(StateGlyphKind.Interrupted, 4, 0.4)
