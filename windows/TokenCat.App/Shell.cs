@@ -92,6 +92,8 @@ sealed class Shell
         trayMenu.Opening += (_, e) => { HideFlyout(); Menus.Fill(trayMenu, BuildTrayMenu); e.Cancel = false; };
         flyout.Deactivated += (_, _) => { if (!Menus.IsOpen) HideFlyout(); };
         flyout.KeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Escape) HideFlyout(); };
+        // Alt+F4 hides it like Esc: a closed window can't be shown again. app.Shutdown closes it regardless.
+        flyout.Closing += (_, e) => { e.Cancel = true; dispatcher.BeginInvoke(HideFlyout); };
         flyout.SizeChanged += (_, _) => { if (flyout.IsVisible) Native.Place(flyout, anchor, onto: false, below: anchorBelow); };
         Menus.Closed += () => { if (flyout.IsVisible) flyout.Activate(); };
         // The frame timer follows the animator's own arming only, so a publish with an unchanged plan never restarts it.
@@ -582,8 +584,7 @@ sealed class Shell
         trayMenu.Dispose();
         settings?.Close();
         window?.Close();
-        flyout.Close();
-        app.Shutdown(); // closes the widget too (it refuses any other close)
+        app.Shutdown(); // closes the flyout and the widget too (they refuse any other close)
     }
 
     // MARK: Helpers
