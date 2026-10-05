@@ -371,9 +371,9 @@ windows/
 Assets are **not copied into the repo**. `TokenCat.App.csproj` embeds `../../Assets/runner-*@{1x,2x}.png`, `app-head-*`, `runner-v2-fx*`
 and `runner-v2.json` as `EmbeddedResource` with `LogicalName=%(Filename)%(Extension)`, excluding `runner-sheet-v1.png`. This is the same
 list as `build.sh`. The spike shows the wildcard picks exactly these 21 files. `TokenCat.ico` is the one derived binary, generated once
-on a Mac and committed: `sips -s format ico -z 256 256 Assets/app-icon-v2-1024.png --out windows/TokenCat.App/TokenCat.ico` (probed: a
-single 256 px PNG-ICO; Windows downsamples it for 16/32). `// ponytail: add the 16/32 pixel PNGs as extra ICO frames if the small Explorer
-icon looks soft.`
+on a Mac and committed: three PNG frames, `Assets/app-icon-v2-16.png`, `-32.png` and the 256 px frame from
+`sips -s format ico -z 256 256 Assets/app-icon-v2-1024.png`, so the title bar, taskbar and Explorer get the pixel tiles at 16/32 instead of a
+downsampled 256. 24/48 px still downsample; add tiles for them if they look soft.
 
 Why suites live in Core: the App's `--self-test` and the console runner call the same `Suites.RunAll()`. An Exe-to-Exe project reference
 would trip NETSDK1151 (self-contained → framework-dependent exe), so it is avoided.

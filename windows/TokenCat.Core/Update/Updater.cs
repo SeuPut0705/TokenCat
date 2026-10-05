@@ -148,7 +148,7 @@ public sealed record UpdateFailure(UpdateFailureKind Kind)
     public string Text => Kind switch
     {
         UpdateFailureKind.Network => Loc("GitHub에 연결하지 못했습니다. 네트워크 연결을 확인하세요.", "Couldn't connect to GitHub. Check your network connection."),
-        UpdateFailureKind.Server => Loc($"GitHub가 HTTP {Status}로 응답했습니다. 잠시 뒤 다시 시도하세요.", $"GitHub responded with HTTP {Status}. Try again in a moment."),
+        UpdateFailureKind.Server => Loc($"GitHub가 HTTP {Status} 오류로 응답했습니다. 잠시 뒤 다시 시도하세요.", $"GitHub responded with HTTP {Status}. Try again in a moment."),
         UpdateFailureKind.RateLimited => Loc($"GitHub 요청 한도에 걸렸습니다. {Clock(Until)} 이후에 다시 확인할 수 있습니다.",
                                              $"GitHub's rate limit was reached. You can check again after {Clock(Until)}."),
         UpdateFailureKind.InvalidResponse => Loc("GitHub 응답을 읽지 못했습니다.", "Couldn't read GitHub's response."),

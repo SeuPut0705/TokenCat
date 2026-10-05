@@ -48,13 +48,14 @@ final class TokenTracker {
         }
         // One pool per file: a cold start parses MBs of tails, and without it every temporary lives until the sample ends.
         for file in files.values { autoreleasepool { file.read(tailLimit: initialTailBytes, now: now) } }
+        let prefix = home.path + "/"
         return files.values.compactMap { file -> TokenReading? in
             let parser = file.parser
             guard parser.lastActivity != nil else { return nil }
             let completion = parser.completion
             let running = parser.isActive(at: now)
-            let relative = file.url.path.hasPrefix(home.path + "/")
-                ? String(file.url.path.dropFirst(home.path.count + 1)) : file.url.path
+            let path = file.url.path
+            let relative = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
             var reading = TokenReading(source: parser.source, id: "\(parser.source.rawValue):\(relative)")
             reading.sessionID = parser.sessionID
             reading.parentSessionID = parser.parentSessionID

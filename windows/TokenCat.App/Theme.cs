@@ -111,7 +111,7 @@ static class Ui
     // Segoe Fluent Icons / MDL2 code points standing in for the SF Symbols the mac uses.
     public const char Gear = '\uE713', More = '\uE712', InfoIcon = '\uE946', Close = '\uE711', ChevronUp = '\uE70E', ChevronDown = '\uE70D',
         OpenOut = '\uE8A7', WarningIcon = '\uE7BA', Copy = '\uE8C8', Shield = '\uEA18', Sliders = '\uE9E9', Blocked = '\uE733',
-        Speedometer = '\uEC4A', Bolt = '\uE945', Refresh = '\uE72C', Check = '\uE73E', Dashed = '\uE91F';
+        Speedometer = '\uEC4A', Bolt = '\uE945', Refresh = '\uE72C', Check = '\uE73E', Dashed = '\uEA3A';
 
     static (double Size, FontWeight Weight, bool Mono) Spec(Font font) => font switch
     {
@@ -246,12 +246,12 @@ static class Ui
         Child = child, CornerRadius = new CornerRadius(10),
         Background = Theme.Brush(tint ? Theme.TintFill : Theme.ContainerFill),
         BorderBrush = Theme.Brush(tint ? Colors.Transparent : Theme.ContainerRule),
-        BorderThickness = new Thickness(tint || Theme.Dark ? 0 : 0.5),
+        BorderThickness = new Thickness(tint || Theme.Dark ? 0 : 1),
     };
 
     public static Border Hairline(double left = 0, double right = 0) => new()
     {
-        Height = 0.5, Background = Theme.Brush(Theme.Hairline), Margin = new Thickness(left, 0, right, 0), SnapsToDevicePixels = true,
+        Height = 1, Background = Theme.Brush(Theme.Hairline), Margin = new Thickness(left, 0, right, 0), SnapsToDevicePixels = true,
     };
 
     public static void Help(FrameworkElement element, string? help)

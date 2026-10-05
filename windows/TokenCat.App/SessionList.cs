@@ -149,7 +149,7 @@ sealed class SessionList : Border
                     items.Add(Reconcile.Item("divider:" + divider.Key, () => new Border
                     {
                         Height = SessionListModel.DividerHeight,
-                        Child = new Border { Height = 0.5, Background = Theme.Brush(Theme.Hairline), Margin = new Thickness(Dashboard.TextX, 0, Dashboard.Inset, 0), VerticalAlignment = VerticalAlignment.Center },
+                        Child = new Border { Height = 1, Background = Theme.Brush(Theme.Hairline), Margin = new Thickness(Dashboard.TextX, 0, Dashboard.Inset, 0), VerticalAlignment = VerticalAlignment.Center },
                     }, (Border _) => { }));
                     break;
                 case SessionListEntry.Caption caption:
@@ -295,7 +295,7 @@ sealed class SessionList : Border
         text.Margin = new Thickness(Dashboard.GlyphX, 0, 0, 4);
         var grid = new Grid();
         grid.Children.Add(text);
-        if (rule) grid.Children.Add(new Border { Height = 0.5, VerticalAlignment = VerticalAlignment.Top, Background = Theme.Brush(Theme.Hairline) });
+        if (rule) grid.Children.Add(new Border { Height = 1, VerticalAlignment = VerticalAlignment.Top, Background = Theme.Brush(Theme.Hairline) });
         return new Border { Height = SessionListModel.CaptionHeight, Child = grid };
     }
 

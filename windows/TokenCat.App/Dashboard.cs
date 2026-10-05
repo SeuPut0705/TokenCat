@@ -737,7 +737,7 @@ sealed class SystemArea : StackPanel
 
     public SystemArea(Action open)
     {
-        Children.Add(new Border { Height = 0.5, Background = Theme.Brush(Theme.Hairline), Margin = new Thickness(-Dashboard.Gutter, 0, -Dashboard.Gutter, 0) });
+        Children.Add(new Border { Height = 1, Background = Theme.Brush(Theme.Hairline), Margin = new Thickness(-Dashboard.Gutter, 0, -Dashboard.Gutter, 0) });
         var arrow = Ui.Icon(Ui.OpenOut, 10, Theme.Secondary);
         arrow.HorizontalAlignment = HorizontalAlignment.Right;
         arrow.VerticalAlignment = VerticalAlignment.Top;
