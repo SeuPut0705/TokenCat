@@ -19,6 +19,14 @@ English · [한국어](README.ko.md)
 </p>
 
 <p align="center">
+  <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip"><img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS%2013%2B-4b55c8?style=for-the-badge"></a>
+  &nbsp;
+  <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip"><img alt="Download for Windows" src="https://img.shields.io/badge/Download-Windows%2010%2F11-3b4252?style=for-the-badge"></a>
+  <br>
+  <sub>Free and open source · <a href="#install">Mac install steps</a> · <a href="#windows-preview">Windows install steps</a></sub>
+</p>
+
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/hero-dark.png">
     <img src="docs/images/en/hero-light.png" width="800" alt="The dashboard open under TokenCat's macOS menu bar item (a yellow question mark and a session count of 3). It shows a bar chart of output tokens over the last 5 minutes and Speed now (docs-site 55.6 generation tok/s), the Codex weekly limit and the Claude 5-hour limit, two sessions needing input and one working, and system metrics, with the Character settings window on the left.">
@@ -204,11 +212,11 @@ On first launch, the card above tells you what TokenCat actually did and what it
 TokenCat runs on macOS 13 and later, and one universal app supports both Apple silicon and Intel Macs.
 
 1. [**Download TokenCat.zip**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip) (attached to the [latest release](https://github.com/SeuPut0705/TokenCat/releases/latest))
-2. Unzip it and move `TokenCat.app` to the **Applications** folder. That location is best if you want to use open at login.
+2. Unzip it and move `TokenCat.app` to the **Applications** folder. Opened from Downloads or elsewhere, macOS runs it from a temporary location where it can't update itself.
 3. The first time, open it following [Opening it the first time](#opening-it-the-first-time) below.
 
 > [!IMPORTANT]
-> On first launch, to receive measurements, TokenCat **automatically** adds settings to Codex `~/.codex/config.toml` and Claude Code `~/.claude/settings.json` that send telemetry to this Mac (`127.0.0.1:16493`), and wraps Claude Code's status line (`statusLine`) command with the TokenCat bridge (the original status line output stays the same). It backs up the originals first and turns off prompt and response text logging. It checks the connection on every launch; after you disconnect with `--disconnect-telemetry`, it won't reconnect until you run `--connect-telemetry`. How to undo it is in [Disconnect and uninstall](#disconnect-and-uninstall).
+> On first launch, to receive measurements, TokenCat **automatically** adds settings to Codex `~/.codex/config.toml` and Claude Code `~/.claude/settings.json` (creating them if they don't exist yet) that send telemetry to this Mac (`127.0.0.1:16493`), and wraps Claude Code's status line (`statusLine`) command with the TokenCat bridge (the original status line output stays the same). It backs up the originals first and turns off prompt and response text logging. It checks the connection on every launch; after you disconnect with `--disconnect-telemetry`, it won't reconnect until you run `--connect-telemetry`. How to undo it is in [Disconnect and uninstall](#disconnect-and-uninstall).
 
 ### Opening it the first time
 
@@ -248,7 +256,7 @@ Unlike a browser, `curl` doesn't add the quarantine attribute (`com.apple.quaran
 
 ### Build from source
 
-You need Xcode. `Package.swift` requires Swift 5.9 or later, and the build was confirmed on macOS 27.0.1 · Xcode 27.0 · Swift 6.4. In the same environment, the Command Line Tools alone fail to build because they lack the SwiftUI macro plugin.
+You need Xcode. `Package.swift` requires Swift 5.9 or later, and the build was confirmed on macOS 27.0.1 · Xcode 27.0 · Swift 6.4. In the same environment, the Command Line Tools alone fail to build because they lack the SwiftUI macro plugin. If `xcode-select -p` prints `/Library/Developer/CommandLineTools`, run `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./build.sh` (or switch once with `sudo xcode-select -s /Applications/Xcode.app`).
 
 ```sh
 git clone https://github.com/SeuPut0705/TokenCat.git
@@ -261,7 +269,7 @@ open dist/TokenCat.app
 
 ### On first launch
 
-1. The cat appears in the menu bar. There's no Dock icon, and opening the app again while it's running opens the Settings window.
+1. The cat appears in the menu bar. Click it to see what TokenCat changed. There's no Dock icon, and opening the app again while it's running opens the Settings window. If a full menu bar hides the cat behind the notch, open the app again and choose Menu Bar › Preset › Minimal in Settings.
 2. Once the local collector is ready, TokenCat makes the settings changes in the note under [Install](#install). If the collector isn't ready, nothing is changed.
 3. Both clients send measurements and Claude usage limits **from their next launch**. Work in progress isn't restarted. Session state and token counts come from the logs, so they show right away.
 
@@ -312,13 +320,13 @@ TokenCat also runs in the Windows notification area, starting with 0.11.0. It's 
 
 It runs on Windows 10 and 11 (x64). There's no installer.
 
-1. [**Download TokenCat-Windows.zip**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip) (attached to the same [latest release](https://github.com/SeuPut0705/TokenCat/releases/latest) as the Mac app). It holds a single `TokenCat.exe` and `LICENSE`.
+1. [**Download TokenCat-Windows.zip**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip) (attached to the same [latest release](https://github.com/SeuPut0705/TokenCat/releases/latest) as the Mac app). It holds a single `TokenCat.exe` and `LICENSE`. Checking **Unblock** in the zip's **Properties** before extracting skips the SmartScreen prompt in step 3.
 2. Extract the whole zip (`TokenCat.exe` and `LICENSE`) to `%LOCALAPPDATA%\Programs\TokenCat` (recommended) and run `TokenCat.exe` from there. In PowerShell, `Expand-Archive "$HOME\Downloads\TokenCat-Windows.zip" "$env:LOCALAPPDATA\Programs\TokenCat"` creates the folder. Run from inside the zip or a temporary folder, it can't update itself or open at login.
-3. The exe isn't code-signed, so Microsoft Defender SmartScreen may show **Windows protected your PC**. Click **More info**, then **Run anyway** (on Korean Windows, **추가 정보** → **실행**). The wording can differ between Windows versions, so follow what your PC shows. Checking **Unblock** in the zip's **Properties** before extracting skips this prompt. With **Smart App Control** on (Windows 11), unsigned apps are blocked with no per-app exception, so TokenCat runs only with it off.
+3. The exe isn't code-signed, so Microsoft Defender SmartScreen may show **Windows protected your PC**. Click **More info**, then **Run anyway** (on Korean Windows, **추가 정보** → **실행**). The wording can differ between Windows versions, so follow what your PC shows. With **Smart App Control** on (Windows 11), unsigned apps are blocked with no per-app exception, so TokenCat runs only with it off.
 4. The cat may sit in the hidden icons (**^**) at first. To keep it in view, drag it from **^** onto the taskbar, or turn it on in **Settings › Personalization › Taskbar › Other system tray icons**.
 
 > [!IMPORTANT]
-> On first launch, TokenCat **automatically** adds settings that send telemetry to this PC (`127.0.0.1:16493`) to Codex `%USERPROFILE%\.codex\config.toml` and Claude Code `%USERPROFILE%\.claude\settings.json`. It backs up the originals to `%LOCALAPPDATA%\TokenCat\telemetry-backups` first and turns off prompt and response text logging. If Claude Code has no `statusLine`, it adds the TokenCat bridge (`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1`, run by PowerShell), which sends the status JSON only to `127.0.0.1` and prints nothing; an existing `statusLine` is left untouched. It checks the connection on every launch; after `--disconnect-telemetry`, it won't reconnect until you run `--connect-telemetry`.
+> On first launch, TokenCat **automatically** adds settings that send telemetry to this PC (`127.0.0.1:16493`) to Codex `%USERPROFILE%\.codex\config.toml` and Claude Code `%USERPROFILE%\.claude\settings.json`, creating them if they don't exist yet. It backs up the originals to `%LOCALAPPDATA%\TokenCat\telemetry-backups` first and turns off prompt and response text logging. If Claude Code has no `statusLine`, it adds the TokenCat bridge (`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1`, run by PowerShell), which sends the status JSON only to `127.0.0.1` and prints nothing; an existing `statusLine` is left untouched. It checks the connection on every launch; after `--disconnect-telemetry`, it won't reconnect until you run `--connect-telemetry`.
 
 **What's different from macOS**
 

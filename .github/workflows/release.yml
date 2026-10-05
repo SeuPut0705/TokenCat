@@ -33,7 +33,7 @@ jobs:
       tag: ${{ steps.read.outputs.tag }}
       exists: ${{ steps.read.outputs.exists }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - id: read
         env:
           GH_TOKEN: ${{ github.token }}
@@ -84,9 +84,9 @@ jobs:
     env:
       VERSION: ${{ needs.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: windows/global.json
 
@@ -134,7 +134,7 @@ jobs:
       - name: 스냅숏
         run: ./publish/TokenCat.exe --snapshot snapshots
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-release
           path: TokenCat-Windows.zip
@@ -157,7 +157,7 @@ jobs:
       APP: dist/TokenCat.app
       WINDOWS_SHA256: ${{ needs.windows.outputs.sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
@@ -258,7 +258,7 @@ jobs:
 
           If you already use 0.9.0 or later, you can install it right away with the **Update** button at the bottom of the dashboard.
 
-          > **On first launch, TokenCat changes client settings automatically.** To receive measurements, it adds local OTLP settings that send to this Mac (\`127.0.0.1:16493\`) to Codex \`~/.codex/config.toml\` and Claude Code \`~/.claude/settings.json\`, and to receive Claude usage limits, it wraps the Claude Code \`statusLine\` command with the TokenCat bridge (\`~/Library/Application Support/TokenCat/claude-statusline.sh\`). The bridge sends the status JSON only to \`127.0.0.1\` and runs the original command unchanged, so the status line output stays the same. The originals are backed up to \`~/Library/Application Support/TokenCat/telemetry-backups/\` first, and prompt and response text logging is turned off. To undo it, quit TokenCat and run \`/Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry\`. Even if automatic restore is refused because a config file changed after connecting, a status line that is still exactly the bridge command is restored. Don't delete \`~/Library/Application Support/TokenCat/\` while \`settings.json\` still points to \`claude-statusline.sh\`.
+          > **On first launch, TokenCat changes client settings automatically.** To receive measurements, it adds local OTLP settings that send to this Mac (\`127.0.0.1:16493\`) to Codex \`~/.codex/config.toml\` and Claude Code \`~/.claude/settings.json\` (creating them if they don't exist yet), and to receive Claude usage limits, it wraps the Claude Code \`statusLine\` command with the TokenCat bridge (\`~/Library/Application Support/TokenCat/claude-statusline.sh\`). The bridge sends the status JSON only to \`127.0.0.1\` and runs the original command unchanged, so the status line output stays the same. The originals are backed up to \`~/Library/Application Support/TokenCat/telemetry-backups/\` first, and prompt and response text logging is turned off. To undo it, quit TokenCat and run \`/Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry\`. Even if automatic restore is refused because a config file changed after connecting, a status line that is still exactly the bridge command is restored. Don't delete \`~/Library/Application Support/TokenCat/\` while \`settings.json\` still points to \`claude-statusline.sh\`.
 
           **TokenCat.zip** · universal (arm64 · x86_64) · ad-hoc signed · SHA-256 \`$SHA256\`
 
@@ -271,7 +271,7 @@ jobs:
           3. The app isn't code-signed, so Microsoft Defender SmartScreen may show **Windows protected your PC**. Click **More info**, then **Run anyway** (the wording can differ between Windows versions). With **Smart App Control** on (Windows 11), unsigned apps are blocked with no way to allow a single one; TokenCat runs only with Smart App Control off.
           4. The cat appears in the notification area. Windows 11 puts new icons in the overflow (**^**): drag the cat onto the taskbar, or turn it on in **Settings › Personalization › Taskbar › Other system tray icons**, to keep it in view.
 
-          > **On first launch, TokenCat changes client settings automatically.** It adds local OTLP settings that send to this PC (\`127.0.0.1:16493\`) to Codex \`%USERPROFILE%\.codex\config.toml\` and Claude Code \`%USERPROFILE%\.claude\settings.json\`. If Claude Code has no \`statusLine\`, it sets one to the TokenCat bridge (\`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1\`, run by PowerShell), which sends the status JSON only to \`127.0.0.1\` and prints nothing. An existing \`statusLine\` is left as it is, and usage limits then come from the Claude desktop app's history. The originals are backed up to \`%LOCALAPPDATA%\TokenCat\telemetry-backups\` first, and prompt and response text logging is turned off. To undo it, quit TokenCat and run \`& "\$env:LOCALAPPDATA\Programs\TokenCat\TokenCat.exe" --disconnect-telemetry | Out-Host\` in PowerShell. Sessions running inside WSL aren't tracked yet.
+          > **On first launch, TokenCat changes client settings automatically.** It adds local OTLP settings that send to this PC (\`127.0.0.1:16493\`) to Codex \`%USERPROFILE%\.codex\config.toml\` and Claude Code \`%USERPROFILE%\.claude\settings.json\` (creating them if they don't exist yet). If Claude Code has no \`statusLine\`, it sets one to the TokenCat bridge (\`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1\`, run by PowerShell), which sends the status JSON only to \`127.0.0.1\` and prints nothing. An existing \`statusLine\` is left as it is, and usage limits then come from the Claude desktop app's history. The originals are backed up to \`%LOCALAPPDATA%\TokenCat\telemetry-backups\` first, and prompt and response text logging is turned off. To undo it, quit TokenCat and run \`& "\$env:LOCALAPPDATA\Programs\TokenCat\TokenCat.exe" --disconnect-telemetry | Out-Host\` in PowerShell. Sessions running inside WSL aren't tracked yet.
 
           **TokenCat-Windows.zip** · Windows x64 · not code-signed · SHA-256 \`$WINDOWS_SHA256\`
 
@@ -305,7 +305,7 @@ jobs:
 
           이미 0.9.0 이상을 쓰고 있다면 상세 화면 아래쪽의 **업데이트** 버튼으로 바로 설치할 수 있습니다.
 
-          > **처음 실행하면 클라이언트 설정을 자동으로 바꿉니다.** 실측을 받기 위해 Codex \`~/.codex/config.toml\`과 Claude Code \`~/.claude/settings.json\`에 이 Mac(\`127.0.0.1:16493\`)으로 보내는 로컬 OTLP 전송 설정을 추가하고, Claude 사용 한도를 받기 위해 Claude Code \`statusLine\` 명령을 TokenCat 브리지(\`~/Library/Application Support/TokenCat/claude-statusline.sh\`)로 감쌉니다. 브리지는 상태 JSON을 \`127.0.0.1\`로만 보내고 원래 명령을 그대로 실행하므로 상태 표시줄 출력은 바뀌지 않습니다. 원본은 \`~/Library/Application Support/TokenCat/telemetry-backups/\`에 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 되돌리려면 TokenCat을 종료한 뒤 \`/Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry\`를 실행합니다. 연결 뒤 설정 파일이 바뀌어 자동 복구가 거부돼도 브리지 명령 그대로인 상태 표시줄은 원래대로 되돌립니다. \`settings.json\`이 아직 \`claude-statusline.sh\`를 가리키면 \`~/Library/Application Support/TokenCat/\`을 지우지 마세요.
+          > **처음 실행하면 클라이언트 설정을 자동으로 바꿉니다.** 실측을 받기 위해 Codex \`~/.codex/config.toml\`과 Claude Code \`~/.claude/settings.json\`에 이 Mac(\`127.0.0.1:16493\`)으로 보내는 로컬 OTLP 전송 설정을 추가하고(파일이 없으면 새로 만듭니다), Claude 사용 한도를 받기 위해 Claude Code \`statusLine\` 명령을 TokenCat 브리지(\`~/Library/Application Support/TokenCat/claude-statusline.sh\`)로 감쌉니다. 브리지는 상태 JSON을 \`127.0.0.1\`로만 보내고 원래 명령을 그대로 실행하므로 상태 표시줄 출력은 바뀌지 않습니다. 원본은 \`~/Library/Application Support/TokenCat/telemetry-backups/\`에 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 되돌리려면 TokenCat을 종료한 뒤 \`/Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry\`를 실행합니다. 연결 뒤 설정 파일이 바뀌어 자동 복구가 거부돼도 브리지 명령 그대로인 상태 표시줄은 원래대로 되돌립니다. \`settings.json\`이 아직 \`claude-statusline.sh\`를 가리키면 \`~/Library/Application Support/TokenCat/\`을 지우지 마세요.
 
           **TokenCat.zip** · universal(arm64 · x86_64) · ad-hoc 서명 · SHA-256 \`$SHA256\`
 
@@ -318,7 +318,7 @@ jobs:
           3. 코드 서명을 하지 않은 앱이라 Microsoft Defender SmartScreen이 **Windows의 PC 보호** 창을 띄울 수 있습니다. **추가 정보**를 누른 뒤 **실행**을 누릅니다(Windows 버전에 따라 문구가 다를 수 있습니다). Windows 11에서 **스마트 앱 컨트롤**이 켜져 있으면 서명하지 않은 앱을 하나만 허용할 방법이 없어, 스마트 앱 컨트롤을 꺼야 실행됩니다.
           4. 고양이는 알림 영역에 나타납니다. Windows 11은 새 아이콘을 숨겨진 아이콘(**^**)에 넣으므로, 고양이를 작업 표시줄로 끌어 놓거나 **설정 › 개인 설정 › 작업 표시줄 › 기타 시스템 트레이 아이콘**에서 켜면 계속 보입니다.
 
-          > **처음 실행하면 클라이언트 설정을 자동으로 바꿉니다.** Codex \`%USERPROFILE%\.codex\config.toml\`과 Claude Code \`%USERPROFILE%\.claude\settings.json\`에 이 PC(\`127.0.0.1:16493\`)로 보내는 로컬 OTLP 전송 설정을 추가합니다. Claude Code에 \`statusLine\`이 없으면 TokenCat 브리지(\`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1\`, PowerShell로 실행)로 설정합니다. 브리지는 상태 JSON을 \`127.0.0.1\`로만 보내고 아무것도 출력하지 않습니다. 이미 있는 \`statusLine\`은 그대로 두고, 이때 사용 한도는 Claude 데스크톱 앱 기록에서 읽습니다. 원본은 \`%LOCALAPPDATA%\TokenCat\telemetry-backups\`에 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 되돌리려면 TokenCat을 종료한 뒤 PowerShell에서 \`& "\$env:LOCALAPPDATA\Programs\TokenCat\TokenCat.exe" --disconnect-telemetry | Out-Host\`를 실행합니다. WSL 안에서 실행하는 세션은 아직 추적하지 않습니다.
+          > **처음 실행하면 클라이언트 설정을 자동으로 바꿉니다.** Codex \`%USERPROFILE%\.codex\config.toml\`과 Claude Code \`%USERPROFILE%\.claude\settings.json\`에 이 PC(\`127.0.0.1:16493\`)로 보내는 로컬 OTLP 전송 설정을 추가합니다(파일이 없으면 새로 만듭니다). Claude Code에 \`statusLine\`이 없으면 TokenCat 브리지(\`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1\`, PowerShell로 실행)로 설정합니다. 브리지는 상태 JSON을 \`127.0.0.1\`로만 보내고 아무것도 출력하지 않습니다. 이미 있는 \`statusLine\`은 그대로 두고, 이때 사용 한도는 Claude 데스크톱 앱 기록에서 읽습니다. 원본은 \`%LOCALAPPDATA%\TokenCat\telemetry-backups\`에 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 되돌리려면 TokenCat을 종료한 뒤 PowerShell에서 \`& "\$env:LOCALAPPDATA\Programs\TokenCat\TokenCat.exe" --disconnect-telemetry | Out-Host\`를 실행합니다. WSL 안에서 실행하는 세션은 아직 추적하지 않습니다.
 
           **TokenCat-Windows.zip** · Windows x64 · 코드 서명 없음 · SHA-256 \`$WINDOWS_SHA256\`
 
@@ -328,7 +328,7 @@ jobs:
           cat "$RUNNER_TEMP/notes.md"
 
       - name: Windows 자산 받기
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: windows-release
 

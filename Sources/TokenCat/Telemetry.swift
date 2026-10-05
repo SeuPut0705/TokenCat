@@ -796,6 +796,8 @@ enum TelemetryHTTP {
             guard !key.isEmpty, key.utf8.allSatisfy({ (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }) else { return response(400) }
             let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
             if key == "origin" { return response(403) }
+            // A DNS-rebound page sends its own host name with no Origin; every client uses 127.0.0.1.
+            if key == "host", !["127.0.0.1", "localhost"].contains(value.split(separator: ":").first.map { $0.lowercased() } ?? "") { return response(403) }
             if key == "transfer-encoding" { return response(400) }
             if key == "content-length" {
                 guard length == nil, !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),

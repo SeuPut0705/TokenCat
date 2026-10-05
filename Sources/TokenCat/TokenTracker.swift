@@ -115,7 +115,7 @@ final class TokenTracker {
         // A quiet session in a turn, or logged within the hour, is not evicted by a burst of
         // newer subagent logs; re-adding it later would restart from a bounded tail.
         for (path, cursor) in files.sorted(by: { $0.key < $1.key })
-        where !retained.contains(path) && retained.count < 128 && cursor.parser.isRecent(at: now)
+        where !retained.contains(path) && retained.count < 256 && cursor.parser.isRecent(at: now)
             && manager.fileExists(atPath: path) {
             retained.insert(path)
         }

@@ -116,7 +116,7 @@ public sealed class TokenTracker
         // A quiet session in a turn, or logged within the hour, is not evicted by a burst of
         // newer subagent logs; re-adding it later would restart from a bounded tail.
         foreach (var (path, cursor) in files.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-            if (!retained.Contains(path) && retained.Count < 128 && cursor.Parser.IsRecent(now) && File.Exists(path)) retained.Add(path);
+            if (!retained.Contains(path) && retained.Count < 256 && cursor.Parser.IsRecent(now) && File.Exists(path)) retained.Add(path);
         files = files.Where(pair => retained.Contains(pair.Key)).ToDictionary(StringComparer.Ordinal);
     }
 

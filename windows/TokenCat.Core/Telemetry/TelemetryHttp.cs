@@ -39,6 +39,8 @@ public static class TelemetryHttp
             var value = line[(colon + 1)..].Trim(' ', '\t');
             // A browser page can reach loopback; no browser request is ever a client export.
             if (key == "origin") return new HttpDecision.Response(403);
+            // A DNS-rebound page sends its own host name with no Origin; every client uses 127.0.0.1.
+            if (key == "host" && value.Split(':')[0].ToLowerInvariant() is not ("127.0.0.1" or "localhost")) return new HttpDecision.Response(403);
             if (key == "transfer-encoding") return new HttpDecision.Response(400);
             if (key == "content-length")
             {

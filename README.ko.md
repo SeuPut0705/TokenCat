@@ -19,6 +19,14 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip"><img alt="macOS용 내려받기" src="https://img.shields.io/badge/%EB%82%B4%EB%A0%A4%EB%B0%9B%EA%B8%B0-macOS%2013%2B-4b55c8?style=for-the-badge"></a>
+  &nbsp;
+  <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip"><img alt="Windows용 내려받기" src="https://img.shields.io/badge/%EB%82%B4%EB%A0%A4%EB%B0%9B%EA%B8%B0-Windows%2010%2F11-3b4252?style=for-the-badge"></a>
+  <br>
+  <sub>무료 오픈 소스 · <a href="#설치">Mac 설치 방법</a> · <a href="#windows-미리보기">Windows 설치 방법</a></sub>
+</p>
+
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/hero-dark.png">
     <img src="docs/images/ko/hero-light.png" width="800" alt="macOS 메뉴 막대의 TokenCat 항목(노란 물음표와 세션 수 3) 아래로 열린 상세 화면. 최근 5분 출력 토큰 막대와 지금 속도(docs-site 55.6 생성 tok/s), Codex 주간 한도와 Claude 5시간 한도, 입력이 필요한 세션 두 개와 진행 중인 세션 하나, 시스템 지표가 보이고 왼쪽에는 캐릭터 설정 창이 있습니다.">
@@ -204,11 +212,11 @@ AI 숫자는 진행 중이거나 입력을 기다리는 최상위 세션 수이�
 macOS 13 이상에서 실행되며, 한 앱으로 Apple silicon과 Intel Mac을 모두 지원합니다(universal).
 
 1. [**TokenCat.zip 내려받기**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip) ([최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest)의 첨부 파일)
-2. 압축을 풀고 `TokenCat.app`을 **응용 프로그램** 폴더로 옮깁니다. 로그인 시 열기를 쓰려면 이 위치가 좋습니다.
+2. 압축을 풀고 `TokenCat.app`을 **응용 프로그램** 폴더로 옮깁니다. 다운로드 폴더 등 다른 곳에서 열면 macOS가 임시 위치에서 실행해 스스로 업데이트할 수 없습니다.
 3. 처음 한 번은 아래 [처음 열 때](#처음-열-때) 순서로 엽니다.
 
 > [!IMPORTANT]
-> 처음 실행하면 실측을 받기 위해 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 이 Mac(`127.0.0.1:16493`)으로 보내는 설정을 **자동으로** 추가하고, Claude Code의 상태 표시줄(`statusLine`) 명령을 TokenCat 브리지로 감쌉니다(원래 상태 표시줄 출력은 그대로). 원본은 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다. 되돌리는 방법은 [연결 해제와 제거](#연결-해제와-제거)에 있습니다.
+> 처음 실행하면 실측을 받기 위해 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 이 Mac(`127.0.0.1:16493`)으로 보내는 설정을 **자동으로** 추가하고(파일이 없으면 새로 만듭니다), Claude Code의 상태 표시줄(`statusLine`) 명령을 TokenCat 브리지로 감쌉니다(원래 상태 표시줄 출력은 그대로). 원본은 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다. 되돌리는 방법은 [연결 해제와 제거](#연결-해제와-제거)에 있습니다.
 
 ### 처음 열 때
 
@@ -248,7 +256,7 @@ rm -rf /tmp/TokenCat-new && ditto -x -k /tmp/TokenCat.zip /tmp/TokenCat-new \
 
 ### 소스에서 빌드
 
-Xcode가 필요합니다. `Package.swift`는 Swift 5.9 이상을 요구하며, macOS 27.0.1 · Xcode 27.0 · Swift 6.4에서 빌드를 확인했습니다. 같은 환경에서 Command Line Tools만으로는 SwiftUI 매크로 플러그인이 없어 빌드에 실패합니다.
+Xcode가 필요합니다. `Package.swift`는 Swift 5.9 이상을 요구하며, macOS 27.0.1 · Xcode 27.0 · Swift 6.4에서 빌드를 확인했습니다. 같은 환경에서 Command Line Tools만으로는 SwiftUI 매크로 플러그인이 없어 빌드에 실패합니다. `xcode-select -p`가 `/Library/Developer/CommandLineTools`를 출력하면 `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./build.sh`로 빌드하거나, `sudo xcode-select -s /Applications/Xcode.app`으로 한 번 바꿉니다.
 
 ```sh
 git clone https://github.com/SeuPut0705/TokenCat.git
@@ -261,7 +269,7 @@ open dist/TokenCat.app
 
 ### 처음 실행하면
 
-1. 메뉴 막대에 고양이가 나타납니다. Dock 아이콘은 없으며, 실행 중에 앱을 다시 열면 설정 창이 열립니다.
+1. 메뉴 막대에 고양이가 나타납니다. 고양이를 클릭하면 TokenCat이 바꾼 내용을 볼 수 있습니다. Dock 아이콘은 없으며, 실행 중에 앱을 다시 열면 설정 창이 열립니다. 메뉴 막대가 꽉 차 노치 뒤에 고양이가 숨으면 앱을 다시 열고 설정 › 메뉴 막대 › 프리셋에서 최소를 고릅니다.
 2. 로컬 수집기가 준비되면 [설치](#설치)의 안내대로 설정을 바꿉니다. 수집기가 준비되지 않으면 아무것도 바꾸지 않습니다.
 3. 두 클라이언트는 **다음에 새로 실행할 때부터** 실측과 Claude 사용 한도를 보냅니다. 진행 중인 작업은 재시작하지 않습니다. 세션 상태와 토큰 수는 로그에서 읽으므로 바로 보입니다.
 
@@ -312,13 +320,13 @@ TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다�
 
 Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 
-1. [**TokenCat-Windows.zip 내려받기**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip) (Mac 앱과 같은 [최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest)의 첨부 파일). `TokenCat.exe` 하나와 `LICENSE`가 들어 있습니다.
+1. [**TokenCat-Windows.zip 내려받기**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip) (Mac 앱과 같은 [최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest)의 첨부 파일). `TokenCat.exe` 하나와 `LICENSE`가 들어 있습니다. 압축을 풀기 전에 zip 파일 **속성**에서 **차단 해제**를 체크하면 3단계의 SmartScreen 창이 나오지 않습니다.
 2. zip 전체(`TokenCat.exe`와 `LICENSE`)를 `%LOCALAPPDATA%\Programs\TokenCat`(권장)에 풀고 그곳에서 `TokenCat.exe`를 실행합니다. PowerShell에서 `Expand-Archive "$HOME\Downloads\TokenCat-Windows.zip" "$env:LOCALAPPDATA\Programs\TokenCat"`를 실행하면 폴더도 만듭니다. 압축 파일 안이나 임시 폴더에서 실행하면 스스로 업데이트하거나 로그인 시 열 수 없습니다.
-3. 코드 서명을 하지 않은 exe라 Microsoft Defender SmartScreen이 **Windows의 PC 보호** 창을 띄울 수 있습니다. **추가 정보**를 누른 뒤 **실행**을 누릅니다(영어 Windows에서는 **More info** → **Run anyway**). Windows 버전에 따라 문구가 다를 수 있으니 PC에 보이는 대로 따르세요. 압축을 풀기 전에 zip 파일 **속성**에서 **차단 해제**를 체크하면 이 창이 나오지 않습니다. Windows 11에서 **스마트 앱 컨트롤**이 켜져 있으면 서명하지 않은 앱을 하나만 허용할 방법이 없어, 이를 꺼야 실행됩니다.
+3. 코드 서명을 하지 않은 exe라 Microsoft Defender SmartScreen이 **Windows의 PC 보호** 창을 띄울 수 있습니다. **추가 정보**를 누른 뒤 **실행**을 누릅니다(영어 Windows에서는 **More info** → **Run anyway**). Windows 버전에 따라 문구가 다를 수 있으니 PC에 보이는 대로 따르세요. Windows 11에서 **스마트 앱 컨트롤**이 켜져 있으면 서명하지 않은 앱을 하나만 허용할 방법이 없어, 이를 꺼야 실행됩니다.
 4. 처음에는 고양이가 숨겨진 아이콘(**^**) 안에 있을 수 있습니다. 계속 보이게 하려면 **^**에서 작업 표시줄로 끌어 놓거나, **설정 › 개인 설정 › 작업 표시줄 › 기타 시스템 트레이 아이콘**에서 켭니다.
 
 > [!IMPORTANT]
-> 처음 실행하면 Codex `%USERPROFILE%\.codex\config.toml`과 Claude Code `%USERPROFILE%\.claude\settings.json`에 이 PC(`127.0.0.1:16493`)로 보내는 실측 설정을 **자동으로** 추가합니다. 원본은 먼저 `%LOCALAPPDATA%\TokenCat\telemetry-backups`에 백업하고 프롬프트·응답 본문 로깅은 끕니다. Claude Code에 `statusLine`이 없으면 TokenCat 브리지(`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1`, PowerShell로 실행)를 추가합니다. 브리지는 상태 JSON을 `127.0.0.1`로만 보내고 아무것도 출력하지 않으며, 이미 있는 `statusLine`은 건드리지 않습니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다.
+> 처음 실행하면 Codex `%USERPROFILE%\.codex\config.toml`과 Claude Code `%USERPROFILE%\.claude\settings.json`에 이 PC(`127.0.0.1:16493`)로 보내는 실측 설정을 **자동으로** 추가합니다(파일이 없으면 새로 만듭니다). 원본은 먼저 `%LOCALAPPDATA%\TokenCat\telemetry-backups`에 백업하고 프롬프트·응답 본문 로깅은 끕니다. Claude Code에 `statusLine`이 없으면 TokenCat 브리지(`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1`, PowerShell로 실행)를 추가합니다. 브리지는 상태 JSON을 `127.0.0.1`로만 보내고 아무것도 출력하지 않으며, 이미 있는 `statusLine`은 건드리지 않습니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다.
 
 **macOS와 다른 점**
 

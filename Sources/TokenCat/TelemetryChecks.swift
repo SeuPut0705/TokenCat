@@ -314,6 +314,10 @@ func runTelemetryChecks() -> [String] {
         check(path == "/health" && body.isEmpty && LocalTelemetryCollector.health["owner"] as? String == "TokenCat"
               && LocalTelemetryCollector.health["schema"] as? Int == 1, "Health response did not identify this collector")
     } else { check(false, "Health endpoint was unavailable") }
+    check(responseCode(TelemetryHTTP.parse(wire("GET /v1/readings HTTP/1.1\r\nHost: rebind.example:16493\r\n\r\n"))) == 403
+          && responseCode(TelemetryHTTP.parse(wire("GET /v1/readings HTTP/1.1\r\nHost: 127.0.0.1.evil.example\r\n\r\n"))) == 403
+          && responseCode(TelemetryHTTP.parse(wire("GET /health HTTP/1.1\r\nHost: 127.0.0.1:16493\r\n\r\n"))) == nil,
+          "A DNS-rebound Host was not rejected, or the loopback Host was")
     check(responseCode(TelemetryHTTP.parse(wire("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2097153\r\n\r\n"))) == 413,
           "Oversized content length was not rejected before body allocation")
     check(responseCode(TelemetryHTTP.parse(wire("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}"))) == 400,
