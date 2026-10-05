@@ -327,12 +327,17 @@ static class OnboardingCard
         stack.Children.Add(Line(Ui.Shield, Loc("대화 본문은 저장하지 않습니다", "Doesn't store conversation text"),
             Loc("모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 읽습니다", "Reads only metadata such as models, token counts, tool types and project folders")));
         var telemetry = Telemetry(outcome);
-        var links = new List<UIElement>();
-        if (added)
-            links.Add(Ui.Link(Loc("백업 보기", "Show backup"), () => Shell.Reveal(System.IO.Path.Combine(AppPaths.Support, "telemetry-backups")),
-                Loc($"원본 백업 {BackupPath} · 탐색기에서 보여 주기만 합니다", $"Original backup {BackupPath} · only shows it in File Explorer")));
-        links.Add(Ui.Link(Loc("설정 열기", "Open settings"), actions.OpenTelemetrySettings, Loc("설정의 실측 탭을 엽니다", "Opens the Telemetry tab in Settings"), needsSettings));
-        stack.Children.Add(Line(Ui.Sliders, telemetry.Title, telemetry.Detail, telemetry.Tail, links));
+        // A factory: each layout candidate needs its own link elements (a WPF element has one parent).
+        UIElement[] Links()
+        {
+            var links = new List<UIElement>();
+            if (added)
+                links.Add(Ui.Link(Loc("백업 보기", "Show backup"), () => Shell.Reveal(System.IO.Path.Combine(AppPaths.Support, "telemetry-backups")),
+                    Loc($"원본 백업 {BackupPath} · 탐색기에서 보여 주기만 합니다", $"Original backup {BackupPath} · only shows it in File Explorer")));
+            links.Add(Ui.Link(Loc("설정 열기", "Open settings"), actions.OpenTelemetrySettings, Loc("설정의 실측 탭을 엽니다", "Opens the Telemetry tab in Settings"), needsSettings));
+            return [.. links];
+        }
+        stack.Children.Add(Line(Ui.Sliders, telemetry.Title, telemetry.Detail, telemetry.Tail, Links));
         stack.Children.Add(Line(Ui.Blocked, Loc("모델 호출·계정 로그인을 하지 않습니다", "Doesn't call models or sign in to accounts"),
             Loc("인터넷 요청은 GitHub 새 버전 확인과 업데이트를 누를 때의 내려받기뿐입니다(설정 › 정보에서 확인 끄기)",
                 "Only goes online to check GitHub for new versions and to download one when you click Update (turn off checks in Settings › About)")));
@@ -342,7 +347,7 @@ static class OnboardingCard
     static Border Center(UIElement child) => new() { Child = child, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
 
     /// The links follow the detail on its line when they fit, otherwise they start the next line (after `tail`).
-    static FrameworkElement Line(char icon, string title, string detail, string? tail = null, IReadOnlyList<UIElement>? links = null)
+    static FrameworkElement Line(char icon, string title, string detail, string? tail = null, Func<UIElement[]>? links = null)
     {
         var grid = new Grid { Margin = new Thickness(0, 6, 0, 0) };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(20) });
@@ -358,12 +363,12 @@ static class OnboardingCard
         if (links is null) { texts.Children.Add(Wrap(Ui.Text(detail, Font.Meta, Theme.Secondary))); return grid; }
         const double width = Dashboard.PanelWidth - 2 * Dashboard.Gutter - 24 - 20;
         texts.Children.Add(Dashboard.Fit(width,
-            () => Dashboard.Row(6, [Ui.Text(string.Join(" · ", new[] { detail, tail }.OfType<string>()), Font.Meta, Theme.Secondary), .. links]),
+            () => Dashboard.Row(6, [Ui.Text(string.Join(" · ", new[] { detail, tail }.OfType<string>()), Font.Meta, Theme.Secondary), .. links()]),
             () =>
             {
                 var two = new StackPanel();
                 two.Children.Add(Wrap(Ui.Text(detail, Font.Meta, Theme.Secondary)));
-                two.Children.Add(Dashboard.Row(6, [tail is null ? null : Ui.Text(tail, Font.Meta, Theme.Secondary), .. links]));
+                two.Children.Add(Dashboard.Row(6, [tail is null ? null : Ui.Text(tail, Font.Meta, Theme.Secondary), .. links()]));
                 return two;
             }));
         return grid;
