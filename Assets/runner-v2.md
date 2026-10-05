@@ -53,7 +53,8 @@
   - `content` 턴 완료 한 번. 꼬리·강조를 세움, 2번은 천천히 깜빡임.
   - 공통: 1번 프레임이 정지 프레임(동작 줄이기). 이웃 프레임(마지막→첫 포함)은 서로 달라야 한다. 빈 프레임 금지.
 - 고립 픽셀 규칙: 상하좌우가 모두 채움(W·S·G·C·T)인 K 픽셀은 금지(어두운 막대에서 구멍처럼 보임). 생성기가 `isolated outline pixel at x,y (dog walk frame 2)`로 멈춘다. 눈은 1 × 2 또는 2 × 2로 그린다.
-- 지금 네 파일은 PLACEHOLDER다: 고양이 몸·다리·꼬리에 머리 격자와 팔레트만 바꿨다(`RunnerArt.catWithHeads`). 실제 그림으로 바꾸면 그 호출을 지우고, 마지막 placeholder가 사라지면 `catWithHeads`도 지운다.
+- 네 캐릭터(개·햄스터·펭귄·로봇) 모두 자기 파일의 실제 그림이며 고양이 프레임을 빌리지 않는다. 걷기·달리기 다리처럼 고양이 도우미가 필요하면 자기 파일에 복사해 둔다.
+- 맞춤 기준: 캐릭터를 바꿔도 튀지 않게 자세별 @1x 불투명 픽셀 수를 고양이와 비슷하게 둔다(현재 앉기 223–254, 잠 189–226, 걷기 222–261, 달리기 215–262. 입력·턴 완료는 팔·볼 동작으로 최대 266). 걷기 머리 끝은 y 0–3. 로봇만 눈이 K가 아니라 회색 화면(G) 위 C LED다. 화면을 K로 칠하면 어두운 막대에서 얼굴이 사라져 G로 칠했다.
 - 확인 순서: 생성기(위 명령) → `work/runner-<id>-contact-8x.png`(캐릭터별 8배, 밝은·어두운 배경, 잠 A·B·C) · `work/runner-lineup.png`(모든 캐릭터의 정지 프레임, 4배와 실제 크기) → `./build.sh` → `dist/TokenCat.app/Contents/MacOS/TokenCat --self-test`(모든 캐릭터 시트를 검사) → `--snapshot-menubar <png> --fixtures --character <id>`.
 - 앱: 선택은 `Preferences.character`(설정 › 캐릭터, 빠른 메뉴 › 캐릭터). 시트가 없거나 검사에 실패한 캐릭터는 고양이로 그리고 `Runner.resourceErrors()`에 남는다. 픽셀 머리와 앱 아이콘은 브랜드라 고양이만 쓴다.
 
@@ -65,11 +66,11 @@
 - 배치(셀 좌표): `{"pose":"sleep","step":1,"glyph":"zS","x":22,"y":3}`, `{"pose":"sleep","step":2,"glyph":"zL","x":25,"y":0}`.
   - 스펙의 zS y 4는 오른쪽 귀 외곽선(25,8)과 대각선으로 닿아 1x에서 z가 귀에 붙어 보였다. 한 줄 올려 8방향 1 px 간격을 지킨다.
 - 잠 주기(3단계, 단계는 순환): 0 = 몸 1번, z 없음 → 1 = 몸 2번 + zS → 2 = 몸 1번 + zL. 정지·깊은 잠 프레임은 마지막 단계(zL)다.
-- 앱은 `Runner.fxMask(pose:step:)`로 32 × 20 pt 템플릿 마스크(알파 0/255)를 받아, 스프라이트와 같은 스냅 원점에 재샘플링 없이 `secondaryLabelColor`(대비 증가·메뉴 막대 항목이 열린 상태에서는 `labelColor`)로 채워 그린다. 마스크 픽셀은 검정 불투명이다.
+- 앱은 `Runner.fxMask(pose:step:)`로 32 × 20 pt 템플릿 마스크(알파 0/255)를 받아, 스프라이트와 같은 스냅 원점에 재샘플링 없이 메뉴 막대의 라벨·단위와 같은 `labelColor` 72%(`StatusBarContentView.secondaryColor`, 대비 증가에서 라벨·단위는 80%)로 채워 그린다. 대비 증가·메뉴 막대 항목이 열린 상태에서 z는 불투명 `labelColor`다. 직접 그리는 상태 항목에는 vibrancy가 없어 `secondaryLabelColor`가 색이 비치는 막대에서 평평한 회색으로 보이므로 쓰지 않는다. 마스크 픽셀은 검정 불투명이다.
   - AppKit: 메뉴 막대(`StatusBarContentView.drawRunner`)는 검사에서 마스크를 주입할 수 있도록 자체 투명 레이어에 `sourceIn` 채움으로 보간 없이 직접 그린다. 스프라이트 색은 바뀌지 않는다. SwiftUI: 스프라이트 위에 `Image(nsImage: mask).renderingMode(.template).interpolation(.none)`를 겹친다.
   - z는 스프라이트에 없으므로 잠든 고양이를 보이는 모든 곳(메뉴 막대·`--snapshot-menubar --fixtures`·설정 범례·빈 화면)이 효과 레이어를 함께 그린다. 단계 번호는 매니페스트를 따른다(`RunnerAnimator.smallZ` = 1, `largeZ` = 2).
   - 정지·깊은 잠 단계(마지막 단계)의 zL은 32 × 20 pt 이미지의 x 26–29, y 1–4에 10 px(@2x 40 px)로 놓인다.
-  - 대비 근사(위 미리보기 색 기준): 밝은 막대 3.9:1, 어두운 막대 5.9:1, 색이 비치는 막대(#6E86B8) 2.2:1. 같은 막대에서 `labelColor` 근사(85%)는 3.1:1이다. 실제 vibrancy 막대에서 3:1 미만이면 `labelColor`로 바꾼다(실기 미확인).
+  - 대비(`--snapshot-menubar --fixtures`에서 읽은 색): 밝은 막대 `#F0F0F0` 위 `#434343` 8.7:1, 어두운 막대 `#212121` 위 `#C1C1C1` 8.9:1. 이전 `secondaryLabelColor`는 색이 비치는 막대(#6E86B8)에서 약 2.2:1이었다. 실제 vibrancy 막대의 값은 실기 미확인.
 
 ## 픽셀 머리 (B-3)
 

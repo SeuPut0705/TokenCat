@@ -28,12 +28,13 @@ struct Runner {
     let manifest: RunnerManifest
     private let sheet: CGImage, fxSheet: CGImage
 
-    init(assets: String) {
+    /// `character` picks the sheet as the app does: the cat's from the manifest, the others' `runner-<id>@1x.png`.
+    init(assets: String, character: String = "cat") {
         guard let data = FileManager.default.contents(atPath: assets + "/runner-v2.json"),
               let manifest = try? JSONDecoder().decode(RunnerManifest.self, from: data) else { fail("러너 매니페스트를 읽지 못함") }
         guard manifest.version == 3 else { fail("러너 매니페스트 버전이 3이 아님: \(manifest.version)") }
         self.manifest = manifest
-        sheet = readPNG(assets + "/" + manifest.sheets["1"]!)
+        sheet = readPNG(assets + "/" + (character == "cat" ? manifest.sheets["1"]! : "runner-\(character)@1x.png"))
         fxSheet = readPNG(assets + "/" + manifest.fxSheets["1"]!)
     }
 
@@ -59,7 +60,7 @@ struct Runner {
         }
     }
 
-    /// The effect sheet is an opaque-black mask; the app fills it with the secondary label colour (source-in).
+    /// The effect sheet is an opaque-black mask; the app fills it with the bar's secondary label tone (source-in).
     private func tinted(_ mask: CGImage, _ tint: CGColor) -> CGImage {
         let canvas = Canvas(mask.width, mask.height)
         canvas.context.beginTransparencyLayer(auxiliaryInfo: nil)
@@ -71,11 +72,11 @@ struct Runner {
     }
 }
 
-/// Bar and sleep-z colours for a theme (z = secondaryLabelColor over the bar, as in the menu bar fixtures).
+/// Bar and sleep-z colours for a theme (z = labelColor 72% over the bar, read from the menu bar fixtures).
 private func catColors(_ theme: Theme, bar: UInt32) -> (bar: CGColor, z: CGColor, text: CGColor, idle: CGColor, idleText: CGColor) {
     switch theme {
-    case .light: return (color(bar), color(0x787878), color(0x1D1D1F), color(0x000000, 0.06), color(0x6E6E73))
-    case .dark: return (color(bar), color(0x9B9B9B), color(0xF5F5F7), color(0xFFFFFF, 0.08), color(0xA1A1A6))
+    case .light: return (color(bar), color(0x434343), color(0x1D1D1F), color(0x000000, 0.06), color(0x6E6E73))
+    case .dark: return (color(bar), color(0xC1C1C1), color(0xF5F5F7), color(0xFFFFFF, 0.08), color(0xA1A1A6))
     }
 }
 
@@ -179,6 +180,46 @@ func posesSheet(_ theme: Theme, runner: Runner, bars: [Theme: UInt32]) -> CGImag
         let center = pad + CGFloat(index) * (tile.width + gap) + tile.width / 2
         canvas.text(item.name, x: center, baseline: captionTop + 42, size: 25, bold: true, color: look.text, align: .center)
         canvas.text(item.state, x: center, baseline: captionTop + 74, size: 19, color: look.secondary, align: .center)
+    }
+    return roundCorners(canvas, radius: 28)
+}
+
+/// Every character's still frames (sit, walk, sit facing you, sleep) on the theme's menu bar, one column per character.
+/// The label column is fixed so both languages share one layout.
+func charactersSheet(_ theme: Theme, characters: [Runner], bar: UInt32) -> CGImage {
+    let names = [loc("고양이", "Cat"), loc("강아지", "Dog"), loc("햄스터", "Hamster"), loc("펭귄", "Penguin"), loc("로봇", "Robot")]
+    let poses: [(pose: String, fx: Int?, name: String, state: String)] = [
+        ("sit", nil, loc("앉기", "Sit"), loc("로그 대기", "Waiting for log")),
+        ("walk", nil, loc("걷기", "Walk"), loc("진행 · 도구 실행", "Working · tool")),
+        ("alert", nil, loc("정면 앉기", "Sit facing you"), loc("입력 필요", "Input needed")),
+        ("sleep", 2, loc("잠", "Sleep"), loc("10분간 활동 없음", "Idle 10 min")),
+    ]
+    guard characters.count == names.count else { fail("캐릭터 수가 이름 수와 다름") }
+    let scale = 6, cell = characters[0].manifest.cell
+    let tile = CGSize(width: cell.width * scale + 20, height: cell.height * scale + 20)
+    let pad: CGFloat = 40, gap: CGFloat = 20, rowGap: CGFloat = 12, labelWidth: CGFloat = 230
+    guard poses.allSatisfy({ max(Canvas.measure($0.name, size: 25, bold: true), Canvas.measure($0.state, size: 19)) < labelWidth - 24 })
+    else { fail("자세 이름이 라벨 칸보다 김") }
+    let width = pad * 2 + labelWidth + CGFloat(names.count) * tile.width + CGFloat(names.count - 1) * gap
+    let gridHeight = CGFloat(poses.count) * tile.height + CGFloat(poses.count - 1) * rowGap
+    let canvas = Canvas(Int(width), Int(pad + gridHeight + 56 + pad - 10))
+    let look = Look.of(theme), colors = catColors(theme, bar: bar)
+    look.paintWall(canvas, glowScale: 0.8)
+    for (row, item) in poses.enumerated() {
+        let y = pad + CGFloat(row) * (tile.height + rowGap)
+        canvas.text(item.name, x: pad + 4, baseline: y + tile.height / 2 - 4, size: 25, bold: true, color: look.text)
+        canvas.text(item.state, x: pad + 4, baseline: y + tile.height / 2 + 26, size: 19, color: look.secondary)
+        for (column, runner) in characters.enumerated() {
+            let rect = CGRect(x: pad + labelWidth + CGFloat(column) * (tile.width + gap), y: y, width: tile.width, height: tile.height)
+            canvas.fill(canvas.rounded(rect, 16), colors.bar)
+            canvas.stroke(canvas.rounded(rect.insetBy(dx: 0.5, dy: 0.5), 15.5), look.border, width: 1)
+            runner.draw(canvas, pose: item.pose, frame: 0, fxStep: item.fx, origin: CGPoint(x: rect.minX + 10, y: rect.minY + 10),
+                        scale: scale, zTint: colors.z)
+        }
+    }
+    for (column, name) in names.enumerated() {
+        let center = pad + labelWidth + CGFloat(column) * (tile.width + gap) + tile.width / 2
+        canvas.text(name, x: center, baseline: pad + gridHeight + 44, size: 25, bold: true, color: look.text, align: .center)
     }
     return roundCorners(canvas, radius: 28)
 }

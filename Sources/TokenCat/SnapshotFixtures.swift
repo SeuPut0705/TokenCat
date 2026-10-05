@@ -35,10 +35,10 @@ enum SnapshotFixtures {
 
     /// A made-up newer release (the digest is all zeros) checked 3 minutes before `now`.
     static func update(_ install: UpdateState.Install = .none, now: Date = now) -> UpdateState {
-        let page = URL(string: "https://github.com/SeuPut0705/TokenCat/releases/tag/v0.9.1")!
+        let page = URL(string: "https://github.com/SeuPut0705/TokenCat/releases/tag/v1.0.0")!
         let asset = UpdateRelease.Asset(url: page, size: 5_242_880, sha256: String(repeating: "0", count: 64))
         return UpdateState(check: .done, install: install, checkedAt: now.addingTimeInterval(-180),
-                           available: UpdateRelease(version: "0.9.1", tag: "v0.9.1", page: page, asset: asset))
+                           available: UpdateRelease(version: "1.0.0", tag: "v1.0.0", page: page, asset: asset))
     }
 
     @MainActor

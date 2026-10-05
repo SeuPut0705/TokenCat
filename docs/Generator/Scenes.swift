@@ -50,7 +50,7 @@ struct Look {
 
 /// Desktop-like product shot: menu bar strip with the TokenCat item (open state) and its popover hanging below.
 /// The minimal item is used because the menu bar and popover fixtures carry different system values.
-/// `window` (the 고양이 settings tab) sits at the lower left, bottom-aligned with the popover.
+/// `window` (the 캐릭터 settings tab) sits at the lower left, bottom-aligned with the popover.
 /// The canvas is at least 1080 px tall and grows with the popover, keeping a 64 px margin under it.
 func hero(_ theme: Theme, popover sheet: FixtureSheet, menu: MenuMatrix, window: CGImage) -> CGImage {
     let look = Look.of(theme)
@@ -199,7 +199,7 @@ func menubarLayouts(_ theme: Theme, minimal: MenuMatrix, twoLine: MenuMatrix, on
     let look = Look.of(theme)
     let state = MenuMatrix.stateNames.firstIndex(of: "도구 실행")!
     let entries: [(title: String, note: String, menu: MenuMatrix)] = [
-        (loc("최소", "Minimal"), loc("고양이 · AI 상태 · 세션 수", "Cat · AI status · session count"), minimal),
+        (loc("최소", "Minimal"), loc("캐릭터 · AI 상태 · 세션 수", "Character · AI status · session count"), minimal),
         (loc("두 줄 · 기본", "Two Lines · default"), loc("시스템 지표와 AI를 두 줄로", "System stats and AI on two lines"), twoLine),
         (loc("한 줄", "One Line"), loc("모든 항목을 한 줄로", "Everything on one line"), oneLine),
     ]
@@ -352,7 +352,7 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
 
 // MARK: - Settings
 
-/// All five settings tabs in tab order, in two columns (일반 + 메뉴 막대 | 고양이 + 실측 + 정보). Windows are 40 apart in
+/// All five settings tabs in tab order, in two columns (일반 + 메뉴 막대 | 캐릭터 + 실측 + 정보). Windows are 40 apart in
 /// both columns; the shorter column is centred in the taller one's height.
 func settingsCollage(_ theme: Theme, panes: [String: CGImage]) -> CGImage {
     let look = Look.of(theme)

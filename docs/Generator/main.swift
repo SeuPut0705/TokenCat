@@ -43,6 +43,7 @@ func snap(_ name: String) -> String { snapshots.appendingPathComponent(language 
 func fixture(_ name: String) -> FixtureSheet { FixtureSheet(snap("fixtures/\(name).png")) }
 let panes = ["general", "menubar", "cat", "telemetry", "about"]
 let runner = Runner(assets: assets)
+let characters = [runner] + ["dog", "hamster", "penguin", "robot"].map { Runner(assets: assets, character: $0) }
 
 // 2. Compose. `folder` is "" for the language-neutral images, "ko/" or "en/" for the rest.
 var written: [String] = [], folder = ""
@@ -92,6 +93,7 @@ for lang in ["ko", "en"] {
         save(architecture(theme, menu: minimal, assets: assets), "architecture" + suffix)
         save(settingsCollage(theme, panes: images), "settings" + suffix)
         save(posesSheet(theme, runner: runner, bars: twoLine.bar), "poses" + suffix)
+        save(charactersSheet(theme, characters: characters, bar: twoLine.bar[theme]!), "characters" + suffix)
         writeGIF(catAnimation(theme, runner: runner, bar: twoLine.bar[theme]!), out + "/" + folder + "cat-\(theme.rawValue).gif")
         written.append(folder + "cat-\(theme.rawValue).gif")
     }

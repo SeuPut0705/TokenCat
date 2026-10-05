@@ -37,25 +37,6 @@ enum RunnerArt {
         ("robot", "runner-robot", RunnerRobotArt.palette, RunnerRobotArt.poses),
     ]
 
-    /// PLACEHOLDER helper (delete with the last placeholder): the cat's frames with its head grids swapped. Each new head
-    /// has the cat variant's height so it sits on the same anchor; the sleep head is `blink` without its collar row.
-    static func catWithHeads(head: [String], blink: [String], alert: [String], yawn: [String]) -> Poses {
-        let cat = RunnerCatArt.self
-        let swap = [cat.head: head, cat.headBlink: blink, cat.headSleep: Array(blink.dropLast()), cat.headAlert: alert, cat.headYawn: yawn]
-        func frames(_ pose: [[Part]]) -> [[Part]] {
-            pose.map { $0.map { part in
-                guard part.group == .head, let rows = swap[part.rows] else { return part }
-                precondition(rows.count == part.rows.count, "placeholder head must keep the cat's \(part.rows.count) rows")
-                var out = part
-                out.rows = rows
-                return out
-            }}
-        }
-        let p = cat.poses
-        return Poses(sit: frames(p.sit), sleep: frames(p.sleep), walk: frames(p.walk), run: frames(p.run),
-                     alert: frames(p.alert), yawn: frames(p.yawn), content: frames(p.content))
-    }
-
     static func line(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int) -> [(Int, Int)] {
         var points: [(Int, Int)] = []
         var x = x0, y = y0

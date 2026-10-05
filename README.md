@@ -21,7 +21,7 @@ English · [한국어](README.ko.md)
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/hero-dark.png">
-    <img src="docs/images/en/hero-light.png" width="800" alt="The dashboard open under TokenCat's macOS menu bar item (a yellow question mark and a session count of 3). It shows a bar chart of output tokens over the last 5 minutes and Speed now (55.6 generation tok/s), the Codex weekly limit and the Claude 5-hour limit, two sessions needing input and one working, and system metrics, with the Cat settings window on the left.">
+    <img src="docs/images/en/hero-light.png" width="800" alt="The dashboard open under TokenCat's macOS menu bar item (a yellow question mark and a session count of 3). It shows a bar chart of output tokens over the last 5 minutes and Speed now (55.6 generation tok/s), the Codex weekly limit and the Claude 5-hour limit, two sessions needing input and one working, and system metrics, with the Character settings window on the left.">
   </picture>
 </p>
 
@@ -118,7 +118,7 @@ At the bottom of the output card, one line per client shows the last usage perce
   </picture>
 </p>
 
-Choose **Minimal** (about 72 pt), **Two Lines** (the default, about 272 pt) or **One Line** (about 410 pt), then turn items on or off and drag them to reorder. Each item has a fixed width, so the icons next to it don't shift when values change. On a Mac without a battery, the battery item is hidden.
+Choose **Minimal** (about 72 pt), **Two Lines** (the default, about 272 pt) or **One Line** (about 410 pt), then turn items on or off and drag them to reorder. Each item has a fixed width, so the icons next to it don't shift when values change, and labels follow the bar's light or dark appearance so they stay readable on tinted bars. On a Mac without a battery, the battery item is hidden.
 
 <p align="center">
   <picture>
@@ -149,18 +149,31 @@ With the default motion source, **AI Activity**, the cat walks while sessions ar
 
 The cat is pixel art drawn 1:1, without blur, in a 32 × 20 pt cell. The dashboard header and the 16 and 32 px app icons use the same pixel head.
 
+### Characters & presets
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/characters-dark.png">
+    <img src="docs/images/en/characters-light.png" width="695" alt="Five characters, cat, dog, hamster, penguin and robot, each shown sitting, walking, sitting facing you and sleeping on a menu bar.">
+  </picture>
+</p>
+
+Besides the cat, you can pick a dog, hamster, penguin or robot in Settings › Character or in the quick menu's Character submenu. All five share the same poses and pace, so only the look changes; the dashboard header and the app icon keep the cat.
+
+Presets set up the menu bar in one step: **Minimal**, **AI Focus** (AI, CPU and memory on two lines), **System Monitor** (every item on two lines) or **Everything Inline** (every item on one line). Choose one in Settings › Menu Bar › Preset. Picking a preset also shows the character again, and when the layout or items no longer match any preset, the picker shows **Custom**.
+
 ### Settings and notifications
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/settings-dark.png">
-    <img src="docs/images/en/settings-light.png" width="796" alt="The five tabs of the Settings window: General (open at login, notifications), Menu Bar, Cat, Telemetry (an example of another app using the port, and Claude limit reception), and About (an Updates section with Check for updates automatically, New version 0.9.1 with Update and Check Now buttons, and Notify about new versions).">
+    <img src="docs/images/en/settings-light.png" width="796" alt="The five tabs of the Settings window: General (open at login, notifications), Menu Bar (with the System Monitor preset), Character, Telemetry (an example of another app using the port, and Claude limit reception), and About (an Updates section with Check for updates automatically, New version 1.0.0 with Update and Check Now buttons, and Notify about new versions).">
   </picture>
 </p>
 
 - **General**: Open TokenCat at login, and notifications (Turn complete, Input needed, Sound for input needed alerts). The login item and all notifications are off by default; TokenCat registers the login item or asks for notification permission only when you turn one on.
-- **Menu Bar**: 1:1 light and dark previews, layout, and item visibility and order.
-- **Cat**: whether it's shown, the motion source, and a legend of poses by state.
+- **Menu Bar**: 1:1 light and dark previews, preset, layout, and item visibility and order.
+- **Character**: the character, whether it's shown, the motion source, and a legend of poses by state.
 - **Telemetry**: collector status and retry, whether each client's measurements are arriving, whether Claude limits are arriving (status line bridge, Claude desktop app history), and Show in Finder for the backup folder and config files.
 - **About**: version, privacy statement, MIT License, Show Welcome Again, and Updates (Check for updates automatically, a status line with `Update` and `Check Now`, `Try Again` or `Open Release Page` on failure, and Notify about new versions). Only Check for updates automatically is on by default, and Notify about new versions asks for notification permission only when you turn it on.
 
@@ -270,8 +283,8 @@ With no records yet, you'll see the sleeping cat. Start a new session in Codex o
 TokenCat checks GitHub for the latest release on its own, and installs only when you click.
 
 - **Checking**: when `Check for updates automatically` in Settings › About › Updates is on (the default), TokenCat checks right after launch, every 15 minutes after that, after your Mac wakes from sleep, and when you open the dashboard more than 5 minutes after the last check. When it's off, it checks only when you click `Check Now`.
-- **Notice**: when a new version is available, `New version 0.9.1` and an `Update` button quietly appear on one line at the bottom of the dashboard, and the right-click quick menu gets `Install Update 0.9.1…`. The line's close button hides the notice for that version only. To get a system notification as well, turn on `Notify about new versions` (off by default).
-- **Installing**: click `Update` and TokenCat downloads `TokenCat.zip` (`Downloading update 45%`), checks that it matches the SHA-256 recorded by GitHub, replaces the app (`Installing…`) and relaunches. When it reopens, it shows `Updated to 0.9.1` once. If it fails, `Update failed` and a way to open the release page appear, plus `Try Again` for failures that a retry might fix. If you quit during installation, TokenCat finishes the install step before quitting.
+- **Notice**: when a new version is available, `New version 1.0.0` and an `Update` button quietly appear on one line at the bottom of the dashboard, and the right-click quick menu gets `Install Update 1.0.0…`. The line's close button hides the notice for that version only. To get a system notification as well, turn on `Notify about new versions` (off by default).
+- **Installing**: click `Update` and TokenCat downloads `TokenCat.zip` (`Downloading update 45%`), checks that it matches the SHA-256 recorded by GitHub, replaces the app (`Installing…`) and relaunches. When it reopens, it shows `Updated to 1.0.0` once. If it fails, `Update failed` and a way to open the release page appear, plus `Try Again` for failures that a retry might fix. If you quit during installation, TokenCat finishes the install step before quitting.
 
 Settings and measurement backups live outside the app, so they stay the same after an update. To update by hand, [install](#install) again or run the commands in [Install from the terminal](#install-from-the-terminal). For an app you downloaded or moved yourself, quit the running TokenCat before opening it. If one is running, the newly opened app just opens the existing app's panel and exits.
 
@@ -465,8 +478,8 @@ All commands and what they check are in [Details › Verification commands](docs
 
 ### Releases
 
-1. Bump `CFBundleShortVersionString` in `build.sh` (for example `0.9.1`) and increase `CFBundleVersion` by 1.
-2. Push to main, and the GitHub Actions [release workflow](.github/workflows/release.yml) builds on a macOS runner, runs `--self-test` and the universal, version and signature checks, and uploads `TokenCat.zip` to a draft release. It publishes the draft as the latest release with the `v0.9.1` tag only if the asset SHA-256 recorded by GitHub matches the zip. If the tag already exists, it does nothing, and it stops if the new version isn't higher than the current latest release.
+1. Bump `CFBundleShortVersionString` in `build.sh` (for example `0.10.1`) and increase `CFBundleVersion` by 1.
+2. Push to main, and the GitHub Actions [release workflow](.github/workflows/release.yml) builds on a macOS runner, runs `--self-test` and the universal, version and signature checks, and uploads `TokenCat.zip` to a draft release. It publishes the draft as the latest release with the `v0.10.1` tag only if the asset SHA-256 recorded by GitHub matches the zip. If the tag already exists, it does nothing, and it stops if the new version isn't higher than the current latest release.
 3. A running TokenCat announces the new version at its next check (usually within 15 minutes).
 
 You can also run the workflow by hand from the Actions tab (main branch only). The English and Korean release notes include commit subjects since the previous tag, install and Gatekeeper instructions, the settings changed on first launch and the command to undo them, and the SHA-256 of `TokenCat.zip`.

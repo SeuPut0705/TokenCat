@@ -21,8 +21,9 @@ macOS 27.0.1·Swift 6.4에서 두 번 실행해 모든 파일의 SHA-256이 같�
 |---|---|
 | `--snapshot-fixtures` (상태마다 다크 \| 라이트) | 히어로 팝오버, `popover-*` |
 | `--snapshot-menubar --fixtures` (두 줄·`--inline`·`--minimal`) | 히어로 메뉴 막대 항목, `menubar-*`, `architecture` |
-| `--snapshot-settings --pane general\|menubar\|cat\|telemetry\|about --fixtures [--light]` | 히어로 창(고양이 탭), `settings-*` |
-| `Assets/runner-v2@1x.png`, `runner-v2-fx@1x.png`, `runner-v2.json` | `cat-*.gif`, `poses-*` |
+| `--snapshot-settings --pane general\|menubar\|cat\|telemetry\|about --fixtures [--light]` (`cat`은 캐릭터 탭) | 히어로 창(캐릭터 탭), `settings-*` |
+| `Assets/runner-v2@1x.png`, `runner-v2-fx@1x.png`, `runner-v2.json` | `cat-*.gif`, `poses-*`, `characters-*` |
+| `Assets/runner-{dog,hamster,penguin,robot}@1x.png` | `characters-*` |
 | `Assets/app-icon-v2-1024.png`, `-32.png`, `-16.png` | `app-icon-*`, `icon.png`, `architecture` |
 
 - 스냅숏은 임시 폴더에 만들고 끝나면(실패해도) 지웁니다. 실데이터를 읽는 `--snapshot`(픽스처 없음)과 `--diagnose`는 쓰지 않습니다.
@@ -30,7 +31,7 @@ macOS 27.0.1·Swift 6.4에서 두 번 실행해 모든 파일의 SHA-256이 같�
 
 ## 출력
 
-- `ko/`·`en/`에 같은 이름으로 다크·라이트 한 쌍: `hero`, `popover-flow`·`-sessions`·`-subagents`·`-detail`·`-limits`·`-empty`·`-onboarding`, `menubar-layouts`, `menubar-states`, `architecture`(데이터 흐름도), `settings`, `poses`(밝은 막대와 어두운 막대에서 일곱 자세), `cat`(GIF, 자세 이름과 상태 칩)
+- `ko/`·`en/`에 같은 이름으로 다크·라이트 한 쌍: `hero`, `popover-flow`·`-sessions`·`-subagents`·`-detail`·`-limits`·`-empty`·`-onboarding`, `menubar-layouts`, `menubar-states`, `architecture`(데이터 흐름도), `settings`, `poses`(밝은 막대와 어두운 막대에서 일곱 자세), `characters`(다섯 캐릭터의 앉기·걷기·정면 앉기·잠 정지 프레임), `cat`(GIF, 자세 이름과 상태 칩)
 - `docs/images/` 언어 공용: `app-icon`(다크·라이트, 라벨은 숫자와 `×`뿐), `icon.png`(README 머리의 256 px 앱 아이콘, 바깥은 투명)
 - PNG는 2배 해상도(144 dpi)이고 바깥 모서리는 투명하게 둥글립니다. GIF도 같은 반지름으로 둥글리되, GIF는 반투명을 못 쓰므로 모서리를 앤티에일리어싱 없이 잘라 바깥을 투명 색으로 둡니다. README에서는 표시 폭을 픽셀의 절반으로 지정합니다.
 
@@ -52,5 +53,7 @@ macOS 27.0.1·Swift 6.4에서 두 번 실행해 모든 파일의 SHA-256이 같�
 - 세션 목록 이미지는 `context-limit` 픽스처를 씁니다. 실측 `요청 tok/s`는 Claude Code에서만 오므로 그 단위가 Claude Code 행에 붙은 화면을 골랐습니다(`retry` 픽스처는 Codex 행에 `요청 tok/s`가 있어 쓰지 않았습니다).
 - 작동 방식 그림은 Mermaid 대신 이미지로 그립니다. GitHub의 Mermaid 틀은 높이가 고정돼 가로로 긴 흐름도의 아래쪽 노드를 잘랐습니다. 수집기 카드에는 OTLP 실측과 Claude Code 상태 표시줄 브리지(사용 한도)가 함께 들어가며, 업데이트 확인은 수집 경로가 아니라서 그리지 않습니다.
 - `popover-limits`는 `usage-limits` 부품 시트 전체(Codex 네 상태, Claude 세 상태)입니다.
-- 설정 묶음은 다섯 탭을 탭 순서대로 두 열(일반 + 메뉴 막대 | 고양이 + 실측 + 정보)에 놓고, 두 열의 위·아래 끝을 맞추도록 짧은 열의 창 간격을 넓힙니다. 0.9.0에서 정보 탭에 업데이트 섹션이 생겨 네 탭만으로는 두 열 높이가 약 360 px 어긋났고, 이 배치가 가장 고릅니다(약 150 px). 실측 탭 픽스처는 다른 앱이 16493 포트를 쓰는 예시를 보여 줍니다.
+- 설정 묶음은 다섯 탭을 탭 순서대로 두 열(일반 + 메뉴 막대 | 캐릭터 + 실측 + 정보)에 놓고, 두 열의 위·아래 끝을 맞추도록 짧은 열의 창 간격을 넓힙니다. 0.9.0에서 정보 탭에 업데이트 섹션이 생겨 네 탭만으로는 두 열 높이가 약 360 px 어긋났고, 이 배치가 가장 고릅니다(약 150 px). 실측 탭 픽스처는 다른 앱이 16493 포트를 쓰는 예시를 보여 줍니다.
+- 캐릭터 그림은 다섯 캐릭터(고양이·강아지·햄스터·펭귄·로봇, 앱의 이름)를 열로, 앉기·걷기·정면 앉기·잠을 행으로 두고 각 자세의 1번 프레임(정지 프레임)을 6배로 그립니다. 잠은 앱의 정지 상태처럼 큰 z(zL)를 함께 그립니다. 칸 배경은 그 테마의 메뉴 막대 색이고, 자세 이름 칸은 230 px로 고정해 두 언어의 배치가 같습니다. 캐릭터 시트는 앱처럼 고양이만 매니페스트의 시트를, 나머지는 `runner-<id>@1x.png`를 씁니다.
+- 잠의 z 색은 메뉴 막대 픽스처에서 읽은 값(밝은 막대 `#434343`, 어두운 막대 `#C1C1C1`, 앱의 `labelColor` 72%)입니다.
 - 고양이 GIF의 프레임 시간은 매니페스트를 따릅니다(걷기 0.15초, 달리기 0.0714초, 정면 앉기 2.4·0.3초, 깜빡임 0.12초와 두 번 깜빡임 간격 0.15초, 잠 단계 1.6초, 하품 0.6초). 달리기는 앱의 출력 직후 달리기와 같은 1.2초(17프레임, 약 1.21초)이고, 앉기의 긴 유지 시간(6–11초)만 1.4초 안팎으로 줄였습니다. 한 바퀴는 약 15.6초입니다. GIF 지연은 1/100초 단위라 누적 시각으로 반올림해 오차가 쌓이지 않게 합니다. 움직임은 상태를 나타낼 뿐 속도가 아닙니다. ImageIO는 투명 픽셀이 있는 프레임을 차이 영역 없이 통째로 저장하므로 GIF는 한 장에 약 390 KB입니다.
