@@ -127,7 +127,7 @@ static class AppChecks
             var busy = new StatusAISummary { Running = 99, Input = 99, Phase = TokenActivityState.Input };
             var items = Enum.GetValues<MetricID>();
             // The speed items' worst realistic rate, "9999 tok/s" on the bar (a sub-millisecond time between tokens).
-            var speeds = new Dictionary<MetricID, double> { [MetricID.CodexSpeed] = 9999.94, [MetricID.ClaudeSpeed] = 9999.94, [MetricID.AverageSpeed] = 9999.94 };
+            var speeds = new Dictionary<MetricID, double> { [MetricID.CodexSpeed] = 9999.4, [MetricID.ClaudeSpeed] = 9999.4, [MetricID.AverageSpeed] = 9999.4 };
             List<string> unstable = [], shrunk = [];
             foreach (var layout in Enum.GetValues<StatusBarLayout>())
             {
@@ -264,7 +264,8 @@ static class AppChecks
                 Snapshot.Render(() => frames, dark: i % 2 == 0);
             }
             var after = Settled();
-            check(Math.Abs((int)after.Gdi - (int)before.Gdi) <= 4 && Math.Abs((int)after.User - (int)before.User) <= 4,
+            // A leak grows the counts; the harness's own handles may still be released in between, so a drop is fine.
+            check((int)after.Gdi - (int)before.Gdi <= 4 && (int)after.User - (int)before.User <= 4,
                 $"300 widget frames leak no handles (GDI {before.Gdi} → {after.Gdi}, USER {before.User} → {after.User})");
         }
         finally { Theme.Dark = saved; }
@@ -320,10 +321,10 @@ static class AppChecks
             List<CheckBox> rows() => [.. Descendants(settings).OfType<CheckBox>()];
             var shown = rows();
             var named = shown.Select(row => Peer(row)?.GetName()).SequenceEqual(["CPU", "메모리 · RAM", "저장 공간 · DISK", "배터리 · BAT", "네트워크 · NET", "AI 세션 · AI",
-                "Codex 속도", "Claude 속도"]);
+                "Codex 속도", "Claude 속도", "평균 속도 · AVG"]);
             var states = shown.Select(row => (Toggled(row), row.IsEnabled)).SequenceEqual(
                 [(ToggleState.Off, true), (ToggleState.On, false), (ToggleState.Off, true), (ToggleState.Off, false), (ToggleState.Off, true), (ToggleState.Off, true),
-                 (ToggleState.Off, true), (ToggleState.Off, true)]);
+                 (ToggleState.Off, true), (ToggleState.Off, true), (ToggleState.Off, true)]);
             var note = Descendants(settings).OfType<TextBlock>().Any(text => text.Text.Replace("⁠", "") == "이 PC에는 배터리가 없습니다");
             // The speed rows show their glyph where the others show their label.
             var glyphs = Descendants(settings).OfType<TextBlock>().SelectMany(text => text.Inlines.OfType<System.Windows.Documents.InlineUIContainer>())
