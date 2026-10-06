@@ -337,6 +337,17 @@ sealed class WidgetView : FrameworkElement
             Draw(context, ValueRuns(metric.Value), middle, new Rect(x, cell.Y, cell.Right - x, cell.Height), TextAlignment.Left);
             return;
         }
+        if (metric.Id == MetricID.AverageSpeed)
+        {
+            // "AVG" sized to itself (about 17 pt at 8.5 pt) from 1 pt in, the value 2 pt after it: wider than the 19 pt label slot
+            // leaves, so "9999 tok/s" fits the 69 pt cell.
+            TextRun[] caption = [new(metric.Label, 8.5, FontWeights.SemiBold, secondary)];
+            var width = Format(caption, 1).WidthIncludingTrailingWhitespace;
+            Draw(context, caption, middle, new Rect(cell.X + 1, cell.Y, width, cell.Height), TextAlignment.Left);
+            var x = cell.X + 1 + width + 2;
+            Draw(context, ValueRuns(metric.Value), middle, new Rect(x, cell.Y, cell.Right - x, cell.Height), TextAlignment.Left);
+            return;
+        }
         // The mac's 16 pt SF Symbol slot holds the short name here (19 pt), trailing-aligned so it hugs its value.
         Draw(context, [new(metric.Label, 8.5, FontWeights.SemiBold, secondary)], middle, new Rect(cell.X + 1, cell.Y, 19, cell.Height), TextAlignment.Right);
         Draw(context, ValueRuns(metric.Value), middle, new Rect(cell.X + 23, cell.Y, cell.Width - 23, cell.Height), TextAlignment.Left);
