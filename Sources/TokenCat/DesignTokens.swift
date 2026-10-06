@@ -7,15 +7,13 @@ import SwiftUI
 /// The popover type scale; no other sizes. Weights are regular, medium and semibold only
 /// (the heavy "?" inside the input glyph is the one exception, drawn by `StateGlyph`).
 /// "mono" means `monospacedDigit()`, so digits keep their width while values change.
-/// Units go one step down in `TCColor.textSecondary`: hero 26 + "tok" in `body` (13);
-/// metric 15 and value 13 + unit in `micro` (10). Korean text never goes below 10 pt.
+/// Units go one step down in `TCColor.textSecondary`: metric 15 and value 13 + unit in `micro` (10).
+/// Korean text never goes below 10 pt.
 /// Inline SF Symbols take the font of the text beside them; chevrons use `.imageScale(.small)`.
 enum TCFont {
-    /// 26 semibold mono: the 5-minute output total.
-    static let hero = Font.system(size: 26, weight: .semibold).monospacedDigit()
-    /// 15 semibold mono: a live row's current-turn total.
+    /// 15 semibold mono: the 5-minute output total and a live row's current-turn total.
     static let metric = Font.system(size: 15, weight: .semibold).monospacedDigit()
-    /// 13 semibold: header sentence, "출력 토큰", "세션", a live row's project.
+    /// 13 semibold: header sentence, "출력 토큰", "세션", a live row's title.
     static let title = Font.system(size: 13, weight: .semibold)
     /// 13 regular: an idle row's project.
     static let body = Font.system(size: 13)
@@ -31,10 +29,8 @@ enum TCFont {
     static let metaMonoSemibold = Font.system(size: 11, weight: .semibold).monospacedDigit()
     /// 10 medium: axes, units (tok · % · kB/s), system labels, ticks.
     static let micro = Font.system(size: 10, weight: .medium)
-    /// Spec-named weights inside the same sizes: 13 medium (empty-list title), 13 medium mono (the flow card's
-    /// last-record value) and 11 semibold (expanded-list date captions).
+    /// Spec-named weights inside the same sizes: 13 medium (empty-list title) and 11 semibold (expanded-list date captions).
     static let bodyMedium = Font.system(size: 13, weight: .medium)
-    static let bodyMediumMono = Font.system(size: 13, weight: .medium).monospacedDigit()
     static let caption = Font.system(size: 11, weight: .semibold)
 
     /// AppKit: the font of the AppKit-drawn input glyph (the menu bar sets its own fonts).

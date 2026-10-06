@@ -120,13 +120,16 @@ public static class SessionPresentationChecks
               "a titled row leads with its title and keeps the project as meta, in help and in VoiceOver");
         var roleChild = claudeChild with { AgentRole = "Explore" };
         var reviewChild = codexChild with { AgentRole = "guardian" };
-        check(ChildTitle(roleChild) == ("Explore", "b1234567") && ChildTitle(claudeChild) == ("b1234567", null)
-              && ChildTitle(reviewChild) == ("sample_runner", "자동 검토"), "subagent role labels keep the ID");
+        check(ChildTitle(roleChild) == ("Explore", "b1234567") && ChildTitle(claudeChild) == ("하위 에이전트", "b1234567")
+              && ChildTitle(reviewChild) == ("sample_runner", "자동 검토")
+              && ChildName(roleChild) == "Explore" && ChildName(claudeChild) == "b1234567" && ChildName(reviewChild) == "sample_runner",
+              "subagent role labels keep the ID; an unnamed subagent is titled 하위 에이전트 with its ID beside it");
         var workflowChild = claudeChild with { AgentID = "a1111111e1", AgentRole = "workflow-subagent" };
         var generalChild = workflowChild with { AgentRole = " general-purpose " };
-        check(ChildTitle(workflowChild) == ("a1111111", null) && ChildTitle(generalChild) == ("a1111111", null)
+        check(ChildTitle(workflowChild) == ("하위 에이전트", "a1111111") && ChildTitle(generalChild) == ("하위 에이전트", "a1111111")
+              && SpokenLabel(workflowChild, S.Working) == "하위 에이전트 a1111111, 진행"
               && RoleLabel(workflowChild.AgentRole) == "workflow-subagent" && RoleLabel(reviewChild.AgentRole) == "자동 검토" && RoleLabel("  ") == null,
-              "shared roles leave the ID as the title; help keeps the role");
+              "shared roles read as 하위 에이전트 with the ID (never \"하위 에이전트 하위 에이전트\" when spoken); help keeps the role");
         var counts = new SessionCounts(groups);
         check(counts.RunningGroups == 2 && counts.Tool == 1 && counts.Working == 1 && counts.RunningSubagents == 2 && counts.Phase == A.Tool
               && counts.Readings == 7 && counts.ToolMembers == 1 && counts.ToolCategories.GetValueOrDefault(ToolCategory.Other) == 1,
@@ -153,7 +156,7 @@ public static class SessionPresentationChecks
               && retryCounts.Phase == SessionCounts.PhaseOf(S.Retrying) && retryCounts.Phase == A.Working,
               "group state and menu-bar phase follow the same order");
 
-        // The flow-card caption: input > retry > tool category > progress > waiting, only after 30 s without a record.
+        // The flow-card caption: retry > tool category > progress > waiting, only after 30 s without a record; input keeps the base.
         FlowCaption caption(SessionCounts value, double? last) => Caption(value, last is { } offset ? at(offset) : null, now);
         var noticeCounts = new SessionCounts(Groups([command, reading("claude:w", session: "W", state: A.Stale, last: -200)], now));
         check(caption(noticeCounts, -40).Text == "명령 실행 중 · 응답 후 기록" && !caption(noticeCounts, -40).Emphasized
@@ -162,10 +165,11 @@ public static class SessionPresentationChecks
         check(caption(noticeCounts, null).Text == "로그 대기 · 3분째 기록 없음", "waiting caption");
         var urgent = new SessionCounts(Groups([command, retrying, question], now));
         var retryOnly = new SessionCounts(Groups([command, retrying], now));
-        check(caption(urgent, -2).Text == "마지막 기록" && caption(urgent, -40).Text == "입력 대기 · 답변하면 계속 기록"
-              && caption(urgent, -40).Glyph == StateGlyphKind.Input && caption(urgent, -40).Emphasized
-              && caption(retryOnly, -40).Text == "API 재시도 2/10 · 4초 후" && caption(retryOnly, -40).Glyph == StateGlyphKind.Retry,
-              "input and retry captions follow the same 30 s rule and are emphasized");
+        check(caption(urgent, -2).Text == "마지막 기록" && caption(urgent, -40).Text == "마지막 기록"
+              && caption(urgent, -40).Glyph == null && !caption(urgent, -40).Emphasized
+              && caption(retryOnly, -40).Text == "API 재시도 2/10 · 4초 후" && caption(retryOnly, -40).Glyph == StateGlyphKind.Retry
+              && caption(retryOnly, -40).Emphasized,
+              "a turn waiting for input keeps the base caption (the header says it); retry captions follow the 30 s rule and are emphasized");
         var offlineCounts = retryOnly with { Retry = retryOnly.Retry! with { NetworkDown = true } };
         check(caption(offlineCounts, null).Text == "API 재시도 · 네트워크 끊김" && caption(new SessionCounts(), null).Text == "마지막 기록",
               "network-down retry; nothing live keeps the default");
@@ -173,9 +177,9 @@ public static class SessionPresentationChecks
         var question3 = question with { Id = "claude:q3", SessionID = "Q3" };
         var plans = new SessionCounts(Groups([plan, plan2, command], now));
         var mixedInput = new SessionCounts(Groups([plan, question3], now));
-        check(plans.InputPlansOnly && caption(plans, null).Text == "계획 승인 대기 · 승인하면 계속 기록"
-              && !mixedInput.InputPlansOnly && caption(mixedInput, null).Text == "입력 대기 · 답변하면 계속 기록",
-              "plan approvals say 승인; a mix keeps the general copy");
+        check(plans.InputPlansOnly && caption(plans, null).Text == "마지막 기록"
+              && !mixedInput.InputPlansOnly && caption(mixedInput, null).Text == "마지막 기록",
+              "plan approvals and questions alike keep the base caption");
 
         // Header sentence (H-2) and head echo (H-3): one sentence per top state.
         HeaderStatus header(SessionCounts value, bool loading = false, bool spoken = false) => Header(value, loading, now, spoken: spoken);
@@ -205,15 +209,15 @@ public static class SessionPresentationChecks
         check(new[] { loadingHeader.Help, restHeader.Help, caption(noticeCounts, null).Help }.All(help => !help.Contains("Codex") && !help.Contains("Claude"))
               && restHeader.Help == "진행 중인 코딩 에이전트 세션이 없습니다",
               "client-neutral header and caption help");
-        // The flow card's split with four clients: widest first, then the smallest folding into "+N" (it used to list every
-        // client at a fixed size and spill past the card); one client is its name only.
+        // The flow card's split with four clients: widest first, then the smallest folding into " · 외 N" / " · +N more" (a
+        // bare "+1" read as one more token); one client is its name only.
         var splits = ProviderSplits(new Dictionary<TokenSource, int>
             { [TokenSource.Codex] = 1_200, [TokenSource.Claude] = 6_600, [TokenSource.OpenCode] = 300, [TokenSource.Omp] = 70_000 });
         check(splits[0] == "omp 70k · Claude Code 6.6k · Codex 1.2k · OpenCode 300" && splits.Count == 4
-              && splits[1] == "omp 70k · Claude Code 6.6k · Codex 1.2k · +1" && splits[^1] == "omp 70k · +3"
+              && splits[1] == "omp 70k · Claude Code 6.6k · Codex 1.2k · 외 1" && splits[^1] == "omp 70k · 외 3"
               && ProviderSplits(new Dictionary<TokenSource, int> { [TokenSource.Codex] = 10 }).SequenceEqual(["Codex"])
               && ProviderSplits(new Dictionary<TokenSource, int>()).SequenceEqual([""]),
-              $"provider split folds into +N, widest first: {string.Join(" | ", splits)}");
+              $"provider split folds into 외 N, widest first: {string.Join(" | ", splits)}");
 
         // Stable ordering: input first, then running groups by project and session, unaffected by activity time.
         var beta = reading("claude:beta", session: "B", project: "beta", active: true, state: A.Working, last: -1);
@@ -233,7 +237,17 @@ public static class SessionPresentationChecks
               "running, waiting, measured, then recent idle; stable when activity changes");
         check(make([.. input, question]).Blocks.FirstOrDefault()?.Id == "claude:q", "a turn waiting for input goes first");
         check(first.HiddenGroups == 6 && first.HiddenChildren == 0 && first.Counts.Groups == 12, "collapsed list fills to six rows");
-        check(first.ContentHeight == 44 * 3 + 28 * 3 + 5, "quiet live rows fold to 44pt; heights stay deterministic");
+        check(first.ContentHeight == 44 * 3 + 28 * 3 + 5 + 1 + SessionListModel.OlderHeight,
+              "quiet live rows fold to 44pt; the toggle adds a 1 pt rule and its 28 pt row; heights stay deterministic");
+        // One disclosure at the end of the list (#6): last entry, last navigation stop, 28 pt, named by what it does.
+        check(first.ShowsToggle && first.Entries(false)[^1] is SessionListEntry.Toggle && first.Entries(false)[^1].Id == SessionListModel.ToggleID
+              && first.Entries(false)[^2] is SessionListEntry.Divider { Key: SessionListModel.ToggleID } && first.Entries(false)[^2].Id == "divider:toggle"
+              && first.Entries(false)[^3] is SessionListEntry.Block && first.Navigation(false)[^1] == SessionListModel.ToggleID
+              && first.ToggleText == "세션 12개 모두 보기" && first.ToggleHelp == "하위 에이전트 포함 12개 기록 · 접힌 세션 6개"
+              && !make([beta]).ShowsToggle && !make([beta]).Entries(false).OfType<SessionListEntry.Toggle>().Any()
+              && !make([beta]).Navigation(false).Contains(SessionListModel.ToggleID)
+              && make([beta], expanded: true) is { ShowsToggle: true, ToggleText: "접기" } folded && folded.Entries(false)[^1] is SessionListEntry.Toggle,
+              "the list toggle is the last entry and navigation stop while something is folded, and folds the expanded list again");
         // Line 3 holds the current turn's last record, context or a measured speed; anything else stays at 44 pt.
         var flowing = alpha with { CurrentTurnStartedAt = at(-60), LastOutputAt = at(-20), LastOutputDelta = 40 };
         var earlierTurn = flowing with { CurrentTurnStartedAt = at(-10) };
@@ -278,8 +292,9 @@ public static class SessionPresentationChecks
         var family = make([codexParent, codexChild, reading("codex:done", TokenSource.Codex, session: "C2", agent: "/root/done",
                                                             subagent: true, parent: "R1", state: A.Complete, last: -20)]);
         check(family.Blocks.FirstOrDefault()?.Lead.Kind == SessionRowKind.Idle && ids(family.Blocks.FirstOrDefault()?.Children).SequenceEqual(["codex:child"])
-              && family.Blocks.FirstOrDefault()?.ChildCount == 2 && family.HiddenGroups == 0 && family.HiddenChildren == 1,
-              "collapsed groups show only live children");
+              && family.Blocks.FirstOrDefault()?.ChildCount == 2 && family.HiddenGroups == 0 && family.HiddenChildren == 1
+              && family.ShowsToggle && family.ToggleText == "하위 1개 더 보기",
+              "collapsed groups show only live children; the toggle offers a hidden finished child");
         // While a child runs, children waiting for a log stay in the summary row only.
         var floodParent = reading("claude:S1", session: "S1", project: "TokenCat", state: A.Complete, last: -600);
         var flood = Enumerable.Range(0, 9)
@@ -291,7 +306,9 @@ public static class SessionPresentationChecks
               && floodBlock?.RunningChildren == 1 && floodBlock?.WaitingChildren == 9, "waiting children take no slot while a child runs");
         check(floodBlock?.MoreCount == 9 && floodBlock?.MoreText == "+9 하위 로그 대기 · 마지막 1분 전"
               && floodCollapsed.HiddenGroups == 0 && floodCollapsed.HiddenChildren == 9
-              && floodCollapsed.ContentHeight == 28 + 24 + 24, "cut children are summarised with their newest record");
+              && floodCollapsed.ContentHeight == 28 + 24 + 24 && !floodCollapsed.ShowsToggle
+              && !floodCollapsed.Entries(false).OfType<SessionListEntry.Toggle>().Any(),
+              "cut children are summarised with their newest record; no closing toggle repeats what the +N row offers");
         var quietBlock = make([floodParent, .. flood.SkipLast(1)]).Blocks.FirstOrDefault();
         check(ids(quietBlock?.Children).SequenceEqual(["claude:S1/a0", "claude:S1/a1", "claude:S1/a2"]) && quietBlock?.MoreCount == 6,
               "with nothing running, up to three waiting children show");
@@ -316,9 +333,10 @@ public static class SessionPresentationChecks
         TokenReading[] dated = [reading("claude:d0", session: "D0", state: A.Complete, last: -600), reading("claude:d1", session: "D1", state: A.Complete, last: -day),
                                 reading("claude:d2", session: "D2", state: A.Complete, last: -5 * day), reading("claude:d3", session: "D3", state: A.Complete, last: -9 * day)];
         var datedList = make([beta, .. dated], expanded: true);
-        string[] datedIDs = ["claude:beta", "caption:claude:d0", "claude:d0", "caption:claude:d1", "claude:d1", "divider:older", "older"];
-        // beta 44 + (caption 24 + row 28) × 2 + divider 1 + older 28; open: + (caption 24 + row 28 + divider 1 + row 28) instead of the fold.
-        const double foldedHeight = 44 + 52 + 52 + 1 + 28, openHeight = 44 + 52 + 52 + 24 + 28 + 1 + 28;
+        string[] datedIDs = ["claude:beta", "caption:claude:d0", "claude:d0", "caption:claude:d1", "claude:d1", "divider:older", "older", "divider:toggle", "toggle"];
+        // beta 44 + (caption 24 + row 28) × 2 + divider 1 + older 28 + divider 1 + toggle 28; open: + (caption 24 + row 28 + divider 1 + row 28)
+        // instead of the fold.
+        const double foldedHeight = 44 + 52 + 52 + 1 + 28 + 1 + 28, openHeight = 44 + 52 + 52 + 24 + 28 + 1 + 28 + 1 + 28;
         IEnumerable<bool> rules(SessionListModel list) => list.Entries(true).OfType<SessionListEntry.Caption>().Select(entry => entry.Rule);
         check(datedList.Blocks.Select(block => block.Section).SequenceEqual([null, "오늘", "어제", "이전", "이전"]) && datedList.OlderCount == 2
               && datedList.Entries(false).Select(entry => entry.Id).SequenceEqual(datedIDs) && rules(datedList).SequenceEqual([true, true, true])
@@ -329,8 +347,8 @@ public static class SessionPresentationChecks
         var frozenIDs = datedList.Reordered(["claude:beta", "claude:d0", "claude:d1", "claude:d2"]).Entries(true).Select(entry => entry.Id).ToList();
         check(frozenIDs.Distinct().Count() == frozenIDs.Count, "duplicate list entry IDs");
         // Keyboard navigation skips captions and dividers; selection starts at input, then retry, then the first row.
-        check(datedList.Navigation(false).SequenceEqual(["claude:beta", "claude:d0", "claude:d1", "older"])
-              && datedList.Navigation(true).Count == 5
+        check(datedList.Navigation(false).SequenceEqual(["claude:beta", "claude:d0", "claude:d1", "older", "toggle"])
+              && datedList.Navigation(true).Count == 6 && datedList.Navigation(true)[^1] == "toggle"
               && make([beta, retrying, question]).StartRow(false) == "claude:q"
               && make([beta, retrying]).StartRow(false) == "claude:r" && make([beta, alpha]).StartRow(false) == "claude:alpha",
               "navigation rows and the first selection");
@@ -338,7 +356,7 @@ public static class SessionPresentationChecks
                                     .. Enumerable.Range(0, 5).Select(i => reading($"claude:S1/a{i}", session: "S1", agent: $"a0{i}xxxxx", subagent: true,
                                                                                   state: A.Stale, last: -100))]);
         check(floodNavigation.Navigation(false).SequenceEqual(["claude:S1", "claude:S1/a0", "claude:S1/a1", "claude:S1/a2", "more:claude:S1"]),
-              "children and the +N row are navigable");
+              "children and the +N row are navigable; all hidden children in the +N row leave no toggle");
         // Frozen order (S-8): known blocks keep their place, new ones go to the end, heights follow.
         var frozen = make([beta, alpha, waiting]).Reordered(["claude:wait", "claude:beta"]);
         check(frozen.Blocks.Select(block => block.Id).SequenceEqual(["claude:wait", "claude:beta", "claude:alpha"])
@@ -347,7 +365,7 @@ public static class SessionPresentationChecks
         // The viewport cut lands at least 12pt inside a row and hides at least 6pt of it.
         var longList = make(Enumerable.Range(0, 12).Select(i => reading($"claude:L{i}", session: $"L{i}", active: true, state: A.Working, last: -1)).ToList());
         var cut = longList.Viewport(false);
-        check(longList.ContentHeight > SessionListModel.MaxViewport && cut <= SessionListModel.MaxViewport
+        check(SessionListModel.MaxViewport == 312 && longList.ContentHeight > SessionListModel.MaxViewport && cut <= SessionListModel.MaxViewport
               && Enumerable.Range(0, 12).Select(i => i * 45.0).Any(top => cut - top >= 12 && top + 44 - cut >= 6), "viewport snaps inside a row");
         check(make([beta]).Viewport(false) == 44, "short lists are not snapped");
 
@@ -409,6 +427,10 @@ public static class SessionPresentationChecks
               && claudeSummary?.Help(now).EndsWith("\n주간 한도 31% 사용 · 3일 4시간 후 초기화", StringComparison.Ordinal) == true
               && claudeSummary?.Spoken(now) == "42퍼센트 사용, 2시간 13분 후 초기화, 1분 전 기록 기준, 주간 한도 31퍼센트 사용, 3일 4시간 후 초기화",
               "Claude limit row: higher live window, Codex row wording, the other window in help and VoiceOver");
+        check(claudeSummary?.ShortTitle == "Claude · 5시간" && claudeSummary?.OtherSummary(now) is { WindowMinutes: 10_080, UsedPercent: 31 } claudeWeekly
+              && claudeWeekly.ShortTitle == "Claude · 주간" && claudeWeekly.RecordedAt == claudeSummary.RecordedAt && claudeWeekly.Other == null
+              && claudeWeekly.Details(now)[^1] == "3일 4시간 후 초기화",
+              "both Claude windows get their own row, titled provider · window");
         var weeklyHigher = ClaudeUsageLimit(new ClaudeUsageLimits(claudeWindow(30, 600), claudeWindow(30, 2 * day)), now);
         var fiveHourReset = ClaudeUsageLimit(new ClaudeUsageLimits(claudeWindow(97, -60), claudeWindow(55, 2 * day)), now);
         check(weeklyHigher?.Title == "Claude 주간 한도" && fiveHourReset?.Title == "Claude 주간 한도" && fiveHourReset?.UsedPercent == 55
@@ -508,8 +530,8 @@ public static class SessionPresentationChecks
               && OnboardingOutcome.Make(conflict, "이유", conflictFailure, TelemetryCollectorState.Waiting, bridged: true) == new OnboardingOutcome.Skipped("이유"),
               "first-run outcome says only what happened");
         check(OnboardingOutcome.Make(null, null, null, TelemetryCollectorState.Receiving, optedOut: true)
-              == new OnboardingOutcome.Skipped("--disconnect-telemetry로 연결을 해제한 상태입니다"),
-              "after --disconnect-telemetry the card does not claim the settings were added");
+              == new OnboardingOutcome.Skipped("실측 연결을 해제한 상태입니다 · 설정 › 실측에서 다시 연결"),
+              "after a disconnect the card does not claim the settings were added, and points to Settings › Telemetry");
         var restartSlot = Speed(question, now, restartNeeded: true);
         check(restartSlot.Value == "—" && restartSlot.Help == "실측 연결됨 · Claude Code를 새로 실행하면 속도가 표시됩니다", "restart-needed speed help");
         check(TelemetryReceipt(new Dictionary<TokenSource, DateTimeOffset> { [TokenSource.Codex] = at(-130) }, now) == "실측 수신: Codex 2분 전 · Claude Code 기록 없음"
@@ -557,6 +579,14 @@ public static class SessionPresentationChecks
               && DetailItems(claudeChild, S.Working).Select(item => item.Label).SequenceEqual(["세션 ID", "에이전트", "기록 시점"])
               && DetailItems(claudeChild, S.Working).Last().Value == "Claude Code는 메시지 완료 시 기록",
               "inline detail lines and height");
+        // The detail's action line (#7): resume command, then File Explorer on the project folder, else the log file; 6 + 20 more.
+        var detailActions = DetailActions(located, home);
+        var logOnly = DetailActions(located with { ProjectPath = null }, home);
+        check(detailActions.Select(action => action.Title).SequenceEqual(["재개 명령 복사", "탐색기에서 보기"])
+              && detailActions[0].Copy == ResumeCommand(located) && detailActions[1].Reveal == @"C:\work\TokenCat"
+              && logOnly.Select(action => action.Reveal).SequenceEqual([logPath]) && DetailActions(detailed, home).Count == 0
+              && DetailHeight(located, S.Working) == 16 + 15 * DetailItems(located, S.Working).Count + 0.5 + 26,
+              "the inline detail offers the resume command and File Explorer, and grows by the action line");
 
         // Wall-clock buckets: the newest starts at floor(now / 5) * 5, future records clamp, old records drop.
         var flowReading = reading("codex:flow", TokenSource.Codex) with
@@ -674,13 +704,18 @@ public static class SessionPresentationChecks
                   && header(noticeCounts, spoken: true).Spoken == "1 session waiting for log · no record for 3 minutes"
                   && header(new SessionCounts(Groups([claudeParent, claudeChild, codexParent, codexChild], now))).Spoken
                      == "2 sessions working · 1 tool · 2 subagents"
-                  && caption(urgent, -40).Text == "Waiting for input · reply to resume" && caption(plans, null).Text == "Plan approval · approve to resume"
-                  && caption(retryOnly, -40).Text == "API retry 2/10 · in 4s" && caption(noticeCounts, null).Text == "Waiting for log · no record for 3m",
-                  "English header and flow caption");
+                  && caption(urgent, -40).Text == "Last record" && caption(plans, null).Text == "Last record"
+                  && caption(retryOnly, -40).Text == "API retry 2/10 · in 4s" && caption(noticeCounts, null).Text == "Waiting for log · no record for 3m"
+                  && ProviderSplits(new Dictionary<TokenSource, int>
+                         { [TokenSource.Codex] = 1_200, [TokenSource.Claude] = 6_600, [TokenSource.OpenCode] = 300, [TokenSource.Omp] = 70_000 })
+                     .Skip(1).SequenceEqual(["omp 70k · Claude Code 6.6k · Codex 1.2k · +1 more", "omp 70k · Claude Code 6.6k · +2 more", "omp 70k · +3 more"]),
+                  "English header, flow caption and provider fold");
             var englishFlood = make([floodParent, .. flood]).Blocks.FirstOrDefault();
             check(ChildGroupText(S.Input, 1) == "1 subagent needs input" && ChildGroupText(S.Waiting, 4) == "4 subagents waiting for log"
                   && SpokenLabel(modelled, S.Input) == "Input needed, TokenCat, Claude Code claude-opus-5-5"
-                  && SpokenLabel(codexChild, S.Working) == "Subagent sample_runner, Working"
+                  && SpokenLabel(codexChild, S.Working) == "Subagent sample_runner, Working" && ChildTitle(claudeChild) == ("Subagent", "b1234567")
+                  && family.ToggleText == "Show 1 more subagent"
+                  && make(input).ToggleText == "Show all 12 sessions" && make(input, expanded: true).ToggleText == "Show less"
                   && englishFlood?.MoreText == "+9 subagents waiting for log · last record 1m ago"
                   && englishFlood?.MoreSpoken == "+9 subagents waiting for log · last record 1 minute ago",
                   "English subagent counts and VoiceOver labels");
@@ -690,7 +725,8 @@ public static class SessionPresentationChecks
                   && undated?.Detail(now) == "As of 10m ago" && expired.Detail(now) == "Reset · waiting for a Codex record"
                   && claudeSummary?.Spoken(now)
                      == "42 percent used, Resets in 2 hours 13 minutes, as of 1 minute ago, Weekly limit 31 percent used, resets in 3 days 4 hours"
-                  && claudeSummary?.Help(now).EndsWith("\nWeekly limit 31% used · resets in 3d 4h", StringComparison.Ordinal) == true,
+                  && claudeSummary?.Help(now).EndsWith("\nWeekly limit 31% used · resets in 3d 4h", StringComparison.Ordinal) == true
+                  && claudeSummary?.ShortTitle == "Claude · 5-hour" && claudeSummary?.OtherSummary(now)?.ShortTitle == "Claude · weekly",
                   "English usage limit copy");
             check(Context(codexContext, now)?.Text == "Context 61% used" && Context(codexContext, now)?.Spoken == "Context 61 percent used"
                   && Context(claudeContext, now)?.Compacted == "Compacted 5m ago"

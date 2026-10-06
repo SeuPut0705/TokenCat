@@ -84,7 +84,8 @@ enum SnapshotFixtures {
                      limit(31, resetsIn: 5 * 86_400 + 2 * 3_600, recorded: -20, live: true), limit(33, resetsIn: 5 * 86_400 + 2 * 3_600, recorded: -300, live: true)]
             .map { UsageLimitSummary(usedPercent: $0.usedPercent, windowMinutes: $0.windowMinutes, resetsAt: $0.resetsAt, recordedAt: $0.recordedAt,
                                      live: $0.live == true) }
-        // Claude: both windows live (the higher one shown), the 5-hour window at the warning level, both reset, then a live read.
+        // Claude: both windows live (each its own row, the higher first), the 5-hour window at the warning level, both reset,
+        // then a live read.
         let claude = [claudeLimits(fiveHour: (42, 2 * 3_600 + 13 * 60), weekly: (31, 3 * 86_400 + 4 * 3_600), recorded: -50),
                       claudeLimits(fiveHour: (91, 47 * 60), weekly: (64, 2 * 86_400), recorded: -20),
                       claudeLimits(fiveHour: (77, -1_200), weekly: (58, -600), recorded: -9_000),
@@ -92,7 +93,7 @@ enum SnapshotFixtures {
             .compactMap { SessionPresentation.claudeUsageLimit($0, now: now) }
         let limits = codex + claude
         let rows = VStack(spacing: 12) {
-            ForEach(Array(limits.enumerated()), id: \.offset) { UsageLimitRow(limit: $0.element, now: now).container() }
+            ForEach(Array(limits.enumerated()), id: \.offset) { UsageLimitsCard(limits: [$0.element], now: now) }
         }
         func sheet<V: View>(_ view: V) -> AnyView {
             AnyView(view.padding(.horizontal, DashboardLayout.gutter).padding(.vertical, 12).frame(width: DashboardLayout.width)

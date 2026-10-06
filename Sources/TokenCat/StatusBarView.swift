@@ -134,10 +134,11 @@ enum StatusBarContent {
                 return StatusBarMetric(id: id, label: "NET", value: "↑\(upload)\n↓\(download)", symbol: "network",
                                        detail: loc("업로드 \(upload) · 다운로드 \(download)", "Upload \(upload) · Download \(download)"))
             case .ai:
-                // Running groups with their phase mark; with none running, the log-wait groups (secondary, half disc);
-                // otherwise a tertiary "0" without a mark (M-2).
+                // Running groups with their phase mark; while any waits for the person, only those (the number to act on);
+                // with none running, the log-wait groups (secondary, half disc); otherwise a tertiary "0" without a mark (M-2).
                 let waitingOnly = ai.running == 0 && ai.waiting > 0
-                let value = hasTokenSample ? String(waitingOnly ? ai.waiting : ai.running) : "—"
+                let shown = waitingOnly ? ai.waiting : ai.running > 0 && ai.phase == .input ? ai.input : ai.running
+                let value = hasTokenSample ? String(shown) : "—"
                 let state: TokenActivityState = !hasTokenSample ? .idle : ai.running > 0 ? ai.phase : waitingOnly ? .stale : .idle
                 let phase = StatusAISummary.phaseTitle(ai.running > 0 ? ai.phase : .idle)
                 let headline = waitingOnly ? loc("AI 로그 대기 \(ai.waiting)개", "AI: \(ai.waiting) waiting for log") : loc("AI \(phase)", "AI: \(phase)")
@@ -207,6 +208,8 @@ struct QuickMenuSummary: Equatable {
     var headline: String
     /// Up to three live top-level groups in urgency order.
     var rows: [Row] = []
+    /// Live groups beyond `rows`, reached through the dashboard.
+    var more = 0
 
     static func make(groups: [SessionGroup], counts: SessionCounts, hasTokenSample: Bool, now: Date) -> QuickMenuSummary {
         guard hasTokenSample else { return QuickMenuSummary(headline: loc("AI 기록 확인 중", "Reading AI records")) }
@@ -224,7 +227,13 @@ struct QuickMenuSummary: Equatable {
             return Row(id: group.id, kind: kind, title: "\(project) — \(detail(group, now: now))")
         }
         return QuickMenuSummary(headline: parts.isEmpty ? loc("진행 중인 세션 없음", "No active sessions")
-                                    : ([loc("AI 세션", "AI sessions")] + parts).joined(separator: " · "), rows: rows)
+                                    : ([loc("AI 세션", "AI sessions")] + parts).joined(separator: " · "), rows: rows,
+                                more: max(0, live.count - 3))
+    }
+
+    /// "그 외 9개 세션…": the quick menu's last summary row when more groups are live than it lists.
+    static func moreTitle(_ count: Int) -> String {
+        loc("그 외 \(count)개 세션…", count == 1 ? "1 more session…" : "\(count) more sessions…")
     }
 
     /// "입력 대기 3분", "명령 실행 · 턴 7분", "로그 대기 · 3분째 기록 없음": minutes only, never seconds.
@@ -354,21 +363,23 @@ final class StatusBarContentView: NSView {
     func cellWidth(_ id: MetricID) -> CGFloat {
         switch layout {
         case .minimal: return showRunner ? 30 : 41
-        // The speed item fits "9999 tok/s" (`Format.barTps` drops the decimal from 100 up) beside three stacked glyphs, so a
-        // 4-digit rate never shrinks: on one line the stack's 12 pt beyond one glyph widen the cell from 69 to 81.
+        // The speed item fits "9999 tok/s" (`Format.barTps` drops the decimal from 100 up) beside three glyphs, so a 4-digit
+        // rate never shrinks: on one line the row's 22 pt beyond one glyph (two more glyphs and their 1 pt gaps) widen the
+        // cell from 69 to 91.
         case .compact:
             switch id { case .network: return 66; case .ai: return 36; case .averageSpeed: return 56; default: return 32 }
         case .inline:
-            switch id { case .network: return 114; case .ai: return 46; case .averageSpeed: return 81; default: return 52 }
+            switch id { case .network: return 114; case .ai: return 46; case .averageSpeed: return 91; default: return 52 }
         }
     }
 
     /// Speed glyph sides: the two-line label row, and beside the value on one line.
     static let glyphSide: (compact: CGFloat, inline: CGFloat) = (8, 10)
-    /// The average speed item draws at most three client glyphs, each 60 % of a side after the one before (a 40 % overlap).
-    static let glyphStack = (limit: 3, step: CGFloat(0.6))
-    static func glyphStackWidth(_ count: Int, side: CGFloat) -> CGFloat {
-        count <= 0 ? 0 : side + CGFloat(min(count, glyphStack.limit) - 1) * side * glyphStack.step
+    /// The average speed item draws at most three client glyphs side by side, 1 pt apart, so each icon stays whole.
+    static let glyphRow = (limit: 3, gap: CGFloat(1))
+    static func glyphRowWidth(_ count: Int, side: CGFloat) -> CGFloat {
+        let shown = CGFloat(min(max(count, 0), glyphRow.limit))
+        return shown == 0 ? 0 : shown * side + (shown - 1) * glyphRow.gap
     }
 
     /// `StateGlyph` sizes in the bar: 7 pt, the input disc 8 pt (A0-3).
@@ -477,24 +488,13 @@ final class StatusBarContentView: NSView {
                 Run(text: (parts.unit == "%" ? "" : "\u{2009}") + parts.unit, font: .systemFont(ofSize: 8.5, weight: .medium), color: palette.secondary)]
     }
 
-    /// The average speed item's client glyphs from `minX`, at most `glyphStack.limit`, each overlapping the one before by
-    /// 40 %: the first (fastest) is leftmost and frontmost, and each front glyph's silhouette, grown by a 1 pt ring, is
-    /// cleared out of the glyphs behind it so the bar shows between them, as in an avatar group.
-    private func drawGlyphStack(_ sources: [TokenSource], side: CGFloat, minX: CGFloat, centerY: CGFloat) {
-        let shown = Array(sources.prefix(Self.glyphStack.limit))
-        guard !shown.isEmpty, let context = NSGraphicsContext.current else { return }
-        let width = Self.glyphStackWidth(shown.count, side: side)
-        context.saveGraphicsState()
-        // A layer of its own, so the cut-outs clear only the glyphs and never what is drawn beneath them.
-        context.cgContext.beginTransparencyLayer(in: CGRect(x: minX - 2, y: centerY - side / 2 - 2, width: width + 4, height: side + 4),
-                                                 auxiliaryInfo: nil)
-        for (index, source) in shown.enumerated().reversed() {
-            let rect = CGRect(x: snap(minX + CGFloat(index) * side * Self.glyphStack.step), y: snap(centerY - side / 2), width: side, height: side)
-            if index < shown.count - 1 { SpeedGlyph.clear(source, around: rect, ring: 1) }
-            SpeedGlyph.draw(source, in: rect)
+    /// The average speed item's client glyphs from `minX`, at most `glyphRow.limit`, fastest first, each whole and 1 pt
+    /// clear of the next.
+    private func drawGlyphRow(_ sources: [TokenSource], side: CGFloat, minX: CGFloat, centerY: CGFloat) {
+        for (index, source) in sources.prefix(Self.glyphRow.limit).enumerated() {
+            SpeedGlyph.draw(source, in: CGRect(x: snap(minX + CGFloat(index) * (side + Self.glyphRow.gap)), y: snap(centerY - side / 2),
+                                               width: side, height: side))
         }
-        context.cgContext.endTransparencyLayer()
-        context.restoreGraphicsState()
     }
 
     private func drawCompact(_ metric: StatusBarMetric, in cell: NSRect, _ palette: Palette) {
@@ -506,7 +506,7 @@ final class StatusBarContentView: NSView {
         let inner = cell.insetBy(dx: 1, dy: 0)
         if !metric.sources.isEmpty {
             let side = Self.glyphSide.compact
-            drawGlyphStack(metric.sources, side: side, minX: inner.midX - Self.glyphStackWidth(metric.sources.count, side: side) / 2, centerY: top + 4.5)
+            drawGlyphRow(metric.sources, side: side, minX: inner.midX - Self.glyphRowWidth(metric.sources.count, side: side) / 2, centerY: top + 4.5)
         } else {
             draw([Run(text: metric.label, font: labelFont, color: palette.secondary, kern: 0.3)], centerY: top + 4.5, in: inner)
         }
@@ -532,8 +532,8 @@ final class StatusBarContentView: NSView {
         if !metric.sources.isEmpty {
             // Like the "AI" caption: 4 pt clear of the cell's leading edge, then the value 3 pt after the glyphs.
             let side = Self.glyphSide.inline
-            drawGlyphStack(metric.sources, side: side, minX: cell.minX + 4, centerY: cell.midY)
-            let x = cell.minX + 4 + Self.glyphStackWidth(metric.sources.count, side: side) + 3
+            drawGlyphRow(metric.sources, side: side, minX: cell.minX + 4, centerY: cell.midY)
+            let x = cell.minX + 4 + Self.glyphRowWidth(metric.sources.count, side: side) + 3
             draw(valueRuns(metric.value, palette), centerY: cell.midY, in: NSRect(x: x, y: 0, width: cell.maxX - x, height: cell.height),
                  alignment: .left)
             return
@@ -739,18 +739,6 @@ enum SpeedGlyph {
         NSGraphicsContext.current?.imageInterpolation = .high
         image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
     }
-
-    /// Clears `source`'s silhouette in `rect`, grown by `ring` points, out of what is already drawn: the icon erased at
-    /// eight offsets around its place.
-    static func clear(_ source: TokenSource, around rect: CGRect, ring: CGFloat) {
-        guard let image = images[source] else { return }
-        NSGraphicsContext.current?.imageInterpolation = .high
-        for step in 0..<8 {
-            let angle = CGFloat(step) * .pi / 4
-            image.draw(in: rect.offsetBy(dx: cos(angle) * ring, dy: sin(angle) * ring), from: .zero, operation: .destinationOut,
-                       fraction: 1, respectFlipped: true, hints: nil)
-        }
-    }
 }
 
 /// Menu-bar-like backdrops for settings previews and snapshots. The real bar is translucent; these approximate it.
@@ -946,8 +934,10 @@ func runStatusBarChecks() -> [String] {
           StatusBarContentView.markWidth(.tool) == 7 && StatusBarContentView.markWidth(.working) == 7 && StatusBarContentView.markWidth(.stale) == 7
           && StatusBarContentView.markWidth(.input) == 8 && StatusBarContentView.markWidth(.output) == 0 && StatusBarContentView.markSlot == 11)
     let question = TokenReading(source: .claude, id: "question", sessionID: "q1", active: true, activityState: .input, sampledAt: at)
-    check("input outranks tool and counts once per group",
-          ai([question, tool])?.activityState == .input && ai([question, tool])?.value == "2"
+    // The bar counts only the groups waiting for the person while any does; the detail keeps the whole breakdown.
+    check("input outranks tool, counts once per group and shows only the groups waiting for input",
+          ai([question, tool])?.activityState == .input && ai([question, tool])?.value == "1"
+          && ai([question, tool], layout: .minimal)?.value == "1"
           && ai([question, tool])?.detail.contains("진행 중 1개") == true && ai([question, tool])?.detail.contains("입력 필요 1") == true)
     var parent = TokenReading(source: .claude, id: "claude:parent", sessionID: "s1", active: true, activityState: .working, sampledAt: at)
     var child = TokenReading(source: .claude, id: "claude:child", sessionID: "s1", agentID: "a1", isSubagent: true,
@@ -1053,9 +1043,9 @@ func runStatusBarChecks() -> [String] {
     }
     check("layout width is stable from unknown to maximum values", stable)
     // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30 (41 without the cat);
-    // the speed item 56 on two lines, 81 on one.
+    // the speed item 56 on two lines, 91 on one (three whole glyphs 1 pt apart beside "9999 tok/s").
     let expected: [String: CGFloat] = ["compact/true": 272, "inline/true": 410, "minimal/true": 72, "minimal/false": 49,
-                                       "compact/true/speed": 328, "inline/true/speed": 491, "minimal/true/speed": 72]
+                                       "compact/true/speed": 328, "inline/true/speed": 501, "minimal/true/speed": 72]
     check("cell widths match the layout contract", expected.allSatisfy { widths[$0.key] == $0.value })
     check("minimal layout fits beside a notch", (46...72).contains(widths["minimal/true"] ?? 0)
           && (widths["minimal/true"] ?? 0) < (widths["compact/true"] ?? 0))
@@ -1139,14 +1129,15 @@ func runStatusBarChecks() -> [String] {
     let glyphColour = [saturation(metric(.averageSpeed, "55.6tok/s", sources: [.codex])), saturation(metric(.averageSpeed, "55.6tok/s", sources: [.claude]))]
     check("speed glyphs are the clients' coloured app icons, dashes secondary, digits label-toned (saturation \(glyphColour), luma \([dashTone, digitTone]))",
           TokenSource.allCases.allSatisfy(SpeedGlyph.has) && glyphColour.allSatisfy { $0 > 0.4 } && dashTone < 0.5 && dashTone > digitTone * 1.5)
-    // Two clients: Codex's blue glyph in front at 8–18 pt, Claude's orange one showing past it at 19–24 pt, and the value
-    // 3 pt after the pair (4 + 4 + 16 + 3 = 27 pt).
+    // Two clients: Codex's blue glyph at 8–18 pt, a 1 pt gap, Claude's orange one whole at 19–29 pt, and the value 3 pt
+    // after the pair (4 + 4 + 21 + 3 = 32 pt).
     let pair = metric(.averageSpeed, "55.6tok/s", sources: [.codex, .claude])
-    let blue = columns(pair, 16..<34).contains { $0.rgb[2] - $0.rgb[0] > 0.3 }, orange = columns(pair, 39..<47).contains { $0.rgb[0] - $0.rgb[2] > 0.3 }
+    let blue = columns(pair, 16..<34).contains { $0.rgb[2] - $0.rgb[0] > 0.3 }, orange = columns(pair, 40..<56).contains { $0.rgb[0] - $0.rgb[2] > 0.3 }
+    let gapClear = columns(pair, 36..<38).allSatisfy { $0.rgb.min()! > 0.85 }
     let pairView = strip(pair)
     _ = pairView.snapshotImage()
-    check("two contributing clients draw two overlapping glyphs before the value (blue \(blue), orange \(orange), value at \(pairView.drawnText.map(\.x)))",
-          blue && orange && pairView.drawnText.first?.x == 27 && StatusBarContentView.glyphStackWidth(5, side: 10) == 22)
+    check("two contributing clients draw two whole glyphs 1 pt apart before the value (blue \(blue), orange \(orange), gap \(gapClear), value at \(pairView.drawnText.map(\.x)))",
+          blue && orange && gapClear && pairView.drawnText.first?.x == 32 && StatusBarContentView.glyphRowWidth(5, side: 10) == 32)
 
     // The sleep z: a template mask at the sprite's snapped origin, label-coloured, nothing outside the mask (K-2).
     let fxView = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
@@ -1232,7 +1223,8 @@ func runStatusBarChecks() -> [String] {
     check("the quick menu summarises live groups by urgency: \(quick.headline) / \(quick.rows.map(\.title))",
           quick.headline == "AI 세션 · 입력 1 · 도구 1 · 진행 2 · 로그 대기 1"
           && quick.rows.map(\.title) == ["TokenCat — 입력 대기 3분", "api-server — 명령 실행 · 턴 7분", "web — 진행 · 턴 1분 미만"]
-          && quick.rows.map(\.kind) == [.input, .tool, .working] && quick.rows.first?.id == "q")
+          && quick.rows.map(\.kind) == [.input, .tool, .working] && quick.rows.first?.id == "q"
+          && quick.more == 2 && QuickMenuSummary.moreTitle(2) == "그 외 2개 세션…")
     let waitingOnly = SessionPresentation.groups([live("s", nil, .stale, last: -190)], now: at)
     check("quiet and loading quick menus say so",
           QuickMenuSummary.make(groups: [], counts: SessionCounts(), hasTokenSample: true, now: at).headline == "진행 중인 세션 없음"
@@ -1250,7 +1242,8 @@ func runStatusBarChecks() -> [String] {
               && QuickMenuSummary.make(groups: waitingOnly, counts: SessionCounts(waitingOnly), hasTokenSample: true, now: at).rows.first?.title
                 == "Unknown project — Waiting for log · no record for 3m"
               && tip.hasSuffix("AI: Working 1 · Running tool 1 · Subagents 0 · Waiting for log 0 · Input needed 1\nClick: details · Right-click: quick menu")
-              && tip.contains("Memory 18 / 24 GB") && ai([stale])?.detail.hasPrefix("AI: 1 waiting for log · Working 0 ·") == true)
+              && tip.contains("Memory 18 / 24 GB") && ai([stale])?.detail.hasPrefix("AI: 1 waiting for log · Working 0 ·") == true
+              && QuickMenuSummary.moreTitle(1) == "1 more session…" && QuickMenuSummary.moreTitle(9) == "9 more sessions…")
     }
 
     // Settings preview memo (T-5): preferences and pose rebuild at once, values at most once a second.

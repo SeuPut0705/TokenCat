@@ -2,6 +2,28 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.17.0
+
+**macOS and Windows**
+
+- Session titles line up: every live row puts its state glyph in the glyph column and its title on the text column shared with quiet rows and subagents, and the state's words (`Waiting for plan approval`, `Running command`, …) open the second line in place of the colored chip. · 세션 제목이 한 줄로 맞춰집니다. 진행 행마다 상태 글리프를 글리프 열에, 제목을 쉬는 행·하위 에이전트와 같은 글자 열에 두고, 색 칩 대신 상태를 말로(`계획 승인 대기`, `명령 실행 중` …) 둘째 줄 앞에 적습니다.
+- Usage limits have their own card right under the header, named provider first (`Claude · 5-hour 42% used`), and an account's other live window gets its own line instead of hiding in help (Claude's weekly beside its 5-hour, and Codex's when both are logged). · 사용 한도가 헤더 바로 아래 자기 카드로 옮겨 제공사를 앞에 두고(`Claude · 5시간 42% 사용`), 계정의 다른 창도 도움말에 숨지 않고 한 줄을 따로 받습니다(Claude의 5시간 옆 주간, 둘 다 기록되면 Codex도).
+- The output card is about half as tall: the total sits on the title line with the per-client split, the last record and Speed now share one line, and the bars are shorter (their scale moved to help). The session list grows to 312 pt before it scrolls, and the footer hides while everything is live (the check interval and last telemetry moved to the header's help), so a fifth live session fits without a taller popover. · 출력 카드 높이가 절반쯤으로 줄었습니다. 합계를 클라이언트별 내역과 함께 제목 줄에 두고, 마지막 기록과 지금 속도를 한 줄에 놓았으며, 막대를 낮췄습니다(눈금은 도움말로). 세션 목록은 312pt까지 늘어난 뒤 스크롤하고, 모두 정상일 때는 아래쪽 줄을 숨겨(확인 주기·마지막 실측 수신은 헤더 도움말로) 팝오버를 키우지 않고도 다섯째 진행 세션이 들어갑니다.
+- One input wait is said once: a row waiting for you ends with only the time waited (`0:40`), and the output card no longer repeats `Waiting for input · reply to resume` under the header that already says it. · 입력 대기를 한 번만 말합니다. 입력을 기다리는 행은 기다린 시간(`0:40`)만 끝에 두고, 출력 카드도 헤더가 이미 말한 `입력 대기 · 답변하면 계속 기록`을 되풀이하지 않습니다.
+- Speed now without a measurement says `No measured speed` instead of a `—` that read as a divider, and folded clients read `+1 more` (`외 1`) instead of a bare `+1`. · 실측이 없을 때 지금 속도는 구분선처럼 보이던 `—` 대신 `속도 실측 없음`이라고 적고, 접힌 클라이언트는 숫자만인 `+1` 대신 `외 1`(`+1 more`)로 적습니다.
+- The list has one disclosure control, at its end (`Show all 12 sessions ⌄`, `Show less ⌃`), instead of a header toggle; the `+3 subagents waiting for log ⌄` line gets a chevron and turns primary on hover so it reads as a button. · 목록을 펼치고 접는 곳이 헤더 대신 목록 끝 한 곳(`세션 12개 모두 보기 ⌄`, `접기 ⌃`)이 되었고, `+3 하위 로그 대기 ⌄` 줄은 갈매기표와 마우스를 올리면 진해지는 글자로 버튼처럼 보입니다.
+- The inline detail has `Copy Resume Command` and `Show in Finder` (Windows: `Show in File Explorer`) buttons, and ⌘⇧C (Ctrl+Shift+C) copies the selected session's resume command. · 인라인 상세에 `재개 명령 복사`·`Finder에서 보기`(Windows는 `탐색기에서 보기`) 버튼이 생겼고, ⌘⇧C(Ctrl+Shift+C)로 선택한 세션의 재개 명령을 복사합니다.
+- A subagent without a distinguishing role reads `Subagent · a2222222` instead of a bare ID. · 구별되는 역할이 없는 하위 에이전트는 ID만 보이지 않고 `하위 에이전트 · a2222222`로 보입니다.
+- The system meters share one length, and CPU's 30-second peak tick shows only when it's 5 points or more above the current value. · 시스템 미터가 같은 길이가 되었고, CPU의 30초 최고값 눈금은 지금 값보다 5 이상 높을 때만 보입니다.
+- The first-launch card is one line per point with the explanations in help; a telemetry problem keeps its reason and `Open settings` on the card. · 처음 실행 카드가 항목마다 한 줄이 되고 설명은 도움말로 옮겼습니다. 실측 연결에 문제가 있으면 그 이유와 `설정 열기`는 카드에 남습니다.
+- While any session waits for input, the menu bar (Windows: widget) AI number counts only those sessions. · 입력을 기다리는 세션이 있으면 메뉴 막대(Windows: 위젯) AI 숫자는 그 세션 수만 셉니다.
+- Average speed shows up to three client icons whole, side by side and 1 pt apart instead of overlapping (the One Line item is a little wider). · 평균 속도의 클라이언트 아이콘을 겹치지 않고 최대 세 개까지 1pt 간격으로 나란히 그립니다(한 줄 표시의 항목이 조금 넓어짐).
+- The right-click quick menu adds `N more sessions…` when more than three are live. · 진행 중인 세션이 세 개를 넘으면 우클릭 빠른 메뉴에 `그 외 N개 세션…`이 생깁니다.
+- Settings › Telemetry: `Disconnect…` (with confirmation) and `Reconnect` replace the terminal command in the footer. · 설정 › 실측: 꼬리말의 터미널 명령 대신 `연결 해제…`(확인 후)와 `다시 연결` 단추를 둡니다.
+- Settings › Telemetry: a working collector reads `On · 127.0.0.1:16493` with a check, idle clients `Nothing received yet`, the retry line no longer crowds the collector row, and each client row has a folder button for its config file. · 설정 › 실측: 정상 수집기는 체크와 `켜짐 · 127.0.0.1:16493`, 받은 것이 없는 클라이언트는 `아직 받은 실측 없음`으로 보이고, 재시도 줄이 수집기 줄을 밀지 않으며, 클라이언트 줄마다 설정 파일 폴더 단추가 있습니다.
+- The character's visibility moved to the top of the item list (Menu Bar / Widget tab), and the item rows dim while Minimal is selected. · 캐릭터 표시를 항목 목록 맨 위(메뉴 막대·위젯 탭)로 옮기고, 최소 표시에서는 항목 줄을 흐리게 합니다.
+- `Restore Defaults…` sits in its own section at the bottom of General; a found update shows only a prominent `Update` button; About lists the privacy facts as three left-aligned lines. · `기본값으로 되돌리기…`를 일반 탭 맨 아래 따로 두고, 새 버전이 있으면 강조한 `업데이트` 단추만 보이며, 정보 탭의 개인정보 문구를 왼쪽 정렬 세 줄로 나눕니다.
+
 ## 0.16.0
 
 **macOS and Windows**

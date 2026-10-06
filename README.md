@@ -62,13 +62,13 @@ The numbers are shown as they are. Token counts are the values actually recorded
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-flow-dark.png">
-    <img src="docs/images/en/popover-flow-light.png" width="468" alt="The top of the dashboard: 7,800 tok of output in the last 5 minutes with a per-client breakdown, Speed now docs-site 55.6 generation tok/s, the reason for waiting on input, 5-second bars, and rows for the Codex weekly limit at 28% used and the Claude 5-hour limit at 42% used.">
+    <img src="docs/images/en/popover-flow-light.png" width="468" alt="The top of the dashboard: a limits card with Codex weekly at 28% used and Claude 5-hour at 42% with Claude weekly at 31% under it; then the output card with 7,800 tok and the per-client breakdown on its title line, the last record +760 tok 40s ago and Speed now docs-site 55.6 generation tok/s on the next line, and 5-second bars.">
   </picture>
 </p>
 
-Output tokens recorded in the logs over the last 5 minutes are shown as 5-second bars. When more than one client records, the total is split, largest first, as in `Claude Code 6.6k · Codex 1.2k`; when they don't all fit beside the speed, the smallest fold into `+N`. The right side shows the last record; after 30 seconds without a new one, that spot tells you what is being waited on instead (input, plan approval, an API retry, or a tool category such as `Running command`). The bars are amounts recorded and are never converted into a speed.
+Output tokens recorded in the logs over the last 5 minutes are shown as 5-second bars, with the total on the card's title line. When more than one client records, the total is split beside the title, largest first, as in `Claude Code 6.6k · Codex 1.2k`; when they don't all fit, the smallest fold into `+N more`. The line under the title shows the last record; after 30 seconds without a new one, it tells you what is being waited on instead (an API retry, a tool category such as `Running command`, or a log). A session waiting for your input says so in the header and on its row, so the card doesn't repeat it. The bars are amounts recorded and are never converted into a speed; their scale is in the chart's help.
 
-**Speed now**, under the number, is the single most recent measurement from the visible working sessions within the last 2 minutes (`Speed now · docs-site 55.6 generation tok/s`): telemetry received by the collector, or the request times OpenCode and omp record for each reply. Only a value measured with that session's current model counts, clients waiting for a restart are left out, and sessions are never summed or averaged. If sessions are working, running a tool or retrying the API with no measurement, it shows `—`; if they are only waiting for input or logs, it's hidden. Speeds derived from log timestamps are never used.
+**Speed now**, at the end of that line, is the single most recent measurement from the visible working sessions within the last 2 minutes (`Speed now · docs-site 55.6 generation tok/s`): telemetry received by the collector, or the request times OpenCode and omp record for each reply. Only a value measured with that session's current model counts, clients waiting for a restart are left out, and sessions are never summed or averaged. If sessions are working, running a tool or retrying the API with no measurement, it says `No measured speed`; if they are only waiting for input or logs, it's hidden. Speeds derived from log timestamps are never used.
 
 ### What each session is doing
 
@@ -79,7 +79,7 @@ Output tokens recorded in the logs over the last 5 minutes are shown as 5-second
   </picture>
 </p>
 
-Working sessions move to the top. Each row shows a state chip, the output so far this turn, the client, model and Codex effort, the turn's elapsed time, and context usage. For Codex, context is a share of the recorded window (`Context 91% used`); Claude Code doesn't record its window size, so it's shown as an absolute value such as `Context 182k`, followed by `Compacted 1m ago` after a compaction. A session with a measurement shows its speed with the unit that names its basis, such as `44.1 request tok/s`. Without a measurement, only rows that may be generating (working, running a tool or retrying the API) show `—`, and rows waiting for input or logs show nothing.
+Working sessions move to the top. Every row's title (the session's title, else its project) starts on the same column after a colored state glyph; the second line opens with the state in words (`Waiting for plan approval`, `Running command`, `Working`, …), then the client, model and Codex effort, and ends with the turn's elapsed time (for a session waiting for input, how long it has waited). The row also shows the output so far this turn and context usage. For Codex, context is a share of the recorded window (`Context 91% used`); Claude Code doesn't record its window size, so it's shown as an absolute value such as `Context 182k`, followed by `Compacted 1m ago` after a compaction. A session with a measurement shows its speed with the unit that names its basis, such as `44.1 request tok/s`. Without a measurement, only rows that may be generating (working, running a tool or retrying the API) show `—`, and rows waiting for input or logs show nothing. When the list is collapsed, its last row is the one control that shows the rest (`Show all 12 sessions ⌄`, or `Show less ⌃` when open).
 
 `Input needed` comes from the logs: Claude Code's questions (AskUserQuestion) and plan approvals (ExitPlanMode), and questions in Codex Plan mode (`request_user_input`). Permission prompts aren't logged, so they can't be shown.
 
@@ -92,29 +92,29 @@ Working sessions move to the top. Each row shows a state chip, the output so far
   </picture>
 </p>
 
-Codex and Claude Code subagents are grouped under their parent by its exact session identifier and shown as a tree. Each is titled by its role or nickname (a short ID when the role is a common one). Every running subagent is shown, and those waiting for logs collapse into one line, such as `+3 subagents waiting for log`.
+Codex and Claude Code subagents are grouped under their parent by its exact session identifier and shown as a tree. Each is titled by its role or nickname; one without a distinguishing role reads `Subagent · a2222222`, its short ID beside it. Every running subagent is shown, and those waiting for logs collapse into one line, such as `+3 subagents waiting for log ⌄`, which opens them.
 
 ### Details and copying in one click
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-detail-dark.png">
-    <img src="docs/images/en/popover-detail-light.png" width="468" alt="Details expanded under the selected session row: the session ID with a copy button, the model, the running tool and record times.">
+    <img src="docs/images/en/popover-detail-light.png" width="468" alt="Details expanded under the selected session row: the session ID with a copy button, the model, the running tool, record times, and Copy Resume Command and Show in Finder buttons.">
   </picture>
 </p>
 
-Click a row or press Return to expand its session ID, model, running tool and record times. The right-click menu copies the session or agent ID and the resume command (`claude --resume …`, `codex resume …`), and shows the log file or project folder in Finder. File contents are never opened. ↑↓ · Return · ⌘C let you do all of this from the keyboard.
+Click a row or press Return to expand its session ID, model, running tool and record times, with buttons to copy the resume command (`claude --resume …`, `codex resume …`) and show the project folder in Finder. The right-click menu also copies the session or agent ID and shows the log file in Finder. File contents are never opened. ↑↓ · Return · ⌘C (copy the ID) · ⌘⇧C (copy the resume command) let you do all of this from the keyboard.
 
 ### Codex and Claude usage limits
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-limits-dark.png">
-    <img src="docs/images/en/popover-limits-light.png" width="468" alt="States of the usage limit row: Codex weekly limit at 28% used, 87% in orange, 97% in red, a dash after the reset, 31% checked live and 33% recorded 5 minutes ago; Claude 5-hour limit at 42% used, 91% in orange, a dash for a Claude weekly limit that has reset, and 48% checked live.">
+    <img src="docs/images/en/popover-limits-light.png" width="468" alt="States of the usage limit rows: Codex weekly at 28% used, 87% in orange, 97% in red, a dash after the reset, 31% checked live and 33% recorded 5 minutes ago; Claude 5-hour at 42% with weekly 31% under it, 91% in orange with weekly 64%, a dash for a Claude weekly limit that has reset, and 48% checked live with weekly 33%.">
   </picture>
 </p>
 
-At the bottom of the output card, one line per client shows the usage percentage, the time until it resets, and how fresh the value is. 85% or more is orange, 95% or more is red, and once the reset time passes it changes to `—`. It isn't a forecast of when you'll run out.
+Right under the header, in their own card, one line per limit window shows the usage percentage, the time until it resets, and how fresh the value is (`Claude · 5-hour 42% used`); when the account's other window is live too, it gets its own line under it (`Claude · weekly 31% used`). 85% or more is orange, 95% or more is red, and once the reset time passes it changes to `—`. It isn't a forecast of when you'll run out.
 
 With **Live usage limits** on (the default, in Settings › Telemetry), TokenCat checks each account's limits every minute while a session on that account's models is running (in its own client or another one, such as omp running a Claude or GPT model) or the dashboard is open, and every 10 minutes otherwise. A value checked within the last 2 minutes reads `… · live`; older values say how long ago they were recorded, and by whom when omp or Pi recorded them (`… · omp recorded 4m ago`). Reset times are never made up: when none is given, none is shown. How it works and what is sent is in [Details › Live usage limits](docs/DETAILS.md#live-usage-limits).
 
@@ -133,7 +133,7 @@ With **Live usage limits** on (the default, in Settings › Telemetry), TokenCat
 
 Choose **Minimal** (about 72 pt), **Two Lines** (the default, about 272 pt) or **One Line** (about 410 pt), then turn items on or off and drag them to reorder. Each item has a fixed width, so the icons next to it don't shift when values change, and labels follow the bar's light or dark appearance so they stay readable on tinted bars. On a Mac without a battery, the battery item is hidden.
 
-One more item is off by default: **Average speed** (`AVG`), turned on in Settings › Menu Bar, is an explicit opt-in mean of the per-session measured rates of every client that the dashboard's **Speed now** rule accepts; it averages only measured rates and estimates nothing, and its Settings row says so. In place of its label it shows the icons of the clients contributing a rate right now, fastest first: one icon for one client, or up to three overlapping like an avatar group. Without a fresh measurement it shows `AVG` and `—`.
+One more item is off by default: **Average speed** (`AVG`), turned on in Settings › Menu Bar, is an explicit opt-in mean of the per-session measured rates of every client that the dashboard's **Speed now** rule accepts; it averages only measured rates and estimates nothing, and its Settings row's tooltip says so. In place of its label it shows the icons of the clients contributing a rate right now, fastest first: one icon for one client, or up to three side by side, each whole and 1 pt apart. Without a fresh measurement it shows `AVG` and `—`.
 
 <p align="center">
   <picture>
@@ -142,7 +142,7 @@ One more item is off by default: **Average speed** (`AVG`), turned on in Setting
   </picture>
 </p>
 
-The AI number is the count of top-level sessions that are working or waiting for input, and the mark uses the same glyphs as the dashboard. Recorded output shows as a short run by the cat instead of a mark. Right-click the item (or use its `Quick menu` action in VoiceOver) for a quick menu that jumps straight to up to three urgent sessions.
+The AI number is the count of top-level sessions that are working or waiting for input; while any session waits for you, it counts only those, the number you act on (the tooltip keeps the full breakdown). The mark uses the same glyphs as the dashboard. Recorded output shows as a short run by the cat instead of a mark. Right-click the item (or use its `Quick menu` action in VoiceOver) for a quick menu that jumps straight to up to three urgent sessions, with `N more sessions…` opening the dashboard when more are live.
 
 ### A cat that shows the state
 
@@ -197,11 +197,11 @@ Screens, menus, notifications, help, VoiceOver labels and command-line output ar
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-onboarding-dark.png">
-    <img src="docs/images/en/popover-onboarding-light.png" width="468" alt="The first-launch card with three lines: conversation text isn't stored; local telemetry was added to the Codex and Claude Code settings for measurements, and the Claude Code status line was wrapped to read only the limits; no model calls or account sign-ins, and it goes online only to check GitHub for new versions, download one, and check usage with OpenAI and Anthropic (can be turned off in Settings). Below are Show backup and Open settings links.">
+    <img src="docs/images/en/popover-onboarding-light.png" width="468" alt="The first-launch card, one line per point: conversation text isn't stored; local telemetry was added to the Codex and Claude Code settings, with a Show backup link; no model calls or account sign-ins.">
   </picture>
 </p>
 
-On first launch, the card above tells you what TokenCat actually did and what it doesn't do.
+On first launch, the card above tells you, one line per point, what TokenCat actually did and what it doesn't do; hover a line for the details. When connecting telemetry didn't go through, the reason and `Open settings` stay on the card.
 
 - **No conversation text is stored.** Only metadata from local logs is used, such as models, token counts, tool types and project folders. Tool inputs aren't read, and error messages in API retry records aren't stored either. The one piece of text shown is a session's title when the client itself generated it or you renamed the session (Claude Code, Codex, OpenCode, omp, Pi, Gemini CLI, Qwen Code, Copilot CLI, Amp, Droid), cut to one line of 80 characters; it's kept in memory only, never written, logged or sent, and a client's copy of your first prompt is never used as a title.
 - **The collector stays inside this Mac.** It accepts requests only on `127.0.0.1:16493` and rejects any request that carries a web page Origin or a Host other than `127.0.0.1` or `localhost`. Received measurements are kept in memory up to a fixed count and never written to files. The only things from the collector that reach disk are the Claude limits' usage percentage, reset time and time received, stored in TokenCat's settings (UserDefaults) so they still show on the next launch. The Claude desktop app's usage history file is only read, and just the last record's percentages and time are stored in the same place.
@@ -211,7 +211,7 @@ On first launch, the card above tells you what TokenCat actually did and what it
 - **Internet access is for updates and usage limits only.** For updates, TokenCat asks GitHub only for the latest release's version number. If you turn off `Check for updates automatically` in Settings › About, it asks only when you click `Check Now`. The new version is downloaded only when you click `Update`.
 - **Live usage limits never store the token.** For Codex, TokenCat briefly runs the local `codex app-server`, which asks OpenAI with its own sign-in; TokenCat never reads Codex's tokens. For Claude, it reads the token Claude Code saved (the macOS Keychain or `~/.claude/.credentials.json`) and sends it only to `api.anthropic.com`. The token is kept in memory only and never written, logged or refreshed, and an expired one isn't sent. Turn it off with `Live usage limits` in Settings › Telemetry.
 - **Nothing else leaves this Mac.** Neither request carries usage history, device information or identifiers, and all other communication stays inside this Mac (`127.0.0.1`).
-- **Original settings are backed up first.** Before changing anything, TokenCat keeps the originals in a folder with restricted access, and it never overwrites an existing external telemetry destination that would conflict. If a config file changed after connecting, the disconnect command (`--disconnect-telemetry`) doesn't overwrite the whole file; it backs up the current file and reverts only the entries TokenCat added.
+- **Original settings are backed up first.** Before changing anything, TokenCat keeps the originals in a folder with restricted access, and it never overwrites an existing external telemetry destination that would conflict. If a config file changed after connecting, disconnecting (`Disconnect…` in Settings › Telemetry, or `--disconnect-telemetry`) doesn't overwrite the whole file; it backs up the current file and reverts only the entries TokenCat added.
 - **Login item and notifications only when you turn them on.** Both are off by default. Updates are installed only when you click, too.
 
 ## Install
@@ -301,11 +301,11 @@ Settings and measurement backups live outside the app, so they stay the same aft
 
 ### Disconnect and uninstall
 
-TokenCat checks the measurement connection on every launch and adds it again if needed. Once you run `--disconnect-telemetry` in step 3 below (even if a restore is refused), it stops connecting automatically; running `--connect-telemetry` connects it again.
+TokenCat checks the measurement connection on every launch and adds it again if needed. Once you disconnect (`Disconnect…` in Settings › Telemetry, or `--disconnect-telemetry` in step 3 below, even if a restore is refused), it stops connecting automatically; `Reconnect` in the same row, or `--connect-telemetry`, connects it again.
 
 1. If you turned on open at login, turn it off in Settings › General.
-2. Right-click the menu bar item and quit TokenCat.
-3. Restore the client settings. If the app is somewhere else (`dist/TokenCat.app` if you built from source), use the executable inside that `TokenCat.app`.
+2. Click `Disconnect…` in Settings › Telemetry (or skip it and use step 3), then right-click the menu bar item and quit TokenCat.
+3. If you didn't disconnect in Settings, restore the client settings from the terminal. If the app is somewhere else (`dist/TokenCat.app` if you built from source), use the executable inside that `TokenCat.app`.
 
    ```sh
    /Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry
@@ -338,7 +338,7 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 **What's different from macOS**
 
 - **Widget on screen**: the taskbar can't show text, so the menu bar item floats on screen instead: the character, the AI status and session count (Minimal), or the menu bar's Two Lines and One Line layouts. Drag it anywhere (edges snap); it's remembered per monitor setup, never takes the focus and hides while a full-screen app is in front. Click it for the dashboard, right-click for the quick menu. To hide it, right-click › **Hide Widget** or turn off `Show widget on screen` in Settings › Widget.
-- **Settings › Widget** is the Mac's Menu Bar tab: preset, layout, and which items show in what order (drag a row, press Alt+↑/↓ or right-click it), including the Average speed item, which is off by default. It also sets the widget's size, 100–300 %, which **Widget Size** in the right-click menu and Ctrl + mouse wheel over the widget change too; a resized widget keeps its nearest screen edges in place. `Show character in widget` is on the Character tab.
+- **Settings › Widget** is the Mac's Menu Bar tab: preset, layout, and which items show in what order (drag a row, press Alt+↑/↓ or right-click it), including the Average speed item, which is off by default. The character's own checkbox heads that list (the tray icon always shows it). It also sets the widget's size, 100–300 %, which **Widget Size** in the right-click menu and Ctrl + mouse wheel over the widget change too; a resized widget keeps its nearest screen edges in place.
 - **Tray icon**: the character and its state. A yellow corner dot means input is needed, an orange one an API retry. Hover for a short summary, click for the dashboard with all the numbers, and right-click for the quick menu.
 - **Size follows the display scale**: at 100–175 % the icon is the cat head, which bobs while working; at 200 % and above it's the full-body character you picked.
 - **WSL isn't tracked**: only clients running on Windows itself are collected (their folders under `%USERPROFILE%`, such as `%USERPROFILE%\.codex\sessions` and `%USERPROFILE%\.claude\projects`).
@@ -350,8 +350,8 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 **Disconnect and uninstall**
 
 1. If you turned on `Open TokenCat at login`, turn it off in Settings › General. This removes the startup entry.
-2. Right-click the tray icon and choose **Quit TokenCat**.
-3. Restore the client settings in PowerShell (use the folder you extracted to; `| Out-Host` waits for the output). The rules are the same as on the Mac, and `statusLine` is removed only while it's still exactly the TokenCat bridge.
+2. Click `Disconnect…` in Settings › Telemetry (or use step 3 instead), then right-click the tray icon and choose **Quit TokenCat**.
+3. If you didn't disconnect in Settings, restore the client settings in PowerShell (use the folder you extracted to; `| Out-Host` waits for the output). The rules are the same as on the Mac, and `statusLine` is removed only while it's still exactly the TokenCat bridge.
 
    ```powershell
    & "$env:LOCALAPPDATA\Programs\TokenCat\TokenCat.exe" --disconnect-telemetry | Out-Host

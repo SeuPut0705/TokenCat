@@ -400,7 +400,9 @@ enum TokenCatMain {
     /// `--update-failure network|translocated|not-writable|no-digest|invalid-bundle` adds that failed install to it;
     /// `--setup-note unknown|skipped|recreated` the connection's status line note; `--login requires-approval|enabled`
     /// that login item state; `--notifications denied|authorized` that permission (denied also turns every notification
-    /// choice on, the tallest case). Prints each pane's content height and the drag types registered in the view tree
+    /// choice on, the tallest case); `--collector listening` a healthy collector; `--telemetry-disconnected` the 실측 tab
+    /// after "연결 해제"; `--layout minimal|compact|inline` that menu bar layout. Prints each pane's content height and the
+    /// drag types registered in the view tree
     /// (drop targets exist).
     private static func snapshotSettings(path: String) {
         let app = NSApplication.shared
@@ -429,13 +431,19 @@ enum TokenCatMain {
         let login = option("--login", ["requires-approval": SMAppService.Status.requiresApproval, "enabled": .enabled])
         let notifications = option("--notifications", ["denied": UNAuthorizationStatus.denied, "authorized": .authorized])
         if fixtures {
-            AppInfo.executablePath = "/Applications/TokenCat.app/Contents/MacOS/TokenCat"
+            // `--collector listening` shows the healthy collector instead of the port conflict; `--telemetry-disconnected`
+            // the state after "연결 해제" (the scratch defaults hold the opt-out the 실측 tab reads).
+            let listening = option("--collector", ["listening": true]) == true
+            if arguments.contains("--telemetry-disconnected") { defaults.set(true, forKey: TelemetrySetup.optOutKey) }
+            if let layout = option("--layout", Dictionary(uniqueKeysWithValues: StatusBarLayout.allCases.map { ($0.rawValue, $0) })) {
+                preferences.statusBarLayout = layout
+            }
             // The menu bar preview draws the same sample as the menu bar fixtures, with no AI session.
             model.system = fixtureSystem
             model.hasSample = true
             model.tokensSampledAt = model.now
-            model.telemetryState = .busyOtherApp
-            model.telemetryNextRetryAt = model.now.addingTimeInterval(25)
+            model.telemetryState = listening ? .waiting : .busyOtherApp
+            model.telemetryNextRetryAt = listening ? nil : model.now.addingTimeInterval(25)
             model.telemetryRestartNeeded = [.codex]
             let failures: [String: UpdateFailure] = ["network": .network, "translocated": .translocated, "not-writable": .notWritable,
                                                      "no-digest": .noDigest, "invalid-bundle": .invalidBundle(loc("코드 서명을 확인하지 못했습니다", "couldn't verify the code signature"))]

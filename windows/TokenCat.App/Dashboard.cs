@@ -35,6 +35,7 @@ sealed class Dashboard : UserControl
     readonly Border onboardingSlot = new() { Margin = new Thickness(0, Block, 0, 0) };
     readonly FlowCard flow;
     readonly StackPanel limits = new();
+    readonly Border limitsBox;
     readonly SessionsHeader sessionsHeader;
     readonly SessionList list;
     readonly SystemArea system;
@@ -52,23 +53,22 @@ sealed class Dashboard : UserControl
         header = new Header(actions, panel, interactive: !snapshot);
         flow = new FlowCard();
         list = new SessionList(this, panel, snapshot, selection, detail, expanded) { Recheck = actions.RecheckLogFolders };
-        sessionsHeader = new SessionsHeader(() => list.ToggleExpanded());
+        sessionsHeader = new SessionsHeader();
         system = new SystemArea(actions.TaskManager);
         footer = new Footer(actions);
 
-        var aiContainer = new StackPanel();
-        aiContainer.Children.Add(flow);
-        aiContainer.Children.Add(limits);
+        // The usage limits get their own container right under the header, above the output-token card.
+        limitsBox = Ui.Container(new Border { Child = limits, Padding = new Thickness(Inset, InsetVertical, Inset, InsetVertical) });
         var root = new Grid { Width = PanelWidth, Margin = new Thickness(0), Background = Theme.Brush(Theme.Background) };
         var content = new Grid { Margin = new Thickness(Gutter, 12, Gutter, 12) };
         UIElement[] rows =
         [
-            header, onboardingSlot, Pad(Ui.Container(aiContainer), Block), Pad(sessionsHeader, Block), Pad(list, TitleGap),
+            header, onboardingSlot, Pad(limitsBox, Block), Pad(Ui.Container(flow), Block), Pad(sessionsHeader, Block), Pad(list, TitleGap),
             Pad(system, Block), Pad(footer, Block),
         ];
         for (var i = 0; i < rows.Length; i++)
         {
-            content.RowDefinitions.Add(new RowDefinition { Height = panel && i == 4 ? new GridLength(1, GridUnitType.Star) : GridLength.Auto });
+            content.RowDefinitions.Add(new RowDefinition { Height = panel && ReferenceEquals(rows[i], list) ? new GridLength(1, GridUnitType.Star) : GridLength.Auto });
             Grid.SetRow(rows[i], i);
             content.Children.Add(rows[i]);
         }
@@ -111,7 +111,7 @@ sealed class Dashboard : UserControl
         if (first) flowOpened = !FlowEmpty(input);
         if (!FlowEmpty(input)) flowOpened = true;
 
-        header.Update(SessionPresentation.Header(state.Sessions.Counts, loading, state.Now, input.QuietSince, false));
+        var headerStatus = SessionPresentation.Header(state.Sessions.Counts, loading, state.Now, input.QuietSince, false);
 
         var notice = TelemetryNoticeFor(input);
         // The status line bridge note only while the original status line command is known.
@@ -132,17 +132,22 @@ sealed class Dashboard : UserControl
         var limitRows = new List<UsageLimitSummary>();
         if (state.Sessions.UsageLimit is { } codex && codex.IsShown(state.Now)) limitRows.Add(codex);
         if (SessionPresentation.ClaudeUsageLimit(state.ClaudeLimits, state.Now) is { } claude && claude.IsShown(state.Now)) limitRows.Add(claude);
-        Reconcile.Panel(limits, limitCache, limitRows.Select((limit, index) => Reconcile.Item(index.ToString(),
-            () => new LimitRow(), (LimitRow row) => row.Update(limit, state.Now))));
+        limitsBox.Visibility = limitRows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        Reconcile.Panel(limits, limitCache, limitRows.Select((limit, index) => Reconcile.Item(limit.Source.ToString(),
+            () => new LimitRow(), (LimitRow row) => row.Update(limit, state.Now, first: index == 0))));
 
-        sessionsHeader.Update(lists, list.Expanded);
+        sessionsHeader.Update(lists);
         list.Show(input, lists);
         system.Update(state);
         var tokenDelay = state.TokensSampledAt is { } sampled ? (int)(state.Now - sampled).TotalSeconds : 0;
         var status = SessionPresentation.Footer(!state.HasSample || loading, tokenDelay, (int)(state.Now - state.System.SampledAt).TotalSeconds, notice);
         var help = Loc("시스템과 AI 기록을 1초마다, 로그 변경 시 즉시 확인합니다", "Checks system and AI records every second, and right away when a log changes")
             + $"\n{SessionPresentation.TelemetryReceipt(state.TelemetryLastReceived, state.Now)}\n{state.TelemetryStatus}";
-        footer.Update(status, notice, help, input.Update.Notice(input.DismissedUpdateVersion));
+        // "실시간" alone says nothing, so the footer shows only for a delay, a notice or an update; its help moves to the header.
+        header.Update(headerStatus with { Help = headerStatus.Help + "\n\n" + help });
+        var update = input.Update.Notice(input.DismissedUpdateVersion);
+        footer.Visibility = status.Kind != FooterStatusKind.Live || update is not null ? Visibility.Visible : Visibility.Collapsed;
+        footer.Update(status, notice, help, update);
     }
 
     readonly Dictionary<string, FrameworkElement> limitCache = [];
@@ -335,23 +340,19 @@ static class OnboardingCard
         var stack = new StackPanel { Margin = new Thickness(12) };
         var close = Ui.HoverButton(new Border { Width = 18, Height = 18, Child = Center(Ui.Icon(Ui.Close, 10, Theme.Secondary)) },
             actions.DismissOnboarding, Loc("안내 닫기", "Close welcome"), circle: true);
-        var title = Dashboard.Row(6, Sprites.HeadImage(RunnerHead.Normal, 12, 11), Ui.Text(Loc("TokenCat이 하는 일", "What TokenCat does"), Font.Title));
+        var title = Dashboard.Row(6, Sprites.HeadImage(RunnerHead.Normal, 12, 11), Ui.Text(Loc("TokenCat이 하는 일", "What TokenCat does"), Font.MetaMedium));
         title.VerticalAlignment = VerticalAlignment.Center;
         stack.Children.Add(Dashboard.Spread(title, close));
         stack.Children.Add(Line(Ui.Shield, Loc("대화 본문은 저장하지 않습니다", "Doesn't store conversation text"),
             Loc("모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 읽습니다", "Reads only metadata such as models, token counts, tool types and project folders")));
         var telemetry = Telemetry(outcome, clients ?? TokenSource.DefaultClients);
         // A factory: each layout candidate needs its own link elements (a WPF element has one parent).
-        UIElement[] Links()
-        {
-            var links = new List<UIElement>();
-            if (added)
-                links.Add(Ui.Link(Loc("백업 보기", "Show backup"), () => Shell.Reveal(System.IO.Path.Combine(AppPaths.Support, "telemetry-backups")),
-                    Loc($"원본 백업 {BackupPath} · 탐색기에서 보여 주기만 합니다", $"Original backup {BackupPath} · only shows it in File Explorer")));
-            links.Add(Ui.Link(Loc("설정 열기", "Open settings"), actions.OpenTelemetrySettings, Loc("설정의 실측 탭을 엽니다", "Opens the Telemetry tab in Settings"), needsSettings));
-            return [.. links];
-        }
-        stack.Children.Add(Line(Ui.Sliders, telemetry.Title, telemetry.Detail, telemetry.Tail, Links));
+        UIElement[] Links() => added
+            ? [Ui.Link(Loc("백업 보기", "Show backup"), () => Shell.Reveal(System.IO.Path.Combine(AppPaths.Support, "telemetry-backups")),
+                Loc($"원본 백업 {BackupPath} · 탐색기에서 보여 주기만 합니다", $"Original backup {BackupPath} · only shows it in File Explorer"))]
+            : [Ui.Link(Loc("설정 열기", "Open settings"), actions.OpenTelemetrySettings, Loc("설정의 실측 탭을 엽니다", "Opens the Telemetry tab in Settings"), true)];
+        var telemetryHelp = string.Join(" · ", new[] { telemetry.Detail, telemetry.Tail }.OfType<string>());
+        stack.Children.Add(Line(Ui.Sliders, telemetry.Title, telemetryHelp, added || needsSettings ? Links : null, needsSettings ? telemetry.Detail : null));
         stack.Children.Add(Line(Ui.Blocked, Loc("모델 호출·계정 로그인을 하지 않습니다", "Doesn't call models or sign in to accounts"),
             Loc("인터넷 요청은 GitHub 새 버전 확인·내려받기와 OpenAI·Anthropic 사용량 확인뿐입니다(설정에서 끄기)",
                 "Only goes online to check GitHub for new versions and to ask OpenAI and Anthropic for usage (turn off in Settings)")));
@@ -360,10 +361,11 @@ static class OnboardingCard
 
     static Border Center(UIElement child) => new() { Child = child, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center };
 
-    /// The links follow the detail on its line when they fit, otherwise they start the next line (after `tail`).
-    static FrameworkElement Line(char icon, string title, string detail, string? tail = null, Func<UIElement[]>? links = null)
+    /// One line per point: the title, its sentence in help. `detail` (telemetry that needs Settings) stays visible with the links
+    /// after it; otherwise the links follow the title when they fit, else start the next line.
+    static FrameworkElement Line(char icon, string title, string help, Func<UIElement[]>? links = null, string? detail = null)
     {
-        var grid = new Grid { Margin = new Thickness(0, 6, 0, 0) };
+        var grid = new Grid { Margin = new Thickness(0, 6, 0, 0), Background = Brushes.Transparent, ToolTip = help };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(20) });
         grid.ColumnDefinitions.Add(new ColumnDefinition());
         var symbol = Ui.Icon(icon, 13, Theme.Accent);
@@ -373,18 +375,25 @@ static class OnboardingCard
         var texts = new StackPanel();
         Grid.SetColumn(texts, 1);
         grid.Children.Add(texts);
-        texts.Children.Add(Wrap(Ui.Text(title, Font.MetaMedium)));
-        if (links is null) { texts.Children.Add(Wrap(Ui.Text(detail, Font.Meta, Theme.Secondary))); return grid; }
+        System.Windows.Automation.AutomationProperties.SetHelpText(grid, help);
         const double width = Dashboard.PanelWidth - 2 * Dashboard.Gutter - 24 - 20;
-        texts.Children.Add(Dashboard.Fit(width,
-            () => Dashboard.Row(6, [Ui.Text(string.Join(" · ", new[] { detail, tail }.OfType<string>()), Font.Meta, Theme.Secondary), .. links()]),
-            () =>
-            {
-                var two = new StackPanel();
-                two.Children.Add(Wrap(Ui.Text(detail, Font.Meta, Theme.Secondary)));
-                two.Children.Add(Dashboard.Row(6, [tail is null ? null : Ui.Text(tail, Font.Meta, Theme.Secondary), .. links()]));
-                return two;
-            }));
+        FrameworkElement TwoLines(string first, Font font, Color color)
+        {
+            var two = new StackPanel();
+            two.Children.Add(Wrap(Ui.Text(first, font, color)));
+            two.Children.Add(Dashboard.Row(6, links!()));
+            return two;
+        }
+        if (detail is not null)
+        {
+            texts.Children.Add(Wrap(Ui.Text(title, Font.MetaMedium)));
+            texts.Children.Add(Dashboard.Fit(width, () => Dashboard.Row(6, [Ui.Text(detail, Font.Meta, Theme.Secondary), .. links!()]),
+                () => TwoLines(detail, Font.Meta, Theme.Secondary)));
+        }
+        else if (links is not null)
+            texts.Children.Add(Dashboard.Fit(width, () => Dashboard.Row(6, [Ui.Text(title, Font.MetaMedium), .. links()]),
+                () => TwoLines(title, Font.MetaMedium, Theme.Label)));
+        else texts.Children.Add(Wrap(Ui.Text(title, Font.MetaMedium)));
         return grid;
     }
 
@@ -397,24 +406,26 @@ static class OnboardingCard
     }
 }
 
-/// The output-token card (F-1–F-6): log records, never a speed, plus the measured "지금 속도".
+/// The output-token card (F-1–F-6): log records, never a speed, plus the measured "지금 속도". Title row 16 (the provider
+/// split and the total), meta row 16 (the last record or why none, then the speed), chart 43: about 109 DIP with padding,
+/// so the session list gets the height.
 sealed class FlowCard : Border
 {
     static string HelpText => Loc("막대 하나는 5초 동안 로그에 기록된 출력 토큰 수입니다. 코딩 에이전트는 응답이나 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다. 속도로 환산하지 않습니다.",
         "Each bar is the number of output tokens recorded in the log over 5 seconds. Coding agents record them when a response or message ends, so tokens still being generated aren't included yet. They're never converted into a speed.");
+    static string Subtitle => Loc("최근 5분 · 로그 기록 기준", "Last 5 min · based on log records");
+    const double Room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - 2 * Dashboard.Inset;
 
     readonly Grid collapsed = new() { Height = 20 };
     readonly TextBlock collapsedLast = Ui.Text("", Font.MetaMono, Theme.Secondary);
     readonly StackPanel card = new();
+    readonly TextBlock title = Ui.Text(Loc("출력 토큰", "Output tokens"), Font.Title);
+    readonly Border splitSlot = new() { Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     readonly TextBlock total = Ui.Line();
-    readonly GlyphView captionGlyph = new(StateGlyphKind.Input) { Margin = new Thickness(0, 0, 4, 0) };
-    readonly TextBlock caption = Ui.Text("", Font.Meta);
-    readonly StackPanel captionRow;
-    readonly Border lastSlot = new() { HorizontalAlignment = HorizontalAlignment.Right };
-    // 21 tall with -3 below: the metric font's descenders fit while the card keeps its 18 + 2 rhythm (like line 3 rows).
-    readonly Border lowerSlot = new() { Height = 21, Margin = new Thickness(0, 2, 0, -3) };
-    readonly FlowChart chart = new() { Height = 61, Margin = new Thickness(0, 8, 0, 0) };
-    object? lastKey, lowerKey;
+    readonly FrameworkElement trailing;
+    readonly Border metaSlot = new() { Height = 16, Margin = new Thickness(0, 6, 0, 0) };
+    readonly FlowChart chart = new() { Height = FlowChart.ChartHeight, Margin = new Thickness(0, 8, 0, 0) };
+    object? splitKey, metaKey;
 
     public FlowCard()
     {
@@ -430,23 +441,18 @@ sealed class FlowCard : Border
             () => { }, Loc("출력 토큰 설명", "About output tokens"), circle: true);
         var popup = new Popup { PlacementTarget = info, Placement = PlacementMode.Bottom, StaysOpen = false, AllowsTransparency = false, Child = Help() };
         info.Click += (_, _) => popup.IsOpen = !popup.IsOpen;
-        var titleRow = Dashboard.Spread(Ui.Line(Ui.Run(Loc("출력 토큰", "Output tokens"), Font.Title),
-            Ui.Run("  " + Loc("최근 5분 · 로그 기록 기준", "Last 5 min · based on log records"), Font.Meta, Theme.Secondary)), info, 4);
+        title.VerticalAlignment = total.VerticalAlignment = VerticalAlignment.Center;
+        title.TextTrimming = TextTrimming.None;
+        Ui.Help(title, Subtitle);
+        Ui.Help(total, Subtitle);
+        // 22 tall with -3 above and below: the metric total's ascent and descenders fit while the row keeps 16.
+        trailing = Dashboard.Row(4, total, info);
+        trailing.Margin = new Thickness(0, -3, -4, -3);
+        trailing.VerticalAlignment = VerticalAlignment.Center;
+        var titleRow = Dashboard.Spread(Dashboard.Row(0, title, splitSlot), trailing);
         titleRow.Height = 16;
         card.Children.Add(titleRow);
-
-        captionRow = Dashboard.Row(0, captionGlyph, caption);
-        captionRow.HorizontalAlignment = HorizontalAlignment.Right;
-        captionRow.MaxWidth = 220;
-        var right = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom };
-        right.Children.Add(captionRow);
-        right.Children.Add(lastSlot);
-        total.VerticalAlignment = VerticalAlignment.Bottom;
-        var numberRow = Dashboard.Spread(total, right);
-        numberRow.Height = 32;
-        numberRow.Margin = new Thickness(0, 6, 0, 0);
-        card.Children.Add(numberRow);
-        card.Children.Add(lowerSlot);
+        card.Children.Add(metaSlot);
         card.Children.Add(chart);
         var stack = new Grid();
         stack.Children.Add(collapsed);
@@ -477,6 +483,15 @@ sealed class FlowCard : Border
         };
     }
 
+    /// The subtitle, plus the bar scale that used to sit above the plot.
+    static string ChartHelp(IReadOnlyList<int> hero, bool loading)
+    {
+        var peak = loading || hero.Count == 0 ? 0 : hero.Max();
+        if (peak <= 0) return Subtitle;
+        var scale = Format.CompactTokens((int)FlowMath.NiceMax(peak));
+        return Subtitle + Loc($"\n막대 눈금: 5초당 최대 {scale} tok", $"\nBar scale: up to {scale} tok per 5 s");
+    }
+
     public void Update(MonitorState state, bool loading, bool isCollapsed, SpeedHeadline? speed)
     {
         var now = state.Now;
@@ -489,39 +504,46 @@ sealed class FlowCard : Border
         var flow = state.Flow;
         var sum = flow.Total;
         total.Inlines.Clear();
-        total.Inlines.Add(Ui.Run(loading ? "0,000" : Format.Tokens(sum), Font.Hero, sum == 0 && !loading ? Theme.Secondary : Theme.Label));
-        total.Inlines.Add(Ui.Run(" tok", Font.Body, Theme.Secondary));
+        total.Inlines.Add(Ui.Run(loading ? "0,000" : Format.Tokens(sum), Font.Metric, sum == 0 && !loading ? Theme.Secondary : Theme.Label));
+        total.Inlines.Add(Ui.Run(" tok", Font.Micro, Theme.Secondary));
         total.Opacity = loading ? 0.25 : 1;
 
-        var value = SessionPresentation.Caption(state.Sessions.Counts, flow.Last?.At, now, false);
-        captionGlyph.Visibility = value.Glyph is not null && !loading ? Visibility.Visible : Visibility.Collapsed;
-        if (value.Glyph is { } kind) captionGlyph.Kind = kind;
-        caption.Text = loading ? SessionPresentation.LastRecordCaption : value.Text;
-        caption.Foreground = Theme.Brush(value.Emphasized && !loading ? Theme.Label : Theme.Secondary);
-        Ui.Help(captionRow, value.Help);
-
-        var fresh = flow.Last is { } record && SessionPresentation.IsFresh(record.At, now);
-        var lastText = loading ? null : flow.Last is { } last ? $"+{Format.Tokens(last.Tokens)} tok · {SessionPresentation.RecordAge(last.At, now, false)}" : "—";
-        var key = (loading, lastText, fresh);
-        if (!Equals(key, lastKey))
+        // `SessionPresentation.ProviderSplits`: the first candidate that fits beside the total; none when even one does not.
+        IReadOnlyList<string> texts = !loading && sum > 0 ? SessionPresentation.ProviderSplits(flow.ByProvider) : [];
+        trailing.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        title.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var splitRoom = Room - title.DesiredSize.Width - 6 - 8 - (trailing.DesiredSize.Width - 4);
+        var split = (string.Join("|", texts), Math.Round(splitRoom));
+        if (!Equals(split, splitKey))
         {
-            lastKey = key;
-            lastSlot.Child = loading ? Dashboard.Redacted(Ui.Text(Loc("+0,000 tok · 방금", "+0,000 tok · just now"), Font.BodyMediumMono))
-                : flow.Last is null ? Ui.Text("—", Font.BodyMediumMono, Theme.Tertiary)
-                : Dashboard.Row(4, fresh ? Dashboard.Dot(Theme.Activity) : null, Ui.Text(lastText!, Font.BodyMediumMono));
+            splitKey = split;
+            splitSlot.Child = texts.Count == 0 ? null : Dashboard.Fit(splitRoom,
+                [.. texts.Select(text => (Func<FrameworkElement>)(() => Ui.Text(text, Font.MetaMono, Theme.Secondary))), () => new Border()]);
         }
 
-        // The slot under the number: the provider split on the left, "지금 속도" on the right. Always 18 DIP, so the card
-        // does not move each time the speed comes and goes.
-        var shows = !loading && (sum > 0 || speed is not null);
-        lowerSlot.Visibility = shows ? Visibility.Visible : Visibility.Collapsed;
-        // `SessionPresentation.ProviderSplits`: the first candidate that fits beside the speed's shortest form.
-        var texts = SessionPresentation.ProviderSplits(flow.ByProvider);
-        var lower = (string.Join("|", texts), speed);
-        if (shows && !Equals(lower, lowerKey))
+        // The meta row: the last record, or why nothing new was recorded (with the record when both fit); "지금 속도" on the right.
+        var caption = SessionPresentation.Caption(state.Sessions.Counts, flow.Last?.At, now, false);
+        var explains = caption.Text != SessionPresentation.LastRecordCaption || caption.Glyph is not null;
+        var fresh = flow.Last is { } record && SessionPresentation.IsFresh(record.At, now);
+        var recordText = flow.Last is { } last ? $"+{Format.Tokens(last.Tokens)} tok · {SessionPresentation.RecordAge(last.At, now, false)}" : null;
+        var key = (loading, recordText, fresh, explains ? caption : null, speed);
+        if (!Equals(key, metaKey))
         {
-            lowerKey = lower;
-            var width = Dashboard.PanelWidth - 2 * Dashboard.Gutter - 2 * Dashboard.Inset;
+            metaKey = key;
+            FrameworkElement Record()
+            {
+                var row = Dashboard.Row(4, fresh ? Dashboard.Dot(Theme.Activity) : null,
+                    Ui.Text(recordText!, fresh ? Font.MetaMonoSemibold : Font.MetaMono, fresh ? Theme.Label : Theme.Secondary));
+                row.ToolTip = Loc("최근 5분 안에 로그에 기록된 마지막 출력입니다", "The latest output recorded in the logs within the last 5 min");
+                return row;
+            }
+            FrameworkElement Caption()
+            {
+                var row = Dashboard.Row(4, caption.Glyph is { } kind ? new GlyphView(kind) : null,
+                    Ui.Text(caption.Text, Font.Meta, caption.Emphasized ? Theme.Label : Theme.Secondary));
+                row.ToolTip = caption.Help;
+                return row;
+            }
             var speedMin = 0.0;
             if (speed is not null)
             {
@@ -529,53 +551,66 @@ sealed class FlowCard : Border
                 shortest.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
                 speedMin = shortest.DesiredSize.Width + 8;
             }
-            var left = Dashboard.Fit(width - speedMin, texts.Select(text => (Func<FrameworkElement>)(() => Ui.Text(text, Font.MetaMono, Theme.Secondary))).ToArray());
+            var left = loading ? Dashboard.Redacted(Ui.Text(Loc("+0,000 tok · 방금", "+0,000 tok · just now"), Font.MetaMono))
+                : recordText is not null
+                    ? explains ? Dashboard.Fit(Room - speedMin, () => Dashboard.Row(6, Record(), Caption()), Caption, Record) : Record()
+                : explains ? Caption()
+                : Ui.Text(Loc("최근 5분 기록 없음", "None in the last 5 min"), Font.Meta, Theme.Secondary);
+            left.VerticalAlignment = VerticalAlignment.Center;
             left.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            var room = width - left.DesiredSize.Width - 8;
-            lowerSlot.Child = Dashboard.Spread(left, speed is null ? null : SpeedHeadlineView(speed, room));
+            metaSlot.Child = Dashboard.Spread(left, speed is null ? null : SpeedHeadlineView(speed, Room - left.DesiredSize.Width - 8));
         }
+        Ui.Help(chart, ChartHelp(flow.Hero, loading));
         chart.Set(flow.Hero, flow.Fresh, loading);
     }
 
     /// "지금 속도 · TokenCat  52.3 요청 tok/s": the label drops first when the row is tight, then the session (its title, else
-    /// project) is cut short, then it goes; help and the screen reader always name the session.
+    /// project) is cut short, then it goes; help and the screen reader always name the session. Without a measurement it says
+    /// so in words, so no "—" can read as a rule.
     static FrameworkElement SpeedHeadlineView(SpeedHeadline headline, double room)
     {
-        // The label is the line's first run, so it shares the value's baseline.
-        TextBlock Value(string? label = null)
+        FrameworkElement view;
+        if (!headline.Known) view = Ui.Text(Loc("속도 실측 없음", "No measured speed"), Font.Meta, Theme.Tertiary);
+        else
         {
-            var line = Ui.Line(Ui.Run(headline.Value, Font.Metric, headline.Known ? Theme.Label : Theme.Tertiary),
-                Ui.Run(" " + (headline.Kind ?? "tok/s"), Font.Micro, Theme.Secondary));
-            if (label is not null) line.Inlines.InsertBefore(line.Inlines.FirstInline, Ui.Run(label + " ", Font.Meta, Theme.Secondary));
-            return line;
+            // The label is the line's first run, so it shares the value's baseline.
+            TextBlock Value(string? label = null)
+            {
+                var line = Ui.Line(Ui.Run(headline.Value, Font.Value), Ui.Run(" " + (headline.Kind ?? "tok/s"), Font.Micro, Theme.Secondary));
+                if (label is not null) line.Inlines.InsertBefore(line.Inlines.FirstInline, Ui.Run(label + " ", Font.Meta, Theme.Secondary));
+                return line;
+            }
+            // A long title ends in "…" within 140 DIP instead of hiding the label.
+            FrameworkElement Cut(string label)
+            {
+                var text = Ui.Text(label, Font.Meta, Theme.Secondary);
+                text.MaxWidth = 140;
+                text.VerticalAlignment = VerticalAlignment.Bottom;
+                var value = Value();
+                value.VerticalAlignment = VerticalAlignment.Bottom;
+                return Dashboard.Row(6, text, value);
+            }
+            var candidates = new List<Func<FrameworkElement>>
+            {
+                () => Value(headline.Label is { } label ? Loc("지금 속도 · ", "Speed now · ") + label : Loc("지금 속도", "Speed now")),
+                () => Value(headline.Label ?? Loc("지금 속도", "Speed now")),
+            };
+            if (headline.Label is { } cut) candidates.Add(() => Cut(cut));
+            candidates.Add(() => Value());
+            view = Dashboard.Fit(room, [.. candidates]);
         }
-        // A long title ends in "…" within 140 DIP instead of hiding the label.
-        FrameworkElement Cut(string label)
-        {
-            var text = Ui.Text(label, Font.Meta, Theme.Secondary);
-            text.MaxWidth = 140;
-            text.VerticalAlignment = VerticalAlignment.Bottom;
-            var value = Value();
-            value.VerticalAlignment = VerticalAlignment.Bottom;
-            return Dashboard.Row(6, text, value);
-        }
-        var candidates = new List<Func<FrameworkElement>>
-        {
-            () => Value(headline.Label is { } label ? Loc("지금 속도 · ", "Speed now · ") + label : Loc("지금 속도", "Speed now")),
-            () => Value(headline.Label ?? Loc("지금 속도", "Speed now")),
-        };
-        if (headline.Label is { } cut) candidates.Add(() => Cut(cut));
-        candidates.Add(() => Value());
-        var view = Dashboard.Fit(room, [.. candidates]);
+        view.VerticalAlignment = VerticalAlignment.Center;
         view.ToolTip = headline.Help;
         System.Windows.Automation.AutomationProperties.SetName(view, Loc("지금 속도", "Speed now") + ", " + headline.Spoken);
         return view;
     }
 }
 
-/// Label band 10 + plot 36 + gap 3 + axis 12 (F-3). Loading draws only the baseline and the axis.
+/// Plot 28 + gap 3 + axis 12 (F-3); the bar scale is in the card's help. Loading draws only the baseline and the axis.
 sealed class FlowChart : FrameworkElement
 {
+    public const double ChartHeight = 43;
+    const double Plot = 28;
     IReadOnlyList<int> values = [];
     IReadOnlyList<bool> fresh = [];
     bool loading = true;
@@ -595,24 +630,22 @@ sealed class FlowChart : FrameworkElement
     {
         var width = ActualWidth;
         var peak = loading || values.Count == 0 ? 0 : values.Max();
-        var scale = FlowMath.NiceMax(peak);
         if (peak > 0)
         {
-            var label = Label(Format.CompactTokens((int)scale));
-            context.DrawText(label, new Point(width - label.Width, 10 - label.Height + 1));
-            context.DrawRectangle(Theme.Brush(Theme.Primary(0.08)), null, new Rect(0, 10, width, 0.5));
-            var plot = new Rect(0, 10, width, 35);
+            var scale = FlowMath.NiceMax(peak);
+            context.DrawRectangle(Theme.Brush(Theme.Primary(0.08)), null, new Rect(0, 0, width, 0.5));
+            var plot = new Rect(0, 0, width, Plot - 1);
             context.DrawGeometry(Theme.Brush(Theme.Neutral), null, Bars(plot, scale, null));
             context.DrawGeometry(Theme.Brush(Theme.Activity), null, Bars(plot, scale, fresh));
         }
-        context.DrawRectangle(Theme.Brush(Theme.Primary(0.12)), null, new Rect(0, 45, width, 1));
+        context.DrawRectangle(Theme.Brush(Theme.Primary(0.12)), null, new Rect(0, Plot - 1, width, 1));
         // Minute marks below the baseline at −4, −3, −2 and −1 min.
         for (var minute = 1; minute <= 4; minute++)
-            context.DrawRectangle(Theme.Brush(Theme.Primary(0.18)), null, new Rect(Math.Round(width * (1 - minute / 5.0) * 2) / 2 - 0.5, 46, 1, 3));
+            context.DrawRectangle(Theme.Brush(Theme.Primary(0.18)), null, new Rect(Math.Round(width * (1 - minute / 5.0) * 2) / 2 - 0.5, Plot, 1, 3));
         var start = Label(Format.Ago(Format.Span(5, Format.TimeUnit.Minute)));
-        context.DrawText(start, new Point(0, 49));
+        context.DrawText(start, new Point(0, Plot + 3));
         var end = Label(Loc("지금", "now"));
-        context.DrawText(end, new Point(width - end.Width, 49));
+        context.DrawText(end, new Point(width - end.Width, Plot + 3));
     }
 
     /// FlowBars: fixed slots, 0.6 of the slot wide, at least 2 × 2, only the top corners rounded (1).
@@ -642,36 +675,62 @@ sealed class FlowChart : FrameworkElement
     }
 }
 
-/// The AI container's bottom rows (Codex, then Claude): the last recorded window, always with its record age; no forecast.
+/// One provider in the limits container (Codex, then Claude): its window, then its other live window as a compact row 6 DIP
+/// under it; 8 + hairline + 8 between providers. Always with the record age or "실시간"; no forecast.
 sealed class LimitRow : StackPanel
 {
-    readonly TextBlock title = Ui.Text("", Font.Meta, Theme.Secondary);
-    readonly TextBlock value = Ui.Line();
-    readonly Border details = new();
-    readonly Meter meter = new() { Margin = new Thickness(0, 5, 0, 0) };
-    IReadOnlyList<string> shown = [];
+    readonly Border rule = Ui.Hairline();
+    readonly LimitWindow main = new(), other = new() { Margin = new Thickness(0, 6, 0, 0) };
 
     public LimitRow()
     {
-        Margin = new Thickness(0);
-        // 13 DIP value beside 11 DIP texts: raised by the ascent difference so all three share one baseline.
-        value.Margin = new Thickness(0, -2, 0, 0);
-        var line = Dashboard.Spread(Dashboard.Row(6, title, value), details);
-        line.Height = 16;
-        var body = new StackPanel { Margin = new Thickness(Dashboard.Inset, 8, Dashboard.Inset, 8) };
-        body.Children.Add(line);
-        body.Children.Add(meter);
-        Children.Add(Ui.Hairline(Dashboard.Inset, Dashboard.Inset));
-        Children.Add(body);
+        rule.Margin = new Thickness(0, 0, 0, 8);
+        Children.Add(rule);
+        Children.Add(main);
+        Children.Add(other);
     }
 
     protected override System.Windows.Automation.Peers.AutomationPeer OnCreateAutomationPeer() =>
         new LeafPeer(this, System.Windows.Automation.Peers.AutomationControlType.Text);
 
+    /// `first`: no hairline above (the first provider in the container).
+    public void Update(UsageLimitSummary limit, DateTimeOffset now, bool first = true)
+    {
+        Margin = new Thickness(0, first ? 0 : 8, 0, 0);
+        rule.Visibility = first ? Visibility.Collapsed : Visibility.Visible;
+        main.Update(limit, now);
+        var second = limit.OtherSummary(now);
+        other.Visibility = second is null ? Visibility.Collapsed : Visibility.Visible;
+        if (second is not null) other.Update(second, now);
+        // Spoken carries the other window too (`OtherText`), so the provider is one element.
+        System.Windows.Automation.AutomationProperties.SetName(this, limit.Title + ", " + limit.Spoken(now));
+    }
+}
+
+/// "Claude · 5시간  42% 사용 … 2시간 13분 후 초기화" over a 4 DIP meter.
+sealed class LimitWindow : StackPanel
+{
+    readonly TextBlock title = Ui.Text("", Font.MetaMedium);
+    readonly TextBlock value = Ui.Line();
+    readonly Border details = new();
+    readonly Meter meter = new() { Margin = new Thickness(0, 4, 0, 0) };
+    object? shown;
+
+    public LimitWindow()
+    {
+        title.TextTrimming = TextTrimming.None;
+        // 13 DIP value beside 11 DIP texts: raised by the ascent difference so all three share one baseline.
+        value.Margin = new Thickness(0, -2, 0, 0);
+        var line = Dashboard.Spread(Dashboard.Row(6, title, value), details);
+        line.Height = 16;
+        Children.Add(line);
+        Children.Add(meter);
+    }
+
     public void Update(UsageLimitSummary limit, DateTimeOffset now)
     {
         var expired = limit.Expired(now);
-        title.Text = limit.Title;
+        title.Text = limit.ShortTitle;
         value.Inlines.Clear();
         if (expired) value.Inlines.Add(Ui.Run("—", Font.Value, Theme.Tertiary));
         else
@@ -682,9 +741,10 @@ sealed class LimitRow : StackPanel
         }
         // The reset countdown is never truncated; the record age drops first.
         var texts = limit.Details(now);
-        if (!texts.SequenceEqual(shown))
+        var key = (string.Join("|", texts), title.Text, limit.PercentText, expired);
+        if (!Equals(key, shown))
         {
-            shown = texts;
+            shown = key;
             title.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
             value.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
             var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - 2 * Dashboard.Inset - title.DesiredSize.Width - 6 - value.DesiredSize.Width - 8;
@@ -693,46 +753,24 @@ sealed class LimitRow : StackPanel
         meter.Visibility = expired ? Visibility.Collapsed : Visibility.Visible;
         meter.Set(limit.UsedPercent / 100, Theme.MeterColor(limit.UsedPercent));
         Ui.Help(this, limit.Help(now));
-        System.Windows.Automation.AutomationProperties.SetName(this, limit.Title + ", " + limit.Spoken(now));
     }
 }
 
-sealed class SessionsHeader : Grid
+/// The list's title; its one disclosure control is the last row of the list (`SessionListEntry.Toggle`).
+sealed class SessionsHeader : Border
 {
     readonly TextBlock title = Ui.Text(Loc("세션", "Sessions"), Font.Title);
-    readonly TextBlock toggleText = Ui.Text("", Font.MetaMedium, Theme.Secondary);
-    readonly TextBlock chevron = Ui.Icon(Ui.ChevronDown, 9, Theme.Secondary);
-    readonly Button toggle;
 
-    public SessionsHeader(Action toggleExpanded)
+    public SessionsHeader()
     {
         Height = 18;
         title.VerticalAlignment = VerticalAlignment.Center;
-        chevron.Margin = new Thickness(3, 1, 0, 0);
-        toggle = Ui.HoverButton(new Border { Child = Dashboard.Row(0, toggleText, chevron), Padding = new Thickness(6, 0, 6, 0), Height = 20 },
-            toggleExpanded, "");
-        toggle.HorizontalAlignment = HorizontalAlignment.Right;
-        toggle.Margin = new Thickness(0, -1, -6, -1);
-        Children.Add(title);
-        Children.Add(toggle);
+        Child = title;
     }
 
-    public void Update(SessionListModel list, bool expanded)
-    {
-        Ui.Help(title, Loc("↑↓ 이동 · Enter 상세 · Ctrl+C ID 복사", "↑↓ move · Enter details · Ctrl+C copy ID")
+    public void Update(SessionListModel list) =>
+        Ui.Help(title, SessionList.KeyboardHint
             + (list.ShowsSpeedColumn ? "" : Loc("\n속도 실측 없음 · 로그 시각으로 추정하지 않습니다", "\nNo measured speed · not estimated from log times")));
-        var visible = list.HiddenGroups + list.HiddenChildren > 0 || expanded;
-        toggle.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
-        if (!visible) return;
-        toggleText.Text = expanded ? Loc("접기", "Show less")
-            : list.HiddenGroups > 0 ? Loc($"{list.Counts.Groups}개 모두 보기", $"Show all {list.Counts.Groups}")
-            : Loc($"하위 {list.HiddenChildren}개 더 보기", $"Show {Plural(list.HiddenChildren, "more subagent")}");
-        chevron.Text = (expanded ? Ui.ChevronUp : Ui.ChevronDown).ToString();
-        Ui.Help(toggle, Loc($"하위 에이전트 포함 {list.Counts.Readings}개 기록", $"{Plural(list.Counts.Readings, "record")} including subagents")
-            + (expanded || list.HiddenGroups == 0 ? "" : Loc($" · 접힌 세션 {list.HiddenGroups}개", $" · {Plural(list.HiddenGroups, "collapsed session")}")));
-        System.Windows.Automation.AutomationProperties.SetName(toggle, expanded ? Loc("세션 목록 접기", "Collapse session list")
-            : list.HiddenGroups > 0 ? Loc("세션 목록 모두 보기", "Show all sessions") : Loc("하위 에이전트 더 보기", "Show more subagents"));
-    }
 }
 
 /// The borderless bottom area (8): label 10, value 13, aux; the whole area opens Task Manager.
@@ -746,7 +784,7 @@ sealed class SystemArea : StackPanel
     readonly Grid cells = new() { Height = 44 };
     readonly Rectangle peak = new() { Width = 1, Height = 6, HorizontalAlignment = HorizontalAlignment.Left, VerticalAlignment = VerticalAlignment.Top };
     readonly TextBlock upload = Ui.Text("", Font.Micro, Theme.Secondary);
-    double cpuWidth = 56;
+    double cpuWidth = 58;
     bool? batteryShown;
 
     sealed class Cell : StackPanel
@@ -808,7 +846,8 @@ sealed class SystemArea : StackPanel
         batteryShown = hasBattery;
         cells.Children.Clear();
         cells.ColumnDefinitions.Clear();
-        double[] widths = hasBattery ? [56, 72, 56, 56, 76] : [64, 80, 64, 120];
+        // Equal meters (Network keeps room for "↓ 999 kB/s"); both sets sum to 364 with the 12 DIP gaps.
+        double[] widths = hasBattery ? [58, 58, 58, 58, 84] : [72, 72, 72, 112];
         cpuWidth = widths[0];
         Cell[] order = hasBattery ? [cpu, memory, disk, battery, network] : [cpu, memory, disk, network];
         for (var i = 0; i < order.Length; i++)
@@ -842,7 +881,8 @@ sealed class SystemArea : StackPanel
         double? cpuPeak = has && state.CpuHistory.Count > 0 ? state.CpuHistory.TakeLast(30).Max() : null;
         Percent(cpu.Value, has, cpuValue);
         cpu.Meter.Set((cpuValue ?? 0) / 100, Theme.MeterColor(cpuValue));
-        peak.Visibility = cpuPeak is null ? Visibility.Collapsed : Visibility.Visible;
+        // A peak at the fill edge reads as a glitch: the mark shows only 5 points or more above the value.
+        peak.Visibility = cpuPeak is { } top && top - (cpuValue ?? 0) >= 5 ? Visibility.Visible : Visibility.Collapsed;
         peak.Margin = new Thickness(Math.Round(cpuWidth * Math.Clamp((cpuPeak ?? 0) / 100, 0, 1) - 0.5), 0, 0, 0);
         Ui.Help(cpu, Loc("CPU 전체 코어 사용률", "CPU usage across all cores")
             + (cpuPeak is { } p ? Loc($"\n최근 30초 최고 {p:F0}%", $"\nPeak {p:F0}% in the last 30 s") : ""));

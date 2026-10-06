@@ -72,8 +72,8 @@ for lang in ["ko", "en"] {
 
     let inputNeeded = fixture("input-needed")
     let features: [(name: String, sheet: FixtureSheet, region: FixtureSheet.Region)] = [
-        ("popover-flow", inputNeeded, .top),
-        ("popover-sessions", fixture("context-limit"), .section(1)),   // 요청 tok/s on a Claude Code row, as the app reports it
+        ("popover-flow", inputNeeded, .through(1)),                     // header, limits card, output card
+        ("popover-sessions", fixture("context-limit"), .section(2)),   // 요청 tok/s on a Claude Code row, as the app reports it
         ("popover-subagents", fixture("grouped-children"), .section(1)),
         ("popover-detail", fixture("detail-open"), .section(1)),
         ("popover-limits", fixture("usage-limits"), .all),

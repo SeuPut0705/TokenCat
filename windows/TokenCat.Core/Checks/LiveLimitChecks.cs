@@ -157,11 +157,14 @@ public static class LiveLimitChecks
         var higher = SessionPresentation.UsageLimit([Log(44, -5)], now, polled);
         var staleTie = SessionPresentation.UsageLimit([Log(42, -5)], now, [polled[0] with { RecordedAt = at(-300) }]);
         check(live is { UsedPercent: 42, Live: true, WindowMinutes: 300 } && live.Details(now).SequenceEqual(["2시간 13분 후 초기화 · 실시간", "2시간 13분 후 초기화"])
-              && live.Spoken(now) == "42퍼센트 사용, 2시간 13분 후 초기화, 실시간"
+              && live.Spoken(now) == "42퍼센트 사용, 2시간 13분 후 초기화, 실시간, 주간 한도 31퍼센트 사용, 3일 후 초기화"
+              && live.ShortTitle == "Codex · 5시간" && live.OtherSummary(now) is { UsedPercent: 31, WindowMinutes: 10_080, Live: true, Source: TokenSource.Codex } weekly
+              && weekly.ShortTitle == "Codex · 주간" && weekly.RecordedAt == at(-10) && weekly.Details(now)[0] == "3일 후 초기화 · 실시간"
+              && live.OtherSummary(at(3 * 86_400)) == null
               && repeated is { UsedPercent: 42, Live: true } && higher is { UsedPercent: 44, Live: false } && higher.Details(now)[0] == "2시간 13분 후 초기화 · 1분 이내 기록"
               && staleTie is { Live: false } && staleTie.Details(now)[0] == "2시간 13분 후 초기화 · 1분 이내 기록"
               && SessionPresentation.UsageLimit([], now, []) == null && SessionPresentation.UsageLimit([Log(45, -300)], now) is { UsedPercent: 45, Live: false },
-              "a live Codex poll doesn't override older records of its window, loses a tie to a later record while fresh (or wins it when stale), or beats a higher one");
+              "a live Codex poll doesn't override older records of its window, loses a tie to a later record while fresh (or wins it when stale), or beats a higher one; or the other live window isn't its own row");
         // After 2 minutes the same value reads as a record again; values from logs never say "실시간".
         check(live is not null && live.Details(at(110)).SequenceEqual(["2시간 11분 후 초기화 · 2분 전 기록", "2시간 11분 후 초기화"])
               && new UsageLimitSummary(20, 300, reset, at(-300)).Details(now)[0] == "2시간 13분 후 초기화 · 5분 전 기록"

@@ -35,12 +35,14 @@ public static class StatusSummaryChecks
             var counts = new SessionCounts(groups);
             return (counts, new StatusAISummary(groups, counts));
         }
-        // The mac AI item: running groups with their phase; with none running, the log-wait groups and the half disc.
+        // The mac AI item: running groups with their phase, only those needing input while any does; with none running, the
+        // log-wait groups and the half disc.
         (int Value, A Mark) ai(IReadOnlyList<TokenReading> readings, DateTimeOffset? now = null)
         {
             var value = summary(readings, now).AI;
             var waitingOnly = value.Running == 0 && value.Waiting > 0;
-            return (waitingOnly ? value.Waiting : value.Running, value.Running > 0 ? value.Phase : waitingOnly ? A.Stale : A.Idle);
+            return (waitingOnly ? value.Waiting : value.Running > 0 && value.Phase == A.Input ? value.Input : value.Running,
+                value.Running > 0 ? value.Phase : waitingOnly ? A.Stale : A.Idle);
         }
 
         check("selected order and activity count do not aggregate speed", ai([
@@ -62,7 +64,9 @@ public static class StatusSummaryChecks
         check("a running session outranks waiting for the mark and the count", ai([stale, tool]) == (1, A.Tool));
         var question = new TokenReading(TokenSource.Claude, "question") { SessionID = "q1", Active = true, ActivityState = A.Input, SampledAt = at };
         var questionSummary = summary([question, tool]);
-        check("input outranks tool and counts once per group", ai([question, tool]) == (2, A.Input) && questionSummary.AI.Input == 1
+        check("input outranks tool, counts once per group, and the count is the groups needing input", ai([question, tool]) == (1, A.Input)
+              && questionSummary.AI.Input == 1 && questionSummary.AI.Running == 2
+              && StatusBarContent.Tooltip(new SystemSnapshot(), questionSummary.Counts, questionSummary.AI, false, true).Contains("진행 중 1개")
               && StatusBarContent.Tooltip(new SystemSnapshot(), questionSummary.Counts, questionSummary.AI, false, true).Contains("입력 필요 1"));
         var parent = new TokenReading(TokenSource.Claude, "claude:parent") { SessionID = "s1", Active = true, ActivityState = A.Working, SampledAt = at };
         var child = new TokenReading(TokenSource.Claude, "claude:child")
@@ -98,12 +102,12 @@ public static class StatusSummaryChecks
               quick.Headline == "AI 세션 · 입력 1 · 도구 1 · 진행 2 · 로그 대기 1"
               && quick.Rows.Select(row => row.Title).SequenceEqual(["TokenCat — 입력 대기 3분", "api-server — 명령 실행 · 턴 7분", "web — 진행 · 턴 1분 미만"])
               && quick.Rows.Select(row => row.Kind).SequenceEqual([StateGlyphKind.Input, StateGlyphKind.Tool, StateGlyphKind.Working])
-              && quick.Rows.FirstOrDefault()?.Id == "q");
+              && quick.Rows.FirstOrDefault()?.Id == "q" && quick.More == 2 && QuickMenuSummary.MoreTitle(quick.More) == "그 외 2개 세션…");
         var waitingOnly = SessionPresentation.Groups([live("s", null, A.Stale, last: -190)], at);
         var loading = QuickMenuSummary.Make(menuGroups, new SessionCounts(menuGroups), false, at);
         check("quiet and loading quick menus say so",
               QuickMenuSummary.Make([], new SessionCounts(), true, at).Headline == "진행 중인 세션 없음"
-              && loading.Headline == "AI 기록 확인 중" && loading.Rows.Count == 0
+              && loading.Headline == "AI 기록 확인 중" && loading.Rows.Count == 0 && loading.More == 0
               && QuickMenuSummary.Make(waitingOnly, new SessionCounts(waitingOnly), true, at).Rows.FirstOrDefault()?.Title
                  == "프로젝트 미확인 — 로그 대기 · 3분째 기록 없음");
         With(AppLanguage.En, () =>
@@ -113,7 +117,8 @@ public static class StatusSummaryChecks
             check($"English quick menu, tooltip and AI value: {english.Headline} / {string.Join(", ", english.Rows.Select(row => row.Title))} / {englishTip}",
                   english.Headline == "AI sessions · Input 1 · Tool 1 · Working 2 · Waiting for log 1"
                   && english.Rows.FirstOrDefault()?.Title == "TokenCat — Waiting for input · 3m" && english.Rows.LastOrDefault()?.Title == "web — Working · turn <1m"
-                  && QuickMenuSummary.Minutes(3_900) == "1h 5m"
+                  && QuickMenuSummary.Minutes(3_900) == "1h 5m" && english.More == 2
+                  && QuickMenuSummary.MoreTitle(1) == "1 more session…" && QuickMenuSummary.MoreTitle(2) == "2 more sessions…"
                   && QuickMenuSummary.Make(waitingOnly, new SessionCounts(waitingOnly), true, at).Rows.FirstOrDefault()?.Title
                      == "Unknown project — Waiting for log · no record for 3m"
                   && englishTip.StartsWith("TokenCat\nAI: Working 1 · Running tool 1 · Subagents 0 · Waiting for log 0 · Input needed 1\nMemory 18 / 24 GB",
@@ -150,6 +155,10 @@ public static class StatusSummaryChecks
               minimal.Select(metric => metric.Id).SequenceEqual([MetricID.Ai]) && minimal[0].Value == "1" && minimal[0].ActivityState == A.Tool);
         check("waiting-only AI shows the log-wait count with the half disc, not active",
               metrics(idleCpu, [stale]).First(metric => metric.Id == MetricID.Ai) is { Value: "1", IsActive: false, ActivityState: A.Stale });
+        // Two running groups, one waiting for the person: the item shows that one, on every layout (minimal included).
+        check("while a group needs input, the AI item counts only the groups needing input",
+              Enum.GetValues<StatusBarLayout>().All(layout => metrics(idleCpu, [question, tool], layout, [MetricID.Ai])[0] is { Value: "1", IsActive: true, ActivityState: A.Input })
+              && metrics(idleCpu, [output, tool], StatusBarLayout.Compact, [MetricID.Ai])[0].Value == "2");
         // The speed item: the mean of every fresh per-session rate (`Format.Tps`, then a smaller "tok/s") labelled by its
         // contributing clients, fastest first, who are spoken after it; "—" and "AVG" without one; the minimal layout still draws only AI.
         var timed = new TokenReading(TokenSource.Codex, "timed")
@@ -214,9 +223,10 @@ public static class StatusSummaryChecks
             }
         check("layout width is stable from unknown to maximum values", stable);
         // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30; the speed item 56 on two
-        // lines, 81 on one.
+        // lines, 91 on one: three side-by-side glyphs 1 pt apart (3 × 10 + 2 = 32 pt) replaced the 22 pt overlapping stack, and only
+        // the one-line cell widens by the difference (81 → 91); on two lines 3 × 8 + 2 = 26 pt still fits the 56 pt cell.
         check($"cell widths match the layout contract: {string.Join(", ", widths)}", widths["Compact"] == 272 && widths["Inline"] == 410 && widths["Minimal"] == 72
-              && widths["Compact/speed"] == 328 && widths["Inline/speed"] == 491 && widths["Minimal/speed"] == 72);
+              && widths["Compact/speed"] == 328 && widths["Inline/speed"] == 501 && widths["Minimal/speed"] == 72);
         // Without the character (mac StatusBarContentView): no runner slot, the minimal AI cell 41, nothing at all the 28 pt "TC".
         check("without the character the runner slot goes, the minimal cell widens and an empty strip is 28 pt",
               StatusBarContent.RequiredWidth(StatusBarLayout.Minimal, [MetricID.Ai], showRunner: false) == 49

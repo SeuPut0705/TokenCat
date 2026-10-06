@@ -73,7 +73,6 @@ struct FixtureSheet {
     /// Named regions used by the feature shots.
     enum Region {
         case all
-        case top                // header + first card
         case section(Int)       // section label above card i + card i
         case through(Int)       // from the top through card i
         case card(Int)          // card i with even margins
@@ -84,7 +83,6 @@ struct FixtureSheet {
         func end(_ card: Int) -> Int { min(cards[card].upperBound + bottomPad, nextContent(from: cards[card].upperBound) - 4) }
         switch region {
         case .all: return 0..<height
-        case .top: return 0..<end(0)
         case let .section(i): return cards[i - 1].upperBound + 14..<end(i)
         case let .through(i): return 0..<end(i)
         case let .card(i):

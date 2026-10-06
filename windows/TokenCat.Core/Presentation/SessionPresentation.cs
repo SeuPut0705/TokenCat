@@ -236,7 +236,7 @@ public sealed record ContextSlot(string Text, string Short, double? Fraction, bo
 public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt, DateTimeOffset RecordedAt)
 {
     public TokenSource Source { get; init; } = TokenSource.Codex;
-    /// Claude only: the other live window, named in help and VoiceOver.
+    /// The other live window (Claude's two, Codex's 5-hour beside its weekly), drawn as its own compact row.
     public OtherWindow? Other { get; init; }
     /// Read from OpenAI or Anthropic by a live poll; `RecordedAt` is that poll.
     public bool Live { get; init; }
@@ -246,7 +246,23 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
     /// A live poll in the last 2 minutes: "실시간" takes the place of the record age.
     public bool IsLive(DateTimeOffset now) => Live && (now - RecordedAt).TotalSeconds < LiveLimits.LiveFor;
 
-    public sealed record OtherWindow(double UsedPercent, int WindowMinutes, DateTimeOffset ResetsAt);
+    /// `RecordedAt`: its own record when it differs from the shown window's (Codex logs each window apart), with its own
+    /// `Live` and `RecordedBy`; null: the same record as the shown window.
+    public sealed record OtherWindow(double UsedPercent, int WindowMinutes, DateTimeOffset ResetsAt)
+    {
+        public DateTimeOffset? RecordedAt { get; init; }
+        public bool Live { get; init; }
+        public string? RecordedBy { get; init; }
+    }
+
+    /// The other window as a summary of its own, for its compact row; null once it has reset.
+    public UsageLimitSummary? OtherSummary(DateTimeOffset now)
+    {
+        if (Other is not { } other || other.ResetsAt <= now) return null;
+        var own = other.RecordedAt is not null;
+        return new UsageLimitSummary(other.UsedPercent, other.WindowMinutes, other.ResetsAt, other.RecordedAt ?? RecordedAt)
+            { Source = Source, Live = own ? other.Live : Live, RecordedBy = own ? other.RecordedBy : RecordedBy };
+    }
 
     /// When the window resets; without a logged reset time, one full window after the record.
     public DateTimeOffset? ResetDate => ResetsAt ?? (WindowMinutes is int minutes and > 0 ? RecordedAt.AddMinutes(minutes) : null);
@@ -263,6 +279,8 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
             return Loc($"{Name} {window} 한도", $"{Name} {window} limit");
         }
     }
+    /// The on-screen row name, "Claude · 5-hour": provider first so the rows scan by provider; `Title` stays for Narrator.
+    public string ShortTitle => $"{Name} · {SessionPresentation.WindowLabel(WindowMinutes)}";
     /// The number alone ("28"); "%" and " 사용" are drawn smaller beside it.
     public string PercentText => SessionPresentation.Round(UsedPercent).ToString(CultureInfo.InvariantCulture);
     public string Value(DateTimeOffset now) => Expired(now) ? "—" : Loc($"{PercentText}% 사용", $"{PercentText}% used");
@@ -362,7 +380,7 @@ public sealed record HeaderStatus(string Sentence, string Suffix, StateGlyphKind
 public sealed record FlowCaption(string Text, string Help)
 {
     public StateGlyphKind? Glyph { get; init; }
-    /// Input and retry captions are primary; the rest stay secondary.
+    /// Retry captions are primary; the rest stay secondary.
     public bool Emphasized { get; init; }
 }
 
@@ -388,7 +406,7 @@ public abstract record OnboardingOutcome
                                          bool bridged = false, bool optedOut = false)
     {
         if (notice is { CollectorDown: true }) return new CollectorDown(notice.Text);
-        if (optedOut) return new Skipped(Loc("--disconnect-telemetry로 연결을 해제한 상태입니다", "Disconnected with --disconnect-telemetry"));
+        if (optedOut) return new Skipped(Loc("실측 연결을 해제한 상태입니다 · 설정 › 실측에서 다시 연결", "Telemetry is disconnected · reconnect in Settings › Telemetry"));
         if (note is not null)
         {
             var reason = note.Replace(NotePrefix, "");
@@ -540,17 +558,26 @@ public static class SessionPresentation
     /// Roles nearly every Claude Code subagent shares; as a title they would hide the only distinguishing ID.
     public static readonly IReadOnlySet<string> OpaqueRoles = new HashSet<string> { "workflow-subagent", "general-purpose" };
 
-    /// A distinguishing role or nickname first; the ID follows in the detail slot. Shared roles leave the ID as the title.
+    /// A distinguishing role or nickname first; the ID follows in the detail slot. Without one (no role, or a shared one)
+    /// the row reads "하위 에이전트 · a2222222", the ID still telling siblings apart.
     public static (string Title, string? Detail) ChildTitle(TokenReading reading)
     {
-        var role = RoleLabel(reading.AgentRole) is { } label && !OpaqueRoles.Contains(label) ? label : null;
+        var role = DistinguishingRole(reading);
         if (reading.AgentID is { } agent && agent.Contains('/'))
         {
             var name = LastComponent(agent);
             return (name, role == name ? null : role);
         }
-        return role is not null ? (role, AgentLabel(reading)) : (AgentLabel(reading), null);
+        return (role ?? Loc("하위 에이전트", "Subagent"), AgentLabel(reading));
     }
+
+    /// The subagent's own name inside another sentence ("subagent Explore", "subagent a2222222"): its path name, role or
+    /// ID, never the generic "Subagent" title.
+    public static string ChildName(TokenReading reading) =>
+        reading.AgentID is { } agent && agent.Contains('/') ? LastComponent(agent) : DistinguishingRole(reading) ?? AgentLabel(reading);
+
+    static string? DistinguishingRole(TokenReading reading) =>
+        RoleLabel(reading.AgentRole) is { } label && !OpaqueRoles.Contains(label) ? label : null;
 
     /// UUIDv7 prefixes are timestamps shared by conversations created together, so use the suffix.
     public static string ShortID(TokenReading reading)
@@ -626,7 +653,7 @@ public static class SessionPresentation
     {
         var word = StateTitle(state, reading);
         if (reading.IsSubagent)
-            return Loc($"하위 에이전트 {ChildTitle(reading).Title}, {word}", $"Subagent {ChildTitle(reading).Title}, {word}");
+            return Loc($"하위 에이전트 {ChildName(reading)}, {word}", $"Subagent {ChildName(reading)}, {word}");
         var name = string.Join(", ", new[] { reading.Title, reading.Project ?? Loc("프로젝트 미확인", "Unknown project") }.OfType<string>());
         return $"{word}, {name}, {reading.ClientTitle} {reading.Model ?? Loc("모델 미확인", "unknown model")}";
     }
@@ -780,11 +807,18 @@ public static class SessionPresentation
                 { Live = top.Live, RecordedBy = top.RecordedBy };
         }).ToList();
         var live = windows.Where(window => window.ResetsAt > now).ToList();
-        return live.Count > 0 ? live.MaxBy(window => (window.UsedPercent, window.WindowMinutes ?? 0)) : windows.MaxBy(window => (window.ResetsAt, window.WindowMinutes ?? 0));
+        if (live.Count == 0) return windows.MaxBy(window => (window.ResetsAt, window.WindowMinutes ?? 0));
+        var shown = live.MaxBy(window => (window.UsedPercent, window.WindowMinutes ?? 0))!;
+        // The other live window (the 5-hour one beside the weekly one) gets its own compact row, like Claude's.
+        var other = live.Where(window => window.WindowMinutes != shown.WindowMinutes && window.WindowMinutes is not null).MaxBy(window => window.UsedPercent);
+        return other is { WindowMinutes: { } minutes, ResetsAt: { } resets }
+            ? shown with { Other = new UsageLimitSummary.OtherWindow(other.UsedPercent, minutes, resets)
+                { RecordedAt = other.RecordedAt, Live = other.Live, RecordedBy = other.RecordedBy } }
+            : shown;
     }
 
     /// Claude's two windows reduced like Codex's: the higher use among windows that have not reset (a tie goes to the
-    /// longer window), the other one named in help; when both have reset, the latest reset reads "초기화됨" for a day.
+    /// longer window), the other one drawn as its own row; when both have reset, the latest reset reads "초기화됨" for a day.
     public static UsageLimitSummary? ClaudeUsageLimit(ClaudeUsageLimits limits, DateTimeOffset now)
     {
         List<(ClaudeLimitWindow Window, int Minutes)> windows = [];
@@ -832,7 +866,7 @@ public static class SessionPresentation
         // A subagent's row is named by its agent, so the headline keeps the project there.
         var label = reading.IsSubagent ? project : RowTitle(reading);
         var session = string.Join(" · ", new[] { reading.IsSubagent ? null : reading.Title, project,
-                                                 reading.IsSubagent ? Loc("하위 ", "subagent ") + ChildTitle(reading).Title : null,
+                                                 reading.IsSubagent ? Loc("하위 ", "subagent ") + ChildName(reading) : null,
                                                  reading.ClientTitle + (reading.Model is { } model ? " " + model : "") }.OfType<string>());
         var value = Format.Tps(newest.Rate);
         var age = HelpAge(newest.Measurement.At, now);
@@ -985,7 +1019,7 @@ public static class SessionPresentation
     }
 
     /// The flow card's per-client split, widest first: "Claude Code 6.6k · Codex 1.2k · OpenCode 300", then the smallest
-    /// folding into "+N" down to the largest alone; one client is its name only (never the hero number again). The card
+    /// folding into " · +N more" down to the largest alone; one client is its name only (never the hero number again). The card
     /// shows the first candidate that fits beside "지금 속도", so four or more clients never spill past it.
     public static IReadOnlyList<string> ProviderSplits(IReadOnlyDictionary<TokenSource, int> byProvider)
     {
@@ -994,22 +1028,19 @@ public static class SessionPresentation
         if (parts.Count < 2) return [parts.Count == 0 ? "" : parts[0].source.Title];
         return Enumerable.Range(1, parts.Count).Reverse()
             .Select(shown => string.Join(" · ", parts.Take(shown).Select(p => $"{p.source.Title} {Format.CompactTokens(p.value)}"))
-                + (shown < parts.Count ? $" · +{parts.Count - shown}" : ""))
+                + (shown < parts.Count ? Loc($" · 외 {parts.Count - shown}", $" · +{parts.Count - shown} more") : ""))
             .ToList();
     }
 
-    /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record.
+    /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record. A turn waiting
+    /// for the person keeps the base caption: the header already says so.
     public static FlowCaption Caption(SessionCounts counts, DateTimeOffset? last, DateTimeOffset now, bool spoken = false)
     {
         var @base = new FlowCaption(LastRecordCaption, Loc("최근 5분 안에 로그에 기록된 마지막 출력입니다", "The latest output recorded in the logs within the last 5 min"));
-        if (counts.LiveGroups <= 0) return @base;
+        if (counts.LiveGroups <= 0 || counts.Input > 0) return @base;
         if (last is { } at && Seconds(now, at) <= 30) return @base;
         var help = Loc("응답이 끝나면 토큰이 기록됩니다. 코딩 에이전트는 응답이나 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다",
                        "Tokens are recorded when a response ends. Coding agents record at the end of a response or message, so tokens still being generated aren't included yet");
-        if (counts.Input > 0)
-            return new FlowCaption(counts.InputPlansOnly ? Loc("계획 승인 대기 · 승인하면 계속 기록", "Plan approval · approve to resume")
-                                       : Loc("입력 대기 · 답변하면 계속 기록", "Waiting for input · reply to resume"), help)
-            { Glyph = StateGlyphKind.Input, Emphasized = true };
         if (counts.Retrying > 0)
         {
             var text = counts.Retry is { } retry
@@ -1121,8 +1152,19 @@ public static class SessionPresentation
         return items;
     }
 
-    /// 8 + 15 per line + 8, plus the 0.5 pt rule above it.
-    public static double DetailHeight(TokenReading reading, SessionDisplayState state) => 16 + 15 * DetailItems(reading, state).Count + 0.5;
+    /// 8 + 15 per line + 8, plus the 0.5 pt rule above it; the action line adds 6 + 20.
+    public static double DetailHeight(TokenReading reading, SessionDisplayState state) =>
+        16 + 15 * DetailItems(reading, state).Count + 0.5 + (DetailActions(reading).Count > 0 ? 26 : 0);
+
+    /// The inline detail's buttons: the resume command, then File Explorer on the project folder (else the log file).
+    public static List<RowAction> DetailActions(TokenReading reading, string? home = null)
+    {
+        var actions = new List<RowAction>();
+        if (ResumeCommand(reading) is { } command) actions.Add(new(Loc("재개 명령 복사", "Copy Resume Command"), "terminal", Copy: command));
+        var target = reading.ProjectPath is { } path && IsWindowsAbsolute(path) ? path : LogFilePath(reading, home ?? AppPaths.Home);
+        if (target is not null) actions.Add(new(Loc("탐색기에서 보기", "Show in File Explorer"), "folder", Reveal: target));
+        return actions;
+    }
 
     /// The log file the reading came from: its id is "<source>:<path relative to home>" with "/" separators (rule 7), and a
     /// log holding several sessions (OpenCode's database) appends "#<session>". JSONL logs, JSON snapshots (Amp, Cline,

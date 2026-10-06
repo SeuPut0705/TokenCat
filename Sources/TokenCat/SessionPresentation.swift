@@ -213,7 +213,7 @@ struct UsageLimitSummary: Equatable {
     var resetsAt: Date?
     var recordedAt: Date
     var source: TokenSource = .codex
-    /// Claude only: the other live window, named in help and VoiceOver.
+    /// The other live window, drawn as its own compact row under this one (Claude's two windows, Codex's when both are logged).
     var other: OtherWindow?
     /// From a live read (실시간 한도 확인), not a record.
     var live = false
@@ -223,6 +223,10 @@ struct UsageLimitSummary: Equatable {
         var usedPercent: Double
         var windowMinutes: Int
         var resetsAt: Date
+        /// Its own record when it differs from the shown window's (Codex logs each window apart); nil: the same record.
+        var recordedAt: Date? = nil
+        var live: Bool? = nil
+        var recordedBy: String?? = nil
     }
 
     /// When the window resets; without a logged reset time, one full window after the record.
@@ -238,6 +242,15 @@ struct UsageLimitSummary: Equatable {
     var title: String {
         let name = source.shortTitle, window = SessionPresentation.windowLabel(windowMinutes)
         return loc("\(name) \(window) 한도", "\(name) \(window) limit")
+    }
+    /// The on-screen row name, "Claude · 5-hour": provider first so the rows scan by provider; `title` stays for VoiceOver.
+    var shortTitle: String { "\(source.shortTitle) · \(SessionPresentation.windowLabel(windowMinutes))" }
+    /// The other window as a summary of its own, for its compact row.
+    func otherSummary(now: Date) -> UsageLimitSummary? {
+        guard let other, other.resetsAt > now else { return nil }
+        return UsageLimitSummary(usedPercent: other.usedPercent, windowMinutes: other.windowMinutes, resetsAt: other.resetsAt,
+                                 recordedAt: other.recordedAt ?? recordedAt, source: source, live: other.live ?? live,
+                                 recordedBy: other.recordedBy ?? recordedBy)
     }
     /// The number alone ("28"); "%" and " 사용" are drawn smaller beside it. "사용" because Codex's own UI counts what is left.
     var percentText: String { "\(Int(usedPercent.rounded()))" }
@@ -430,7 +443,8 @@ enum SessionPresentation {
     /// Roles nearly every Claude Code subagent shares; as a title they would hide the only distinguishing ID.
     static let opaqueRoles: Set<String> = ["workflow-subagent", "general-purpose"]
 
-    /// A distinguishing role or nickname first; the ID follows in the detail slot. Shared roles leave the ID as the title.
+    /// A distinguishing role or nickname first; the ID follows in the detail slot. Without one (no role or a shared role)
+    /// the row is named "하위 에이전트" with the ID beside it, so a bare ID never stands as the title.
     static func childTitle(_ reading: TokenReading) -> (title: String, detail: String?) {
         let role = roleLabel(reading.agentRole).flatMap { opaqueRoles.contains($0) ? nil : $0 }
         if let agent = reading.agentID, agent.contains("/") {
@@ -438,7 +452,13 @@ enum SessionPresentation {
             return (name, role == name ? nil : role)
         }
         if let role { return (role, agentLabel(reading)) }
-        return (agentLabel(reading), nil)
+        return (loc("하위 에이전트", "Subagent"), agentLabel(reading))
+    }
+
+    /// A subagent's own name inside another sentence: its role or nickname, else its ID (never the generic "하위 에이전트").
+    static func childName(_ reading: TokenReading) -> String {
+        let title = childTitle(reading)
+        return title.title == loc("하위 에이전트", "Subagent") ? title.detail ?? agentLabel(reading) : title.title
     }
 
     /// UUIDv7 prefixes are timestamps shared by conversations created together, so use the suffix.
@@ -501,7 +521,7 @@ enum SessionPresentation {
         state == .tool ? toolTitle(reading.toolCategory) : state.title
     }
 
-    /// A live row's chip: tool category, input kind, or the state. Retry progress stays on line 2.
+    /// The words opening a live row's second line: tool category, input kind, or the state. Retry progress stays trailing.
     static func chipText(_ state: SessionDisplayState, _ reading: TokenReading) -> String {
         state == .input ? inputTitle(reading) : stateTitle(state, reading)
     }
@@ -525,7 +545,7 @@ enum SessionPresentation {
     /// VoiceOver row label (P-3): "<상태>, [<제목>,] <프로젝트>, <클라이언트> <모델>"; subagents "하위 에이전트 <제목>, <상태>".
     static func spokenLabel(_ reading: TokenReading, state: SessionDisplayState) -> String {
         let word = stateTitle(state, reading)
-        if reading.isSubagent { return loc("하위 에이전트 \(childTitle(reading).title), \(word)", "Subagent \(childTitle(reading).title), \(word)") }
+        if reading.isSubagent { return loc("하위 에이전트 \(childName(reading)), \(word)", "Subagent \(childName(reading)), \(word)") }
         let name = [reading.title, reading.project ?? loc("프로젝트 미확인", "Unknown project")].compactMap { $0 }.joined(separator: ", ")
         return "\(word), \(name), \(reading.clientTitle) \(reading.model ?? loc("모델 미확인", "unknown model"))"
     }
@@ -667,12 +687,20 @@ enum SessionPresentation {
                                      recordedAt: recordedAt, live: top.live == true, recordedBy: top.recordedBy)
         }
         let live = windows.filter { ($0.resetsAt ?? .distantPast) > now }
-        return live.max { ($0.usedPercent, $0.windowMinutes ?? 0) < ($1.usedPercent, $1.windowMinutes ?? 0) }
-            ?? windows.max { ($0.resetsAt ?? .distantPast, $0.windowMinutes ?? 0) < ($1.resetsAt ?? .distantPast, $1.windowMinutes ?? 0) }
+        guard var top = live.max(by: { ($0.usedPercent, $0.windowMinutes ?? 0) < ($1.usedPercent, $1.windowMinutes ?? 0) }) else {
+            return windows.max { ($0.resetsAt ?? .distantPast, $0.windowMinutes ?? 0) < ($1.resetsAt ?? .distantPast, $1.windowMinutes ?? 0) }
+        }
+        // The other live window (the 5-hour one beside the weekly one) gets its own compact row, like Claude's.
+        if let other = live.filter({ $0.windowMinutes != top.windowMinutes }).max(by: { $0.usedPercent < $1.usedPercent }),
+           let minutes = other.windowMinutes, let resetsAt = other.resetsAt {
+            top.other = UsageLimitSummary.OtherWindow(usedPercent: other.usedPercent, windowMinutes: minutes, resetsAt: resetsAt,
+                                                      recordedAt: other.recordedAt, live: other.live, recordedBy: .some(other.recordedBy))
+        }
+        return top
     }
 
     /// Claude's two windows reduced like Codex's: the higher use among windows that have not reset (a tie goes to the
-    /// longer window), the other one named in help; when both have reset, the latest reset reads "초기화됨" for a day.
+    /// longer window), the other one drawn as its own row; when both have reset, the latest reset reads "초기화됨" for a day.
     static func claudeUsageLimit(_ limits: ClaudeUsageLimits, now: Date) -> UsageLimitSummary? {
         let windows = [(limits.fiveHour, 300), (limits.sevenDay, 10_080)].compactMap { window, minutes in window.map { ($0, minutes) } }
         // Without a reset time (the desktop app), one full window after the record, as `UsageLimitSummary.resetDate`.
@@ -720,7 +748,7 @@ enum SessionPresentation {
         let project = reading.project ?? loc("프로젝트 미확인", "Unknown project")
         // A subagent's row is named by its agent, so the headline keeps the project there.
         let label = reading.isSubagent ? project : rowTitle(reading)
-        let session = [reading.isSubagent ? nil : reading.title, project, reading.isSubagent ? loc("하위 ", "subagent ") + childTitle(reading).title : nil,
+        let session = [reading.isSubagent ? nil : reading.title, project, reading.isSubagent ? loc("하위 ", "subagent ") + childName(reading) : nil,
                        reading.clientTitle + (reading.model.map { " " + $0 } ?? "")].compactMap { $0 }.joined(separator: " · ")
         let value = Format.tps(newest.rate), age = helpAge(newest.measurement.at, now: now)
         return SpeedHeadline(value: value, kind: newest.measurement.kind?.title ?? "tok/s", label: label,
@@ -875,8 +903,9 @@ enum SessionPresentation {
     }
 
     /// The flow card's per-client split, widest first: "Claude Code 6.6k · Codex 1.2k · OpenCode 300", then the smallest
-    /// folding into "+N" down to the largest alone; one client is its name only (never the hero number again). The card
-    /// shows the first candidate that fits beside "지금 속도", so four or more clients never spill past it.
+    /// folding into "외 N" / "+N more" (never a bare "+N", which reads as tokens) down to the largest alone; one client is
+    /// its name only (never the hero number again). The card shows the first candidate that fits, so four or more clients
+    /// never spill past it.
     static func providerSplits(_ byProvider: [TokenSource: Int]) -> [String] {
         let parts = TokenSource.allCases.compactMap { source -> (TokenSource, Int)? in
             guard let value = byProvider[source], value > 0 else { return nil }
@@ -885,22 +914,19 @@ enum SessionPresentation {
         guard parts.count > 1 else { return [parts.first?.0.title ?? ""] }
         return (1...parts.count).reversed().map { shown in
             parts.prefix(shown).map { "\($0.0.title) \(Format.compactTokens($0.1))" }.joined(separator: " · ")
-                + (shown < parts.count ? " · +\(parts.count - shown)" : "")
+                + (shown < parts.count ? loc(" · 외 \(parts.count - shown)", " · +\(parts.count - shown) more") : "")
         }
     }
 
-    /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record.
+    /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record. A session
+    /// waiting for the person keeps the base caption: the header and the row already say it.
     static func flowCaption(counts: SessionCounts, last: Date?, now: Date, spoken: Bool = false) -> FlowCaption {
         let base = FlowCaption(text: lastRecordCaption, help: loc("최근 5분 안에 로그에 기록된 마지막 출력입니다", "The latest output recorded in the logs within the last 5 min"))
         guard counts.liveGroups > 0 else { return base }
         if let last, now.timeIntervalSince(last) <= 30 { return base }
         let help = loc("응답이 끝나면 토큰이 기록됩니다. 코딩 에이전트는 응답이나 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다",
                        "Tokens are recorded when a response ends. Coding agents record at the end of a response or message, so tokens still being generated aren't included yet")
-        if counts.input > 0 {
-            return FlowCaption(text: counts.inputPlansOnly ? loc("계획 승인 대기 · 승인하면 계속 기록", "Plan approval · approve to resume")
-                                   : loc("입력 대기 · 답변하면 계속 기록", "Waiting for input · reply to resume"),
-                               glyph: .input, emphasized: true, help: help)
-        }
+        if counts.input > 0 { return base }
         if counts.retrying > 0 {
             let text = counts.retry.map { $0.networkDown ? loc("API 재시도 · 네트워크 끊김", "API retry · network down") : retryText($0, now: now, api: true, spoken: spoken) }
                 ?? loc("API 재시도", "API retry")
@@ -1022,9 +1048,23 @@ enum SessionPresentation {
         return items
     }
 
-    /// 8 + 15 per line + 8, plus the 0.5 pt rule above it.
+    /// 8 + 15 per line + 8, plus the 0.5 pt rule above it, plus the 20 pt button line and 6 pt above it when there is one.
     static func detailHeight(_ reading: TokenReading, state: SessionDisplayState) -> CGFloat {
-        16 + 15 * CGFloat(detailItems(reading, state: state).count) + 0.5
+        16 + 15 * CGFloat(detailItems(reading, state: state).count) + 0.5 + (detailActions(reading).isEmpty ? 0 : 26)
+    }
+
+    /// The detail's button line, so the row menu's main actions are on screen and reachable by keyboard: the resume
+    /// command, then one Finder reveal (the project folder, else the log file).
+    static func detailActions(_ reading: TokenReading, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [RowAction] {
+        var actions: [RowAction] = []
+        if let command = resumeCommand(reading) {
+            actions.append(RowAction(title: loc("재개 명령 복사", "Copy Resume Command"), symbol: "terminal", kind: .copy(command)))
+        }
+        let folder = reading.projectPath.flatMap { $0.hasPrefix("/") ? URL(fileURLWithPath: $0, isDirectory: true) : nil }
+        if let url = folder ?? logFileURL(reading, home: home) {
+            actions.append(RowAction(title: loc("Finder에서 보기", "Show in Finder"), symbol: "folder", kind: .reveal(url)))
+        }
+        return actions
     }
 
     /// The log file the reading came from: its id is "<source>:<path relative to home>", and a log holding several
@@ -1137,13 +1177,15 @@ struct SessionBlock: Identifiable {
 enum SessionListEntry: Identifiable {
     /// `caption`'s flag draws a full-width rule above every caption but the first.
     /// `anchor` is the following block's id, so a caption stays unique even when a frozen order repeats a section.
-    case divider(String), caption(String, rule: Bool, anchor: String), block(SessionBlock), older(Int)
+    /// `toggle` is the list's one "모두 보기 / 접기" row, always last.
+    case divider(String), caption(String, rule: Bool, anchor: String), block(SessionBlock), older(Int), toggle
     var id: String {
         switch self {
         case .divider(let id): return "divider:" + id
         case .caption(_, _, let anchor): return "caption:" + anchor
         case .block(let block): return block.id
         case .older: return "older"
+        case .toggle: return SessionListModel.toggleID
         }
     }
     var height: CGFloat {
@@ -1151,29 +1193,34 @@ enum SessionListEntry: Identifiable {
         case .divider: return SessionListModel.dividerHeight
         case .caption: return SessionListModel.captionHeight
         case .block(let block): return block.height
-        case .older: return SessionListModel.olderHeight
+        case .older, .toggle: return SessionListModel.olderHeight
         }
     }
 }
 
 /// Computed once per publish; views never re-sort.
 struct SessionListModel {
-    static let maxViewport: CGFloat = 264
+    /// The list's height cap in the popover. 312 rather than 264 since the flow card shrank and the footer hides while
+    /// live, so the popover's usual height stays about where it was while a fifth live row fits.
+    static let maxViewport: CGFloat = 312
     static let dividerHeight: CGFloat = 1
     static let captionHeight: CGFloat = 24
     static let collapsedMinimum = 6
     static let collapsedChildren = 3
     /// The "+N 하위" summary row.
     static let moreHeight: CGFloat = 24
-    /// "이전 기록 더 보기".
+    /// "이전 기록 더 보기" and the closing "모두 보기 / 접기" row.
     static let olderHeight: CGFloat = 28
     static let olderID = "older"
+    static let toggleID = "toggle"
 
     var blocks: [SessionBlock] = []
     var counts = SessionCounts()
     /// Top-level groups and children of shown groups not visible while collapsed.
     var hiddenGroups = 0
     var hiddenChildren = 0
+    /// Built with every group and child shown (`make(expanded:)`).
+    var expanded = false
     /// Expanded only: blocks in the folded "이전" section.
     var olderCount = 0
     /// With "이전" folded.
@@ -1211,18 +1258,34 @@ struct SessionListModel {
             }
             entries.append(.block(block))
         }
+        if !entries.isEmpty && (expanded || hiddenGroups > 0 || unofferedChildren > 0) {
+            entries.append(.divider(Self.toggleID))
+            entries.append(.toggle)
+        }
         return entries
+    }
+
+    /// Hidden children no group's "+N 하위" row already offers; only those need the closing row.
+    private var unofferedChildren: Int { hiddenChildren - blocks.reduce(0) { $0 + $1.moreCount } }
+
+    /// The closing row's words: what one click shows or hides.
+    var toggleText: String {
+        if expanded { return loc("접기", "Show less") }
+        if hiddenGroups > 0 { return loc("세션 \(counts.groups)개 모두 보기", "Show all \(plural(counts.groups, "session"))") }
+        return loc("하위 \(unofferedChildren)개 더 보기", "Show \(plural(unofferedChildren, "more subagent"))")
     }
 
     func height(showOlder: Bool) -> CGFloat { olderCount > 0 && showOlder ? olderContentHeight : contentHeight }
     func viewport(showOlder: Bool) -> CGFloat { olderCount > 0 && showOlder ? viewports.open : viewports.folded }
 
-    /// Selectable rows in visual order (P-2): leads, children, "+N 하위" and "이전 기록"; captions and dividers are skipped.
+    /// Selectable rows in visual order (P-2): leads, children, "+N 하위", "이전 기록" and the closing toggle; captions and
+    /// dividers are skipped.
     func navigation(showOlder: Bool) -> [String] {
         entries(showOlder: showOlder).flatMap { entry -> [String] in
             switch entry {
             case .block(let block): return [block.id] + block.children.map(\.id) + (block.moreCount > 0 ? [block.moreID] : [])
             case .older: return [Self.olderID]
+            case .toggle: return [Self.toggleID]
             default: return []
             }
         }
@@ -1283,7 +1346,7 @@ struct SessionListModel {
         var y: CGFloat = 0
         for entry in entries {
             var frames: [(top: CGFloat, height: CGFloat)] = []
-            if case .block(let block) = entry { frames = block.rowFrames } else if case .older = entry { frames = [(0, olderHeight)] }
+            if case .block(let block) = entry { frames = block.rowFrames } else if entry.id == olderID || entry.id == toggleID { frames = [(0, olderHeight)] }
             for frame in frames {
                 let low = y + frame.top + 12, high = y + frame.top + frame.height - 6
                 if low <= maxViewport { best = max(best, min(high, maxViewport)) }
@@ -1323,6 +1386,7 @@ struct SessionListModel {
         let shown = expanded ? ordered : Array(ordered.prefix(max(pinned.count, collapsedMinimum)))
 
         var model = SessionListModel()
+        model.expanded = expanded
         model.counts = SessionCounts(groups)
         model.usageLimit = SessionPresentation.usageLimit(tokens, reads: codexReads, now: now)
         model.hiddenGroups = ordered.count - shown.count

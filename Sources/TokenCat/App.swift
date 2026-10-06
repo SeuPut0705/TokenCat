@@ -335,6 +335,12 @@ final class DashboardModel: ObservableObject {
         savePendingRestart()
         updateRestartState(now: date)
     }
+    /// After "연결 해제" no client waits for a relaunch to send telemetry.
+    func noteTelemetryDisconnected() {
+        pendingRestart = [:]
+        savePendingRestart()
+        updateRestartState(now: Date())
+    }
     private func updateRestartState(now: Date) {
         var ran: [TokenSource: Date] = [:]
         for reading in tokens where !SessionPresentation.isTelemetry(reading) {
@@ -1265,6 +1271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                 : StateGlyph.image(row.kind, side: 10, highlighted: false, contrast: contrast)
             menu.addItem(item)
         }
+        if summary.more > 0 { menu.addItem(menuItem(QuickMenuSummary.moreTitle(summary.more), #selector(openDashboardAction))) }
         menu.addItem(.separator())
         let open = menuItem(loc("열기", "Open"), #selector(openDashboardAction))
         open.keyEquivalentModifierMask = []
@@ -1337,7 +1344,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         settingsState.runnerPose = animator.plan.pose
         if settingsWindow == nil {
             let tabs = SettingsTabsController(preferences: model.preferences, model: model, state: settingsState,
-                                              actions: SettingsActions(reshowOnboarding: { [weak self] in self?.reshowOnboarding() }))
+                                              actions: SettingsActions(reshowOnboarding: { [weak self] in self?.reshowOnboarding() },
+                                                                       setTelemetryConnected: { [weak self] connect, done in
+                                                                           guard let self else { return done() }
+                                                                           self.setTelemetryConnected(connect, done: done)
+                                                                       }))
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: SettingsTabsController.width, height: 400),
                                   styleMask: [.titled, .closable], backing: .buffered, defer: false)
             SettingsTabsController.configure(window, with: tabs)
@@ -1395,8 +1406,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         }
     }
 
-    private func connectTelemetryAutomatically() {
-        guard !telemetrySetupInFlight else { return }
+    /// "다시 연결" / "연결 해제" on the 실측 tab, like `--connect-telemetry` / `--disconnect-telemetry`: the choice is
+    /// remembered first (a failed disconnect included, as on the command line), then applied off the main thread.
+    /// `done` runs on the main thread once the configuration settles.
+    private func setTelemetryConnected(_ connect: Bool, done: @escaping () -> Void) {
+        UserDefaults.standard.set(!connect, forKey: TelemetrySetup.optOutKey)
+        if connect { return connectTelemetryAutomatically(done: done) }
+        guard !telemetrySetupInFlight else { return done() }
+        telemetrySetupInFlight = true
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var message: String?
+            var failure: TelemetrySetupFailure?
+            do {
+                _ = try TelemetrySetup().disconnect()
+            } catch {
+                message = OnboardingCard.notePrefix + error.localizedDescription
+                failure = (error as? TelemetrySetupError)?.failure ?? .writeFailed(restored: true)
+            }
+            DispatchQueue.main.async {
+                defer { done() }
+                guard let self else { return }
+                self.telemetrySetupInFlight = false
+                self.telemetryConfigured = false
+                self.model.telemetrySetupNote = message
+                self.model.telemetrySetupFailure = failure
+                self.model.telemetryConnectNotes = []
+                self.model.claudeBridged = false
+                if message == nil { self.model.noteTelemetryDisconnected() }
+            }
+        }
+    }
+
+    private func connectTelemetryAutomatically(done: @escaping () -> Void = {}) {
+        guard !telemetrySetupInFlight else { return done() }
+        defer { if !telemetrySetupInFlight { done() } }
         // `--disconnect-telemetry` opted out; only `--connect-telemetry` opts back in.
         if UserDefaults.standard.bool(forKey: TelemetrySetup.optOutKey) {
             model.claudeBridged = false
@@ -1420,6 +1463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
                 failure = (error as? TelemetrySetupError)?.failure ?? .writeFailed(restored: true)
             }
             DispatchQueue.main.async {
+                defer { done() }
                 self?.telemetrySetupInFlight = false
                 self?.telemetryConfigured = message == nil
                 self?.model.telemetrySetupNote = message

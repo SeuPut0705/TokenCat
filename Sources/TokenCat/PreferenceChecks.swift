@@ -567,8 +567,11 @@ func runShellChecks() -> [String] {
     check(SettingsPane.allCases.map(\.title) == ["일반", "메뉴 막대", "캐릭터", "실측", "정보"] && SettingsPane.allCases.allSatisfy { $0.image != nil }
           && SettingsPane(rawValue: "cat") == .character,
           "Settings tabs are not 일반 · 메뉴 막대 · 캐릭터 · 실측 · 정보 with a symbol each, or the remembered 'cat' tab is lost")
+    // A healthy collector says it is on with an outline check; the dashed glyph is left to clients with nothing yet.
     check(TelemetryStatusRow.collector(.receiving) == (.receiving, "수신 중 · 127.0.0.1:16493")
-          && TelemetryStatusRow.collector(.waiting).text == "수신 대기 · 127.0.0.1:16493"
+          && TelemetryStatusRow.collector(.waiting) == (.listening, "켜짐 · 127.0.0.1:16493")
+          && TelemetryStatusRow.listening.symbol == "checkmark.circle" && TelemetryStatusRow.listening.color == TCColor.activity
+          && TelemetryStatusRow.listening.symbol != TelemetryStatusRow.waiting.symbol
           && TelemetryStatusRow.collector(.busyOtherApp) == (.problem, "꺼짐 · 다른 앱이 16493 포트 사용 중")
           && TelemetryStatusRow.collector(.starting) == (.starting, "준비 중"),
           "Collector status rows do not match the T-3 table")
@@ -579,7 +582,7 @@ func runShellChecks() -> [String] {
           && client(false, false, at.addingTimeInterval(-30), at).text == "최근 수신 1분 이내"
           && client(false, false, at.addingTimeInterval(-720), nil).text == "최근 수신 12분 전"
           && client(false, false, nil, at).text == "기록 수신 중 · 속도 형식 없음" && client(false, false, nil, at).detail != nil
-          && client(false, false, nil, nil).text == "이번 실행에서 받은 실측 없음",
+          && client(false, false, nil, nil) == (.waiting, "아직 받은 실측 없음", nil),
           "Client telemetry rows are not checked restart → 24 h → received → batch only → none")
     let skippedRow = TelemetryStatusRow.client(skipped: "기존 실측 전송 설정이 있어 덮어쓰지 않았습니다.", restartNeeded: true, expired: false,
                                                lastReceived: at, batch: nil, now: at)
@@ -597,9 +600,25 @@ func runShellChecks() -> [String] {
           && TelemetryStatusRow.claudeLimits(notes: [], bridged: false, received: at.addingTimeInterval(-720), desktop: true, now: at)
               == (.received, "Claude 데스크톱 앱 기록 · 12분 전", nil),
           "Claude limit row is not checked empty status line → skipped → received → waiting → none")
+    // About lists the privacy facts one per line; the standard About panel gets the same lines as bullets.
+    check(AppInfo.privacyLines.count == 3 && AppInfo.privacy.components(separatedBy: "\n").count == 3
+          && AppInfo.privacy.components(separatedBy: "\n").allSatisfy { $0.hasPrefix("• ") }
+          && AppInfo.privacyLines[1].contains("GitHub") && AppInfo.privacyLines[2].contains("토큰은 저장하지 않습니다"),
+          "About's privacy statement is not three separate lines")
+    // The 실측 tab's folder buttons: only existing config files, keyed by client, and the backup folder apart.
+    let home = FileManager.default.temporaryDirectory.appendingPathComponent("tokencat-files-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: home.appendingPathComponent(".codex"), withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: home.appendingPathComponent(".codex/config.toml").path, contents: Data())
+    let files = TelemetryFiles.existing(home: home)
+    try? FileManager.default.removeItem(at: home)
+    check(files.configs == [.codex: home.appendingPathComponent(".codex/config.toml")] && files.backups == nil,
+          "The 실측 tab offers config files that don't exist, or misses one that does")
     AppLanguage.with(.en) {
         check(SettingsPane.allCases.map(\.title) == ["General", "Menu Bar", "Character", "Telemetry", "About"]
               && TelemetryStatusRow.collector(.busyOtherApp).text == "Off · another app is using port 16493"
+              && TelemetryStatusRow.collector(.waiting).text == "On · 127.0.0.1:16493"
+              && client(false, false, nil, nil).text == "Nothing received yet"
+              && AppInfo.privacyLines.first == "Reads only metadata from local logs and telemetry; never stores or shows prompts or responses"
               && client(false, false, at.addingTimeInterval(-30), at).text == "Last received <1m ago"
               && limits([], true, at.addingTimeInterval(-180)).text == "Last received 3m ago"
               && TelemetryStatusRow.claudeLimits(notes: [], bridged: false, received: at.addingTimeInterval(-720), desktop: true, now: at).text

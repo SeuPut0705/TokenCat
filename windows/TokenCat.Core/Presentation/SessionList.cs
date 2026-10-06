@@ -62,12 +62,15 @@ public abstract record SessionListEntry
     public sealed record Block(SessionBlock Value) : SessionListEntry;
     /// "이전 기록 더 보기" with the folded block count.
     public sealed record Older(int Count) : SessionListEntry;
+    /// The one list disclosure at the very end: "세션 N개 모두 보기", "하위 N개 더 보기" or "접기".
+    public sealed record Toggle : SessionListEntry;
 
     public string Id => this switch
     {
         Divider divider => "divider:" + divider.Key,
         Caption caption => "caption:" + caption.Anchor,
         Block block => block.Value.Id,
+        Toggle => SessionListModel.ToggleID,
         _ => SessionListModel.OlderID,
     };
 
@@ -83,19 +86,33 @@ public abstract record SessionListEntry
 /// Computed once per publish; views never re-sort.
 public sealed record SessionListModel
 {
-    public const double MaxViewport = 264, DividerHeight = 1, CaptionHeight = 24;
+    public const double MaxViewport = 312, DividerHeight = 1, CaptionHeight = 24;
     public const int CollapsedMinimum = 6, CollapsedChildren = 3;
     /// The "+N 하위" summary row.
     public const double MoreHeight = 24;
-    /// "이전 기록 더 보기".
+    /// "이전 기록 더 보기" and the list toggle.
     public const double OlderHeight = 28;
-    public const string OlderID = "older";
+    public const string OlderID = "older", ToggleID = "toggle";
+
+    /// The full list (every group, finished children, date captions) rather than the collapsed one.
+    public bool Expanded { get; init; }
 
     public IReadOnlyList<SessionBlock> Blocks { get; init; } = [];
     public SessionCounts Counts { get; init; } = new();
     /// Top-level groups and children of shown groups not visible while collapsed.
     public int HiddenGroups { get; init; }
     public int HiddenChildren { get; init; }
+    /// Hidden children not already offered by a group's "+N 하위" row (finished children of a collapsed group).
+    int UnofferedChildren => HiddenChildren - Blocks.Sum(block => block.MoreCount);
+    /// The list toggle shows while something is folded away that no "+N 하위" row offers, or to fold the expanded list again.
+    public bool ShowsToggle => Expanded || HiddenGroups > 0 || UnofferedChildren > 0;
+    public string ToggleText => Expanded ? Loc("접기", "Show less")
+        : HiddenGroups > 0 ? Loc($"세션 {Counts.Groups}개 모두 보기", $"Show all {Plural(Counts.Groups, "session")}")
+        : Loc($"하위 {UnofferedChildren}개 더 보기", $"Show {Plural(UnofferedChildren, "more subagent")}");
+    public string ToggleHelp => Loc($"하위 에이전트 포함 {Counts.Readings}개 기록", $"{Plural(Counts.Readings, "record")} including subagents")
+        + (Expanded || HiddenGroups == 0 ? "" : Loc($" · 접힌 세션 {HiddenGroups}개", $" · {Plural(HiddenGroups, "collapsed session")}"));
+    public string ToggleSpoken => Expanded ? Loc("세션 목록 접기", "Collapse session list")
+        : HiddenGroups > 0 ? Loc("세션 목록 모두 보기", "Show all sessions") : Loc("하위 에이전트 더 보기", "Show more subagents");
     /// Expanded only: blocks in the folded "이전" section.
     public int OlderCount { get; init; }
     /// With "이전" folded.
@@ -137,19 +154,25 @@ public sealed record SessionListModel
             else if (entries.Count > 0) entries.Add(new SessionListEntry.Divider(block.Id));
             entries.Add(new SessionListEntry.Block(block));
         }
+        if (ShowsToggle && entries.Count > 0)
+        {
+            entries.Add(new SessionListEntry.Divider(ToggleID));
+            entries.Add(new SessionListEntry.Toggle());
+        }
         return entries;
     }
 
     public double Height(bool showOlder) => OlderCount > 0 && showOlder ? OlderContentHeight : ContentHeight;
     public double Viewport(bool showOlder) => OlderCount > 0 && showOlder ? OpenViewport : FoldedViewport;
 
-    /// Selectable rows in visual order (P-2): leads, children, "+N 하위" and "이전 기록"; captions and dividers are skipped.
+    /// Selectable rows in visual order (P-2): leads, children, "+N 하위", "이전 기록" and the toggle; captions and dividers are
+    /// skipped.
     public List<string> Navigation(bool showOlder)
     {
         var ids = new List<string>();
         foreach (var entry in Entries(showOlder))
         {
-            if (entry is SessionListEntry.Older) ids.Add(OlderID);
+            if (entry is SessionListEntry.Older or SessionListEntry.Toggle) ids.Add(entry.Id);
             if (entry is not SessionListEntry.Block { Value: var block }) continue;
             ids.Add(block.Id);
             ids.AddRange(block.Children.Select(child => child.Id));
@@ -217,7 +240,7 @@ public sealed record SessionListModel
             IReadOnlyList<(double Top, double Height)> frames = entry switch
             {
                 SessionListEntry.Block { Value: var block } => block.RowFrames,
-                SessionListEntry.Older => [(0, OlderHeight)],
+                SessionListEntry.Older or SessionListEntry.Toggle => [(0, OlderHeight)],
                 _ => [],
             };
             foreach (var (top, height) in frames)
@@ -315,7 +338,7 @@ public sealed record SessionListModel
         }
         return new SessionListModel
         {
-            Blocks = blocks, Counts = new SessionCounts(groups), UsageLimit = SessionPresentation.UsageLimit(readings, now, codexReads),
+            Blocks = blocks, Counts = new SessionCounts(groups), UsageLimit = SessionPresentation.UsageLimit(readings, now, codexReads), Expanded = expanded,
             HiddenGroups = ordered.Count - shown.Count, HiddenChildren = hiddenChildren, OlderCount = olderCount,
             ShowsSpeedColumn = showsSpeedColumn,
         }.Measured();

@@ -20,7 +20,7 @@ static class Snapshot
         try
         {
             // A throwaway store: the fixtures show default preferences and never write the real settings.json.
-            var actions = new SettingsActions(new Preferences(new SettingsStore(store)), () => { }, _ => { }, () => { }, _ => { });
+            var actions = new SettingsActions(new Preferences(new SettingsStore(store)), () => { }, _ => { }, () => { }, _ => { }, _ => { });
             foreach (var language in new[] { AppLanguage.Ko, AppLanguage.En })
             {
                 Lang.With(language, () =>
@@ -33,7 +33,13 @@ static class Snapshot
                     {
                         var row = new LimitRow();
                         row.Update(limit, Fixtures.Now);
-                        return (FrameworkElement)Ui.Container(row);
+                        // Padded like the dashboard's limits container; the rows carry no inner margins of their own.
+                        return (FrameworkElement)Ui.Container(new System.Windows.Controls.Border
+                        {
+                            Child = row,
+                            Padding = new Thickness(TokenCat.Dashboard.Inset, TokenCat.Dashboard.InsetVertical,
+                                                    TokenCat.Dashboard.Inset, TokenCat.Dashboard.InsetVertical),
+                        });
                     })));
                     foreach (var page in Enum.GetValues<SettingsPage>())
                         Save($"settings-{page.ToString().ToLowerInvariant()}-{code}.png", () => new SettingsView(Fixtures.Settings(), actions, page, _ => { }, snapshot: true));

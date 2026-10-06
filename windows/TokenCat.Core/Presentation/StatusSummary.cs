@@ -172,13 +172,13 @@ public static class StatusBarContent
     public const double Edge = 4, RunnerWidth = 32, Height = 24, MarkSlot = 8 + 3;
 
     /// Without the character the minimal AI cell widens to 41 pt. The speed item fits "9999 tok/s" (`Format.BarTps` drops the decimal
-    /// from 100 up; an 11 pt value, a thin space and an 8.5 pt unit) beside three stacked glyphs, so a 4-digit rate never shrinks:
-    /// on one line the stack's 12 pt beyond one glyph widen the cell from 69 to 81.
+    /// from 100 up; an 11 pt value, a thin space and an 8.5 pt unit) beside three glyphs side by side, 1 pt apart, so a 4-digit rate
+    /// never shrinks: on one line the row's 22 pt beyond one glyph widen the cell from 69 to 91.
     public static double CellWidth(StatusBarLayout layout, MetricID id, bool showRunner = true) => layout switch
     {
         StatusBarLayout.Minimal => showRunner ? 30 : 41,
         StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.AverageSpeed => 56, _ => 32 },
-        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.AverageSpeed => 81, _ => 52 },
+        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.AverageSpeed => 91, _ => 52 },
     };
 
     /// Neither items nor the character: the 28 pt "TC" placeholder.
@@ -217,10 +217,11 @@ public static class StatusBarContent
                 case MetricID.Battery when system.BatteryPresent: metrics.Add(new(id, "BAT", Percentage(system.BatteryPercent))); break;
                 case MetricID.Network: metrics.Add(new(id, "NET", $"↑{upload}\n↓{download}")); break;
                 case MetricID.Ai:
-                    // Running groups with their phase mark; with none running, the log-wait groups (secondary, half disc);
-                    // otherwise a tertiary "0" without a mark (M-2).
+                    // Running groups with their phase mark; while any waits for the person, only those (the number to act on);
+                    // with none running, the log-wait groups (secondary, half disc); otherwise a tertiary "0" without a mark (M-2).
                     var waitingOnly = ai.Running == 0 && ai.Waiting > 0;
-                    var value = hasTokenSample ? (waitingOnly ? ai.Waiting : ai.Running).ToString(CultureInfo.InvariantCulture) : "—";
+                    var shown = waitingOnly ? ai.Waiting : ai.Running > 0 && ai.Phase == TokenActivityState.Input ? ai.Input : ai.Running;
+                    var value = hasTokenSample ? shown.ToString(CultureInfo.InvariantCulture) : "—";
                     var state = !hasTokenSample ? TokenActivityState.Idle : ai.Running > 0 ? ai.Phase : waitingOnly ? TokenActivityState.Stale : TokenActivityState.Idle;
                     metrics.Add(new(id, "AI", value, hasTokenSample && ai.Running > 0, state));
                     break;
@@ -292,6 +293,12 @@ public sealed record QuickMenuSummary(string Headline)
     /// Up to three live top-level groups in urgency order.
     public IReadOnlyList<Row> Rows { get; init; } = [];
 
+    /// Live groups beyond `Rows`, reached through the dashboard.
+    public int More { get; init; }
+
+    /// "그 외 9개 세션…": the quick menu's last summary row when more groups are live than it lists.
+    public static string MoreTitle(int count) => Loc($"그 외 {count}개 세션…", count == 1 ? "1 more session…" : $"{count} more sessions…");
+
     public static QuickMenuSummary Make(IReadOnlyList<SessionGroup> groups, SessionCounts counts, bool hasTokenSample, DateTimeOffset now)
     {
         if (!hasTokenSample) return new QuickMenuSummary(Loc("AI 기록 확인 중", "Reading AI records"));
@@ -302,7 +309,7 @@ public sealed record QuickMenuSummary(string Headline)
         }.Where(part => part.Item2 > 0).Select(part => $"{part.Item1} {part.Item2}").ToList();
         static int Rank(SessionDisplayState state) => SessionDisplayState.LiveOrder.ToList().IndexOf(state) is var index and >= 0 ? index : 99;
         var live = groups.Where(group => group.State.IsLive && group.State != SessionDisplayState.Measurement)
-            .OrderBy(group => Rank(group.State)).ThenByDescending(group => group.LastActivity).ThenBy(group => group.Id, StringComparer.Ordinal);
+            .OrderBy(group => Rank(group.State)).ThenByDescending(group => group.LastActivity).ThenBy(group => group.Id, StringComparer.Ordinal).ToList();
         var rows = new List<Row>();
         foreach (var group in live.Take(3))
         {
@@ -313,7 +320,7 @@ public sealed record QuickMenuSummary(string Headline)
         }
         return new QuickMenuSummary(parts.Count == 0 ? Loc("진행 중인 세션 없음", "No active sessions")
                                         : string.Join(" · ", parts.Prepend(Loc("AI 세션", "AI sessions"))))
-        { Rows = rows };
+        { Rows = rows, More = Math.Max(0, live.Count - 3) };
     }
 
     /// "입력 대기 3분", "명령 실행 · 턴 7분", "로그 대기 · 3분째 기록 없음": minutes only, never seconds.

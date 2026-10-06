@@ -14,17 +14,29 @@ namespace TokenCat;
 /// The Settings pages (§4.4), in navigation order: the mac's, with "메뉴 막대" as "위젯" (the on-screen widget, §4.7).
 enum SettingsPage { General, Widget, Character, Telemetry, About }
 
-/// `Pose`: the character's current pose, which the widget preview shows (frame 0).
-sealed record SettingsInput(DashboardInput Dashboard, IReadOnlyDictionary<TokenSource, DateTimeOffset> Batches, LoginItem.State Login, RunnerPose Pose = RunnerPose.Sit);
+/// `Pose`: the character's current pose, which the widget preview shows (frame 0). `SetupInFlight`: a telemetry connection or
+/// disconnection is running.
+sealed record SettingsInput(DashboardInput Dashboard, IReadOnlyDictionary<TokenSource, DateTimeOffset> Batches, LoginItem.State Login, RunnerPose Pose = RunnerPose.Sit,
+    bool SetupInFlight = false);
 
-sealed record SettingsActions(Preferences Preferences, Action RetryTelemetry, Action<UpdateCommand> Update, Action ReshowOnboarding, Action<bool> SetLogin);
+/// `SetTelemetryConnected`: true connects (clearing the opt-out), false disconnects (setting it), like the CLI flags.
+sealed record SettingsActions(Preferences Preferences, Action RetryTelemetry, Action<UpdateCommand> Update, Action ReshowOnboarding, Action<bool> SetLogin,
+    Action<bool> SetTelemetryConnected);
 
 static class AppInfo
 {
     public static string Version => typeof(AppInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "—";
 
-    public static string Privacy => Loc("로컬 로그와 로컬 실측의 메타데이터만 읽습니다. 프롬프트·응답 본문은 저장하거나 표시하지 않으며, 모델을 호출하거나 계정에 로그인하지 않습니다. 인터넷 요청은 GitHub에 최신 버전을 묻는 업데이트 확인, 업데이트를 누를 때의 내려받기, 실시간 한도 확인이 켜져 있을 때 Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic에 사용량을 묻는 요청뿐입니다. 토큰은 저장하지 않습니다.",
-        "TokenCat reads only metadata from local logs and local telemetry. It never stores or shows prompts or responses, never calls a model and never signs in to an account. It goes online only to check GitHub for updates, to download one when you click Update and, with Live usage limits on, to ask OpenAI and Anthropic for usage with Codex and Claude Code's saved sign-in. Tokens are never stored.");
+    /// The About page's privacy bullets.
+    public static IReadOnlyList<string> PrivacyLines =>
+    [
+        Loc("로컬 로그·실측의 메타데이터만 읽고, 프롬프트·응답 본문은 저장하거나 표시하지 않습니다",
+            "Reads only metadata from local logs and telemetry; never stores or shows prompts or responses"),
+        Loc("모델을 호출하거나 계정에 로그인하지 않으며, 인터넷은 GitHub 업데이트 확인과 내려받기에만 씁니다",
+            "Never calls a model or signs in; goes online only to check GitHub for updates and download them"),
+        Loc("실시간 한도 확인이 켜져 있으면 저장된 Codex·Claude Code 로그인으로 OpenAI·Anthropic 사용량을 묻습니다. 토큰은 저장하지 않습니다",
+            "With Live usage limits on, asks OpenAI and Anthropic for usage with Codex and Claude Code's saved sign-in. Tokens are never stored"),
+    ];
 
     /// The release zip puts LICENSE next to TokenCat.exe.
     public static string License()
@@ -353,12 +365,8 @@ sealed class SettingsView : Grid
                 MessageBoxButton.OKCancel, MessageBoxImage.Question, MessageBoxResult.Cancel);
             if (answer == MessageBoxResult.OK) preferences.Reset();
         });
-        reset.HorizontalAlignment = HorizontalAlignment.Right;
-        var notificationFooter = new StackPanel();
-        notificationFooter.Children.Add(Caption(Loc("기본값은 꺼짐입니다. 상세 화면이 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.",
-            "Off by default, and never sent while the dashboard is visible. They include only the project, model, token count and duration, never questions or responses.")));
-        reset.Margin = new Thickness(0, 8, 0, 0);
-        notificationFooter.Children.Add(reset);
+        var notificationFooter = Caption(Loc("기본값은 꺼짐입니다. 상세 화면이 보이는 동안에는 보내지 않습니다. 프로젝트·모델·토큰 수·소요 시간만 넣고 질문이나 응답 내용은 넣지 않습니다.",
+            "Off by default, and never sent while the dashboard is visible. They include only the project, model, token count and duration, never questions or responses."));
         return Page(
             Section(Loc("시작", "Startup"),
             [
@@ -384,7 +392,8 @@ sealed class SettingsView : Grid
                 Toggle(Loc("입력 필요", "Input needed"), Loc("질문·계획 승인을 기다리면 알립니다. 권한 확인 요청은 로그에 남지 않아 알 수 없습니다",
                     "Notifies when a question or plan approval is waiting. Permission prompts aren't logged, so TokenCat can't see them"),
                     preferences.NotifyInput, on => preferences.NotifyInput = on),
-            ], notificationFooter));
+            ], notificationFooter),
+            Section(null, [Labeled(Caption(Loc("위젯·캐릭터·알림 선택을 처음 상태로 돌립니다", "Resets the widget, character and notification choices")), reset)]));
     }
 
     /// The mac "메뉴 막대" pane for the on-screen widget (§4.7): showing it, a live preview, its size, preset and layout, then the
@@ -426,10 +435,8 @@ sealed class SettingsView : Grid
         var layouts = Segmented(Enum.GetValues<StatusBarLayout>(), preferences.Layout, layout => layout.Title, layout => preferences.Layout = layout);
         AutomationProperties.SetAutomationId(layouts, "widget-layout");
         var footer = Caption(preferences.Layout == StatusBarLayout.Minimal
-            ? Loc("최소 표시는 캐릭터와 AI 상태·세션 수만 보여 줍니다. 항목 목록은 두 줄·한 줄 표시에 적용됩니다.",
-                "Minimal shows only the character, AI status and session count. The item list applies to the Two Lines and One Line layouts.")
-            : Loc("끌거나 Alt+↑·↓로 순서를 바꿉니다. 캐릭터를 숨기면 마지막 항목은 숨길 수 없습니다.",
-                "Drag or press Alt+↑ or Alt+↓ to reorder. With the character hidden, the last item can't be hidden."));
+            ? Loc("최소 표시에서는 캐릭터와 AI 상태만 보입니다.", "Minimal shows only the character and AI status.")
+            : Loc("끌어서 순서를 바꿉니다. 최소 한 항목은 표시됩니다.", "Drag to reorder. At least one item stays visible."));
         return Page(
             Section(null,
             [
@@ -443,7 +450,7 @@ sealed class SettingsView : Grid
                 Labeled(Label(Loc("프리셋", "Preset")), preset),
                 Labeled(Label(Loc("표시 방식", "Layout"), preferences.Layout.Summary), layouts),
             ]),
-            Section(Loc("항목", "Items"), preferences.Order.Select(MetricRow), footer));
+            Section(Loc("항목", "Items"), [CharacterRow(), .. preferences.Order.Select(MetricRow)], footer));
     }
 
     /// The widget as it is now: values, layout, items, character and size, the current pose at frame 0.
@@ -457,15 +464,11 @@ sealed class SettingsView : Grid
 
     static string MetricKey(MetricID id) => "metric-" + id.ToString().ToLowerInvariant();
 
-    /// One item: a drag handle and a check box "title · bar label" (mac MetricRows). The row is the drag source and drop target
-    /// (the dragged item takes each row's place as it passes); Alt+↑/↓ on the focused box and its menu (right-click, the Apps key,
-    /// Shift+F10) move it too.
-    FrameworkElement MetricRow(MetricID id)
+    /// The item list's check box: an accent box, then `content`. A CheckBox, so UI Automation reports it by `name` with its
+    /// checked state; its own Checked/Unchecked act, so a UI Automation Toggle (Narrator scan mode, voice access), which raises
+    /// no Click, changes it too. `help` is the tooltip, shown on a disabled box as well.
+    static CheckBox ItemCheck(bool on, UIElement content, string name, Action<bool> set, bool enabled, string help)
     {
-        var preferences = actions.Preferences;
-        var missing = id == MetricID.Battery && !preferences.HasBattery;
-        var on = !missing && preferences.Visible.Contains(id);
-        var locked = on && !preferences.CanHide(id);
         var mark = Ui.Icon(Ui.Check, 10, on ? (Theme.Dark ? Colors.Black : Colors.White) : Colors.Transparent);
         mark.HorizontalAlignment = HorizontalAlignment.Center;
         var box = new Border
@@ -473,6 +476,48 @@ sealed class SettingsView : Grid
             Width = 16, Height = 16, CornerRadius = new CornerRadius(4), Child = mark, Background = on ? Theme.Brush(Theme.Accent) : null,
             BorderBrush = Theme.Brush(on ? Theme.Accent : Theme.Primary(0.45)), BorderThickness = new Thickness(1),
         };
+        var check = Ui.Hover(new CheckBox { IsChecked = on }, Dashboard.Row(8, box, content), () => { }, name);
+        check.Checked += (_, _) => set(true);
+        check.Unchecked += (_, _) => set(false);
+        check.IsEnabled = enabled;
+        check.Opacity = enabled ? 1 : 0.4;
+        check.Tag = on ? "on" : "off";
+        check.ToolTip = help;
+        ToolTipService.SetShowOnDisabled(check, true);
+        return check;
+    }
+
+    /// The items list's first row (mac "캐릭터"): the widget's runner slot, fixed above the draggable items. The tray icon always
+    /// shows the character; it can't be hidden while nothing else would be drawn.
+    FrameworkElement CharacterRow()
+    {
+        var preferences = actions.Preferences;
+        var locked = preferences.ShowRunner && !preferences.CanHideRunner;
+        var tray = Loc("알림 영역 아이콘에는 항상 표시됩니다", "The notification area icon always shows it");
+        var lockedHelp = Loc("표시할 항목이 없어 캐릭터를 숨길 수 없습니다", "The character can't be hidden because no other item is shown");
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        text.Children.Add(Ui.Text(Loc("캐릭터", "Character"), Font.Body));
+        text.Children.Add(Caption(tray));
+        var sprite = Sprites.Sprite(preferences.Character, RunnerPose.Walk, 0, 1);
+        sprite.VerticalAlignment = VerticalAlignment.Center;
+        var check = ItemCheck(preferences.ShowRunner, Dashboard.Row(6, sprite, text), Loc("캐릭터", "Character"), preferences.SetShowRunner, !locked,
+            locked ? lockedHelp : tray);
+        AutomationProperties.SetAutomationId(check, "item-character");
+        AutomationProperties.SetHelpText(check, locked ? lockedHelp : tray);
+        // The drag handle's width, so the boxes line up.
+        return Dashboard.Row(10, new Border { Width = 12 }, check);
+    }
+
+    /// One item: a drag handle and a check box "title · bar label" (mac MetricRows). The row is the drag source and drop target
+    /// (the dragged item takes each row's place as it passes); Alt+↑/↓ on the focused box and its menu (right-click, the Apps key,
+    /// Shift+F10) move it too. The minimal layout draws none of them: the rows are disabled and stay in place.
+    FrameworkElement MetricRow(MetricID id)
+    {
+        var preferences = actions.Preferences;
+        var movable = preferences.Layout != StatusBarLayout.Minimal;
+        var missing = id == MetricID.Battery && !preferences.HasBattery;
+        var on = !missing && preferences.Visible.Contains(id);
+        var locked = on && !preferences.CanHide(id);
         var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         var line = id.BarLabel is { } bar ? Ui.Line(Ui.Run(id.Title, Font.Body), Ui.Run($" · {bar}", Font.Meta, Theme.Secondary)) : Ui.Line(Ui.Run(id.Title, Font.Body));
         text.Children.Add(line);
@@ -482,30 +527,25 @@ sealed class SettingsView : Grid
         else if (id == MetricID.AverageSpeed)
             text.Children.Add(Caption(Loc("모든 클라이언트 세션의 실측 속도 평균", "Mean of measured session speeds, all clients")));
         var title = id.BarLabel is { } label ? $"{id.Title} · {label}" : id.Title;
-        var lockedHelp = Loc("캐릭터를 숨긴 상태에서는 최소 한 항목을 표시해야 합니다", "With the character hidden, at least one item must stay visible");
-        // A CheckBox, so UI Automation reports the item by name with its checked state. Its own Checked/Unchecked act, so a UI
-        // Automation Toggle (Narrator scan mode, voice access), which raises no Click, changes the item too.
-        var check = Ui.Hover(new CheckBox { IsChecked = on }, Dashboard.Row(8, box, text), () => { }, title);
-        check.Checked += (_, _) => preferences.SetVisible(id, true);
-        check.Unchecked += (_, _) => preferences.SetVisible(id, false);
-        check.IsEnabled = !missing && !locked;
-        check.Opacity = check.IsEnabled ? 1 : 0.4;
-        check.Tag = on ? "on" : "off";
-        check.ToolTip = locked ? lockedHelp : Loc("끌어서 순서를 바꿉니다", "Drag to reorder");
-        ToolTipService.SetShowOnDisabled(check, true);
+        var lockedHelp = Loc("캐릭터나 다른 항목 중 하나는 표시해야 합니다", "The character or another item must stay visible");
+        var minimalHelp = Loc("최소 표시에서는 캐릭터와 AI 상태만 보입니다.", "Minimal shows only the character and AI status.");
+        var check = ItemCheck(on, text, title, visible => preferences.SetVisible(id, visible), movable && !missing && !locked,
+            !movable ? minimalHelp : locked ? lockedHelp : Loc("끌어서 순서를 바꿉니다", "Drag to reorder"));
         AutomationProperties.SetAutomationId(check, MetricKey(id));
-        AutomationProperties.SetHelpText(check, missing ? noBattery : locked ? lockedHelp : Loc("Alt+↑·↓로 순서를 바꿉니다", "Alt+Up or Alt+Down reorders it"));
+        AutomationProperties.SetHelpText(check, missing ? noBattery : !movable ? minimalHelp : locked ? lockedHelp
+            : Loc("Alt+↑·↓로 순서를 바꿉니다", "Alt+Up or Alt+Down reorders it"));
         var handle = new System.Windows.Shapes.Path
         {
             Data = Geometry.Parse("M0,0.5 H12 M0,4.5 H12 M0,8.5 H12"), Stroke = Theme.Brush(Theme.Tertiary), StrokeThickness = 1,
-            VerticalAlignment = VerticalAlignment.Center, SnapsToDevicePixels = true,
+            VerticalAlignment = VerticalAlignment.Center, SnapsToDevicePixels = true, Opacity = movable ? 1 : 0.4,
         };
         // Over the section's row padding, so the whole row takes drags and drops.
         var row = new Border
         {
-            Child = Dashboard.Row(10, handle, check), Background = Brushes.Transparent, AllowDrop = true,
+            Child = Dashboard.Row(10, handle, check), Background = Brushes.Transparent, AllowDrop = movable,
             Margin = new Thickness(-12, -9, -12, -9), Padding = new Thickness(12, 9, 12, 9),
         };
+        if (!movable) return row;
         Point? press = null;
         row.PreviewMouseLeftButtonDown += (_, e) => press = e.GetPosition(row);
         row.PreviewMouseLeftButtonUp += (_, _) => press = null;
@@ -615,14 +655,8 @@ sealed class SettingsView : Grid
             motion => preferences.AnimationSource = motion);
         motions.ToolTip = preferences.AnimationSource.Caption;
         var entries = LegendEntries(preferences.AnimationSource);
-        // Mac "메뉴 막대에 캐릭터 표시"; the tray icon is the character, so it always shows there.
-        var canHide = preferences.CanHideRunner;
-        var runner = Toggle(Loc("위젯에 캐릭터 표시", "Show character in widget"),
-            canHide ? Loc("알림 영역 아이콘에는 항상 표시됩니다", "The notification area icon always shows it")
-                : Loc("표시할 항목이 없어 캐릭터를 숨길 수 없습니다", "The character can't be hidden because no other item is shown"),
-            preferences.ShowRunner, preferences.SetShowRunner, enabled: !preferences.ShowRunner || canHide);
         return Page(
-            Section(null, [Labeled(Label(Loc("캐릭터", "Character")), null), characters, runner]),
+            Section(null, [Labeled(Label(Loc("캐릭터", "Character")), null), characters]),
             Section(null,
             [
                 Label(Loc("움직임 기준", "Motion source"), preferences.AnimationSource.Subtitle), motions,
@@ -704,11 +738,15 @@ sealed class SettingsView : Grid
     }
 
     /// Collector and client rows (T-3): a state symbol, secondary text and an optional second line.
-    public enum StatusRow { Receiving, Waiting, Starting, Problem, Info, Received }
+    public enum StatusRow { Receiving, Listening, Waiting, Starting, Problem, Info, Received }
+
+    /// Segoe Fluent Icons CompletedSolid / Completed (mac checkmark.circle.fill / checkmark.circle) and Folder.
+    const char FilledCheck = '\uEC61', OutlineCheck = '\uE930', FolderIcon = '\uE8B7';
 
     static (char Icon, Color Color) Symbol(StatusRow row) => row switch
     {
-        StatusRow.Receiving or StatusRow.Received => (Ui.Check, Theme.Activity),
+        StatusRow.Receiving or StatusRow.Received => (FilledCheck, Theme.Activity),
+        StatusRow.Listening => (OutlineCheck, Theme.Activity),
         StatusRow.Problem => (Ui.WarningIcon, Theme.Warning),
         StatusRow.Info => (Ui.InfoIcon, Theme.Secondary),
         _ => (Ui.Dashed, Theme.Secondary),
@@ -720,7 +758,7 @@ sealed class SettingsView : Grid
         return state switch
         {
             TelemetryCollectorState.Receiving => (StatusRow.Receiving, Loc($"수신 중 · {address}", $"Receiving · {address}")),
-            TelemetryCollectorState.Waiting => (StatusRow.Waiting, Loc($"수신 대기 · {address}", $"Waiting · {address}")),
+            TelemetryCollectorState.Waiting => (StatusRow.Listening, Loc($"켜짐 · {address}", $"On · {address}")),
             TelemetryCollectorState.Starting => (StatusRow.Starting, Loc("준비 중", "Preparing")),
             TelemetryCollectorState.BusyTokenCat => (StatusRow.Problem, Loc("꺼짐 · 다른 TokenCat이 수집 중", "Off · another TokenCat is collecting")),
             TelemetryCollectorState.BusyOtherApp => (StatusRow.Problem, Loc($"꺼짐 · 다른 앱이 {TelemetryCollector.DefaultPort} 포트 사용 중", $"Off · another app is using port {TelemetryCollector.DefaultPort}")),
@@ -741,7 +779,7 @@ sealed class SettingsView : Grid
         if (batch is not null)
             return (StatusRow.Waiting, Loc("기록 수신 중 · 속도 형식 없음", "Receiving records · no speed data"),
                 Loc("받은 실측에서 요청별 생성 시간을 찾지 못해 속도를 표시하지 않습니다", "Received telemetry has no per-request generation time, so no speed is shown"));
-        return (StatusRow.Waiting, Loc("이번 실행에서 받은 실측 없음", "No telemetry since launch"), null);
+        return (StatusRow.Waiting, Loc("아직 받은 실측 없음", "Nothing received yet"), null);
     }
 
     /// The usage-limit sources, checked top to bottom. `desktop`: the newest reading is the Claude desktop app's own record;
@@ -806,27 +844,35 @@ sealed class SettingsView : Grid
         var state = dashboard.State;
         var now = state.Now;
         var collectorStatus = CollectorStatus(state.TelemetryState);
-        var collector = new StackPanel { HorizontalAlignment = HorizontalAlignment.Right };
-        collector.Children.Add(StatusLine(collectorStatus.Row, collectorStatus.Text, null));
+        var rows = new List<UIElement?> { Labeled(Label(Loc("수집기", "Collector")), StatusLine(collectorStatus.Row, collectorStatus.Text, null)) };
+        // The retry and the other copy's location on their own trailing row, so the status stays on one line.
+        var collectorActions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         if (state.TelemetryNextRetryAt is { } next)
         {
             var retry = Ui.SmallButton(Loc("지금 다시 시도", "Retry Now"), actions.RetryTelemetry);
             retry.IsEnabled = state.TelemetryState != TelemetryCollectorState.Starting;
-            var line = Dashboard.Row(6, Ui.Text(Loc("다음 자동 재시도 ", "Automatic retry in ") + SessionPresentation.Clock(Math.Max(0, (int)Math.Ceiling((next - now).TotalSeconds))),
-                Font.MetaMono, Theme.Secondary), retry);
-            line.HorizontalAlignment = HorizontalAlignment.Right;
-            line.Margin = new Thickness(0, 4, 0, 0);
-            collector.Children.Add(line);
+            var clock = Ui.Text(Loc("다음 자동 재시도 ", "Automatic retry in ") + SessionPresentation.Clock(Math.Max(0, (int)Math.Ceiling((next - now).TotalSeconds))),
+                Font.MetaMono, Theme.Secondary);
+            clock.VerticalAlignment = VerticalAlignment.Center;
+            clock.Margin = new Thickness(0, 0, 6, 0);
+            collectorActions.Children.Add(clock);
+            collectorActions.Children.Add(retry);
         }
         if (state.TelemetryState == TelemetryCollectorState.BusyTokenCat && !snapshot && OtherTokenCat() is { } other)
         {
             var show = Ui.SmallButton(Loc("탐색기에서 보기", "Show in File Explorer"), () => Shell.Reveal(other), other);
-            show.HorizontalAlignment = HorizontalAlignment.Right;
-            show.Margin = new Thickness(0, 4, 0, 0);
-            collector.Children.Add(show);
+            if (collectorActions.Children.Count > 0) show.Margin = new Thickness(6, 0, 0, 0);
+            collectorActions.Children.Add(show);
         }
-        var rows = new List<UIElement?> { Labeled(Label(Loc("수집기", "Collector")), collector) };
+        if (collectorActions.Children.Count > 0) rows.Add(collectorActions);
         if (dashboard.SetupNote is { } note) rows.Add(Caption(note, Theme.Warning));
+        // Each client's config file, shown in File Explorer from its row when it exists (never in snapshots).
+        var configs = new Dictionary<TokenSource, string>
+        {
+            [TokenSource.Codex] = AppPaths.CodexConfig(AppPaths.Home), [TokenSource.Claude] = AppPaths.ClaudeSettings(AppPaths.Home),
+            [TokenSource.Gemini] = Path.Combine(AppPaths.Home, ".gemini", "settings.json"), [TokenSource.Qwen] = Path.Combine(AppPaths.Home, ".qwen", "settings.json"),
+        };
+        var revealed = false;
         // Gemini CLI and Qwen Code once their folder is detected, like every list.
         foreach (var source in TokenSource.TelemetryClients.Where(state.ListedSources.Contains))
         {
@@ -834,35 +880,67 @@ sealed class SettingsView : Grid
             var status = ClientStatus(state.TelemetryRestartNeeded.Contains(source), state.TelemetryRestartExpired.Contains(source),
                 state.TelemetryLastReceived.TryGetValue(source, out var received) ? received : null,
                 input.Batches.TryGetValue(source, out var batch) ? batch : null, now, skipped);
-            rows.Add(Labeled(Label(source.Title), StatusLine(status.Row, status.Text, status.Detail)));
+            FrameworkElement trailing = StatusLine(status.Row, status.Text, status.Detail);
+            if (!snapshot && configs.TryGetValue(source, out var config) && File.Exists(config))
+            {
+                revealed = true;
+                var shown = config.StartsWith(AppPaths.Home, StringComparison.OrdinalIgnoreCase) ? "%USERPROFILE%" + config[AppPaths.Home.Length..] : config;
+                var icon = Ui.Icon(FolderIcon, 13, Theme.Secondary);
+                icon.Margin = new Thickness(4, 2, 4, 2);
+                var folder = Ui.HoverButton(icon, () => Shell.Reveal(config), Loc($"설정 파일 보기 · {shown}", $"Show config file · {shown}"));
+                folder.VerticalAlignment = VerticalAlignment.Center;
+                trailing = Dashboard.Row(6, trailing, folder);
+            }
+            rows.Add(Labeled(Label(source.Title), trailing));
         }
         // Whether the bridge delivers: the newer of the two windows' receipts (no reset time: the desktop app).
         var newest = new[] { state.ClaudeLimits.FiveHour, state.ClaudeLimits.SevenDay }.OfType<ClaudeLimitWindow>().MaxBy(window => window.ReceivedAt);
         var limits = ClaudeLimitsStatus(dashboard.ConnectNotes, dashboard.ClaudeBridged, newest?.ReceivedAt, newest is { ResetsAt: null }, now, newest is { Live: true },
             newest?.RecordedBy);
         rows.Add(Labeled(Label(Loc("Claude 한도", "Claude limits")), StatusLine(limits.Row, limits.Text, limits.Detail)));
-        // Non-breaking hyphens (U+2011) keep the flag on one line.
-        var exe = snapshot ? @"%LOCALAPPDATA%\Programs\TokenCat\TokenCat.exe" : Environment.ProcessPath;
-        var command = $"& \"{exe}\" \u2011\u2011disconnect\u2011telemetry | Out-Host";
-        var footer = Caption(Loc($"실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱·omp·Pi 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 해제하려면 PowerShell에서 {command}를 실행합니다.",
-            $"Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the usage history of the Claude desktop app, omp and Pi. Restart running clients to apply. To disconnect, run {command} in PowerShell."));
-        var files = new (string Title, string Path)[]
+        var backups = Path.Combine(AppPaths.Support, "telemetry-backups");
+        var backupsShown = !snapshot && Directory.Exists(backups);
+        // The folder note only beside a folder button (the rows' or the backups'); the backups' button under the text.
+        var footer = new StackPanel();
+        footer.Children.Add(Caption(Loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱·omp·Pi 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.",
+            "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the usage history of the Claude desktop app, omp and Pi. Restart running clients to apply.")
+            + (revealed || backupsShown ? Loc(" 폴더 단추는 탐색기에서 위치만 보여 주며 파일을 열거나 바꾸지 않습니다.",
+                " Folder buttons only show where the files are in File Explorer; they never open or change them.") : "")));
+        if (backupsShown)
         {
-            (Loc("백업 폴더 보기", "Show Backup Folder"), Path.Combine(AppPaths.Support, "telemetry-backups")),
-            (Loc("Codex 설정 파일 보기", "Show Codex Config"), AppPaths.CodexConfig(AppPaths.Home)),
-            (Loc("Claude Code 설정 파일 보기", "Show Claude Code Config"), AppPaths.ClaudeSettings(AppPaths.Home)),
-            (Loc("Gemini CLI 설정 파일 보기", "Show Gemini CLI Config"), Path.Combine(AppPaths.Home, ".gemini", "settings.json")),
-            (Loc("Qwen Code 설정 파일 보기", "Show Qwen Code Config"), Path.Combine(AppPaths.Home, ".qwen", "settings.json")),
-        }.Where(file => !snapshot && (File.Exists(file.Path) || Directory.Exists(file.Path))).ToList();
-        var buttons = new WrapPanel();
-        foreach (var file in files) { var button = Ui.SmallButton(file.Title, () => Shell.Reveal(file.Path), file.Path); button.Margin = new Thickness(0, 0, 6, 6); buttons.Children.Add(button); }
+            var backup = Ui.SmallButton(Loc("백업 폴더 보기", "Show Backup Folder"), () => Shell.Reveal(backups), backups);
+            backup.HorizontalAlignment = HorizontalAlignment.Left;
+            backup.Margin = new Thickness(0, 6, 0, 0);
+            footer.Children.Add(backup);
+        }
         var preferences = actions.Preferences;
         var live = Toggle(Loc("실시간 한도 확인", "Live usage limits"),
             Loc("Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic 사용량을 사용 중에는 1분, 평소에는 10분마다 확인합니다. 토큰은 저장하지 않습니다.",
                 "Checks usage with OpenAI and Anthropic using Codex and Claude Code's saved sign-in, every minute while in use and every 10 minutes otherwise. Tokens are never stored."),
             preferences.LiveUsageLimits, on => preferences.LiveUsageLimits = on);
-        return Page(Section(null, rows, footer), Section(null, [live]),
-            files.Count == 0 ? null : Section(null, [buttons], Caption(Loc("탐색기에서 위치만 보여 주며 파일을 열거나 바꾸지 않습니다.", "Only shows where the files are in File Explorer; never opens or changes them."))));
+        return Page(Section(null, rows, footer), Section(null, [Connection(dashboard.OptedOut), live]));
+    }
+
+    /// The second section's first row, above 실시간 한도 확인: disconnect (behind a confirmation) while connected, reconnect once
+    /// opted out, like `--disconnect-telemetry` / `--connect-telemetry`. Disabled while a connection or disconnection runs.
+    FrameworkElement Connection(bool optedOut)
+    {
+        var button = optedOut
+            ? Ui.SmallButton(Loc("다시 연결", "Reconnect"), () => actions.SetTelemetryConnected(true))
+            : Ui.SmallButton(Loc("연결 해제…", "Disconnect…"), () =>
+            {
+                var answer = MessageBox.Show(Window.GetWindow(this),
+                    Loc("클라이언트 설정에서 TokenCat 항목을 지우고 백업해 둔 원래 값을 되돌립니다. 다시 연결하기 전에는 자동으로 연결하지 않습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.",
+                        "Removes TokenCat's entries from the client settings and restores the backed-up values. TokenCat won't reconnect until you connect again. Restart running clients to apply."),
+                    Loc("실측 연결을 해제할까요?", "Disconnect telemetry?"), MessageBoxButton.OKCancel, MessageBoxImage.Warning, MessageBoxResult.Cancel);
+                if (answer == MessageBoxResult.OK) actions.SetTelemetryConnected(false);
+            });
+        button.IsEnabled = !input.SetupInFlight;
+        button.Opacity = button.IsEnabled ? 1 : 0.4;
+        AutomationProperties.SetAutomationId(button, "telemetry-connection");
+        return Labeled(Label(Loc("연결", "Connection"), optedOut
+            ? Loc("해제됨 · 다시 연결하기 전에는 연결하지 않습니다", "Disconnected · stays off until you reconnect")
+            : Loc("클라이언트 설정에 실측 연결이 들어 있습니다", "Client settings send telemetry to TokenCat")), button);
     }
 
     FrameworkElement About()
@@ -881,9 +959,24 @@ sealed class SettingsView : Grid
         name.Margin = new Thickness(0, 6, 0, 0);
         header.Children.Add(name);
         header.Children.Add(Centered(Ui.Text(Loc($"버전 {AppInfo.Version}", $"Version {AppInfo.Version}"), Font.MetaMono, Theme.Secondary)));
-        var privacy = Centered(Caption(AppInfo.Privacy));
-        privacy.Margin = new Thickness(0, 4, 0, 0);
-        header.Children.Add(privacy);
+        // The privacy bullets, left-aligned under the centred header.
+        var top = new StackPanel();
+        top.Children.Add(header);
+        var privacy = new StackPanel { Margin = new Thickness(0, 8, 0, 0) };
+        foreach (var line in AppInfo.PrivacyLines)
+        {
+            var bullet = new Grid { Margin = new Thickness(0, 2, 0, 0) };
+            bullet.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            bullet.ColumnDefinitions.Add(new ColumnDefinition());
+            var dot = Ui.Text("•", Font.Meta, Theme.Secondary);
+            dot.Margin = new Thickness(0, 0, 6, 0);
+            var text = Caption(line);
+            SetColumn(text, 1);
+            bullet.Children.Add(dot);
+            bullet.Children.Add(text);
+            privacy.Children.Add(bullet);
+        }
+        top.Children.Add(privacy);
         var buttons = Dashboard.Row(8, Ui.SmallButton(Loc("MIT 라이선스 보기", "Show MIT License"), ShowLicense),
             Ui.SmallButton(Loc("처음 안내 다시 보기", "Show Welcome Again"), actions.ReshowOnboarding,
                 Loc("처음 실행 안내(TokenCat이 하는 일)를 상세 화면에 다시 보입니다", "Shows the first-launch welcome (What TokenCat does) on the dashboard again")));
@@ -917,14 +1010,16 @@ sealed class SettingsView : Grid
                 Add(Loc("지금 확인", "Check Now"), () => actions.Update(UpdateCommand.Check), enabled: update.CanCheck);
             }
         }
-        else
+        else if (update.CanInstall)
         {
-            if (update.CanInstall) Add(Loc("업데이트", "Update"), () => actions.Update(UpdateCommand.Install), Loc("내려받아 설치한 뒤 TokenCat을 다시 엽니다", "Downloads and installs the update, then reopens TokenCat"));
-            Add(Loc("지금 확인", "Check Now"), () => actions.Update(UpdateCommand.Check), enabled: update.CanCheck);
+            // An available update is the one action: the default button, without "지금 확인".
+            Add(Loc("업데이트", "Update"), () => actions.Update(UpdateCommand.Install), Loc("내려받아 설치한 뒤 TokenCat을 다시 엽니다", "Downloads and installs the update, then reopens TokenCat"));
+            ((Button)updateButtons.Children[^1]).IsDefault = true;
         }
+        else Add(Loc("지금 확인", "Check Now"), () => actions.Update(UpdateCommand.Check), enabled: update.CanCheck);
         var disabled = update.Disabled is not null;
         return Page(
-            Section(null, [header, buttons]),
+            Section(null, [top, buttons]),
             Section(Loc("업데이트", "Updates"),
             [
                 Toggle(Loc("새 버전 자동 확인", "Check for updates automatically"), null, preferences.AutoCheckUpdates, on => preferences.AutoCheckUpdates = on, !disabled,

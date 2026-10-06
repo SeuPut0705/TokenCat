@@ -296,9 +296,12 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
   need writing again is skipped ("changed after the connection"). Disconnecting an edited Gemini/Qwen file reverts only the members
   still holding TokenCat's values (`RevertGeminiStyle`), removing `telemetry` when it ends empty and the backup had none.
 * Claude usage limits: statusLine bridge (§7.4) plus Claude Desktop history file. Codex limits come from logs.
-* Dashboard (flyout): header sentence + head, onboarding card, flow card + limits, sessions header/list with children, system area, footer
-  (telemetry notice, update notice). "Open in Explorer" replaces "Finder에서 보기". "Task Manager" replaces "Activity Monitor". "Open as
-  window" replaces "패널로 열기".
+* Dashboard (flyout): header sentence + head, onboarding card (one line per point, details in tooltips), limits card (every live
+  window its own row), compact flow card (total on the title line, last record + Speed now on one line, 28 px plot), sessions title,
+  list with children ending in the one "Show all / Show less" row (list cap 312), system area, footer only for a delay, a telemetry
+  notice or an update. Live rows put the state glyph on the glyph column and the state words at the start of line 2; the detail has
+  Copy Resume Command / Show in File Explorer buttons and Ctrl+Shift+C copies the resume command. "Open in Explorer" replaces "Finder에서
+  보기". "Task Manager" replaces "Activity Monitor". "Open as window" replaces "패널로 열기".
 * Characters (5) and motion sources (activity/cpu/measured/still), same director/animator timing. Reduce motion =
   `SystemParameters.ClientAreaAnimation == false`.
 * Notifications (opt-in): input needed, turn complete/interrupted, update available. Same titles and bodies (`AttentionEvent`).
@@ -378,7 +381,8 @@ spot and height, and a selected child row or open detail becomes its top-level g
 
 ### 4.3 Right click → context menu (`ContextMenuStrip`)
 Disabled headline (`QuickMenuSummary.headline`), session rows with the state colour square (click focuses that group in the flyout),
-separator, **Open**, **Open as window**, separator, **Layout ▸** (3, checked), **Character ▸** (5, checked, then a separator and
+then, when more live groups than the three rows exist, "그 외 N개 세션…" / "N more sessions…" (`QuickMenuSummary.More`, opens the
+flyout), separator, **Open**, **Open as window**, separator, **Layout ▸** (3, checked), **Character ▸** (5, checked, then a separator and
 **Show in Widget**, the mac "Show in Menu Bar": checked while shown, disabled when nothing else would be drawn), **Motion source ▸**
 (4, checked), separator, update item (`UpdateState.quickMenuTitle`) when present, **Settings…**, **Task Manager**, **About TokenCat**,
 separator, **Quit TokenCat**. **Show/Hide Widget** follows **Open as window**, then **Widget Size ▸** (the seven sizes, checked)
@@ -386,25 +390,35 @@ while the widget is on (§4.7). The widget's right-click shows this same menu. `
 
 ### 4.4 Settings window
 Normal WPF window with the mac's five pages (left nav), "메뉴 막대" named **Widget**:
-* **General**: start at login (with Run/StartupApproved status text), notifications (input, turn end), Restore Defaults. Restore
+* **General**: start at login (with Run/StartupApproved status text), notifications (input, turn end), then a last section with
+  "위젯·캐릭터·알림 선택을 처음 상태로 돌립니다" and Restore Defaults… (same confirmation). Restore
   Defaults also resets the widget's layout, item order and visibility, character visibility and size (the mac restores items, layout
   and character); the login item, update settings, showing the widget and its saved positions stay. `Preferences.Reset` returns the
   previous snapshot and `Restore` brings all of it back.
 * **Widget** (mac `MenuBarPane`): show on screen; a live preview (`WidgetView` at the chosen size on the current theme, frame 0 of the
   current pose, cut with a 28 DIP fade when wider than the row) with its size in px; **Size** (a themed pop-up of the seven sizes; the
   caption names Ctrl + wheel and the right-click menu); **Preset** (shows 사용자 지정 / Custom when none matches); **Layout** (segmented
-  최소 / 두 줄 / 한 줄). **Items**: one row per item in the stored order — drag handle, check box "title · bar label" (the speed
-  item "평균 속도 · AVG"; disabled when it is the last shown item with the character hidden, or
-  the battery on a PC without one: "이 PC에는 배터리가 없습니다"). Reorder by dragging a row (it takes each row's place as it passes, as on
+  최소 / 두 줄 / 한 줄). **Items**: first a fixed, non-draggable "캐릭터" check box with the character's sprite (the widget's runner slot,
+  mac "메뉴 막대에 캐릭터 표시"; subtitle "알림 영역 아이콘에는 항상 표시됩니다"; disabled with "표시할 항목이 없어 캐릭터를 숨길 수 없습니다"
+  when nothing else would be drawn), then one row per item in the stored order — drag handle, check box "title · bar label" (the speed
+  item "평균 속도 · AVG"; disabled when it is the last shown item with the character hidden ("캐릭터나 다른 항목 중 하나는 표시해야
+  합니다"), or the battery on a PC without one: "이 PC에는 배터리가 없습니다"). In the minimal layout every item row is disabled and
+  can't be moved (the character row stays). Reorder by dragging a row (it takes each row's place as it passes, as on
   the mac), Alt+↑/↓ on a focused row (focus follows, Narrator hears "메모리, 7개 중 1번째"), or the row menu (right-click, Apps key, Shift+F10: 위로 이동 / 아래로 이동). Rows are named check boxes in UI Automation.
   WPF's ComboBox and ContextMenu don't follow dark mode, so the pop-ups are the WinForms menus the tray uses.
-* **Character**: picker with live 2× preview, "위젯에 캐릭터 표시" (mac "메뉴 막대에 캐릭터 표시"; disabled with its reason when nothing
-  else would be drawn; the tray icon always shows the character), motion source with `caption`/`subtitle` texts.
-* **Telemetry**: collector state with Retry Now, per-client status (`TelemetryClients` filtered to listed sources; a `ClientSkipped`
-  note shows "연결 안 함 · 기존 실측 설정 유지" with its reason first), Claude limits status, the `--disconnect-telemetry` command as
-  text, and buttons that show the backups folder and the Codex, Claude Code, Gemini CLI and Qwen Code config files that exist in File
-  Explorer. Connecting and disconnecting stay in the CLI.
-* **About**: version, privacy note, licence, Show Welcome Again, and Updates (automatic check, check/install update, new-version notice).
+* **Character**: picker with live 2× preview, motion source with `caption`/`subtitle` texts (showing the character in the widget
+  moved to the Widget page's item list).
+* **Telemetry**: the collector's state on one line ("켜짐 · 127.0.0.1:16493" with an outline check while listening, "수신 중 · …"
+  with a filled one), Retry Now and the other TokenCat's Show in File Explorer on their own trailing row below it; per-client status
+  (`TelemetryClients` filtered to listed sources; a `ClientSkipped` note shows "연결 안 함 · 기존 실측 설정 유지" with its reason first;
+  nothing yet: "아직 받은 실측 없음"), each with a folder button that shows its config file in File Explorer when it exists; Claude limits
+  status. The footer adds the folder note only when a folder button shows, with Show Backup Folder under it when that folder exists.
+  The second section starts with **연결**: "연결 해제…" (confirmation, then what `--disconnect-telemetry` does) or, once opted out,
+  "다시 연결" (what `--connect-telemetry` does); `Shell.SetTelemetryConnected` sets the opt-out flag and runs `TelemetrySetup` off the UI
+  thread, the result and any failure landing in the setup note like the automatic connection; disabled while a setup runs. Then
+  Live usage limits.
+* **About**: version, three left-aligned privacy bullets (`AppInfo.PrivacyLines`), licence, Show Welcome Again, and Updates
+  (automatic check, check/install update — an installable update shows only "업데이트" as the default button —, new-version notice).
 
 Texts come from `SettingsView.swift`, minus the cut items.
 
@@ -432,10 +446,10 @@ The taskbar can't show text the way the mac menu bar does, so the menu-bar item 
   "평균 속도 · AVG" in the list; until 0.13 the per-client "codexSpeed"/"claudeSpeed" items, which `Preferences` folds into it: either
   shown shows it) draws the arithmetic mean of every client's fresh per-session rates (`SessionPresentation.Average`, `CurrentSpeed`'s
   own filter; measured rates only, nothing estimated; `Format.BarTps`, whole numbers from 100 up, + a smaller "tok/s") in 56 pt (two
-  lines) / 81 pt (one line) cells. Its label slot shows the contributing clients (`AverageSpeed.Sources`, fastest first by each
-  client's own mean) as the mac's `SpeedGlyph` icons, `speed-<source>.png`: one icon, or up to three overlapping by 40 % (8 pt centred
-  on two lines, 10 pt from 4 pt in on one, the value 3 pt after them), each front icon's silhouette grown by 1 pt cleared out of the
-  ones behind (composited once per set at 64 px, `SpeedGlyph.DrawStack`). Without a measurement it draws "AVG" and "—". Narrator reads
+  lines) / 91 pt (one line) cells. Its label slot shows the contributing clients (`AverageSpeed.Sources`, fastest first by each
+  client's own mean) as the mac's `SpeedGlyph` icons, `speed-<source>.png`: up to three side by side, 1 pt apart and never
+  overlapping (8 pt centred on two lines, 3 × 8 + 2 = 26 pt in the 56 pt cell; 10 pt from 4 pt in on one, the value 3 pt after them,
+  the one-line cell widened from 81 by the row's extra 10 pt; `SpeedGlyph.Draw`). Without a measurement it draws "AVG" and "—". Narrator reads
   the strip as one text element (`StatusBarMetric.Spoken`, the speed item "평균 속도 55.6 토큰/초 · Codex, Claude Code"). Layout,
   items, order and the character come from Settings › Widget (§4.4); default **two
   lines** (like the mac bar), the six standard items, the character shown, 100 %.

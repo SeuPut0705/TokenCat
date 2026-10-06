@@ -25,9 +25,13 @@ sealed record RowContext(DateTimeOffset Now, IReadOnlySet<TokenSource> Restart, 
         + (Restart.Contains(reading.Source) ? Loc($"\n{reading.Source.Title}를 새로 실행하면 속도가 표시됩니다", $"\nRestart {reading.Source.Title} to show speed") : "");
 }
 
-/// The session list (S-1–S-8): a grow-only viewport while open, rows kept by id, ↑↓/Enter/Ctrl+C, order frozen under the pointer.
+/// The session list (S-1–S-8): a grow-only viewport while open, rows kept by id, ↑↓/Enter/Ctrl+C/Ctrl+Shift+C, order frozen under
+/// the pointer.
 sealed class SessionList : Border
 {
+    public static string KeyboardHint => Loc("↑↓ 이동 · Enter 상세 · Ctrl+C ID 복사 · Ctrl+Shift+C 재개 명령 복사",
+        "↑↓ move · Enter details · Ctrl+C copy ID · Ctrl+Shift+C copy resume command");
+
     readonly Dashboard owner;
     readonly bool panel, snapshot;
     readonly ScrollViewer scroll = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Focusable = true };
@@ -61,7 +65,7 @@ sealed class SessionList : Border
         var container = Ui.Container(host);
         Child = container;
         System.Windows.Automation.AutomationProperties.SetName(scroll, Loc("세션 목록", "Session list"));
-        scroll.ToolTip = Loc("↑↓ 이동 · Enter 상세 · Ctrl+C ID 복사", "↑↓ move · Enter details · Ctrl+C copy ID");
+        scroll.ToolTip = KeyboardHint;
         ToolTipService.SetInitialShowDelay(scroll, 1500);
         scroll.PreviewKeyDown += OnKey;
         scroll.MouseEnter += (_, _) => { pointerInside = true; UpdateFreeze(); };
@@ -101,6 +105,8 @@ sealed class SessionList : Border
         Dispatcher.BeginInvoke(() =>
         {
             if (anchor is not null && cache.GetValueOrDefault(anchor) is { } target) target.BringIntoView();
+            // Toggled from the keyboard: the toggle, now at the new end of the list, stays in view.
+            else if (selectedId == SessionListModel.ToggleID && cache.GetValueOrDefault(SessionListModel.ToggleID) is { } toggle) toggle.BringIntoView();
             else scroll.ScrollToTop();
         });
     }
@@ -158,8 +164,14 @@ sealed class SessionList : Border
                     items.Add(Reconcile.Item("caption:" + caption.Anchor + caption.Text, () => Caption(caption.Text, caption.Rule), (Border _) => { }));
                     break;
                 case SessionListEntry.Older older:
-                    items.Add(Reconcile.Item(SessionListModel.OlderID, () => new OlderRow(() => { showOlder = true; Refresh(); }),
-                        (OlderRow row) => row.Update(older.Count, selectedId == SessionListModel.OlderID)));
+                    items.Add(Reconcile.Item(SessionListModel.OlderID, () => new DisclosureRow(() => { showOlder = true; Refresh(); }),
+                        (DisclosureRow row) => row.Update(Loc($"이전 기록 {older.Count}개 더 보기", $"Show {Plural(older.Count, "earlier record")}"), false,
+                            selectedId == SessionListModel.OlderID, null, Loc("이전 기록 더 보기", "Show earlier records"))));
+                    break;
+                case SessionListEntry.Toggle:
+                    items.Add(Reconcile.Item(SessionListModel.ToggleID, () => new DisclosureRow(ToggleExpanded),
+                        (DisclosureRow row) => row.Update(display.ToggleText, display.Expanded, selectedId == SessionListModel.ToggleID,
+                            display.ToggleHelp, display.ToggleSpoken)));
                     break;
                 case SessionListEntry.Block block:
                     items.Add(Reconcile.Item("block:" + block.Value.Id, () => new BlockView(() => Expand(block.Value.Id)),
@@ -198,7 +210,7 @@ sealed class SessionList : Border
     }
 
     /// The group holding the open detail or the keyboard selection (a flyout dragged out keeps it).
-    public string? SelectedGroup => (detailId ?? selectedId) is { } id && id != SessionListModel.OlderID ? BlockOf(id) : null;
+    public string? SelectedGroup => (detailId ?? selectedId) is { } id && id is not (SessionListModel.OlderID or SessionListModel.ToggleID) ? BlockOf(id) : null;
 
     string BlockOf(string id) => shown.Blocks.FirstOrDefault(block => block.Id == id || block.Children.Any(child => child.Id == id) || block.MoreID == id)?.Id ?? id;
 
@@ -240,6 +252,11 @@ sealed class SessionList : Border
                 Activate();
                 e.Handled = true;
                 break;
+            case Key.C when Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift):
+                if (selectedId is { } resumeRow && shown.Item(resumeRow)?.Reading is { } resumed && SessionPresentation.ResumeCommand(resumed) is { } command)
+                    Shell.Copy(command);
+                e.Handled = true;
+                break;
             case Key.C when Keyboard.Modifiers == ModifierKeys.Control:
                 if (selectedId is { } id && shown.Item(id)?.Reading is { } reading
                     && (reading.IsSubagent ? reading.AgentID ?? reading.SessionID : reading.SessionID) is { } text) Shell.Copy(text);
@@ -278,6 +295,7 @@ sealed class SessionList : Border
     {
         if (selectedId is not { } id) return;
         if (id == SessionListModel.OlderID) { showOlder = true; Refresh(); }
+        else if (id == SessionListModel.ToggleID) ToggleExpanded();
         else if (id.StartsWith("more:", StringComparison.Ordinal)) Expand(id[5..]);
         else Tap(id);
     }
@@ -518,7 +536,8 @@ sealed class BlockView : Grid
 
         // 1 DIP primary 0.15 from below the lead glyph (x = 17) to the last child or "+N 하위" row, with a 6 DIP tail to each.
         if (block.Children.Count == 0 && block.MoreCount == 0) { guide.Data = null; return; }
-        var start = lead.Kind == SessionRowKind.Live ? 23.0 : 19.0;
+        // Live and idle leads alike put their 8 DIP glyph at y 10–18 (a live row's first line is 18 under 5 of padding).
+        const double start = 19;
         var y = lead.Height + context.DetailHeight(lead);
         var tails = new List<double>();
         foreach (var child in block.Children)
@@ -547,37 +566,16 @@ sealed class BlockView : Grid
         Reconcile.Item("detail:" + item.Id, () => new DetailView(), (DetailView view) => view.Update(item, indent));
 }
 
-/// State glyph plus tool category, input kind or state on a tinted capsule.
-sealed class StateChip : Border
-{
-    readonly GlyphView glyph = new(StateGlyphKind.Working) { Margin = new Thickness(1, 0, 5, 0) };
-    readonly TextBlock text = Ui.Text("", Font.MetaMedium);
-
-    public StateChip()
-    {
-        Height = 18;
-        CornerRadius = new CornerRadius(9);
-        Padding = new Thickness(4, 0, 6, 0);
-        Child = Dashboard.Row(0, glyph, text);
-        text.VerticalAlignment = VerticalAlignment.Center;
-    }
-
-    public void Update(StateGlyphKind kind, string label)
-    {
-        glyph.Kind = kind;
-        text.Text = label;
-        var color = Theme.GlyphColor(kind);
-        Background = Theme.Brush(Color.FromArgb(41, color.R, color.G, color.B));
-    }
-}
-
+/// Line 1: the state glyph on the glyph column, the title on the text column (x = 28), the turn total. Line 2: the tool
+/// category, input kind or state in primary, then the client line; the timer trailing.
 sealed class LiveRow : RowShell
 {
-    readonly StateChip chip = new() { Margin = new Thickness(Dashboard.GlyphX - 4, 0, 0, 0) };
+    readonly GlyphView glyph = new(StateGlyphKind.Working) { Margin = new Thickness(Dashboard.GlyphX + 1, 0, 1, 0) };
     readonly TextBlock project = TrimLine.Shrink(Ui.Text("", Font.Title));
     readonly TextBlock shortId = Ui.Text("", Font.Meta, Theme.Secondary);
     readonly TextBlock number = Ui.Line();
-    readonly TextBlock client = Ui.Text("", Font.Meta, Theme.Secondary);
+    readonly TextBlock chipWords = Ui.Text("", Font.MetaMedium);
+    readonly TextBlock client = TrimLine.Shrink(Ui.Text("", Font.Meta, Theme.Secondary));
     readonly TextBlock trailing = Ui.Text("", Font.MetaMono);
     // 15 tall for MetaMono's descenders (a comma, a g), drawn 3 into the bottom padding so the row stays 58.
     readonly Border line3 = new() { Height = 15, Margin = new Thickness(Dashboard.GlyphX, 2, 0, -3) };
@@ -585,13 +583,15 @@ sealed class LiveRow : RowShell
 
     public LiveRow()
     {
-        project.Margin = new Thickness(8, 0, 0, 0);
+        project.Margin = new Thickness(6, 0, 0, 0);
         shortId.Margin = new Thickness(6, 0, 0, 0);
+        chipWords.TextTrimming = TextTrimming.None;
         number.MinWidth = 86;
         number.TextAlignment = TextAlignment.Right;
-        var first = Dashboard.Spread(new TrimLine(chip, project, shortId), number);
+        var first = Dashboard.Spread(new TrimLine(glyph, project, shortId), number);
         first.Height = 18;
-        var second = Dashboard.Spread(client, trailing);
+        // The chip's words never trim; the client line does.
+        var second = Dashboard.Spread(new TrimLine(chipWords, client), trailing);
         second.Height = 14;
         second.Margin = new Thickness(Dashboard.TextX, 2, 0, 0);
         var stack = new StackPanel { Margin = new Thickness(0, 5, Dashboard.Inset, 5) };
@@ -606,7 +606,8 @@ sealed class LiveRow : RowShell
         var reading = item.Reading;
         var now = context.Now;
         Bind(item.Id, reading, context, item.Height, context.Help(reading), SessionPresentation.SpokenLabel(reading, item.State));
-        chip.Update(GlyphView.For(item.State) ?? StateGlyphKind.Working, SessionPresentation.ChipText(item.State, reading));
+        glyph.Kind = GlyphView.For(item.State) ?? StateGlyphKind.Working;
+        chipWords.Text = SessionPresentation.ChipText(item.State, reading);
         project.Text = SessionPresentation.RowTitle(reading);
         shortId.Visibility = context.ShowsID(reading) ? Visibility.Visible : Visibility.Collapsed;
         shortId.Text = SessionPresentation.ShortID(reading);
@@ -626,11 +627,12 @@ sealed class LiveRow : RowShell
             Ui.Help(number, Loc("현재 턴 시작 부분을 읽지 못해 이번 턴 누적량을 알 수 없습니다", "Couldn't read the start of this turn, so its total is unknown"));
         }
 
-        client.Text = SessionPresentation.ClientLine(reading);
+        client.Text = " · " + SessionPresentation.ClientLine(reading);
         trailing.Text = item.State switch
         {
             SessionDisplayState.Waiting => Loc("활동 ", "Active ") + Format.Age(SessionPresentation.LiveAt(reading), now),
-            SessionDisplayState.Input => Loc("입력 대기 ", "Waiting for input ") + Format.Elapsed(reading.LastActivity, now),
+            // Line 2 already starts with the input kind; the timer is the one new fact.
+            SessionDisplayState.Input => Format.Elapsed(reading.LastActivity, now),
             SessionDisplayState.Retrying => reading.Retry is { } retry ? SessionPresentation.RetryText(retry, now, false, false) : item.State.Title,
             _ => Loc("턴 ", "Turn ") + Format.Elapsed(reading.CurrentTurnStartedAt, now),
         };
@@ -832,7 +834,8 @@ sealed class ChildRow : RowShell
         right.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - Dashboard.TextX - 12 - 6 - 8 - Dashboard.Inset
             - (word.Visibility == Visibility.Visible ? word.DesiredSize.Width + 6 : 0) - right.DesiredSize.Width;
-        // Each part shows whole or not at all (the project drops first, then the role); never a cut id.
+        // Each part shows whole or not at all (the project drops first, then the role); never a cut id. Tight, the row keeps its
+        // own name (role or ID), never a bare "하위 에이전트".
         FrameworkElement Names(params string?[] parts)
         {
             var line = Ui.Line(Ui.Run(title.Title, Font.Meta));
@@ -840,7 +843,8 @@ sealed class ChildRow : RowShell
             line.TextTrimming = TextTrimming.None;
             return line;
         }
-        names.Child = Dashboard.Fit(room, () => Names(title.Detail, project), () => Names(title.Detail), () => TrimLine.Shrink(Ui.Text(title.Title, Font.Meta)));
+        names.Child = Dashboard.Fit(room, () => Names(title.Detail, project), () => Names(title.Detail),
+            () => TrimLine.Shrink(Ui.Text(SessionPresentation.ChildName(reading), Font.Meta)));
     }
 
     static FrameworkElement Fixed(TextBlock text, double width)
@@ -905,19 +909,27 @@ sealed class MeasurementRow : RowShell
     }
 }
 
+/// "+N 하위 로그 대기 · 마지막 2분 전 ⌄": opens the full list; primary under the pointer.
 sealed class MoreRow : RowShell
 {
     readonly TextBlock text = Ui.Text("", Font.MetaMono, Theme.Secondary);
+    readonly TextBlock chevron = Ui.Icon(Ui.ChevronDown, 8, Theme.Secondary);
 
     readonly Action expand;
 
     public MoreRow(Action expand)
     {
         this.expand = expand;
-        text.Margin = new Thickness(Dashboard.ChildTextX, 0, Dashboard.Inset, 0);
-        text.VerticalAlignment = VerticalAlignment.Center;
-        Body.Children.Add(text);
+        chevron.Margin = new Thickness(4, 1, 0, 0);
+        var row = new TrimLine(TrimLine.Shrink(text), chevron)
+            { Margin = new Thickness(Dashboard.ChildTextX, 0, Dashboard.Inset, 0), VerticalAlignment = VerticalAlignment.Center };
+        Body.Children.Add(row);
+        Cursor = Cursors.Hand;
+        MouseEnter += (_, _) => Tint(Theme.Label);
+        MouseLeave += (_, _) => Tint(Theme.Secondary);
     }
+
+    void Tint(Color color) => text.Foreground = chevron.Foreground = Theme.Brush(color);
 
     public void Update(SessionBlock block, RowContext context)
     {
@@ -929,30 +941,35 @@ sealed class MoreRow : RowShell
     }
 }
 
-sealed class OlderRow : Border
+/// A full-width disclosure row: "이전 기록 3개 더 보기 ⌄" and the list toggle at the very end ("세션 12개 모두 보기 ⌄", "접기 ⌃").
+sealed class DisclosureRow : Border
 {
     readonly TextBlock text = Ui.Text("", Font.MetaMedium, Theme.Secondary);
+    readonly TextBlock chevron = Ui.Icon(Ui.ChevronDown, 9, Theme.Secondary);
     bool selected;
 
-    public OlderRow(Action open)
+    public DisclosureRow(Action open)
     {
         Height = SessionListModel.OlderHeight;
         Background = Brushes.Transparent;
         Cursor = Cursors.Hand;
-        var row = Dashboard.Row(3, text, Ui.Icon(Ui.ChevronDown, 9, Theme.Secondary));
+        var row = Dashboard.Row(3, text, chevron);
         row.HorizontalAlignment = HorizontalAlignment.Center;
         row.VerticalAlignment = VerticalAlignment.Center;
         Child = row;
         MouseEnter += (_, _) => Paint();
         MouseLeave += (_, _) => Paint();
         MouseLeftButtonUp += (_, _) => open();
-        System.Windows.Automation.AutomationProperties.SetName(this, Loc("이전 기록 더 보기", "Show earlier records"));
     }
 
-    public void Update(int count, bool isSelected)
+    /// `up`: "접기" points the chevron up.
+    public void Update(string title, bool up, bool isSelected, string? help, string name)
     {
         selected = isSelected;
-        text.Text = Loc($"이전 기록 {count}개 더 보기", $"Show {Plural(count, "earlier record")}");
+        text.Text = title;
+        chevron.Text = (up ? Ui.ChevronUp : Ui.ChevronDown).ToString();
+        Ui.Help(this, help);
+        System.Windows.Automation.AutomationProperties.SetName(this, name);
         Paint();
     }
 
@@ -966,7 +983,8 @@ sealed class OlderRow : Border
     }
 }
 
-/// The inline detail under a row (S-6): a two-column grid, 15 DIP lines, 8 above and below, a rule on top.
+/// The inline detail under a row (S-6): a two-column grid, 15 DIP lines, 8 above and below, a rule on top; then the resume
+/// command and File Explorer buttons on a 20 DIP line 6 below (Ctrl+Shift+C copies the command from the keyboard).
 sealed class DetailView : StackPanel
 {
     object? key;
@@ -977,7 +995,9 @@ sealed class DetailView : StackPanel
     public void Update(SessionRowItem item, double indent)
     {
         var items = SessionPresentation.DetailItems(item.Reading, item.State);
-        var value = (indent, string.Join("\n", items.Select(detail => $"{detail.Label}\t{detail.Value}\t{detail.Copy}")));
+        var actions = SessionPresentation.DetailActions(item.Reading, AppPaths.Home);
+        var value = (indent, string.Join("\n", items.Select(detail => $"{detail.Label}\t{detail.Value}\t{detail.Copy}")),
+            string.Join("\n", actions.Select(action => $"{action.Title}\t{action.Copy}\t{action.Reveal}")));
         Height = SessionPresentation.DetailHeight(item.Reading, item.State);
         if (Equals(value, key)) return;
         key = value;
@@ -999,6 +1019,15 @@ sealed class DetailView : StackPanel
                 System.Windows.Automation.AutomationProperties.SetName(copy, Loc($"{detail.Label} 복사", $"Copy {detail.Label}"));
             }
             grid.Children.Add(new TrimLine(label, text, copy) { Height = 15 });
+        }
+        if (actions.Count > 0)
+        {
+            var buttons = Dashboard.Row(6, [.. actions.Select(action => (UIElement)Ui.SmallButton(action.Title,
+                action.Copy is { } copied ? () => Shell.Copy(copied) : () => Shell.Reveal(action.Reveal!), action.Copy ?? action.Reveal))]);
+            buttons.Height = 20;
+            buttons.Margin = new Thickness(0, 6, 0, 0);
+            foreach (FrameworkElement button in buttons.Children) button.VerticalAlignment = VerticalAlignment.Center;
+            grid.Children.Add(buttons);
         }
         Children.Add(grid);
         System.Windows.Automation.AutomationProperties.SetName(this, Loc("세션 상세", "Session details"));

@@ -100,7 +100,7 @@ static class Theme
 }
 
 /// TCFont (A0-1): the only sizes and weights. "Mono" is tabular digits.
-enum Font { Hero, Metric, Title, Body, Value, Meta, MetaMedium, MetaMono, MetaMonoSemibold, Micro, BodyMedium, BodyMediumMono, Caption }
+enum Font { Metric, Title, Body, Value, Meta, MetaMedium, MetaMono, MetaMonoSemibold, Micro, BodyMedium, Caption }
 
 /// Small builders shared by the flyout, the dashboard window and Settings.
 static class Ui
@@ -115,7 +115,6 @@ static class Ui
 
     static (double Size, FontWeight Weight, bool Mono) Spec(Font font) => font switch
     {
-        Font.Hero => (26, FontWeights.SemiBold, true),
         Font.Metric => (15, FontWeights.SemiBold, true),
         Font.Title => (13, FontWeights.SemiBold, false),
         Font.Body => (13, FontWeights.Normal, false),
@@ -126,7 +125,6 @@ static class Ui
         Font.MetaMonoSemibold => (11, FontWeights.SemiBold, true),
         Font.Micro => (10, FontWeights.Medium, false),
         Font.BodyMedium => (13, FontWeights.Medium, false),
-        Font.BodyMediumMono => (13, FontWeights.Medium, true),
         _ => (11, FontWeights.SemiBold, false),
     };
 

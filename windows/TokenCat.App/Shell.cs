@@ -231,7 +231,7 @@ sealed class Shell
     DashboardInput Input() => new(Current, update, preferences.DismissedUpdateVersion, quietSince, setupNote, setupFailure, connectNotes, claudeBridged,
         SettingsStore.Shared.Get<bool?>(OnboardingSeenKey) == true, SettingsStore.Shared.Get<bool?>(TelemetrySetup.OptOutKey) == true);
 
-    SettingsInput SettingsInput() => new(Input(), collector.LastBatchAt, LoginItem.Status, animator.Current.Pose);
+    SettingsInput SettingsInput() => new(Input(), collector.LastBatchAt, LoginItem.Status, animator.Current.Pose, setupInFlight);
 
     /// Only what is on screen re-renders (the mac releases a closed popover's views).
     void RefreshViews()
@@ -473,7 +473,7 @@ sealed class Shell
                 {
                     LoginItem.Set(on);
                     RefreshViews();
-                }), SettingsInput());
+                }, SetTelemetryConnected), SettingsInput());
             settings.Closed += (_, _) => settings = null;
         }
         if (page is { } chosen) settings.Select(chosen);
@@ -509,6 +509,7 @@ sealed class Shell
         var summary = QuickMenuSummary.Make(current.Groups, current.Sessions.Counts, current.TokensSampledAt is not null, current.Now);
         menu.Add(summary.Headline, null, enabled: false);
         foreach (var row in summary.Rows) menu.Add(row.Title, () => OpenDashboard(row.Id), image: MenuBuilder.Square(Theme.GlyphColor(row.Kind)));
+        if (summary.More > 0) menu.Add(QuickMenuSummary.MoreTitle(summary.More), () => OpenDashboard());
         menu.Separator();
         menu.Add(Loc("열기", "Open"), () => OpenDashboard());
         menu.Add(Loc("창으로 열기", "Open as Window"), OpenWindow);
@@ -578,7 +579,7 @@ sealed class Shell
     void ConnectTelemetryAutomatically()
     {
         if (setupInFlight) return;
-        // `--disconnect-telemetry` opted out; only `--connect-telemetry` opts back in.
+        // A disconnect (Settings or `--disconnect-telemetry`) opted out; only a connect opts back in.
         if (SettingsStore.Shared.Get<bool?>(TelemetrySetup.OptOutKey) == true) { claudeBridged = false; RefreshViews(); return; }
         if (collector.State is not (TelemetryCollectorState.Waiting or TelemetryCollectorState.Receiving))
         {
@@ -609,6 +610,51 @@ sealed class Shell
                 claudeBridged = result?.Bridged;
                 // Running clients keep their old config; remember to say so until each one reports.
                 monitor.NoteTelemetryConnected(result?.RestartRequired ?? []);
+                RefreshViews();
+            });
+        });
+    }
+
+    /// Settings › 실측's 연결 해제 / 다시 연결, the app's `--disconnect-telemetry` / `--connect-telemetry`: the opt-out flag first, then
+    /// the setup off the UI thread; the result lands where the automatic connection's does, a failure in the setup note. The
+    /// button stays disabled while `setupInFlight`.
+    void SetTelemetryConnected(bool connect)
+    {
+        if (setupInFlight) return;
+        SettingsStore.Shared.Set(TelemetrySetup.OptOutKey, !connect);
+        // A failed write is silent in the store; an unsaved opt-out would let the next launch reconnect.
+        if (SettingsStore.Shared.Get<bool?>(TelemetrySetup.OptOutKey) != !connect)
+        {
+            setupNote = OnboardingOutcome.NotePrefix + Loc("TokenCat 설정 파일을 저장하지 못해 아무것도 바꾸지 않았습니다.", "Couldn't save TokenCat's settings file, so nothing was changed.");
+            setupFailure = new TelemetrySetupFailure.WriteFailed(true);
+            RefreshViews();
+            return;
+        }
+        if (connect)
+        {
+            ConnectTelemetryAutomatically();
+            RefreshViews();
+            return;
+        }
+        setupInFlight = true;
+        RefreshViews();
+        Task.Run(() =>
+        {
+            string? message = null;
+            TelemetrySetupFailure? failure = null;
+            try { new TelemetrySetup(AppPaths.Home, AppPaths.Support).Disconnect(); }
+            catch (Exception error)
+            {
+                message = OnboardingOutcome.NotePrefix + error.Message;
+                failure = (error as TelemetrySetupError)?.Failure ?? new TelemetrySetupFailure.WriteFailed(true);
+            }
+            dispatcher.BeginInvoke(() =>
+            {
+                setupInFlight = false;
+                setupNote = message;
+                setupFailure = failure;
+                connectNotes = [];
+                claudeBridged = false;
                 RefreshViews();
             });
         });

@@ -189,11 +189,14 @@ static class AppChecks
             byte[] tones = [Scan(speedItem(), 25, 45).alpha, Scan(speedItem(TokenSource.Codex), 25, 45).alpha];
             check(Enum.GetValues<TokenSource>().All(SpeedGlyph.Has) && glyphColour.All(colour => colour > 100) && tones[0] is > 60 and <= 187 && tones[1] > 190,
                   $"speed glyphs are the clients' coloured app icons, dashes secondary, digits label-toned (colour {string.Join(", ", glyphColour)}, alpha {string.Join(", ", tones)})");
-            // Two clients: Codex's blue glyph in front at 12–22 pt, Claude's orange one showing past it and its 1 pt ring at 23–28 pt.
+            // Two clients side by side, 1 pt apart and never overlapping: Codex's blue glyph at 12–22 pt with none of Claude's orange
+            // in it, Claude's at 23–33 pt. The row is 3 glyphs at most: 32 pt on one line, 26 pt (fits the 56 pt cell) on two.
             var pair = speedItem(TokenSource.Codex, TokenSource.Claude);
-            bool blue = Columns(pair, 12, 18).Any(pixel => pixel.B - pixel.R > 80), orange = Columns(pair, 23.5, 27.5).Any(pixel => pixel.R - pixel.B > 80);
-            check(blue && orange && SpeedGlyph.StackWidth(5, WidgetView.GlyphInline) == 22,
-                  $"two contributing clients draw two overlapping glyphs (blue {blue}, orange {orange})");
+            bool blue = Columns(pair, 12, 18).Any(pixel => pixel.B - pixel.R > 80), orange = Columns(pair, 24, 32).Any(pixel => pixel.R - pixel.B > 80),
+                apart = !Columns(pair, 12, 22).Any(pixel => pixel.R - pixel.B > 80);
+            check(blue && orange && apart && SpeedGlyph.RowWidth(5, WidgetView.GlyphInline) == 32 && SpeedGlyph.RowWidth(3, WidgetView.GlyphCompact) == 26
+                  && SpeedGlyph.RowWidth(1, WidgetView.GlyphInline) == 10,
+                  $"two contributing clients draw two glyphs side by side without overlap (blue {blue}, orange {orange}, apart {apart})");
 
             // Sizes: the width is the contract × the size, with and without the character; whole pixels per point keep the runner
             // nearest-neighbour at exactly that size, a fractional size scales the next whole size up down smoothly.
@@ -283,8 +286,9 @@ static class AppChecks
     }
 
     /// Settings › 위젯 and the pages it changed (§4.4): they build in ko and en with the widget's controls inside the page; the
-    /// item rows are check boxes named "title · bar label" in the stored order with the mac's locked and no-battery cases;
-    /// Alt+↑/↓ moves the focused item; the character toggle moved to Character.
+    /// item rows are check boxes named "title · bar label" in the stored order under the fixed character row, with the mac's
+    /// locked and no-battery cases; Alt+↑/↓ moves the focused item; the minimal layout disables the items but not the character.
+    /// Also the Telemetry page's rows and the About page's privacy bullets and update buttons.
     static void WidgetSettings(Action<bool, string> check)
     {
         static IEnumerable<DependencyObject> Descendants(DependencyObject root) =>
@@ -299,7 +303,7 @@ static class AppChecks
         try
         {
             var preferences = new Preferences(new SettingsStore(store));
-            var actions = new SettingsActions(preferences, () => { }, _ => { }, () => { }, _ => { });
+            var actions = new SettingsActions(preferences, () => { }, _ => { }, () => { }, _ => { }, _ => { });
             var outside = new List<string>();
             foreach (var language in new[] { AppLanguage.Ko, AppLanguage.En })
                 With(language, () =>
@@ -331,17 +335,17 @@ static class AppChecks
             var settings = new SettingsView(Fixtures.Settings(), actions, SettingsPage.Widget, _ => { }, snapshot: true);
             List<CheckBox> rows() => [.. Descendants(settings).OfType<CheckBox>()];
             var shown = rows();
-            var named = shown.Select(row => Peer(row)?.GetName()).SequenceEqual(["CPU", "메모리 · RAM", "저장 공간 · DISK", "배터리 · BAT", "네트워크 · NET", "AI 세션 · AI",
-                "평균 속도 · AVG"]);
+            var named = shown.Select(row => Peer(row)?.GetName()).SequenceEqual(["캐릭터", "CPU", "메모리 · RAM", "저장 공간 · DISK", "배터리 · BAT", "네트워크 · NET",
+                "AI 세션 · AI", "평균 속도 · AVG"]);
             var states = shown.Select(row => (Toggled(row), row.IsEnabled)).SequenceEqual(
-                [(ToggleState.Off, true), (ToggleState.On, false), (ToggleState.Off, true), (ToggleState.Off, false), (ToggleState.Off, true), (ToggleState.Off, true),
-                 (ToggleState.Off, true)]);
+                [(ToggleState.Off, true), (ToggleState.Off, true), (ToggleState.On, false), (ToggleState.Off, true), (ToggleState.Off, false), (ToggleState.Off, true),
+                 (ToggleState.Off, true), (ToggleState.Off, true)]);
             var note = Descendants(settings).OfType<TextBlock>().Any(text => text.Text.Replace("⁠", "") == "이 PC에는 배터리가 없습니다");
             check(named && states && note,
-                "the widget's item rows are check boxes named title · bar label in the stored order, locked and no-battery rows disabled with the note");
+                "the widget's item rows are check boxes named title · bar label in the stored order under the character row, locked and no-battery rows disabled with the note");
 
             // UI Automation's Toggle (Narrator scan mode, voice access) raises no Click: it must still show and hide the item.
-            var cpu = (IToggleProvider)Peer(shown[0])!.GetPattern(PatternInterface.Toggle)!;
+            var cpu = (IToggleProvider)Peer(shown[1])!.GetPattern(PatternInterface.Toggle)!;
             cpu.Toggle();
             var toggledOn = preferences.Visible.Contains(MetricID.Cpu);
             cpu.Toggle();
@@ -351,16 +355,73 @@ static class AppChecks
             var ignored = !settings.RowKey(MetricID.Memory, Key.Up, Key.None, ModifierKeys.None) && !settings.RowKey(MetricID.Memory, Key.System, Key.Up, ModifierKeys.Control);
             var top = settings.RowKey(MetricID.Memory, Key.System, Key.Up, ModifierKeys.Alt) && preferences.Order[0] == MetricID.Memory;
             settings.Refresh(Fixtures.Settings());
-            var rebuilt = AutomationProperties.GetName(rows()[0]) == "메모리 · RAM";
+            var rebuilt = AutomationProperties.GetName(rows()[1]) == "메모리 · RAM" && AutomationProperties.GetName(rows()[0]) == "캐릭터";
             settings.RowKey(MetricID.Memory, Key.System, Key.Down, ModifierKeys.Alt);
             check(handled && ignored && top && rebuilt && preferences.Order.SequenceEqual(Enum.GetValues<MetricID>()),
-                  "Alt+↑/↓ on an item row moves it one place (not past the top), other keys are left alone, and the rebuilt list follows");
+                  "Alt+↑/↓ on an item row moves it one place (not past the top), other keys are left alone, and the rebuilt list follows below the fixed character row");
 
             var character = Descendants(new SettingsView(Fixtures.Settings(), actions, SettingsPage.Character, _ => { }, snapshot: true)).ToList();
             var general = Descendants(new SettingsView(Fixtures.Settings(), actions, SettingsPage.General, _ => { }, snapshot: true)).ToList();
-            check(Named(character, "위젯에 캐릭터 표시") == nameof(ToggleState.Off) && Named(general, "화면에 위젯 표시") is null
+            var characterRow = Descendants(settings).OfType<CheckBox>().FirstOrDefault(box => AutomationProperties.GetAutomationId(box) == "item-character");
+            check(characterRow is not null && Peer(characterRow)?.GetName() == "캐릭터" && Toggled(characterRow) == ToggleState.Off
+                  && !character.OfType<CheckBox>().Any() && Named(character, "위젯에 캐릭터 표시") is null && Named(general, "화면에 위젯 표시") is null
                   && Named(Descendants(settings), "화면에 위젯 표시") == nameof(ToggleState.On),
-                  "the widget's switch is on the Widget page and the character's in the widget on the Character page");
+                  "the widget's switch and the character row are on the Widget page, and the Character page has no character toggle");
+
+            // The character row shows the character; with it shown and nothing else drawn it can't be hidden (disabled).
+            ((IToggleProvider)Peer(characterRow!)!.GetPattern(PatternInterface.Toggle)!).Toggle();
+            var runnerShown = preferences.ShowRunner;
+            preferences.SetVisible(MetricID.Memory, false);
+            settings.Refresh(Fixtures.Settings());
+            var lockedRunner = rows()[0] is { IsEnabled: false } runnerRow && Toggled(runnerRow) == ToggleState.On && preferences.Visible.Count(id => id != MetricID.Battery) == 0;
+            // Minimal: every item row disabled and out of the drag, the character row still enabled.
+            preferences.SetVisible(MetricID.Memory, true);
+            preferences.Layout = StatusBarLayout.Minimal;
+            settings.Refresh(Fixtures.Settings());
+            var minimalRows = rows();
+            var minimal = minimalRows[0].IsEnabled && minimalRows.Skip(1).All(row => !row.IsEnabled)
+                          && Descendants(settings).OfType<Border>().All(border => !border.AllowDrop);
+            preferences.Layout = StatusBarLayout.Compact;
+            check(runnerShown && lockedRunner && minimal,
+                  $"the character row shows the character and locks while nothing else is drawn; minimal disables every item row but not it (shown {runnerShown}, locked {lockedRunner}, minimal {minimal})");
+
+            // Telemetry: the collector's status alone on its row with the retry on the next; the connection row first in the second
+            // section, right above 실시간 한도 확인: disconnect while connected, reconnect once opted out, disabled while a setup runs;
+            // no CLI instruction; no folder buttons or folder note in a snapshot.
+            static List<DependencyObject> TelemetryPage(SettingsActions actions, SettingsInput input) =>
+                Descendants(new SettingsView(input, actions, SettingsPage.Telemetry, _ => { }, snapshot: true)).ToList();
+            var fixture = Fixtures.Settings();
+            var telemetry = TelemetryPage(actions, fixture);
+            var collectorRow = telemetry.OfType<TextBlock>().First(text => text.Text == "수집기").Parent is FrameworkElement label ? label.Parent : null;
+            var collectorAlone = collectorRow is not null && !Descendants(collectorRow).OfType<Button>().Any()
+                                 && telemetry.OfType<Button>().Any(button => AutomationProperties.GetName(button) == "지금 다시 시도");
+            Button? connection(List<DependencyObject> page) => page.OfType<Button>().FirstOrDefault(button => AutomationProperties.GetAutomationId(button) == "telemetry-connection");
+            var connected = connection(telemetry) is { IsEnabled: true } disconnect && AutomationProperties.GetName(disconnect) == "연결 해제…";
+            var optedOut = TelemetryPage(actions, fixture with { Dashboard = fixture.Dashboard with { OptedOut = true } });
+            var reconnect = connection(optedOut) is { } again && AutomationProperties.GetName(again) == "다시 연결"
+                            && optedOut.OfType<TextBlock>().Any(text => text.Text.Replace("⁠", "") == "해제됨 · 다시 연결하기 전에는 연결하지 않습니다");
+            var busy = connection(TelemetryPage(actions, fixture with { SetupInFlight = true })) is { IsEnabled: false };
+            var connectionAt = connection(telemetry) is { } connectionRow ? telemetry.IndexOf(connectionRow) : -1;
+            var liveAt = telemetry.FindIndex(node => node is System.Windows.Controls.Primitives.ToggleButton toggle && AutomationProperties.GetName(toggle) == "실시간 한도 확인");
+            var placed = connectionAt > telemetry.FindIndex(node => node is TextBlock { Text: "Claude 한도" }) && connectionAt < liveAt
+                         && !telemetry.Skip(connectionAt + 1).Take(liveAt - connectionAt - 1).OfType<Button>().Any();
+            var quiet = !telemetry.OfType<TextBlock>().Any(text => text.Text.Contains("PowerShell") || text.Text.Contains("telemetry") || text.Text.Replace("⁠", "").Contains("폴더 단추"))
+                        && !telemetry.OfType<Button>().Any(button => AutomationProperties.GetName(button).Contains("설정 파일") || AutomationProperties.GetName(button) == "백업 폴더 보기");
+            check(collectorAlone && connected && reconnect && busy && placed && quiet,
+                  $"the Telemetry page's collector, connection and file rows (collector {collectorAlone}, connected {connected}, reconnect {reconnect}, busy {busy}, placed {placed}, quiet {quiet})");
+
+            // About: three privacy bullets; an installable update offers only 업데이트 as the default button; while installing, 지금 확인.
+            var about = Descendants(new SettingsView(fixture, actions, SettingsPage.About, _ => { }, snapshot: true)).ToList();
+            var texts = about.OfType<TextBlock>().Select(text => text.Text.Replace("⁠", "")).ToList();
+            var bullets = AppInfo.PrivacyLines.Count == 3 && AppInfo.PrivacyLines.All(texts.Contains)
+                          && AppInfo.PrivacyLines[0] == "로컬 로그·실측의 메타데이터만 읽고, 프롬프트·응답 본문은 저장하거나 표시하지 않습니다"
+                          && With(AppLanguage.En, () => AppInfo.PrivacyLines[1]) == "Never calls a model or signs in; goes online only to check GitHub for updates and download them";
+            List<Button> updateButtons(List<DependencyObject> page) => [.. page.OfType<Button>().Where(button => AutomationProperties.GetName(button) is "업데이트" or "지금 확인")];
+            var installable = updateButtons(about) is [{ IsDefault: true } only] && AutomationProperties.GetName(only) == "업데이트";
+            var installing = updateButtons(Descendants(new SettingsView(fixture with { Dashboard = fixture.Dashboard with { Update = Fixtures.Update("downloading", Fixtures.Now) } },
+                actions, SettingsPage.About, _ => { }, snapshot: true)).ToList()).Select(button => AutomationProperties.GetName(button)).SequenceEqual(["지금 확인"]);
+            check(bullets && installable && installing,
+                  $"About shows the three privacy bullets and, for an installable update, only the default 업데이트 button (bullets {bullets}, installable {installable}, installing {installing})");
         }
         finally
         {
@@ -407,6 +468,20 @@ static class AppChecks
         check(detail is not null && Peer(detail)?.GetName() == "세션 상세"
               && Peer(detail)?.GetChildren()?.Any(child => child.GetAutomationControlType() == AutomationControlType.Button) == true,
               "the inline detail is named and keeps its copy buttons in UI Automation");
+        // One list toggle, the last row (#6); the footer only when it says more than "실시간" (#8); both windows of a limit (#5).
+        var toggles = Tree(Shown("expanded-dates")).OfType<DisclosureRow>().ToList();
+        check(toggles.Count > 0 && Peer(toggles[^1]) is { } togglePeer && togglePeer.GetName() == "세션 목록 접기"
+              && togglePeer.GetAutomationControlType() == AutomationControlType.ListItem && toggles[^1].ToolTip is string,
+              "the expanded list ends in its one toggle row, a named list item with help");
+        check(Tree(Shown("detail-open")).OfType<Footer>().Single().Visibility == Visibility.Collapsed
+              && Tree(Shown("update-downloading")).OfType<Footer>().Single().Visibility == Visibility.Visible
+              && Tree(Shown("restart-needed")).OfType<Footer>().Single().Visibility == Visibility.Visible,
+              "the footer hides while it would only say 실시간, and shows for a notice or an update");
+        var claudeLimit = new LimitRow();
+        claudeLimit.Update(Fixtures.Limits().First(limit => limit.Source == TokenSource.Claude && limit.Other is not null), Fixtures.Now);
+        check(Tree(claudeLimit).OfType<LimitWindow>().Count(window => window.Visibility == Visibility.Visible) == 2
+              && Tree(claudeLimit).OfType<TextBlock>().Any(text => text.Text == "Claude · 5시간") && Tree(claudeLimit).OfType<TextBlock>().Any(text => text.Text == "Claude · 주간"),
+              "a limit with another live window draws both, titled provider · window");
 
         static ToggleState? Toggle(UIElement element) => (Peer(element)?.GetPattern(PatternInterface.Toggle) as IToggleProvider)?.ToggleState;
         var on = SettingsView.Switch(true, _ => { }, "턴 완료");
@@ -415,7 +490,7 @@ static class AppChecks
         var store = Path.Combine(Path.GetTempPath(), $"tokencat-appchecks-{Guid.NewGuid():N}.json");
         try
         {
-            var actions = new SettingsActions(new Preferences(new SettingsStore(store)), () => { }, _ => { }, () => { }, _ => { });
+            var actions = new SettingsActions(new Preferences(new SettingsStore(store)), () => { }, _ => { }, () => { }, _ => { }, _ => { });
             var page = Tree(new SettingsView(Fixtures.Settings(), actions, SettingsPage.Character, _ => { }, snapshot: true)).ToList();
             var choices = page.OfType<RadioButton>().ToList();
             check(choices.Select(choice => AutomationProperties.GetName(choice))
@@ -616,7 +691,7 @@ static class AppChecks
             && SettingsView.LegendEntries(RunnerMotion.Still).Count == 0,
             "The cat legend does not match the motion source");
         check(SettingsView.CollectorStatus(TelemetryCollectorState.Receiving) == (SettingsView.StatusRow.Receiving, "수신 중 · 127.0.0.1:16493")
-            && SettingsView.CollectorStatus(TelemetryCollectorState.Waiting).Text == "수신 대기 · 127.0.0.1:16493"
+            && SettingsView.CollectorStatus(TelemetryCollectorState.Waiting) == (SettingsView.StatusRow.Listening, "켜짐 · 127.0.0.1:16493")
             && SettingsView.CollectorStatus(TelemetryCollectorState.BusyOtherApp) == (SettingsView.StatusRow.Problem, "꺼짐 · 다른 앱이 16493 포트 사용 중")
             && SettingsView.CollectorStatus(TelemetryCollectorState.Starting) == (SettingsView.StatusRow.Starting, "준비 중"),
             "Collector status rows do not match the T-3 table");
@@ -627,8 +702,8 @@ static class AppChecks
             && Client(false, false, at.AddSeconds(-30), at).Text == "최근 수신 1분 이내"
             && Client(false, false, at.AddSeconds(-720), null).Text == "최근 수신 12분 전"
             && Client(false, false, null, at).Text == "기록 수신 중 · 속도 형식 없음" && Client(false, false, null, at).Detail is not null
-            && Client(false, false, null, null).Text == "이번 실행에서 받은 실측 없음",
-            "Client telemetry rows are not checked restart → 24 h → received → batch only → none");
+            && Client(false, false, null, null) == (SettingsView.StatusRow.Waiting, "아직 받은 실측 없음", null),
+            "Client telemetry rows are not checked restart → 24 h → received → batch only → nothing received yet");
         check(SettingsView.ClientStatus(true, true, at, at, at, "이유") == (SettingsView.StatusRow.Info, "연결 안 함 · 기존 실측 설정 유지", "이유")
             && OnboardingCard.Clients([TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.Qwen, TokenSource.Amp],
                 [new TelemetrySetupNote.ClientSkipped(TokenSource.Gemini, "이유")]).SequenceEqual([TokenSource.Codex, TokenSource.Claude, TokenSource.Qwen]),
@@ -663,6 +738,8 @@ static class AppChecks
         {
             check(SettingsPageTitles() == "General · Widget · Character · Telemetry · About"
                 && SettingsView.CollectorStatus(TelemetryCollectorState.BusyOtherApp).Text == "Off · another app is using port 16493"
+                && SettingsView.CollectorStatus(TelemetryCollectorState.Waiting).Text == "On · 127.0.0.1:16493"
+                && Client(false, false, null, null).Text == "Nothing received yet"
                 && Client(false, false, at.AddSeconds(-30), at).Text == "Last received <1m ago"
                 && Limits([], true, at.AddSeconds(-180)).Text == "Last received 3m ago"
                 && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-720), true, at).Text == "Claude desktop app · recorded 12m ago"

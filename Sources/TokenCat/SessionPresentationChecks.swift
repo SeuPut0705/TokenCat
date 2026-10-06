@@ -139,17 +139,18 @@ func runSessionPresentationChecks() -> [String] {
     roleChild.agentRole = "Explore"
     var reviewChild = codexChild
     reviewChild.agentRole = "guardian"
-    check(SessionPresentation.childTitle(roleChild) == ("Explore", "b1234567") && SessionPresentation.childTitle(claudeChild) == ("b1234567", nil)
+    check(SessionPresentation.childTitle(roleChild) == ("Explore", "b1234567") && SessionPresentation.childTitle(claudeChild) == ("하위 에이전트", "b1234567")
           && SessionPresentation.childTitle(reviewChild) == ("sample_runner", "자동 검토"), "subagent role labels keep the ID")
     var workflowChild = claudeChild
     workflowChild.agentID = "a1111111e1"
     workflowChild.agentRole = "workflow-subagent"
     var generalChild = workflowChild
     generalChild.agentRole = " general-purpose "
-    check(SessionPresentation.childTitle(workflowChild) == ("a1111111", nil) && SessionPresentation.childTitle(generalChild) == ("a1111111", nil)
+    check(SessionPresentation.childTitle(workflowChild) == ("하위 에이전트", "a1111111") && SessionPresentation.childTitle(generalChild) == ("하위 에이전트", "a1111111")
+          && SessionPresentation.childName(generalChild) == "a1111111" && SessionPresentation.childName(roleChild) == "Explore"
           && SessionPresentation.roleLabel(workflowChild.agentRole) == "workflow-subagent"
           && SessionPresentation.roleLabel(reviewChild.agentRole) == "자동 검토" && SessionPresentation.roleLabel("  ") == nil,
-          "shared roles leave the ID as the title; help keeps the role")
+          "shared roles name the row 하위 에이전트 with the ID beside it; help keeps the role")
     let counts = SessionCounts(groups)
     check(counts.runningGroups == 2 && counts.tool == 1 && counts.working == 1 && counts.runningSubagents == 2
           && counts.phase == .tool && counts.readings == 7 && counts.toolMembers == 1 && counts.toolCategories[.other] == 1,
@@ -190,10 +191,11 @@ func runSessionPresentationChecks() -> [String] {
     check(caption(noticeCounts, nil).text == "로그 대기 · 3분째 기록 없음", "waiting caption")
     let urgent = SessionCounts(SessionPresentation.groups([command, retrying, question], now: now))
     let retryOnly = SessionCounts(SessionPresentation.groups([command, retrying], now: now))
-    check(caption(urgent, -2).text == "마지막 기록" && caption(urgent, -40).text == "입력 대기 · 답변하면 계속 기록"
-          && caption(urgent, -40).glyph == .input && caption(urgent, -40).emphasized
-          && caption(retryOnly, -40).text == "API 재시도 2/10 · 4초 후" && caption(retryOnly, -40).glyph == .retry,
-          "input and retry captions follow the same 30 s rule and are emphasized")
+    // A session waiting for the person keeps the base caption: the header and the row already say it.
+    check(caption(urgent, -2).text == "마지막 기록" && caption(urgent, -40).text == "마지막 기록" && caption(urgent, -40).glyph == nil
+          && !caption(urgent, -40).emphasized
+          && caption(retryOnly, -40).text == "API 재시도 2/10 · 4초 후" && caption(retryOnly, -40).glyph == .retry && caption(retryOnly, -40).emphasized,
+          "input leaves the caption to the header; retry captions follow the 30 s rule and are emphasized")
     var offlineCounts = retryOnly
     offlineCounts.retry?.networkDown = true
     check(caption(offlineCounts, nil).text == "API 재시도 · 네트워크 끊김"
@@ -206,9 +208,9 @@ func runSessionPresentationChecks() -> [String] {
     question3.sessionID = "Q3"
     let plans = SessionCounts(SessionPresentation.groups([plan, plan2, command], now: now))
     let mixedInput = SessionCounts(SessionPresentation.groups([plan, question3], now: now))
-    check(plans.inputPlansOnly && caption(plans, nil).text == "계획 승인 대기 · 승인하면 계속 기록"
-          && !mixedInput.inputPlansOnly && caption(mixedInput, nil).text == "입력 대기 · 답변하면 계속 기록",
-          "plan approvals say 승인; a mix keeps the general copy")
+    check(plans.inputPlansOnly && caption(plans, nil).text == "마지막 기록"
+          && !mixedInput.inputPlansOnly && caption(mixedInput, nil).text == "마지막 기록",
+          "plan approvals and questions are said by the header, not repeated in the caption")
 
     // Header sentence (H-2) and head echo (H-3): one sentence per top state.
     func header(_ counts: SessionCounts, loading: Bool = false, spoken: Bool = false) -> HeaderStatus {
@@ -240,13 +242,13 @@ func runSessionPresentationChecks() -> [String] {
     check([loadingHeader.help, restHeader.help, caption(noticeCounts, nil).help].allSatisfy { !$0.contains("Codex") && !$0.contains("Claude") }
           && restHeader.help == "진행 중인 코딩 에이전트 세션이 없습니다",
           "client-neutral header and caption help")
-    // The flow card's split with four clients: widest first, then the smallest folding into "+N" (it used to list every
-    // client at a fixed size and spill past the card); one client is its name only.
+    // The flow card's split with four clients: widest first, then the smallest folding into "외 N" (it used to list every
+    // client at a fixed size and spill past the card; a bare "+N" read as tokens); one client is its name only.
     let splits = SessionPresentation.providerSplits([.codex: 1_200, .claude: 6_600, .opencode: 300, .omp: 70_000])
     check(splits.first == "omp 70k · Claude Code 6.6k · Codex 1.2k · OpenCode 300" && splits.count == 4
-          && splits[1] == "omp 70k · Claude Code 6.6k · Codex 1.2k · +1" && splits.last == "omp 70k · +3"
+          && splits[1] == "omp 70k · Claude Code 6.6k · Codex 1.2k · 외 1" && splits.last == "omp 70k · 외 3"
           && SessionPresentation.providerSplits([.codex: 10]) == ["Codex"] && SessionPresentation.providerSplits([:]) == [""],
-          "provider split folds into +N, widest first: \(splits)")
+          "provider split folds into 외 N, widest first: \(splits)")
 
     // Stable ordering: input first, then running groups by project and session, unaffected by activity time.
     let beta = reading("claude:beta", session: "B", project: "beta", active: true, state: .working, last: -1)
@@ -268,8 +270,10 @@ func runSessionPresentationChecks() -> [String] {
           "running, waiting, measured, then recent idle; stable when activity changes")
     check(make(input + [question]).blocks.first?.id == "claude:q", "a turn waiting for input goes first")
     check(first.hiddenGroups == 6 && first.hiddenChildren == 0 && first.counts.groups == 12, "collapsed list fills to six rows")
-    let quietHeight: CGFloat = 44 * 3 + 28 * 3 + 5
-    check(first.contentHeight == quietHeight, "quiet live rows fold to 44pt; heights stay deterministic")
+    // Three quiet live rows, three idle rows, five dividers, then the closing "모두 보기" row and its divider.
+    let quietHeight: CGFloat = 44 * 3 + 28 * 3 + 5 + 1 + 28
+    check(first.contentHeight == quietHeight && first.entries(showOlder: false).last?.id == SessionListModel.toggleID
+          && first.toggleText == "세션 12개 모두 보기", "quiet live rows fold to 44pt; heights stay deterministic; the toggle closes the list")
     // Line 3 holds the current turn's last record, context or a measured speed; anything else stays at 44 pt.
     var flowing = alpha
     flowing.currentTurnStartedAt = at(-60)
@@ -340,7 +344,9 @@ func runSessionPresentationChecks() -> [String] {
           "waiting children take no slot while a child runs")
     check(floodBlock?.moreCount == 9 && floodBlock?.moreText == "+9 하위 로그 대기 · 마지막 1분 전"
           && floodCollapsed.hiddenGroups == 0 && floodCollapsed.hiddenChildren == 9
-          && floodCollapsed.contentHeight == 28 + 24 + 24, "cut children are summarised with their newest record")
+          && floodCollapsed.contentHeight == 28 + 24 + 24 && floodCollapsed.entries(showOlder: false).last?.id != SessionListModel.toggleID
+          && family.entries(showOlder: false).last?.id == SessionListModel.toggleID && family.toggleText == "하위 1개 더 보기",
+          "cut children are summarised with their newest record and need no closing row; a hidden finished child does")
     let quietBlock = make([floodParent] + flood.dropLast()).blocks.first
     check(quietBlock?.children.map(\.id) == ["claude:S1/a0", "claude:S1/a1", "claude:S1/a2"] && quietBlock?.moreCount == 6,
           "with nothing running, up to three waiting children show")
@@ -369,31 +375,33 @@ func runSessionPresentationChecks() -> [String] {
     let dated = [reading("claude:d0", session: "D0", state: .complete, last: -600), reading("claude:d1", session: "D1", state: .complete, last: -day),
                  reading("claude:d2", session: "D2", state: .complete, last: -5 * day), reading("claude:d3", session: "D3", state: .complete, last: -9 * day)]
     let datedList = make([beta] + dated, expanded: true)
-    let datedIDs = ["claude:beta", "caption:claude:d0", "claude:d0", "caption:claude:d1", "claude:d1", "divider:older", "older"]
-    // beta 44 + (caption 24 + row 28) × 2 + divider 1 + older 28; open: + (caption 24 + row 28 + divider 1 + row 28) instead of the fold.
-    let foldedHeight: CGFloat = 44 + 52 + 52 + 1 + 28, openHeight: CGFloat = 44 + 52 + 52 + 24 + 28 + 1 + 28
+    let datedIDs = ["claude:beta", "caption:claude:d0", "claude:d0", "caption:claude:d1", "claude:d1", "divider:older", "older", "divider:toggle", "toggle"]
+    // beta 44 + (caption 24 + row 28) × 2 + divider 1 + older 28 + divider 1 + "접기" 28; open: + (caption 24 + row 28 +
+    // divider 1 + row 28) instead of the fold.
+    let foldedHeight: CGFloat = 44 + 52 + 52 + 1 + 28 + 29, openHeight: CGFloat = 44 + 52 + 52 + 24 + 28 + 1 + 28 + 29
     func rules(_ list: SessionListModel) -> [Bool] {
         list.entries(showOlder: true).compactMap { entry -> Bool? in if case .caption(_, let rule, _) = entry { return rule } else { return nil } }
     }
     check(datedList.blocks.map(\.section) == [nil, "오늘", "어제", "이전", "이전"] && datedList.olderCount == 2
           && datedList.entries(showOlder: false).map(\.id) == datedIDs && rules(datedList) == [true, true, true]
           && rules(make(dated, expanded: true)) == [false, true, true]
-          && datedList.contentHeight == foldedHeight && datedList.olderContentHeight == openHeight,
-          "captions, a rule above all but a caption at the top, folded older section and both heights")
+          && datedList.contentHeight == foldedHeight && datedList.olderContentHeight == openHeight && datedList.toggleText == "접기",
+          "captions, a rule above all but a caption at the top, folded older section, the closing 접기 row and both heights")
     // A frozen order can place two runs of the same section; each caption still has its own identity.
     let frozenDated = datedList.reordered(["claude:beta", "claude:d0", "claude:d1", "claude:d2"])
     let frozenIDs = frozenDated.entries(showOlder: true).map { $0.id }
     check(Set(frozenIDs).count == frozenIDs.count, "duplicate list entry IDs")
     // Keyboard navigation skips captions and dividers; selection starts at input, then retry, then the first row.
-    check(datedList.navigation(showOlder: false) == ["claude:beta", "claude:d0", "claude:d1", "older"]
-          && datedList.navigation(showOlder: true).count == 5
+    check(datedList.navigation(showOlder: false) == ["claude:beta", "claude:d0", "claude:d1", "older", "toggle"]
+          && datedList.navigation(showOlder: true).count == 6
           && make([beta, retrying, question]).startRow(showOlder: false) == "claude:q"
           && make([beta, retrying]).startRow(showOlder: false) == "claude:r" && make([beta, alpha]).startRow(showOlder: false) == "claude:alpha",
           "navigation rows and the first selection")
     let floodNavigation = make([reading("claude:S1", session: "S1", project: "TokenCat", state: .complete, last: -600)]
                                + (0..<5).map { reading("claude:S1/a\($0)", session: "S1", agent: "a0\($0)xxxxx", subagent: true, state: .stale, last: -100) })
-    check(floodNavigation.navigation(showOlder: false) == ["claude:S1", "claude:S1/a0", "claude:S1/a1", "claude:S1/a2", "more:claude:S1"],
-          "children and the +N row are navigable")
+    check(floodNavigation.navigation(showOlder: false) == ["claude:S1", "claude:S1/a0", "claude:S1/a1", "claude:S1/a2", "more:claude:S1"]
+          && family.navigation(showOlder: false).last == SessionListModel.toggleID,
+          "children, the +N row and the closing row are navigable")
     // Frozen order (S-8): known blocks keep their place, new ones go to the end, heights follow.
     let frozen = make([beta, alpha, waiting]).reordered(["claude:wait", "claude:beta"])
     check(frozen.blocks.map(\.id) == ["claude:wait", "claude:beta", "claude:alpha"] && frozen.contentHeight == make([beta, alpha, waiting]).contentHeight,
@@ -447,6 +455,11 @@ func runSessionPresentationChecks() -> [String] {
     check(SessionPresentation.usageLimit([weekly, fiveHour], now: now)?.windowMinutes == 300
           && SessionPresentation.usageLimit([weekly, fiveHour], now: at(3 * 3_600))?.usedPercent == 70,
           "Codex windows of different lengths: the fuller live one wins, not the latest reset")
+    let bothCodex = SessionPresentation.usageLimit([weekly, fiveHour], now: now)
+    check(bothCodex?.other?.windowMinutes == 10_080 && bothCodex?.otherSummary(now: now)?.usedPercent == 70
+          && bothCodex?.otherSummary(now: now)?.recordedAt == at(-1_800) && bothCodex?.otherSummary(now: now)?.shortTitle == "Codex · 주간"
+          && SessionPresentation.usageLimit([weekly, fiveHour], now: at(3 * 3_600))?.other == nil,
+          "the other live Codex window is kept for its own row, with its own record time")
     let expired = UsageLimitSummary(usedPercent: 64, windowMinutes: 300, resetsAt: at(-10), recordedAt: at(-7_000))
     check(expired.value(now: now) == "—" && expired.detail(now: now) == "초기화됨 · 다음 Codex 기록 대기" && expired.isOld(now: now)
           && SessionPresentation.usageLimit([question], now: now) == nil && SessionPresentation.windowLabel(300) == "5시간"
@@ -619,7 +632,8 @@ func runSessionPresentationChecks() -> [String] {
           && OnboardingCard.outcome(notice: conflict, note: "이유", failure: .conflict, state: .waiting, bridged: true) == .skipped("이유"),
           "first-run outcome says only what happened")
     check(OnboardingCard.outcome(notice: nil, note: nil, failure: nil, state: .receiving, optedOut: true)
-          == .skipped("--disconnect-telemetry로 연결을 해제한 상태입니다"), "after --disconnect-telemetry the card does not claim the settings were added")
+          == .skipped("실측 연결을 해제한 상태입니다 · 설정 › 실측에서 다시 연결"),
+          "after a disconnect the card does not claim the settings were added, and points to Settings to reconnect")
     let restartSlot = SessionPresentation.speed(question, now: now, restartNeeded: true)
     check(restartSlot.value == "—" && restartSlot.help == "실측 연결됨 · Claude Code를 새로 실행하면 속도가 표시됩니다",
           "restart-needed speed help")
@@ -804,10 +818,9 @@ func runSessionPresentationChecks() -> [String] {
     let previousOnly = headline([switched])
     check(previousOnly?.value == "—" && previousOnly?.help == "최근 실측은 이전 모델(g0) 기준이라 지금 속도로 쓰지 않습니다",
           "a fresh measurement left out for its previous model is named as such, not as a missing one")
-    // The card keeps one height whether or not "지금 속도" shows.
-    check(FlowCard.lowerHeight(loading: false, total: 120, speed: nil) == 18 && FlowCard.lowerHeight(loading: false, total: 120, speed: pair) == 18
-          && FlowCard.lowerHeight(loading: false, total: 0, speed: nil) == nil && FlowCard.lowerHeight(loading: true, total: 120, speed: pair) == nil,
-          "the speed slot does not resize the flow card")
+    // The compact card: a 28 pt plot plus 3 pt ticks and the 12 pt axis, no scale band (the scale is in help), so the
+    // list keeps the room the card gave up.
+    check(FlowChart.height == 43 && SessionListModel.maxViewport == 312, "the flow chart stays compact and the list takes the room")
     let quiet = timed("claude:quiet", .claude, project: "Quiet", model: "m1", ago: -3, live: false)
     let unmatched = timed("telemetry:claude:x", .claude, project: "요청 실측", model: "m1", ago: -3, live: false)
     check(headline([quiet, unmatched]) == nil && headline([]) == nil, "nothing running hides the speed, even beside a fresh unmatched measurement")
@@ -850,9 +863,10 @@ func runSessionPresentationChecks() -> [String] {
               && header(noticeCounts, spoken: true).spoken == "1 session waiting for log · no record for 3 minutes"
               && header(SessionCounts(SessionPresentation.groups([claudeParent, claudeChild, codexParent, codexChild], now: now))).spoken
                 == "2 sessions working · 1 tool · 2 subagents"
-              && caption(urgent, -40).text == "Waiting for input · reply to resume" && caption(plans, nil).text == "Plan approval · approve to resume"
-              && caption(retryOnly, -40).text == "API retry 2/10 · in 4s" && caption(noticeCounts, nil).text == "Waiting for log · no record for 3m",
-              "English header and flow caption")
+              && caption(urgent, -40).text == "Last record" && caption(plans, nil).text == "Last record"
+              && caption(retryOnly, -40).text == "API retry 2/10 · in 4s" && caption(noticeCounts, nil).text == "Waiting for log · no record for 3m"
+              && SessionPresentation.providerSplits([.codex: 3_200, .claude: 900]) == ["Codex 3.2k · Claude Code 900", "Codex 3.2k · +1 more"],
+              "English header, flow caption and folded provider count")
         check(SessionPresentation.childGroupText(.input, count: 1) == "1 subagent needs input"
               && SessionPresentation.childGroupText(.waiting, count: 4) == "4 subagents waiting for log"
               && SessionPresentation.spokenLabel(modelled, state: .input) == "Input needed, TokenCat, Claude Code claude-opus-5-5"
@@ -860,7 +874,9 @@ func runSessionPresentationChecks() -> [String] {
               && make([floodParent] + flood).blocks.first?.moreText == "+9 subagents waiting for log · last record 1m ago"
               && make([floodParent] + flood).blocks.first?.moreSpoken == "+9 subagents waiting for log · last record 1 minute ago",
               "English subagent counts and VoiceOver labels")
-        check(usage?.title == "Codex weekly limit" && usage?.value(now: now) == "28% used"
+        check(usage?.title == "Codex weekly limit" && usage?.shortTitle == "Codex · weekly" && claudeSummary?.shortTitle == "Claude · 5-hour"
+              && claudeSummary?.otherSummary(now: now)?.shortTitle == "Claude · weekly" && claudeSummary?.otherSummary(now: now)?.percentText == "31"
+              && usage?.value(now: now) == "28% used"
               && usage?.detail(now: now) == "Resets in 5d 11h · as of 1m ago"
               && usage?.details(now: now) == ["Resets in 5d 11h · recorded 1m ago", "Resets in 5d 11h"]
               && undated?.detail(now: now) == "As of 10m ago" && expired.detail(now: now) == "Reset · waiting for a Codex record"
@@ -879,8 +895,12 @@ func runSessionPresentationChecks() -> [String] {
         check(englishDates.blocks.map(\.section) == [nil, "Today", "Yesterday", "Earlier", "Earlier"] && englishDates.olderCount == 2
               && SessionPresentation.rowActions(located, home: home).map(\.title)
                 == ["Copy Session ID", "Copy Resume Command", "Show Project Folder in Finder", "Show Log File in Finder"]
-              && SessionPresentation.detailItems(detailed, state: .tool).last?.value == "When a Codex response ends",
-              "English day sections fold the older part; row actions use title case")
+              && SessionPresentation.detailItems(detailed, state: .tool).last?.value == "When a Codex response ends"
+              && SessionPresentation.detailActions(located, home: home).map(\.title) == ["Copy Resume Command", "Show in Finder"]
+              && SessionPresentation.childTitle(claudeChild) == ("Subagent", "b1234567")
+              && family.toggleText == "Show 1 more subagent" && make(input).toggleText == "Show all 12 sessions"
+              && make(input, expanded: true).toggleText == "Show less",
+              "English day sections fold the older part; row and detail actions use title case; the closing row's words")
     }
 
     // Fixture PNGs carry only visibly fake identifiers.
