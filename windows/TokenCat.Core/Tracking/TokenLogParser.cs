@@ -28,6 +28,12 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
     public string? Model { get; private set; }
     public string? Effort { get; private set; }
     public string? AgentRole { get; private set; }
+    /// Claude Code: the newest `/rename` (`custom-title`), generated title (`ai-title`) and older builds' `summary`, ranked
+    /// in that order as Claude Code's own session list does. The client re-appends them as the log grows, so a tail sees them.
+    string? customTitle;
+    string? generatedTitle;
+    string? summaryTitle;
+    public string? Title => customTitle ?? generatedTitle ?? summaryTitle;
     /// Client-reported duration of the last completed turn (Codex duration_ms, Claude durationMs).
     public double? LastTurnDuration { get; private set; }
     public TokenRetryState? Retry { get; private set; }
@@ -171,6 +177,12 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
             AgentID = record.Field("agentId")?.Text ?? AgentID;
             cwd = record.Field("cwd")?.Text;
             if (IsSubagent) ParentSessionID = SessionID;
+            switch (record.Field("type")?.Text)
+            {
+                case "custom-title": customTitle = SessionTitle.Clean(record.Field("customTitle")) ?? customTitle; break;
+                case "ai-title": generatedTitle = SessionTitle.Clean(record.Field("aiTitle")) ?? generatedTitle; break;
+                case "summary": summaryTitle = SessionTitle.Clean(record.Field("summary")) ?? summaryTitle; break;
+            }
         }
         SetProject(cwd);
     }

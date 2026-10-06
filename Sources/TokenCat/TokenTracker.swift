@@ -194,10 +194,13 @@ private final class TokenFileCursor: TokenLogReader {
     private let maximumLineBytes = 1_048_576
     /// Claude subagent type from `<log>.meta.json`; only `agentType` is kept.
     private(set) var sidecarRole: String?
+    /// Codex: the thread-name index of this rollout's Codex home.
+    private let threadNames: CodexThreadNames?
 
     init(url: URL, source: TokenSource) {
         self.url = url
         parser = Self.parser(for: url, source: source)
+        threadNames = source == .codex ? CodexThreadNames.index(forRollout: url) : nil
     }
 
     func isRecent(at now: Date) -> Bool { parser.isRecent(at: now) }
@@ -210,6 +213,7 @@ private final class TokenFileCursor: TokenLogReader {
         reading.parentSessionID = parser.parentSessionID
         reading.agentID = parser.agentID
         reading.project = parser.project
+        reading.title = threadNames.map { $0.name(for: parser.sessionID) } ?? parser.title
         reading.projectPath = parser.projectPath
         reading.isSubagent = parser.isSubagent
         reading.agentRole = sidecarRole ?? parser.agentRole
@@ -267,6 +271,7 @@ private final class TokenFileCursor: TokenLogReader {
     func read(tailLimit: Int, now: Date) {
         // Every sample, so liveness and the replay filter recover once records are stamped by a sane clock again.
         parser.clampClock(to: now.addingTimeInterval(5))
+        threadNames?.refresh()
         // stat(2), not attributesOfItem: this runs for every tracked log on every tick, and the latter also reads xattrs.
         var info = stat()
         guard stat(url.path, &info) == 0 else { return }
@@ -478,6 +483,12 @@ final class TokenLogParser {
     private(set) var model: String?
     private(set) var effort: String?
     private(set) var agentRole: String?
+    /// Claude Code: the newest `/rename` (`custom-title`), generated title (`ai-title`) and older builds' `summary`, ranked
+    /// in that order as Claude Code's own session list does. The client re-appends them as the log grows, so a tail sees them.
+    private var customTitle: String?
+    private var generatedTitle: String?
+    private var summaryTitle: String?
+    var title: String? { customTitle ?? generatedTitle ?? summaryTitle }
     /// Client-reported duration of the last completed turn (Codex duration_ms, Claude durationMs).
     private(set) var lastTurnDuration: TimeInterval?
     private(set) var retry: TokenRetryState?
@@ -599,6 +610,12 @@ final class TokenLogParser {
             agentID = record["agentId"] as? String ?? agentID
             cwd = record["cwd"] as? String
             if isSubagent { parentSessionID = sessionID }
+            switch record["type"] as? String {
+            case "custom-title": customTitle = SessionTitle.clean(record["customTitle"]) ?? customTitle
+            case "ai-title": generatedTitle = SessionTitle.clean(record["aiTitle"]) ?? generatedTitle
+            case "summary": summaryTitle = SessionTitle.clean(record["summary"]) ?? summaryTitle
+            default: break
+            }
         }
         setProject(cwd)
     }

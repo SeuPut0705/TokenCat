@@ -84,6 +84,9 @@ struct SessionCounts: Equatable {
     /// Every member waiting for input is a plan approval, so the copy says "승인".
     var inputPlansOnly = false
     var running: [TokenSource: Int] = [:]
+    /// Subscriptions a running session uses (`TokenSource.limitProvider`): a Codex or Claude Code session, or any client's
+    /// running member on a Claude or OpenAI model. `LiveLimitPoller` reads these every minute.
+    var limitSources: Set<TokenSource> = []
     /// Newest record among waiting rows, for "N분째 새 기록 없음".
     var waitingSince: Date?
     /// Newest activity of any session group (telemetry rows excluded), for "마지막 활동 2시간 전".
@@ -110,7 +113,13 @@ struct SessionCounts: Equatable {
             case .waiting: waiting += 1
             default: break
             }
-            if group.state.isRunning { running[group.lead.reading.source, default: 0] += 1 }
+            if group.state.isRunning {
+                running[group.lead.reading.source, default: 0] += 1
+                if TokenSource.defaultClients.contains(group.lead.reading.source) { limitSources.insert(group.lead.reading.source) }
+                for member in group.members where member.state.isRunning {
+                    if let provider = TokenSource.limitProvider(model: member.reading.model) { limitSources.insert(provider) }
+                }
+            }
             if group.state != .measurement, group.lastActivity != .distantPast {
                 newestActivity = max(newestActivity ?? group.lastActivity, group.lastActivity)
             }
@@ -173,8 +182,8 @@ struct AverageSpeed: Equatable {
 struct SpeedHeadline: Equatable {
     var value: String
     var kind: String?
-    /// The measured session's project, shown when it fits.
-    var project: String?
+    /// The measured session's title, else its project (always the project for a subagent); shown when it fits.
+    var label: String?
     var help: String
     var spoken: String
     var known: Bool { kind != nil }
@@ -195,8 +204,9 @@ struct ContextSlot: Equatable {
 }
 
 /// An account usage-limit window as last recorded: Codex from its logs, Claude from Claude Code's status line
-/// (`recordedAt` is then TokenCat's receipt) or the Claude desktop app's usage history (no reset time), or either from a
-/// live read (`recordedAt` is the read time). Never projected forward.
+/// (`recordedAt` is then TokenCat's receipt) or the Claude desktop app's usage history (no reset time), either from omp's or
+/// Pi's own usage check (`recordedBy`, its record time), or either from a live read (`recordedAt` is the read time).
+/// Never projected forward.
 struct UsageLimitSummary: Equatable {
     var usedPercent: Double
     var windowMinutes: Int?
@@ -207,6 +217,8 @@ struct UsageLimitSummary: Equatable {
     var other: OtherWindow?
     /// From a live read (실시간 한도 확인), not a record.
     var live = false
+    /// "omp" or "Pi" when that client's own usage check recorded the value; named beside the record age.
+    var recordedBy: String? = nil
     struct OtherWindow: Equatable {
         var usedPercent: Double
         var windowMinutes: Int
@@ -238,22 +250,31 @@ struct UsageLimitSummary: Equatable {
     }
     /// A live read under 2 minutes old: "실시간" replaces the record age.
     func isLive(now: Date) -> Bool { live && now.timeIntervalSince(recordedAt) < LiveLimits.freshness }
+    /// "4분 전 기록", or "omp 4분 전 기록" when another client recorded it; `start` capitalizes the English sentence start.
+    private func recorded(_ age: String, start: Bool = false) -> String {
+        recordedBy.map { loc("\($0) \(age) 기록", "\($0) recorded \(age)") } ?? loc("\(age) 기록", start ? "Recorded \(age)" : "recorded \(age)")
+    }
     /// Help and VoiceOver wording.
     func detail(now: Date, spoken: Bool = false) -> String {
         if expired(now: now) { return waitingText }
         let age = SessionPresentation.helpAge(recordedAt, now: now, spoken: spoken), live = isLive(now: now)
-        guard let resetsAt else { return live ? loc("실시간", "Live") : loc("\(age) 기록 기준", "As of \(age)") }
+        let basis = recordedBy.map { loc("\($0) \(age) 기록 기준", "as of \($0)'s record \(age)") } ?? loc("\(age) 기록 기준", "as of \(age)")
+        guard let resetsAt else {
+            return live ? loc("실시간", "Live") : recordedBy == nil ? loc("\(age) 기록 기준", "As of \(age)") : basis
+        }
         let reset = SessionPresentation.countdown(to: resetsAt, now: now, spoken: spoken)
-        return loc("\(reset) 후 초기화 · ", "Resets in \(reset) · ") + (live ? loc("실시간", "live") : loc("\(age) 기록 기준", "as of \(age)"))
+        return loc("\(reset) 후 초기화 · ", "Resets in \(reset) · ") + (live ? loc("실시간", "live") : basis)
     }
-    /// On-screen variants, widest first; the reset countdown is never the part that is dropped.
+    /// On-screen variants, widest first; the reset countdown is never the part that is dropped, the recording client is
+    /// dropped before the age.
     func details(now: Date) -> [String] {
         if expired(now: now) { return [waitingText] }
         let age = SessionPresentation.helpAge(recordedAt, now: now), live = isLive(now: now)
-        guard let resetsAt else { return [live ? loc("실시간", "Live") : loc("\(age) 기록", "Recorded \(age)")] }
+        guard let resetsAt else { return [live ? loc("실시간", "Live") : recorded(age, start: true)] }
         let countdown = SessionPresentation.countdown(to: resetsAt, now: now)
         let reset = loc("\(countdown) 후 초기화", "Resets in \(countdown)")
-        return [reset + " · " + (live ? loc("실시간", "live") : loc("\(age) 기록", "recorded \(age)")), reset]
+        if live { return [reset + " · " + loc("실시간", "live"), reset] }
+        return (recordedBy == nil ? [] : [reset + " · " + recorded(age)]) + [reset + " · " + loc("\(age) 기록", "recorded \(age)"), reset]
     }
     /// "주간 한도 31% 사용 · 3일 4시간 후 초기화" while the other window has not reset.
     func otherText(now: Date, spoken: Bool = false) -> String? {
@@ -272,12 +293,16 @@ struct UsageLimitSummary: Equatable {
         let basis = live ? (source == .codex
             ? loc("Codex에 저장된 로그인으로 OpenAI에서 확인한 계정 사용량입니다.", "Account usage checked with OpenAI using Codex's saved sign-in.")
             : loc("Claude Code에 저장된 로그인으로 Anthropic에서 확인한 계정 사용량입니다.", "Account usage checked with Anthropic using Claude Code's saved sign-in."))
-            + loc(" 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
-                  " It's checked every minute while a session runs or this window is open, otherwise every 10 minutes.")
-            : source == .codex ? loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
-                                           "The last account usage recorded in the Codex logs. It isn't a live balance and updates only while you use Codex.")
+            + loc(" 이 계정의 모델을 쓰는 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
+                  " It's checked every minute while a session on its models runs or this window is open, otherwise every 10 minutes.")
+            : recordedBy.map { by in
+                loc("\(by)가 자체 사용량 확인으로 기록한 마지막 \(source.shortTitle) 계정 사용량입니다. 실시간 잔여량이 아니며 \(by)를 사용할 때만 갱신됩니다.",
+                    "The last \(source.shortTitle) account usage \(by) recorded from its own usage check. It isn't a live balance and updates only while you use \(by).")
+            }
+            ?? (source == .codex ? loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
+                                       "The last account usage recorded in the Codex logs. It isn't a live balance and updates only while you use Codex.")
             : loc("Claude Code가 상태 표시줄로 보냈거나 Claude 데스크톱 앱이 기록한 마지막 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude를 사용할 때만 갱신됩니다.",
-                  "The last Claude account usage sent by Claude Code to its status line or recorded by the Claude desktop app. It isn't a live balance and updates only while you use Claude.")
+                  "The last Claude account usage sent by Claude Code to its status line or recorded by the Claude desktop app. It isn't a live balance and updates only while you use Claude."))
         return basis + loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.") + (otherText(now: now).map { "\n" + $0 } ?? "")
     }
 }
@@ -430,9 +455,27 @@ enum SessionPresentation {
         return project
     }
 
-    /// A live row's second line, one text with one separator: "Claude Code · claude-opus-5-5 · xhigh".
+    /// A lead or stand-alone row's name: the client's session title, else the project folder.
+    static func rowTitle(_ reading: TokenReading) -> String {
+        reading.title ?? reading.project ?? loc("프로젝트 미확인", "Unknown project")
+    }
+
+    /// The project beside a titled row's name, so the folder stays visible; nil when the project is the name.
+    static func rowProject(_ reading: TokenReading) -> String? {
+        guard reading.title != nil, let project = reading.project, !project.isEmpty else { return nil }
+        return project
+    }
+
+    /// A titled row's hover line: the whole title (the row cuts it) and the project.
+    static func titleHelp(_ reading: TokenReading) -> String? {
+        reading.title.map { title in [title, reading.project].compactMap { $0 }.joined(separator: " · ") }
+    }
+
+    /// A live row's second line, one text with one separator: "Claude Code · claude-opus-5-5 · xhigh"; a titled row
+    /// leads with its project ("TokenCat · Claude Code · …").
     static func clientLine(_ reading: TokenReading) -> String {
-        [reading.clientTitle, reading.model ?? loc("모델 기록 대기", "waiting for model"), effortLabel(reading)].compactMap { $0 }.joined(separator: " · ")
+        [rowProject(reading), reading.clientTitle, reading.model ?? loc("모델 기록 대기", "waiting for model"), effortLabel(reading)]
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     /// Raw client value, lowercased and never translated.
@@ -479,11 +522,12 @@ enum SessionPresentation {
         }
     }
 
-    /// VoiceOver row label (P-3): "<상태>, <프로젝트>, <클라이언트> <모델>"; subagents "하위 에이전트 <제목>, <상태>".
+    /// VoiceOver row label (P-3): "<상태>, [<제목>,] <프로젝트>, <클라이언트> <모델>"; subagents "하위 에이전트 <제목>, <상태>".
     static func spokenLabel(_ reading: TokenReading, state: SessionDisplayState) -> String {
         let word = stateTitle(state, reading)
         if reading.isSubagent { return loc("하위 에이전트 \(childTitle(reading).title), \(word)", "Subagent \(childTitle(reading).title), \(word)") }
-        return "\(word), \(reading.project ?? loc("프로젝트 미확인", "Unknown project")), \(reading.clientTitle) \(reading.model ?? loc("모델 미확인", "unknown model"))"
+        let name = [reading.title, reading.project ?? loc("프로젝트 미확인", "Unknown project")].compactMap { $0 }.joined(separator: ", ")
+        return "\(word), \(name), \(reading.clientTitle) \(reading.model ?? loc("모델 미확인", "unknown model"))"
     }
 
     /// "재시도 2/10 · 4초 후" / "Retry 2/10 · in 4s"; `api` starts it "API 재시도" / "API retry".
@@ -599,14 +643,15 @@ enum SessionPresentation {
     /// Replay-proof per window length: the newest reset wins, then the highest percentage inside it. Across windows (each
     /// session logs only its fuller one), the higher use among those not reset wins like Claude's; all reset, the latest.
     /// Without any reset time the windows cannot be told apart, so only the newest record counts.
-    /// `live`: the windows of the newest live read, weighed with the log records like one more session.
-    static func usageLimit(_ tokens: [TokenReading], live reads: [TokenRateLimit] = [], now: Date) -> UsageLimitSummary? {
+    /// `reads`: the windows of the newest live read and of omp's or Pi's own usage checks, weighed with the log records
+    /// like more sessions.
+    static func usageLimit(_ tokens: [TokenReading], reads: [TokenRateLimit] = [], now: Date) -> UsageLimitSummary? {
         // Live reads last: past 2 minutes old they lose a tie to a later record of the same value.
         let limits = (tokens.filter { $0.source == .codex }.compactMap(\.rateLimit) + reads).filter { $0.usedPercent.isFinite }
         guard let newest = limits.map({ $0.resetsAt ?? .distantPast }).max() else { return nil }
         if newest == .distantPast, let last = limits.max(by: { $0.recordedAt < $1.recordedAt }) {
             return UsageLimitSummary(usedPercent: last.usedPercent, windowMinutes: last.windowMinutes, resetsAt: nil, recordedAt: last.recordedAt,
-                                     live: last.live == true)
+                                     live: last.live == true, recordedBy: last.recordedBy)
         }
         // A live read overrides older records of its window; under 2 minutes old it also wins a tie with a later record
         // of the same value, so the row keeps "실시간".
@@ -615,10 +660,11 @@ enum SessionPresentation {
             guard let newest = group.compactMap(\.resetsAt).max() else { return nil }
             var window = group.filter { abs(($0.resetsAt ?? .distantPast).timeIntervalSince(newest)) <= 60 }
             if let read = window.filter({ $0.live == true }).map(\.recordedAt).max() { window = window.filter { $0.recordedAt >= read } }
-            guard let top = window.max(by: { ($0.usedPercent, fresh($0)) < ($1.usedPercent, fresh($1)) }) else { return nil }
+            // An equal value goes to the newer record, so the source named beside the age is the one that recorded it.
+            guard let top = window.max(by: { ($0.usedPercent, fresh($0), $0.recordedAt) < ($1.usedPercent, fresh($1), $1.recordedAt) }) else { return nil }
             let recordedAt = top.live == true ? top.recordedAt : window.map(\.recordedAt).max() ?? top.recordedAt
             return UsageLimitSummary(usedPercent: top.usedPercent, windowMinutes: top.windowMinutes, resetsAt: top.resetsAt,
-                                     recordedAt: recordedAt, live: top.live == true)
+                                     recordedAt: recordedAt, live: top.live == true, recordedBy: top.recordedBy)
         }
         let live = windows.filter { ($0.resetsAt ?? .distantPast) > now }
         return live.max { ($0.usedPercent, $0.windowMinutes ?? 0) < ($1.usedPercent, $1.windowMinutes ?? 0) }
@@ -638,7 +684,8 @@ enum SessionPresentation {
             window.0.resetsAt.map { UsageLimitSummary.OtherWindow(usedPercent: window.0.usedPercent, windowMinutes: window.1, resetsAt: $0) }
         }
         return UsageLimitSummary(usedPercent: top.0.usedPercent, windowMinutes: top.1, resetsAt: top.0.resetsAt,
-                                 recordedAt: top.0.receivedAt, source: .claude, other: other, live: top.0.live == true)
+                                 recordedAt: top.0.receivedAt, source: .claude, other: other, live: top.0.live == true,
+                                 recordedBy: top.0.live == true ? nil : top.0.recordedBy)
     }
 
     /// The flow card's "지금 속도": the newest measurement under 2 minutes old among visible live rows (leads and
@@ -667,18 +714,20 @@ enum SessionPresentation {
                      "No measurement from active sessions in the last 2 min · not estimated from log times")
             let help = waiting.count == sources.count ? loc("실측 연결됨 · \(names)를 새로 실행하면 속도가 표시됩니다", "Telemetry connected · restart \(names) to show speed")
                 : reason + (waiting.isEmpty ? "" : loc("\n\(names)를 새로 실행하면 속도가 표시됩니다", "\nRestart \(names) to show speed"))
-            return SpeedHeadline(value: "—", kind: nil, project: nil, help: help, spoken: loc("속도 실측 없음", "No measured speed"))
+            return SpeedHeadline(value: "—", kind: nil, label: nil, help: help, spoken: loc("속도 실측 없음", "No measured speed"))
         }
         let reading = newest.row.reading
         let project = reading.project ?? loc("프로젝트 미확인", "Unknown project")
-        let session = [project, reading.isSubagent ? loc("하위 ", "subagent ") + childTitle(reading).title : nil,
+        // A subagent's row is named by its agent, so the headline keeps the project there.
+        let label = reading.isSubagent ? project : rowTitle(reading)
+        let session = [reading.isSubagent ? nil : reading.title, project, reading.isSubagent ? loc("하위 ", "subagent ") + childTitle(reading).title : nil,
                        reading.clientTitle + (reading.model.map { " " + $0 } ?? "")].compactMap { $0 }.joined(separator: " · ")
         let value = Format.tps(newest.rate), age = helpAge(newest.measurement.at, now: now)
-        return SpeedHeadline(value: value, kind: newest.measurement.kind?.title ?? "tok/s", project: project,
+        return SpeedHeadline(value: value, kind: newest.measurement.kind?.title ?? "tok/s", label: label,
                              help: loc("\(session) · 측정 \(age)\n\(newest.measurement.details)\n가장 최근 실측 한 건이며 세션끼리 합치거나 평균내지 않습니다",
                                        "\(session) · measured \(age)\n\(newest.measurement.details)\nThe single latest measurement; sessions are never summed or averaged"),
-                             spoken: loc("\(spokenKind(newest.measurement.kind)) 초당 \(value) 토큰, \(project)",
-                                         "\(spokenKind(newest.measurement.kind)) \(value) tokens per second, \(project)"))
+                             spoken: loc("\(spokenKind(newest.measurement.kind)) 초당 \(value) 토큰, \(label)",
+                                         "\(spokenKind(newest.measurement.kind)) \(value) tokens per second, \(label)"))
     }
 
     /// Visible live rows: leads and subagents.
@@ -1247,7 +1296,7 @@ struct SessionListModel {
     /// `flow` is no longer read (row bars were removed, S-2); the shell still passes it. `restart`: clients waiting for a
     /// relaunch, whose rows show no speed cell.
     static func make(tokens: [TokenReading], now: Date, expanded: Bool, flow: FlowSeries = .empty,
-                     restart: Set<TokenSource> = [], codexLive: [TokenRateLimit] = [], calendar: Calendar = .current) -> SessionListModel {
+                     restart: Set<TokenSource> = [], codexReads: [TokenRateLimit] = [], calendar: Calendar = .current) -> SessionListModel {
         let groups = SessionPresentation.groups(tokens, now: now)
         func stable(_ a: SessionGroup, _ b: SessionGroup) -> Bool {
             let order = (a.lead.reading.project ?? "").localizedStandardCompare(b.lead.reading.project ?? "")
@@ -1275,7 +1324,7 @@ struct SessionListModel {
 
         var model = SessionListModel()
         model.counts = SessionCounts(groups)
-        model.usageLimit = SessionPresentation.usageLimit(tokens, live: codexLive, now: now)
+        model.usageLimit = SessionPresentation.usageLimit(tokens, reads: codexReads, now: now)
         model.hiddenGroups = ordered.count - shown.count
         func measuredSpeed(_ reading: TokenReading) -> Bool {
             reading.speedMeasurement?.tokensPerSecond != nil && !restart.contains(reading.source)

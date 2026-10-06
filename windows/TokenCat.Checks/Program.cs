@@ -23,6 +23,18 @@ if (args is ["--live-limits"])
         var state = monitor.Current;
         foreach (var limit in new[] { state.Sessions.UsageLimit, SessionPresentation.ClaudeUsageLimit(state.ClaudeLimits, state.Now) })
             Console.WriteLine(limit is null ? "—" : $"{limit.Title}: {limit.Value(state.Now)} · {limit.Details(state.Now)[0]} · live={limit.Live}");
+        // omp's and Pi's own usage records, with their age (the monitor reads them only with telemetry).
+        static string Describe(IEnumerable<(double Percent, int? Minutes, DateTimeOffset? Reset)> windows) => string.Join(", ", windows.Select(window =>
+            $"{Math.Round(window.Percent, MidpointRounding.AwayFromZero)}% of {(window.Minutes is { } minutes ? $"{minutes} min" : "?")} · resets {window.Reset?.ToString("O") ?? "—"}"));
+        var recorded = new AgentUsageHistoryReader(AppPaths.Home, Environment.GetEnvironmentVariable).Read();
+        string Age(IEnumerable<DateTimeOffset> dates) =>
+            dates.Any() ? $" · recorded {(DateTimeOffset.UtcNow - dates.Max()).TotalMinutes:F0} min ago" : "";
+        var claudeWindows = new[] { (recorded.Claude.FiveHour, 300), (recorded.Claude.SevenDay, 10_080) }
+            .Where(pair => pair.Item1 is not null).Select(pair => (pair.Item1!.UsedPercent, (int?)pair.Item2, pair.Item1.ResetsAt)).ToList();
+        Console.WriteLine("omp/Pi records, Claude: " + (claudeWindows.Count == 0 ? "none" : Describe(claudeWindows))
+            + Age(new[] { recorded.Claude.FiveHour, recorded.Claude.SevenDay }.OfType<ClaudeLimitWindow>().Select(window => window.ReceivedAt)));
+        Console.WriteLine("omp/Pi records, Codex: " + (recorded.Codex.Count == 0 ? "none" : Describe(recorded.Codex.Select(limit => (limit.UsedPercent, limit.WindowMinutes, limit.ResetsAt))))
+            + Age(recorded.Codex.Select(limit => limit.RecordedAt)));
         return 0;
     }
     finally

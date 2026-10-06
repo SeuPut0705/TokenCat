@@ -4,7 +4,8 @@ using System.Text.Json;
 namespace TokenCat;
 
 // Gemini CLI and Qwen Code (a Gemini CLI fork) chat logs; mirrors the mac's Providers/GeminiLog.swift. Only ids, counts,
-// times, statuses, tool and model names are read; message text, tool arguments and results never leave the parsed record.
+// times, statuses, tool and model names and the client's own session title are read; message text, tool arguments and
+// results never leave the parsed record.
 // Neither client logs when generation started or ended, so no speed is ever derived from these logs; a measured speed comes
 // only from the client's own telemetry (`api_response`, TelemetryDecode.cs) once TelemetrySetup connected it, joined to
 // these rows by session ID.
@@ -89,6 +90,9 @@ file sealed class ChatTurnState(TokenSource source)
     public string? Project { get; set; }
     public string? ProjectPath { get; set; }
     public string? Model { get; set; }
+    /// Gemini CLI's generated `summary` (metadata or a `$set` update); Qwen Code's newest `custom_title` (a `/rename` or
+    /// an auto title).
+    public string? Title { get; set; }
     public bool IsSubagent { get; set; }
     public DateTimeOffset? LastActivity { get; private set; }
     public DateTimeOffset? LastLogAt { get; private set; }
@@ -279,6 +283,7 @@ file sealed class ChatTurnState(TokenSource source)
             IsSubagent = IsSubagent,
             Project = Project,
             ProjectPath = ProjectPath,
+            Title = Title,
             Model = Model ?? Completion?.Model,
             ToolName = tool?.Name,
             ToolCategory = open && (unnamedTool || tools.Count > 0) ? tool?.Name is { } name ? Category(name) : TokenCat.ToolCategory.Other : null,
@@ -552,6 +557,7 @@ file sealed class GeminiChatReader : ITokenLogReader
         state.Note(ChatTurnState.Date(record.Field("lastUpdated")));
         if (projectRoot is null && record.Field("directories") is { ValueKind: JsonValueKind.Array } directories
             && directories.GetArrayLength() > 0 && directories[0].Text is { } directory) state.SetProject(directory);
+        if (SessionTitle.Clean(record.Field("summary")) is { } summary) state.Title = summary;
     }
 
     /// `deriveStableId(["environment-context"])`: the session-context turn every start, `/clear` and new chat records.
@@ -699,6 +705,10 @@ file sealed class QwenChatReader : ITokenLogReader
     void Consume(JsonElement record)
     {
         state.SetProject(record.Field("cwd")?.Text);
+        // Ahead of the branch filter: a branch's copied records carry the parent's title until its own is written.
+        if (record.Field("type")?.Text == "system" && record.Field("subtype")?.Text == "custom_title"
+            && SessionTitle.Clean(record.Field("systemPayload")?.Field("customTitle")) is { } title)
+            state.Title = title;
         // /branch copies the parent's records into the new session; they were counted there.
         if (record.Field("forkedFrom") is not null) return;
         if (record.Field("uuid")?.Text is { } uuid)

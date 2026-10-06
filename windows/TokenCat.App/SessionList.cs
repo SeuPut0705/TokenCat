@@ -18,8 +18,10 @@ sealed record RowContext(DateTimeOffset Now, IReadOnlySet<TokenSource> Restart, 
     public SpeedSlot? Speed(SessionRowItem item) => SessionPresentation.SpeedCell(item.Reading, item.State, Now, ShowsSpeed, Restart);
     public bool ShowsID(TokenReading reading) => reading.Project is { } project && SharedProjects.Contains(project);
 
-    /// One line of help; a client waiting for a restart adds why its speed is missing.
-    public string Help(TokenReading reading) => Loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu")
+    /// A titled row's whole title and project, then one line of help; a client waiting for a restart adds why its speed is
+    /// missing.
+    public string Help(TokenReading reading) => (SessionPresentation.TitleHelp(reading) is { } title ? title + "\n" : "")
+        + Loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu")
         + (Restart.Contains(reading.Source) ? Loc($"\n{reading.Source.Title}를 새로 실행하면 속도가 표시됩니다", $"\nRestart {reading.Source.Title} to show speed") : "");
 }
 
@@ -605,7 +607,7 @@ sealed class LiveRow : RowShell
         var now = context.Now;
         Bind(item.Id, reading, context, item.Height, context.Help(reading), SessionPresentation.SpokenLabel(reading, item.State));
         chip.Update(GlyphView.For(item.State) ?? StateGlyphKind.Working, SessionPresentation.ChipText(item.State, reading));
-        project.Text = reading.Project ?? Loc("프로젝트 미확인", "Unknown project");
+        project.Text = SessionPresentation.RowTitle(reading);
         shortId.Visibility = context.ShowsID(reading) ? Visibility.Visible : Visibility.Collapsed;
         shortId.Text = SessionPresentation.ShortID(reading);
 
@@ -749,17 +751,20 @@ sealed class IdleRow : RowShell
         Ui.Help(trailing, state.Title + Loc(" · 마지막 활동 ", " · last activity ") + SessionPresentation.HelpAge(reading.LastActivity, now, false));
 
         var showsId = context.ShowsID(reading);
-        var key = (reading.Project, reading.Source, word, showsId, showsLast, trailing.Text);
+        var key = (reading.Title, reading.Project, reading.Source, word, showsId, showsLast, trailing.Text);
         if (Equals(key, namesKey)) return;
         namesKey = key;
         lastTurn.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         trailing.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - Dashboard.GlyphX - 12 - 6 - 8 - Dashboard.Inset
             - (showsLast ? lastTurn.DesiredSize.Width + 10 : 0) - trailing.DesiredSize.Width;
+        // A titled row keeps its project beside the title; the title is cut before it.
+        var rowProject = SessionPresentation.RowProject(reading);
         FrameworkElement Names(bool withClient, bool withId, bool withWord, bool trim)
         {
-            var title = Ui.Text(reading.Project ?? Loc("프로젝트 미확인", "Unknown project"), Font.Body);
+            var title = Ui.Text(SessionPresentation.RowTitle(reading), Font.Body);
             return new TrimLine(trim ? TrimLine.Shrink(title) : title,
+                rowProject is null ? null : Spaced(Ui.Text(rowProject, Font.Meta, Theme.Secondary)),
                 withClient ? Spaced(Ui.Text(reading.ClientTitle, Font.Meta, Theme.Secondary)) : null,
                 withWord && word is not null ? Spaced(Ui.Text(word, Font.Micro, Theme.Secondary)) : null,
                 withId ? Spaced(Ui.Text(SessionPresentation.ShortID(reading), Font.Meta, Theme.Secondary)) : null);

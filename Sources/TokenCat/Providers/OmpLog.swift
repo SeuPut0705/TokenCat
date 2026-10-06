@@ -2,8 +2,8 @@ import Foundation
 
 /// omp and Pi coding-agent sessions: `<root>/<encoded cwd>/<timestamp>_<id>.jsonl`, with subagent sessions nested in the
 /// session's folder (`<timestamp>_<id>/<Agent>.jsonl`, then `<Agent>/<Agent.Child>.jsonl`). Append-only JSONL read through
-/// `LogLineTail`. Only the session header, model and thinking level, message roles, usage counts, the client's own request
-/// timing (`duration`, `ttft`), stop reasons and tool names survive; message content is never kept.
+/// `LogLineTail`. Only the session header, the session title, model and thinking level, message roles, usage counts, the
+/// client's own request timing (`duration`, `ttft`), stop reasons and tool names survive; message content is never kept.
 extension TokenLogFormat {
     static let omp = TokenLogFormat(files: { roots, discovery in
         var main: [URL] = []
@@ -64,6 +64,7 @@ private final class OmpLogReader: TokenLogReader {
         reading.isSubagent = state.isSubagent
         reading.agentRole = state.agentRole
         reading.project = state.cwd.map { URL(fileURLWithPath: $0).lastPathComponent }
+        reading.title = state.title
         reading.projectPath = state.cwd
         reading.model = state.model
         reading.effort = state.effort
@@ -104,6 +105,9 @@ private struct OmpLogState {
     let isSubagent: Bool
     private(set) var agentRole: String?
     private(set) var cwd: String?
+    /// omp: the title slot (the fixed-width first line, rewritten in place), the session header's `title`, then each
+    /// `title_change` (a rename or a regenerated title, appended). Pi: the newest `session_info` `name`, empty clears it.
+    private(set) var title: String?
     private(set) var model: String?
     private(set) var effort: String?
     private(set) var context: TokenContextUsage?
@@ -137,10 +141,11 @@ private struct OmpLogState {
         return id.isEmpty ? nil : String(id)
     }
 
-    /// Identity records only, for a header the tail skipped: never usage, turns or times.
+    /// Identity records only, for a header the tail skipped: never usage, turns or times. A title there fills in only
+    /// when the tail held none, since the tail's is newer.
     mutating func consumeHeader(_ line: Data) {
         guard let record = LogFields.object(line) else { return }
-        consumeIdentity(record)
+        consumeIdentity(record, header: true)
     }
 
     mutating func consume(_ line: Data, headSkipped: Bool) {
@@ -174,7 +179,7 @@ private struct OmpLogState {
     /// tool results, other message roles, and record types that only stamp `lastLogAt`. False leaves the line to the full parse.
     private mutating func consumeHead(_ head: OmpRecordHead, headSkipped: Bool) -> Bool {
         switch head.fields["type"] {
-        case nil, "session", "session_init", "model_change", "thinking_level_change": return false
+        case nil, "session", "session_init", "model_change", "thinking_level_change", "title", "title_change", "session_info": return false
         case "custom" where (head.fields["customType"] ?? "session_exit") == "session_exit": return false
         case "message":
             guard let role = head.message["role"], role != "user", role != "assistant",
@@ -191,12 +196,16 @@ private struct OmpLogState {
 
     /// Subagent status comes from the folder nesting alone: `/fork` and branched sessions also name a `parentSession`, but
     /// they are top-level conversations of their own.
-    private mutating func consumeIdentity(_ record: [String: Any]) {
+    private mutating func consumeIdentity(_ record: [String: Any], header: Bool = false) {
         switch record["type"] as? String {
         case "session":
             sessionID = LogFields.text(record["id"]) ?? sessionID
             if let path = LogFields.text(record["cwd"]), path.count <= 4_096 { cwd = path }
+            if title == nil { title = SessionTitle.clean(record["title"]) }
         case "session_init": agentRole = TokenLogParser.label(record["agent"]) ?? agentRole
+        case "title": if title == nil { title = SessionTitle.clean(record["title"]) }
+        case "title_change": if !header || title == nil { title = SessionTitle.clean(record["title"]) ?? title }
+        case "session_info": if !header || title == nil { title = SessionTitle.clean(record["name"]) }
         default: return
         }
     }

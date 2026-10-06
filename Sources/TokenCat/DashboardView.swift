@@ -709,15 +709,17 @@ struct FlowCard: View {
 }
 
 /// "지금 속도 · TokenCat  52.3 요청 tok/s": the value in `metric`, one step under the hero and above the last record.
-/// The label drops first when the row is tight, then the project; help and VoiceOver always name the session.
+/// The label drops first when the row is tight, then the session (its title, else project) is cut short, then it goes;
+/// help and VoiceOver always name the session.
 private struct SpeedHeadlineView: View {
     var headline: SpeedHeadline
     @Environment(\.tokenCatHighContrast) private var high
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
-            labelled(headline.project.map { loc("지금 속도 · ", "Speed now · ") + $0 } ?? loc("지금 속도", "Speed now"))
-            labelled(headline.project ?? loc("지금 속도", "Speed now"))
+            labelled(headline.label.map { loc("지금 속도 · ", "Speed now · ") + $0 } ?? loc("지금 속도", "Speed now"))
+            labelled(headline.label ?? loc("지금 속도", "Speed now"))
+            if let label = headline.label { labelled(label, cut: true) }
             value
         }
         .help(headline.help)
@@ -726,9 +728,14 @@ private struct SpeedHeadlineView: View {
         .accessibilityValue(headline.spoken)
     }
 
-    private func labelled(_ label: String) -> some View {
+    /// `cut`: a long title ends in "…" within 140 pt instead of hiding the label.
+    private func labelled(_ label: String, cut: Bool = false) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(label).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize()
+            if cut {
+                Text(label).font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.tail).frame(maxWidth: 140, alignment: .leading)
+            } else {
+                Text(label).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize()
+            }
             value
         }
     }
@@ -1468,9 +1475,10 @@ struct ContextLabel: View {
 }
 
 private enum RowText {
-    /// One line of help; a client waiting for a restart adds why its speed is missing.
+    /// A titled row's whole title and project, then one line of help; a client waiting for a restart adds why its speed is
+    /// missing.
     static func help(_ reading: TokenReading, _ context: RowContext) -> String {
-        loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu")
+        (SessionPresentation.titleHelp(reading).map { $0 + "\n" } ?? "") + loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu")
             + (context.restart.contains(reading.source)
                ? loc("\n\(reading.source.title)를 새로 실행하면 속도가 표시됩니다", "\nRestart \(reading.source.title) to show speed") : "")
     }
@@ -1510,7 +1518,7 @@ struct LiveSessionRow: View {
             HStack(alignment: .firstTextBaseline, spacing: 0) {
                 StateChip(kind: StateGlyph.Kind(item.state) ?? .working, text: SessionPresentation.chipText(item.state, reading))
                     .padding(.leading, DashboardLayout.glyphX - 4)
-                Text(reading.project ?? loc("프로젝트 미확인", "Unknown project")).font(TCFont.title).lineLimit(1).truncationMode(.tail).layoutPriority(2)
+                Text(SessionPresentation.rowTitle(reading)).font(TCFont.title).lineLimit(1).truncationMode(.tail).layoutPriority(2)
                     .padding(.leading, 8)
                 if context.showsID(reading) {
                     Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize().padding(.leading, 6)
@@ -1676,9 +1684,13 @@ struct IdleSessionRow: View {
         .rowActions(reading)
     }
 
+    /// A titled row keeps its project beside the title; the title is cut before it.
     private func names(client: Bool, id: Bool, word: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(reading.project ?? loc("프로젝트 미확인", "Unknown project")).font(TCFont.body).lineLimit(1).truncationMode(.tail).layoutPriority(2)
+            Text(SessionPresentation.rowTitle(reading)).font(TCFont.body).lineLimit(1).truncationMode(.tail).layoutPriority(2)
+            if let project = SessionPresentation.rowProject(reading) {
+                Text(project).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize()
+            }
             if client { Text(reading.clientTitle).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
             if word, let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).fixedSize() }
             if id { Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }

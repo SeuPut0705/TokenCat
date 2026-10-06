@@ -2,6 +2,14 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.16.0
+
+**macOS and Windows**
+
+- Claude and Codex usage limits keep updating while you work through omp or Pi: TokenCat now reads, read-only, the newest 5-hour, weekly and Codex windows those clients record from their own usage checks (`usage_history` in `~/.omp/agent/agent.db` or `~/.pi/agent/agent.db`), only the percentages and times. They count as records with omp's or Pi's record time, merge with the other sources by recency, and the row says who recorded them (`… · omp recorded 4m ago`); Anthropic rows from an account other than Claude Code's are ignored. · omp나 Pi로 작업해도 Claude·Codex 사용 한도가 계속 갱신됩니다. 두 클라이언트가 직접 확인해 남기는 최근 5시간·주간·Codex 창(`~/.omp/agent/agent.db`·`~/.pi/agent/agent.db`의 `usage_history`)을 사용률과 시각만 읽기 전용으로 읽습니다. omp·Pi의 기록 시각을 가진 기록으로 다른 경로와 시각순으로 합치고, 누가 기록했는지 줄에 함께 적습니다(`… · omp 4분 전 기록`). Claude Code와 다른 계정의 Anthropic 기록은 쓰지 않습니다.
+- Live usage limits are checked every minute while any running session uses that account's models, not only that provider's own client: an omp session on a Claude model keeps Claude's check at one minute, one on a GPT model keeps Codex's. · 실시간 한도 확인이 그 제공사 클라이언트뿐 아니라 그 계정의 모델을 쓰는 실행 중인 세션이 있으면 1분마다 확인합니다. Claude 모델을 쓰는 omp 세션은 Claude를, GPT 모델을 쓰는 세션은 Codex를 1분 주기로 유지합니다.
+- Session rows show the session's title instead of only its project folder, and follow it live as the client renames or regenerates it: Claude Code `/rename` and generated titles, Codex thread names, OpenCode, omp and Pi, Gemini CLI, Qwen Code, Copilot CLI, Amp and Droid titles. The project stays on the row (the second line of a live row, beside the title on a quiet one), help, VoiceOver and `Speed now` name the title too, and long titles end in `…`. Only titles the client generated or you set are read, cut to one line of 80 characters and kept in memory only; Cline, Roo Code and Kilo Code (whose task title is the first prompt) keep showing the project. · 세션 행이 프로젝트 폴더 대신 세션 제목을 보여 주고, 클라이언트가 이름을 바꾸거나 다시 만들면 바로 따라갑니다. Claude Code `/rename`·자동 제목, Codex 스레드 이름, OpenCode, omp·Pi, Gemini CLI, Qwen Code, Copilot CLI, Amp, Droid 제목을 읽습니다. 프로젝트는 행에 남고(진행 중 행은 둘째 줄, 조용한 행은 제목 옆), 도움말·VoiceOver·`지금 속도`도 제목을 말하며, 긴 제목은 `…`로 줄입니다. 클라이언트가 만들었거나 사용자가 정한 제목만 한 줄 80자로 잘라 메모리에만 둡니다. 작업 제목이 첫 프롬프트인 Cline·Roo Code·Kilo Code는 그대로 프로젝트를 보여 줍니다.
+
 ## 0.15.0
 
 **macOS and Windows**

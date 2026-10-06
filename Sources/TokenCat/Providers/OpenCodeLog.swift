@@ -13,7 +13,8 @@ extension TokenLogFormat {
 /// - Re-queried only when the database or its WAL changed, and then only sessions updated within the hour, with an open
 ///   turn, or whose `time_updated` moved; message bodies are fetched again only when a row's `time_updated` changes. A
 ///   read the database refused (busy) is never cached: that session is queried again on the next read.
-/// - Only roles, times, finish reasons, token counts, model, agent, cwd and tool names/states are kept; never text.
+/// - Only roles, times, finish reasons, token counts, model, agent, cwd, tool names/states and the session's generated or
+///   renamed title are kept; never message text.
 /// - A message body over 64 KB is never loaded whole when its first 4 KB name a user message (a summary with file diffs
 ///   can reach hundreds of MB). Anything else, such as an assistant message holding a provider's error page, is loaded up
 ///   to 16 MB; past that an assistant message counts as a failed request.
@@ -45,12 +46,13 @@ final class OpenCodeLog: TokenLogReader {
         guard let current = currentSignature(), current != signature, let database = OpenCodeDatabase(path: url.path) else { return }
         guard database.execute("BEGIN") else { return }
         defer { _ = database.execute("COMMIT") }
-        var listed: [(id: String, parent: String?, directory: String?, agent: String?, model: String?, updated: Date)] = []
-        let columns = "id, parent_id, directory, agent, model, time_updated FROM session"
+        var listed: [(id: String, parent: String?, directory: String?, agent: String?, model: String?, updated: Date, title: String?)] = []
+        // The title is bounded in SQL; a generated or renamed one is short.
+        let columns = "id, parent_id, directory, agent, model, time_updated, substr(title, 1, 1024) FROM session"
         let order = "ORDER BY time_updated DESC LIMIT 64"
         let collect: (OpenCodeDatabase.Row) -> Void = { row in
             guard let id = row.text(0), let updated = row.date(5) else { return }
-            listed.append((id, row.text(1), row.text(2), row.text(3), row.text(4), updated))
+            listed.append((id, row.text(1), row.text(2), row.text(3), row.text(4), updated, row.text(6)))
         }
         // Older schemas lack time_archived.
         guard database.query("SELECT \(columns) WHERE time_archived IS NULL \(order)", row: collect)
@@ -66,6 +68,7 @@ final class OpenCodeLog: TokenLogReader {
             session.directory = row.directory
             session.agent = row.agent
             session.sessionModel = row.model.flatMap(Self.modelID)
+            session.title = Self.title(row.title)
             session.updated = row.updated
             if moved || now.timeIntervalSince(row.updated) <= 3_600 || session.summary.open, !refresh(session, database) {
                 // Keeps what was read before; `distantPast` makes the next read refresh it again.
@@ -79,17 +82,7 @@ final class OpenCodeLog: TokenLogReader {
     }
 
     /// Database and WAL identity, size and modification time; any write changes one of them.
-    private func currentSignature() -> [Int64]? {
-        var info = stat()
-        guard stat(url.path, &info) == 0 else { return nil }
-        var result = [Int64(info.st_dev), Int64(info.st_ino), Int64(info.st_size),
-                      Int64(info.st_mtimespec.tv_sec), Int64(info.st_mtimespec.tv_nsec)]
-        var wal = stat()
-        if stat(url.path + "-wal", &wal) == 0 {
-            result += [Int64(wal.st_size), Int64(wal.st_mtimespec.tv_sec), Int64(wal.st_mtimespec.tv_nsec)]
-        }
-        return result
-    }
+    private func currentSignature() -> [Int64]? { OpenCodeDatabase.signature(url.path) }
 
     /// False when the database refused a read; the session then keeps its previous messages.
     private func refresh(_ session: Session, _ database: OpenCodeDatabase) -> Bool {
@@ -188,6 +181,7 @@ final class OpenCodeLog: TokenLogReader {
             let ceiling = now.addingTimeInterval(5)
             var reading = TokenReading(source: .opencode, id: "\(id)#\(session.id)")
             reading.sessionID = session.id
+            reading.title = session.title
             if let parent = session.parentID {
                 reading.isSubagent = true
                 reading.parentSessionID = parent
@@ -246,6 +240,15 @@ final class OpenCodeLog: TokenLogReader {
     fileprivate static func modelID(_ json: String) -> String? {
         guard json.utf8.count <= 4_096, let object = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] else { return nil }
         return text(object["id"]) ?? text(object["modelID"])
+    }
+
+    /// `session.title` once generated or renamed; OpenCode's placeholder ("New session - <ISO time>", "Child session - …",
+    /// its `isDefaultTitle`) is no title.
+    static func title(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let placeholder = #"^(New session - |Child session - )\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$"#
+        guard raw.range(of: placeholder, options: .regularExpression) == nil else { return nil }
+        return SessionTitle.clean(raw)
     }
 
     fileprivate static func text(_ value: Any?) -> String? {
@@ -360,6 +363,7 @@ private final class Session {
     var directory: String?
     var agent: String?
     var sessionModel: String?
+    var title: String?
     var updated = Date.distantPast
     /// Newest first, at most 200.
     var messages: [Message] = []
@@ -456,8 +460,8 @@ private struct Summary {
 
 // MARK: - SQLite
 
-/// A read-only connection to OpenCode's database; system libsqlite3.
-private final class OpenCodeDatabase {
+/// A read-only connection to an SQLite database (OpenCode's; omp's and Pi's usage history); system libsqlite3.
+final class OpenCodeDatabase {
     private let handle: OpaquePointer
     /// Bytes of `data` without loading it (`octet_length`, SQLite 3.43+); older libraries load the value to measure it.
     private(set) var sizeOfData = "octet_length(data)"
@@ -477,6 +481,24 @@ private final class OpenCodeDatabase {
         func integer(_ column: Int32) -> Int64? {
             sqlite3_column_type(statement, column) == SQLITE_INTEGER ? sqlite3_column_int64(statement, column) : nil
         }
+        /// REAL or INTEGER as a number; nil for NULL or text.
+        func double(_ column: Int32) -> Double? {
+            let type = sqlite3_column_type(statement, column)
+            return type == SQLITE_FLOAT || type == SQLITE_INTEGER ? sqlite3_column_double(statement, column) : nil
+        }
+    }
+
+    /// Database and WAL identity, size and modification time; any write changes one of them. Nil when the file is missing.
+    static func signature(_ path: String) -> [Int64]? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        var result = [Int64(info.st_dev), Int64(info.st_ino), Int64(info.st_size),
+                      Int64(info.st_mtimespec.tv_sec), Int64(info.st_mtimespec.tv_nsec)]
+        var wal = stat()
+        if stat(path + "-wal", &wal) == 0 {
+            result += [Int64(wal.st_size), Int64(wal.st_mtimespec.tv_sec), Int64(wal.st_mtimespec.tv_nsec)]
+        }
+        return result
     }
 
     /// The first `count` bytes of a message's `data`, read in place (incremental blob I/O), so a body of hundreds of MB is

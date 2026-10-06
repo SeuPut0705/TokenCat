@@ -2,7 +2,7 @@ import Foundation
 import SQLite3
 
 /// OpenCode fixture database (synthetic metadata, no transcript text): turn state, tool, input wait, token totals, model,
-/// project, subagent, measured speed and an incremental update. Run from `runTrackerChecks`.
+/// project, subagent, session title, measured speed and an incremental update. Run from `runTrackerChecks`.
 func runOpenCodeLogChecks(root: URL, check: (Bool, String) -> Void) {
     let now = ISO8601DateFormatter().date(from: "2026-10-04T06:00:00Z")!
     func ms(_ seconds: TimeInterval) -> Int64 { Int64((now.addingTimeInterval(seconds).timeIntervalSince1970 * 1_000).rounded()) }
@@ -48,12 +48,15 @@ func runOpenCodeLogChecks(root: URL, check: (Bool, String) -> Void) {
         }
         if sqlite3_step(statement) != SQLITE_DONE { failed = true }
     }
-    run("CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL, agent TEXT, model TEXT, time_updated INTEGER NOT NULL, time_archived INTEGER)")
+    run("CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT NOT NULL, title TEXT NOT NULL, agent TEXT, model TEXT, time_updated INTEGER NOT NULL, time_archived INTEGER)")
     run("CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
     run("CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, time_updated INTEGER NOT NULL, data TEXT NOT NULL)")
-    func session(_ id: String, parent: String? = nil, directory: String, agent: String = "build", updated: TimeInterval, archived: Bool = false) {
-        run("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [id, parent, directory, agent, json(["id": "session-model", "providerID": "fixture"]), ms(updated), archived ? ms(updated) : nil])
+    /// The title defaults to OpenCode's placeholder, which is no title.
+    func session(_ id: String, parent: String? = nil, directory: String, title: String? = nil, agent: String = "build",
+                 updated: TimeInterval, archived: Bool = false) {
+        run("INSERT INTO session VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [id, parent, directory, title ?? "\(parent == nil ? "New" : "Child") session - 2026-10-04T05:00:00.000Z", agent,
+             json(["id": "session-model", "providerID": "fixture"]), ms(updated), archived ? ms(updated) : nil])
     }
     func message(_ id: String, _ session: String, created: TimeInterval, updated: TimeInterval, _ data: String) {
         run("INSERT OR REPLACE INTO message VALUES (?, ?, ?, ?, ?)", [id, session, ms(created), ms(updated), data])
@@ -63,7 +66,7 @@ func runOpenCodeLogChecks(root: URL, check: (Bool, String) -> Void) {
     }
     // A working turn: one step ended in tool calls, the next runs bash. Its 320 tokens over created → last generated part
     // (the write tool's execution start, -12 s, after reasoning and text) are 6 s: 53.3 tok/s.
-    session("ses_work", directory: "/tmp/WorkProject", updated: -2)
+    session("ses_work", directory: "/tmp/WorkProject", title: "Fix flaky\nlogin test", updated: -2)
     message("u1", "ses_work", created: -20, updated: -20, user(-20))
     message("a1", "ses_work", created: -18, updated: -10,
             assistant(parent: "u1", created: -18, completed: -10, finish: "tool-calls", output: 300, reasoning: 20, cwd: "/tmp/WorkProject"))
@@ -98,8 +101,9 @@ func runOpenCodeLogChecks(root: URL, check: (Bool, String) -> Void) {
     check(work?.active == true && work?.activityState == .tool && work?.toolName == "bash" && work?.toolCategory == .command
           && work?.currentTurnStartedAt == now.addingTimeInterval(-20) && work?.currentTurnOutputTokens == 320
           && work?.model == "fixture-model" && work?.project == "WorkProject" && work?.projectPath == "/tmp/WorkProject"
-          && work?.context?.usedTokens == 6_000 && work?.isSubagent == false && work?.id.hasSuffix("opencode.db#ses_work") == true,
-          "OpenCode: a working turn running bash lost its state, turn output, model, project or context")
+          && work?.context?.usedTokens == 6_000 && work?.isSubagent == false && work?.id.hasSuffix("opencode.db#ses_work") == true
+          && work?.title == "Fix flaky login test",
+          "OpenCode: a working turn running bash lost its state, turn output, model, project, context or generated title")
     let speed = work?.speedMeasurement
     check(speed?.kind == .requestProcessing && speed?.outputTokens == 320 && speed?.requestDurationMs == 6_000
           && speed.flatMap(\.tokensPerSecond).map { abs($0 - 320.0 / 6) < 0.001 } == true && speed?.model == "fixture-model"
@@ -108,12 +112,13 @@ func runOpenCodeLogChecks(root: URL, check: (Bool, String) -> Void) {
     let done = row("ses_done")
     check(done?.active == false && done?.activityState == .complete && done?.lastOutputTokens == 500
           && done?.currentTurnStartedAt == nil && done?.currentTurnOutputTokens == nil && done?.project == "DoneProject"
-          && done?.measurementAt == now.addingTimeInterval(-50) && done?.speedMeasurement?.tokensPerSecond == 12.5,
-          "OpenCode: a finished turn waiting for input is not complete with its output and speed")
+          && done?.measurementAt == now.addingTimeInterval(-50) && done?.speedMeasurement?.tokensPerSecond == 12.5
+          && done?.title == nil,
+          "OpenCode: a finished turn waiting for input is not complete with its output and speed, or the placeholder title showed")
     let ask = row("ses_ask")
     check(ask?.activityState == .input && ask?.active == true && ask?.toolCategory == .question && ask?.isSubagent == true
-          && ask?.parentSessionID == "ses_work" && ask?.agentID == "ses_ask" && ask?.agentRole == "explore",
-          "OpenCode: a subagent asking a question is not waiting for input under its parent")
+          && ask?.parentSessionID == "ses_work" && ask?.agentID == "ses_ask" && ask?.agentRole == "explore" && ask?.title == nil,
+          "OpenCode: a subagent asking a question is not waiting for input under its parent, or showed the child placeholder title")
     let big = row("ses_big")
     check(big?.activityState == .working && big?.active == true && big?.currentTurnStartedAt == now.addingTimeInterval(-5)
           && big?.currentTurnOutputTokens == 0 && big?.model == "session-model" && big?.project == "BigProject",
@@ -144,10 +149,13 @@ func runOpenCodeLogChecks(root: URL, check: (Bool, String) -> Void) {
             assistant(parent: "u1", created: -9, completed: -1, finish: "stop", output: 80, cwd: "/tmp/WorkProject"))
     part("p4", "a2", "ses_work", updated: -4, ["type": "tool", "tool": "bash", "state": ["status": "completed", "time": ["start": ms(-3), "end": ms(-4)]]])
     part("p7", "a2", "ses_work", updated: -1, ["type": "text", "time": ["start": ms(-2), "end": ms(-1)]])
-    run("UPDATE session SET time_updated = ? WHERE id = 'ses_work'", [ms(-1)])
+    run("UPDATE session SET time_updated = ?, title = 'Renamed: login fix' WHERE id = 'ses_work'", [ms(-1)])
     let finished = tracker.sample().first { $0.sessionID == "ses_work" }
     check(!failed && finished?.activityState == .complete && finished?.active == false && finished?.lastOutputTokens == 400
           && finished?.toolName == nil && finished?.speedMeasurement?.tokensPerSecond == 10
-          && finished?.recentOutputs.map(\.tokens) == [320, 80],
-          "OpenCode: a finished step was not picked up incrementally, or the turn total and speed are wrong")
+          && finished?.recentOutputs.map(\.tokens) == [320, 80] && finished?.title == "Renamed: login fix",
+          "OpenCode: a finished step or the renamed title was not picked up incrementally, or the turn total and speed are wrong")
+    check(OpenCodeLog.title("New session - 2026-10-04T05:00:00.000Z") == nil && OpenCodeLog.title("Child session - 2026-10-04T05:00:00.000Z") == nil
+          && OpenCodeLog.title("New session - draft") == "New session - draft" && OpenCodeLog.title("   ") == nil,
+          "OpenCode: only the exact placeholder (prefix and ISO time) is no title")
 }

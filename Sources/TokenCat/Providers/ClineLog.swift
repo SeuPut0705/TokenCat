@@ -3,7 +3,8 @@ import Foundation
 /// Cline, Roo Code and Kilo Code tasks in a VS Code family editor (`globalStorage/<extension>/tasks/<task>/ui_messages.json`)
 /// and Cline CLI sessions (`~/.cline/data/sessions/<id>/<id>.messages.json` beside its `<id>.json` manifest).
 /// Both are JSON snapshots rewritten in place: a changed modification time or size rereads the file. Only ask/say kinds,
-/// token counts, times, model ids and the working directory survive; message text is never kept.
+/// token counts, times, model ids and the working directory survive; message text is never kept. No title is read: the
+/// task history's `task` and the CLI manifest's `metadata.title` are the first prompt (or its opening), not a generated name.
 extension TokenLogFormat {
     static let cline = TokenLogFormat(files: { roots, discovery in
         var found: [URL] = []

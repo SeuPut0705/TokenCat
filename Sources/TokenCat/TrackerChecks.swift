@@ -1292,6 +1292,7 @@ func runTrackerChecks() -> [String] {
     }
     check(mismatched.isEmpty, "Timestamp fast path differs from ISO8601DateFormatter: \(mismatched.prefix(3))")
     copilotAmpDroidChecks { check($0, $1) }
+    sessionTitleChecks { check($0, $1) }
     print("Tracker checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

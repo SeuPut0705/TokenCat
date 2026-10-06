@@ -9,6 +9,7 @@ import Foundation
 ///   `tokens.output`) for messages without usage. No per-call duration is written, so no speed is measured.
 /// - Times: usage timestamps and user `meta.sentAt` (ms); the file's modification time is the newest record of any kind.
 /// - Project: `env.initial.trees[0]` (`uri` file URL, `displayName`).
+/// - Title: the thread's `title`, which Amp generates with a model from the first message or the person renames.
 extension TokenLogFormat {
     static let amp = TokenLogFormat(files: { roots, discovery in
         func isThread(_ url: URL) -> Bool { url.pathExtension == "json" && url.lastPathComponent.hasPrefix("T-") }
@@ -35,6 +36,7 @@ final class AmpLogReader: TokenLogReader {
     private var cwd: String?
     /// The tree's display name, for a thread whose tree has no file URL.
     private var projectName: String?
+    private var title: String?
     /// Snapshots past this size are left unread rather than parsed on every change.
     private static let maximumBytes = 67_108_864
     /// Tool runs that ended; any other status still runs.
@@ -51,6 +53,7 @@ final class AmpLogReader: TokenLogReader {
         guard var reading = turn.reading(source: .amp, id: id, model: model, cwd: cwd, now: now) else { return [] }
         reading.sessionID = threadID
         if cwd == nil { reading.project = projectName }
+        reading.title = title
         return [reading]
     }
 
@@ -71,6 +74,7 @@ final class AmpLogReader: TokenLogReader {
         let state = LogTurnState()
         var latestModel: String?
         threadID = LogFields.text(thread["id"]) ?? threadID
+        title = SessionTitle.clean(thread["title"])
         if let tree = ((thread["env"] as? [String: Any])?["initial"] as? [String: Any]).flatMap({ ($0["trees"] as? [[String: Any]])?.first }) {
             if let uri = LogFields.text(tree["uri"]), let file = URL(string: uri), file.isFileURL { cwd = file.path }
             projectName = LogFields.text(tree["displayName"])

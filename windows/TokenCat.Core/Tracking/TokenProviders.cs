@@ -61,7 +61,7 @@ public sealed record TokenProvider(TokenSource Source, Func<string, Func<string,
     }
 
     /// A non-empty environment value as a full path; a leading `~` names `home`.
-    static string? EnvPath(string home, Func<string, string?> env, string key)
+    internal static string? EnvPath(string home, Func<string, string?> env, string key)
     {
         if (env(key) is not { Length: > 0 } value) return null;
         if (value == "~" || value.StartsWith("~/", StringComparison.Ordinal) || value.StartsWith(@"~\", StringComparison.Ordinal))

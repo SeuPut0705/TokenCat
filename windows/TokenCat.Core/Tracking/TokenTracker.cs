@@ -210,6 +210,8 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
     public TokenLogParser Parser { get; private set; } = NewParser(path, source);
     /// Claude subagent type from `<log>.meta.json`; only `agentType` is kept.
     public string? SidecarRole { get; private set; }
+    /// Codex: the thread-name index of this rollout's Codex home.
+    readonly CodexThreadNames? threadNames = source == TokenSource.Codex ? CodexThreadNames.ForRollout(path) : null;
     long offset;
     long identity;
     bool initialized;
@@ -261,6 +263,7 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
             ParentSessionID = parser.ParentSessionID,
             AgentID = parser.AgentID,
             Project = parser.Project,
+            Title = threadNames is { } names ? names.Name(parser.SessionID) : parser.Title,
             ProjectPath = parser.ProjectPath,
             IsSubagent = parser.IsSubagent,
             AgentRole = SidecarRole ?? parser.AgentRole,
@@ -293,6 +296,7 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
     {
         // A future record (one bad timestamp, or the clock set back) must not keep later records filtered or a live turn stale.
         Parser.Clamp(now.AddSeconds(5));
+        threadNames?.Refresh();
         // A fresh attribute query every tick, never enumeration data: NTFS updates a directory entry's size lazily while
         // a writer keeps the file open (rule 8). The creation time stands in for the mac's dev-ino.
         // ponytail: NTFS can tunnel a creation time for 15 s; use the file ID (GetFileInformationByHandle) if a replaced

@@ -251,6 +251,9 @@ final class DashboardModel: ObservableObject {
     @Published var claudeLimits = ClaudeUsageLimits()
     /// Codex windows of the newest live read (실시간 한도 확인), weighed with the log records; empty until one arrives.
     @Published var codexLiveLimits: [TokenRateLimit] = [] { didSet { if codexLiveLimits != oldValue { rebuildPresentation() } } }
+    /// Codex windows omp or Pi recorded from their own usage checks (`AgentUsageHistory`), weighed like log records.
+    private(set) var codexRecordedLimits: [TokenRateLimit] = []
+    private let agentUsage = AgentUsageHistoryReader()
     /// Set by the app shell: whether the popover or panel is on screen, and whether the screens or the Mac sleep.
     var dashboardVisible: () -> Bool = { false }
     var livePaused = false
@@ -442,12 +445,13 @@ final class DashboardModel: ObservableObject {
         if lastFolderCheck.map({ ProcessInfo.processInfo.systemUptime - $0 >= Self.folderCheckInterval }) ?? true { checkLogFolders() }
         pollLiveLimits()
     }
-    /// The app's own model only (verification commands never go online): each provider every minute while one of its
-    /// sessions runs or the dashboard is open, otherwise every 10 minutes; nothing while the screens or the Mac sleep.
+    /// The app's own model only (verification commands never go online): each provider every minute while a session uses
+    /// it (any client running its models, `SessionCounts.limitSources`) or the dashboard is open, otherwise every 10 minutes;
+    /// nothing while the screens or the Mac sleep.
     private func pollLiveLimits() {
         guard ownsTelemetryState, preferences.liveUsageLimits, !livePaused else { return }
-        let runningSessions = sessions.counts.running
-        liveLimits.tick(now: Date(), open: dashboardVisible(), live: { (runningSessions[$0] ?? 0) > 0 }) { [weak self] outcome in
+        let active = sessions.counts.limitSources
+        liveLimits.tick(now: Date(), open: dashboardVisible(), live: { active.contains($0) }) { [weak self] outcome in
             guard let self, self.running else { return }
             if let codex = outcome.codex { self.codexLiveLimits = codex }
             if let claude = outcome.claude {
@@ -488,7 +492,9 @@ final class DashboardModel: ObservableObject {
             for measurement in measurements { received[measurement.provider] = max(received[measurement.provider] ?? measurement.at, measurement.at) }
             // Any batch from a restarted client clears its notice, even one TokenCat cannot decode yet.
             let batches = self.telemetryProvider == nil ? self.telemetry.lastBatchAt : [:]
-            let claudeLimits = self.telemetryProvider == nil ? self.telemetry.claudeLimits.merged(self.desktopLimits()) : ClaudeUsageLimits()
+            let agent = self.telemetryProvider == nil ? self.agentUsage.read() : AgentUsageHistory.Limits()
+            let claudeLimits = self.telemetryProvider == nil
+                ? self.telemetry.claudeLimits.merged(self.desktopLimits()).merged(agent.claude) : ClaudeUsageLimits()
             // Verification commands read the running app's collector, never this unstarted one.
             let probed = self.telemetryProbe?()
             let telemetryState = probed.map { $0 ? (measurements.isEmpty ? .waiting : .receiving) : .stopped } ?? self.telemetry.state
@@ -513,6 +519,7 @@ final class DashboardModel: ObservableObject {
                     self.claudeLimits = limits
                     if self.ownsTelemetryState { limits.save(to: .standard) }
                 }
+                self.codexRecordedLimits = agent.codex
                 self.updateRestartState(now: measuredAt)
                 self.rebuildPresentation()
                 self.onUpdate?()
@@ -574,7 +581,7 @@ final class DashboardModel: ObservableObject {
         if flow != self.flow { self.flow = flow }
         groups = SessionPresentation.groups(tokens, now: now)
         sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow, restart: telemetryRestartNeeded,
-                                         codexLive: codexLiveLimits)
+                                         codexReads: codexLiveLimits + codexRecordedLimits)
         let newest = tokens.filter { !SessionPresentation.isTelemetry($0) }.compactMap(\.lastOutputAt).max()
         if newest != newestOutputAt { newestOutputAt = newest }
     }

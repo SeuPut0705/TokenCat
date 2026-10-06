@@ -642,7 +642,8 @@ static class AppChecks
             && Limits([], true, null) == (SettingsView.StatusRow.Waiting, "아직 받지 못함 · Claude Code를 새로 실행하면 표시", null)
             && Limits([], false, null).Text == "연결 안 함" && Limits([], null, null).Row == SettingsView.StatusRow.Info
             && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-720), true, at) == (SettingsView.StatusRow.Received, "Claude 데스크톱 앱 기록 · 12분 전", null)
-            && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-30), false, at, live: true) == (SettingsView.StatusRow.Received, "실시간 확인 1분 이내", null),
+            && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-30), false, at, live: true) == (SettingsView.StatusRow.Received, "실시간 확인 1분 이내", null)
+            && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-240), true, at, recordedBy: "omp") == (SettingsView.StatusRow.Received, "omp 기록 · 4분 전", null),
             "Claude limit row is not checked empty status line → skipped → received → waiting → none");
         check(LoginItem.Describe(LoginItem.State.NotRegistered) == "꺼짐 · 켤 때만 시작 프로그램에 등록합니다", "Korean startup app captions changed");
         const string command = "\"C:\\Users\\me\\AppData\\Local\\Programs\\TokenCat\\TokenCat.exe\"";
@@ -665,6 +666,7 @@ static class AppChecks
                 && Client(false, false, at.AddSeconds(-30), at).Text == "Last received <1m ago"
                 && Limits([], true, at.AddSeconds(-180)).Text == "Last received 3m ago"
                 && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-720), true, at).Text == "Claude desktop app · recorded 12m ago"
+                && SettingsView.ClaudeLimitsStatus([], false, at.AddSeconds(-240), false, at, recordedBy: "Pi").Text == "Pi · recorded 4m ago"
                 && SettingsView.LegendEntries(RunnerMotion.Measured).Select(entry => entry.Caption).SequenceEqual(["Not measured", "Under 40 tok/s", "40 or more"])
                 && SettingsView.LegendEntries(RunnerMotion.Activity)[^1].Name == "Sleep"
                 && LoginItem.Describe(LoginItem.State.DisabledInTaskManager) == "Disabled in Task Manager › Startup apps",

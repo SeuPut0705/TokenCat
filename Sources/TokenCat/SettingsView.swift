@@ -678,14 +678,17 @@ enum TelemetryStatusRow: Equatable {
     /// The usage-limit bridge, checked top to bottom: an empty status line, skipped, a reading, the bridge waiting for a
     /// relaunch, nothing connected. `bridged` is nil until a connection succeeds this run. A recreated original command
     /// adds the second line. `desktop`: the newest reading is the Claude desktop app's own record, not a bridge receipt;
-    /// `live`: a live read (실시간 한도 확인).
-    static func claudeLimits(notes: [TelemetrySetupNote], bridged: Bool?, received: Date?, desktop: Bool = false, live: Bool = false, now: Date)
-        -> (row: TelemetryStatusRow, text: String, detail: String?) {
+    /// `live`: a live read (실시간 한도 확인); `recordedBy`: omp's or Pi's own usage check.
+    static func claudeLimits(notes: [TelemetrySetupNote], bridged: Bool?, received: Date?, desktop: Bool = false, live: Bool = false,
+                             recordedBy: String? = nil, now: Date) -> (row: TelemetryStatusRow, text: String, detail: String?) {
         if notes.contains(.originalUnknown) { return (.problem, loc("상태 표시줄이 비어 보일 수 있음", "Status line may look empty"),
                                                                  loc("settings.json의 statusLine을 직접 고쳐 주세요", "Fix statusLine in settings.json by hand")) }
         if notes.contains(.statusLineSkipped) { return (.info, loc("연결 안 함 · statusLine 형식이 달라 건너뜀", "Not connected · unsupported statusLine format"), nil) }
         let detail = notes.contains(.originalRecreated) ? loc("원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다", "Recreated the original status line command from backup") : nil
         if let at = received, live { return (.received, loc("실시간 확인 ", "Checked live ") + SessionPresentation.helpAge(at, now: now), detail) }
+        if let at = received, let by = recordedBy {
+            return (.received, loc("\(by) 기록 · \(Format.age(at, now: now))", "\(by) · recorded \(Format.age(at, now: now))"), detail)
+        }
         if let at = received, desktop { return (.received, loc("Claude 데스크톱 앱 기록 · \(Format.age(at, now: now))", "Claude desktop app · recorded \(Format.age(at, now: now))"), detail) }
         if let at = received { return (.received, loc("최근 수신 ", "Last received ") + SessionPresentation.helpAge(at, now: now), detail) }
         if bridged == true { return (.waiting, loc("아직 받지 못함 · Claude Code를 새로 실행하면 표시", "Nothing yet · restart Claude Code to show"), detail) }
@@ -720,12 +723,13 @@ private struct TelemetryPane: View {
                 let newest = [model.claudeLimits.fiveHour, model.claudeLimits.sevenDay].compactMap { $0 }.max { $0.receivedAt < $1.receivedAt }
                 let live = newest?.live == true
                 let limits = TelemetryStatusRow.claudeLimits(notes: model.telemetryConnectNotes, bridged: model.claudeBridged, received: newest?.receivedAt,
-                                                             desktop: newest?.resetsAt == nil && !live, live: live, now: model.now)
+                                                             desktop: newest?.resetsAt == nil && !live, live: live, recordedBy: newest?.recordedBy,
+                                                             now: model.now)
                 LabeledContent(loc("Claude 한도", "Claude limits")) { statusLine(limits.row, limits.text, detail: limits.detail) }
             } footer: {
                 // Non-breaking hyphens (U+2011) keep the flag on one line; the footer is not selectable, so it is retyped.
-                settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 해제하려면 터미널에서 \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry를 실행합니다.",
-                                   "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply. To disconnect, run \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry in Terminal."))
+                settingsFooter(loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱·omp·Pi 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 해제하려면 터미널에서 \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry를 실행합니다.",
+                                   "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the usage history of the Claude desktop app, omp and Pi. Restart running clients to apply. To disconnect, run \(AppInfo.executablePath) \u{2011}\u{2011}disconnect\u{2011}telemetry in Terminal."))
             }
             Section {
                 Toggle(isOn: $preferences.liveUsageLimits) {

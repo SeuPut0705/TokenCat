@@ -267,18 +267,43 @@ enum LiveLimits {
         return outcome
     }
 
-    /// `--live-limits`: one read per provider, printed as numbers only; a token is never printed. Exit 1 when neither reads.
+    /// `--live-limits`: one read per provider, printed as numbers only; a token is never printed. omp's and Pi's own usage
+    /// records follow with their age, then the limit rows both give the dashboard (status line and log records aside).
+    /// Exit 1 when neither reads nor any record exists.
     static func commandLineCheck() -> Int32 {
         var read = 0
+        func describe(_ windows: [(Double, Int?, Date?)]) -> String {
+            windows.map { "\(Int($0.0.rounded()))% of \($0.1.map { "\($0) min" } ?? "?") · resets \($0.2.map { ISO8601DateFormatter().string(from: $0) } ?? "—")" }
+                .joined(separator: ", ")
+        }
+        func claudeWindows(_ limits: ClaudeUsageLimits?) -> [(Double, Int?, Date?)] {
+            [(limits?.fiveHour, 300), (limits?.sevenDay, 10_080)].compactMap { window, minutes in window.map { ($0.usedPercent, minutes, $0.resetsAt) } }
+        }
+        var live = Outcome()
         for source in TokenSource.defaultClients {
             let started = Date()
             let outcome = Self.read(source, rejected: nil, keychain: true)
-            let windows: [(Double, Int?, Date?)] = outcome.codex?.map { ($0.usedPercent, $0.windowMinutes, $0.resetsAt) }
-                ?? [(outcome.claude?.fiveHour, 300), (outcome.claude?.sevenDay, 10_080)].compactMap { window, minutes in window.map { ($0.usedPercent, minutes, $0.resetsAt) } }
-            let text = windows.map { "\(Int($0.0.rounded()))% of \($0.1.map { "\($0) min" } ?? "?") · resets \($0.2.map { ISO8601DateFormatter().string(from: $0) } ?? "—")" }
+            live.codex = live.codex ?? outcome.codex
+            live.claude = live.claude ?? outcome.claude
+            let text = describe(outcome.codex?.map { ($0.usedPercent, $0.windowMinutes, $0.resetsAt) } ?? claudeWindows(outcome.claude))
             if outcome.codex != nil || outcome.claude != nil { read += 1 }
-            print("\(source.title): " + (text.isEmpty ? "no window" : text.joined(separator: ", "))
+            print("\(source.title): " + (text.isEmpty ? "no window" : text)
                   + (outcome.note.map { " · \($0)" } ?? "") + String(format: " (%.1f s)", Date().timeIntervalSince(started)))
+        }
+        let recorded = AgentUsageHistoryReader().read(), now = Date()
+        func age(_ dates: [Date]) -> String { dates.max().map { " · recorded \(Int(now.timeIntervalSince($0)) / 60) min ago" } ?? "" }
+        let claude = claudeWindows(recorded.claude), codex = recorded.codex.map { ($0.usedPercent, $0.windowMinutes, $0.resetsAt) }
+        print("omp/Pi records, Claude: " + (claude.isEmpty ? "none" : describe(claude))
+              + age([recorded.claude.fiveHour?.receivedAt, recorded.claude.sevenDay?.receivedAt].compactMap { $0 }))
+        print("omp/Pi records, Codex: " + (codex.isEmpty ? "none" : describe(codex)) + age(recorded.codex.map(\.recordedAt)))
+        if !claude.isEmpty || !codex.isEmpty { read += 1 }
+        let rows = [SessionPresentation.usageLimit([], reads: (live.codex ?? []) + recorded.codex, now: now),
+                    SessionPresentation.claudeUsageLimit((live.claude ?? ClaudeUsageLimits()).merged(recorded.claude), now: now)]
+        AppLanguage.with(.en) {
+            for row in rows.compactMap({ $0 }) {
+                print("Dashboard row, \(row.title): \(row.value(now: now)) · \(row.details(now: now).first ?? "")"
+                      + (row.otherText(now: now).map { " (\($0))" } ?? ""))
+            }
         }
         return read > 0 ? 0 : 1
     }

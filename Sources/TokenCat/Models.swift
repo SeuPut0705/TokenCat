@@ -60,14 +60,24 @@ enum TokenSource: String, Codable, CaseIterable {
     /// The clients telemetry setup connects to TokenCat's collector: Codex and Claude Code always, Gemini CLI and Qwen Code
     /// while their folder (~/.gemini, ~/.qwen) exists.
     static let telemetryClients: [TokenSource] = [.codex, .claude, .gemini, .qwen]
-    /// Codex and Claude Code: always listed, and the only clients whose usage limits TokenCat reads (live and the status
-    /// line bridge).
+    /// Codex and Claude Code: always listed, and the only subscriptions whose usage limits TokenCat reads (live, the status
+    /// line bridge, and omp's and Pi's usage history).
     static let defaultClients: [TokenSource] = [.codex, .claude]
     /// Sources a list names: the default clients always (a Codex and Claude Code user sees no change), any other
     /// once its data folder is detected or a reading carries it.
     static func listed(detected: Set<TokenSource>, readings: [TokenReading]) -> [TokenSource] {
         let seen = Set(readings.map(\.source))
         return allCases.filter { defaultClients.contains($0) || detected.contains($0) || seen.contains($0) }
+    }
+    /// The subscription whose usage limits a model's requests count against, whichever client sends them (omp, OpenCode,
+    /// Cline, …): Claude models → `.claude`, OpenAI GPT, o-series and Codex models → `.codex`; nil for any other model.
+    /// A provider prefix ("anthropic/claude-opus-5-5", "openai-codex/gpt-5.5") is allowed.
+    static func limitProvider(model: String?) -> TokenSource? {
+        guard let model else { return nil }
+        let name = model.lowercased(), base = name.split(separator: "/").last.map(String.init) ?? name
+        if base.contains("claude") { return .claude }
+        if base.hasPrefix("gpt") || name.contains("codex") || base.range(of: #"^o\d"#, options: .regularExpression) != nil { return .codex }
+        return nil
     }
 }
 
@@ -100,6 +110,8 @@ struct TokenRateLimit: Codable, Equatable {
     var recordedAt: Date
     /// From a live read (`LiveLimits`), not a log; `recordedAt` is then the read time.
     var live: Bool? = nil
+    /// "omp" or "Pi": another client's own usage check (`AgentUsageHistory`); `recordedAt` is then its record time.
+    var recordedBy: String? = nil
 }
 
 /// Context occupied by the latest request. Codex reports the window size; Claude does not,
@@ -126,6 +138,8 @@ struct TokenReading: Codable, Identifiable {
     var parentSessionID: String? = nil
     var agentID: String? = nil
     var project: String? = nil
+    /// The client's newest session title (`SessionTitle.clean`ed); never prompt text. Memory only, never stored.
+    var title: String? = nil
     /// Full working directory, used only for the "Finder에서 보기" action; never displayed.
     var projectPath: String? = nil
     var model: String? = nil

@@ -54,7 +54,7 @@ public static class ClineOmpChecks
                 });
             }
             JsonNode User(double seconds) => Message(seconds, new JsonObject { ["role"] = "user", ["content"] = "PRIVATE_PROMPT", ["timestamp"] = Ms(seconds) });
-            Append(main, N("""{"type":"title","title":"PRIVATE_TITLE"}"""),
+            Append(main, N("""{"type":"title","title":"Omp fixture title"}"""),
                 new JsonObject { ["type"] = "session", ["version"] = 3, ["id"] = "omp-main", ["timestamp"] = Iso(0), ["cwd"] = "/tmp/Fixture/OmpProject" },
                 new JsonObject { ["type"] = "model_change", ["timestamp"] = Iso(0), ["model"] = "fixture/omp-model" },
                 new JsonObject { ["type"] = "thinking_level_change", ["timestamp"] = Iso(0), ["thinkingLevel"] = "high" },
@@ -64,9 +64,9 @@ public static class ClineOmpChecks
             var row = tracker.Sample().FirstOrDefault(r => !r.IsSubagent);
             check(row is { Source: TokenSource.Omp, Active: true, ActivityState: TokenActivityState.Tool, ToolName: "bash", ToolCategory: ToolCategory.Command,
                       CurrentTurnOutputTokens: 40, Model: "omp-model", Project: "OmpProject", ProjectPath: "/tmp/Fixture/OmpProject", SessionID: "omp-main",
-                      Effort: "high", Context.UsedTokens: 10_000 }
+                      Effort: "high", Context.UsedTokens: 10_000, Title: "Omp fixture title" }
                   && row.RecentOutputs.Select(e => e.Tokens).SequenceEqual([40]),
-                  "omp: a reply calling a tool was not a running tool turn with its output, model, effort, context and project");
+                  "omp: a reply calling a tool was not a running tool turn with its output, model, effort, context, project and title");
             check(row?.SpeedMeasurement is { OutputTokens: 40, RequestDurationMs: 2_000, TtftMs: 500, Model: "omp-model", TokensPerSecond: 20 },
                   "omp: the client's own request duration was not reported as a measured request rate");
 
@@ -98,7 +98,7 @@ public static class ClineOmpChecks
                   && child.AgentID?.EndsWith("/Scout", StringComparison.Ordinal) == true,
                   "omp: a subagent was not grouped under its root session, named, or finished by its exit record");
             check(!JsonSerializer.Serialize(sampled).Contains("PRIVATE", StringComparison.Ordinal),
-                  "omp: message text, a title or tool arguments leaked into a reading");
+                  "omp: message text or tool arguments leaked into a reading");
 
             Append(main, Assistant(7_201, 3, "aborted"));
             now = Start.AddSeconds(7_202);

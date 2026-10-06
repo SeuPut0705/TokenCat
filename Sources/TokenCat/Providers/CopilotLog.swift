@@ -11,6 +11,8 @@ import Foundation
 /// - Liveness: while a turn is open, `inuse.<PID>.lock` files that all name exited processes (or that disappeared after
 ///   being seen) end the turn as `unfinished`.
 /// - Project: `session.start`/`session.resume` `context.cwd`, `session.context_changed`, else `workspace.yaml` `cwd:`.
+/// - Title: `workspace.yaml` `name:` (a rename), else `summary:` (the name the CLI generates with a model); the yaml is
+///   read again whenever it changes. The `session.title_changed` event is ephemeral and never written.
 extension TokenLogFormat {
     static let copilot = TokenLogFormat(files: { roots, discovery in
         var found: [URL] = []
@@ -37,7 +39,8 @@ final class CopilotLogReader: TokenLogReader {
     private var model: String?
     private var effort: String?
     private var cwd: String?
-    private var workspaceRead = false
+    private var workspaceStamp: String?
+    private var title: String?
     /// The last model reply of the open turn requested tools, so a turn_end continues the agent loop.
     private var requestedTools = false
     /// Lock files were seen for this session, so their absence means the process is gone.
@@ -56,6 +59,7 @@ final class CopilotLogReader: TokenLogReader {
         guard var reading = turn.reading(source: .copilot, id: id, model: model, cwd: cwd, now: now) else { return [] }
         reading.sessionID = sessionID
         reading.effort = effort
+        reading.title = title
         return [reading]
     }
 
@@ -73,7 +77,7 @@ final class CopilotLogReader: TokenLogReader {
         if wasInitial, tail.skippedHead, let header = tail.firstLine() {
             consumeHeader(header)
         }
-        if cwd == nil, !workspaceRead { readWorkspace() }
+        readWorkspace()
         if turn.turnOpen, processEnded() { turn.close(.unfinished, at: nil, model: model) }
     }
 
@@ -153,21 +157,52 @@ final class CopilotLogReader: TokenLogReader {
         }
     }
 
-    /// `cwd:` from workspace.yaml (one plain or quoted scalar); its other keys are never kept.
+    /// `cwd:` (when the events named none), `name:` and `summary:` from workspace.yaml (plain, quoted or block scalars
+    /// on top-level keys), whenever its size, time or file changed; its other keys are never kept.
     private func readWorkspace() {
-        workspaceRead = true
         guard let folder else { return }
         let file = folder.appendingPathComponent("workspace.yaml")
-        guard let size = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.size] as? NSNumber,
-              size.intValue <= 65_536, let data = try? Data(contentsOf: file) else { return }
-        for line in String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline) where line.hasPrefix("cwd:") {
-            var value = line.dropFirst(4).trimmingCharacters(in: .whitespaces)
-            if value.count >= 2, let first = value.first, first == "\"" || first == "'", value.last == first {
-                value = String(value.dropFirst().dropLast())
+        var info = stat()
+        guard stat(file.path, &info) == 0 else { return }
+        let current = "\(info.st_ino)-\(info.st_size)-\(info.st_mtimespec.tv_sec)-\(info.st_mtimespec.tv_nsec)"
+        guard current != workspaceStamp else { return }
+        workspaceStamp = current
+        guard info.st_size <= 65_536, let data = try? Data(contentsOf: file) else { return }
+        let values = Self.yamlValues(String(decoding: data, as: UTF8.self), keys: ["cwd", "name", "summary"])
+        if cwd == nil, let path = values["cwd"], !path.isEmpty { cwd = path }
+        title = SessionTitle.clean(values["name"]) ?? SessionTitle.clean(values["summary"])
+    }
+
+    /// Top-level scalar values of a flat YAML mapping, for the given keys only.
+    static func yamlValues(_ text: String, keys: Set<String>) -> [String: String] {
+        let lines = text.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+        var values: [String: String] = [:]
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            index += 1
+            guard let colon = line.firstIndex(of: ":"), line.first?.isWhitespace == false else { continue }
+            let key = String(line[..<colon])
+            guard keys.contains(key) else { continue }
+            let value = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            if let first = value.first, first == "|" || first == ">" {
+                // A block scalar: the indented lines that follow, joined (SessionTitle folds them to one line anyway).
+                var block: [String] = []
+                while index < lines.count, lines[index].isEmpty || lines[index].first?.isWhitespace == true {
+                    block.append(lines[index].trimmingCharacters(in: .whitespaces))
+                    index += 1
+                }
+                values[key] = block.joined(separator: "\n")
+            } else if value.count >= 2, value.first == "\"", value.last == "\"" {
+                values[key] = (try? JSONSerialization.jsonObject(with: Data(value.utf8), options: .fragmentsAllowed)) as? String
+                    ?? String(value.dropFirst().dropLast())
+            } else if value.count >= 2, value.first == "'", value.last == "'" {
+                values[key] = String(value.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'")
+            } else {
+                values[key] = value
             }
-            cwd = value.isEmpty ? nil : value
-            return
         }
+        return values
     }
 
     /// The CLI keeps `inuse.<PID>.lock` in the session folder while it runs; a crash can leave one behind.

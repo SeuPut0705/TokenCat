@@ -5,8 +5,8 @@ namespace TokenCat;
 
 /// OmpLog.swift: omp and Pi coding-agent sessions, `<root>\<encoded cwd>\<timestamp>_<id>.jsonl`, with subagent sessions nested in
 /// the session's folder (`<timestamp>_<id>\<Agent>.jsonl`, then `<Agent>\<Agent.Child>.jsonl`). Append-only JSONL read through
-/// `LogLineTail`. Only the session header, model and thinking level, message roles, usage counts, the client's own request
-/// timing (`duration`, `ttft`), stop reasons and tool names survive; message content is never kept.
+/// `LogLineTail`. Only the session header, the session title, model and thinking level, message roles, usage counts, the
+/// client's own request timing (`duration`, `ttft`), stop reasons and tool names survive; message content is never kept.
 public sealed partial record TokenLogFormat
 {
     public static readonly TokenLogFormat Omp = new(OmpFiles, path => path.EndsWith(".jsonl", StringComparison.Ordinal),
@@ -83,6 +83,7 @@ sealed class OmpLogReader(string path) : ITokenLogReader
             IsSubagent = s.IsSubagent,
             AgentRole = s.AgentRole,
             Project = s.Cwd is { } cwd ? LastComponent(cwd) : null,
+            Title = s.Title,
             ProjectPath = s.Cwd,
             Model = s.Model,
             Effort = s.Effort,
@@ -122,6 +123,9 @@ sealed class OmpLogState
     public bool IsSubagent { get; }
     public string? AgentRole { get; private set; }
     public string? Cwd { get; private set; }
+    /// omp: the title slot (the fixed-width first line, rewritten in place), the session header's `title`, then each
+    /// `title_change` (a rename or a regenerated title, appended). Pi: the newest `session_info` `name`, empty clears it.
+    public string? Title { get; private set; }
     public string? Model { get; private set; }
     public string? Effort { get; private set; }
     public TokenContextUsage? Context { get; private set; }
@@ -154,11 +158,12 @@ sealed class OmpLogState
         name.Length > 25 && name[..4].All(char.IsAsciiDigit) && name[10] == 'T' && name.IndexOf('_') is var separator and >= 0
         && separator < name.Length - 1 ? name[(separator + 1)..] : null;
 
-    /// Identity records only, for a header the tail skipped: never usage, turns or times.
+    /// Identity records only, for a header the tail skipped: never usage, turns or times. A title there fills in only
+    /// when the tail held none, since the tail's is newer.
     public void ConsumeHeader(byte[] line)
     {
         if (Parse(line) is not { } document) return;
-        using (document) ConsumeIdentity(document.RootElement);
+        using (document) ConsumeIdentity(document.RootElement, header: true);
     }
 
     public void Consume(byte[] line, bool headSkipped)
@@ -202,7 +207,7 @@ sealed class OmpLogState
     {
         switch (head.Fields.GetValueOrDefault("type"))
         {
-            case null or "session" or "session_init" or "model_change" or "thinking_level_change":
+            case null or "session" or "session_init" or "model_change" or "thinking_level_change" or "title" or "title_change" or "session_info":
                 return false;
             case "custom" when (head.Fields.GetValueOrDefault("customType") ?? "session_exit") == "session_exit":
                 return false;
@@ -223,16 +228,26 @@ sealed class OmpLogState
 
     /// Subagent status comes from the folder nesting alone: `/fork` and branched sessions also name a `parentSession`, but
     /// they are top-level conversations of their own.
-    void ConsumeIdentity(JsonElement record)
+    void ConsumeIdentity(JsonElement record, bool header = false)
     {
         switch (record.Field("type")?.Text)
         {
             case "session":
                 SessionID = LogFields.Text(record.Field("id")) ?? SessionID;
                 if (LogFields.Text(record.Field("cwd")) is { Length: <= 4_096 } cwd) Cwd = cwd;
+                Title ??= SessionTitle.Clean(record.Field("title"));
                 break;
             case "session_init":
                 AgentRole = TokenLogParser.Label(record.Field("agent")) ?? AgentRole;
+                break;
+            case "title":
+                Title ??= SessionTitle.Clean(record.Field("title"));
+                break;
+            case "title_change":
+                if (!header || Title is null) Title = SessionTitle.Clean(record.Field("title")) ?? Title;
+                break;
+            case "session_info":
+                if (!header || Title is null) Title = SessionTitle.Clean(record.Field("name"));
                 break;
         }
     }

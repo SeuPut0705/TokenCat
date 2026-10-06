@@ -1,7 +1,8 @@
 import CommonCrypto
 import Foundation
 
-// Gemini CLI and Qwen Code (a Gemini CLI fork) chat logs. Only ids, counts, times, statuses, tool and model names are read;
+// Gemini CLI and Qwen Code (a Gemini CLI fork) chat logs. Only ids, counts, times, statuses, tool and model names and the
+// client's own session title are read;
 // message text, tool arguments and results never leave the parsed record. Neither client logs when generation started or
 // ended, so no speed is ever derived from these logs; a measured speed comes only from the client's own telemetry
 // (`api_response`, Telemetry.swift) once TelemetrySetup connected it, joined to these rows by session ID.
@@ -77,6 +78,9 @@ private final class ChatTurnState {
     var project: String?
     var projectPath: String?
     var model: String?
+    /// Gemini CLI's generated `summary` (metadata or a `$set` update); Qwen Code's newest `custom_title` (a `/rename` or
+    /// an auto title).
+    var title: String?
     var isSubagent = false
     private(set) var lastActivity: Date?
     private(set) var lastLogAt: Date?
@@ -262,6 +266,7 @@ private final class ChatTurnState {
         reading.isSubagent = isSubagent
         reading.project = project
         reading.projectPath = projectPath
+        reading.title = title
         reading.model = model ?? completion?.model
         if open, unnamedTool || !tools.isEmpty {
             let tool = tools.last { Self.inputTools.contains($0.name ?? "") } ?? tools.last
@@ -504,6 +509,7 @@ private final class GeminiChatReader: TokenLogReader {
         }
         state.note(TokenLogParser.date(record["lastUpdated"]))
         if projectRoot == nil, let directory = (record["directories"] as? [String])?.first { state.setProject(directory) }
+        if let summary = SessionTitle.clean(record["summary"]) { state.title = summary }
     }
 
     /// `deriveStableId(["environment-context"])`: the session-context turn every start, `/clear` and new chat records.
@@ -637,6 +643,11 @@ private final class QwenChatReader: TokenLogReader {
 
     private func consume(_ record: [String: Any]) {
         state.setProject(record["cwd"] as? String)
+        // Ahead of the branch filter: a branch's copied records carry the parent's title until its own is written.
+        if record["type"] as? String == "system", record["subtype"] as? String == "custom_title",
+           let title = SessionTitle.clean((record["systemPayload"] as? [String: Any])?["customTitle"]) {
+            state.title = title
+        }
         // /branch copies the parent's records into the new session; they were counted there.
         guard record["forkedFrom"] == nil else { return }
         if let uuid = record["uuid"] as? String {

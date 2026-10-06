@@ -13,6 +13,7 @@ enum TokenCatMain {
             print("Unknown --language '\(raw)': ko or en")
             exit(1)
         }
+        ScratchDefaults.sweepLeftovers()
         if CommandLine.arguments.contains("--self-test") {
             // Existing suites assert Korean text; the localization suite switches to English where it checks it.
             AppLanguage.current = .ko

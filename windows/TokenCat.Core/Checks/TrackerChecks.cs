@@ -1144,6 +1144,7 @@ public static class TrackerChecks
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
         CopilotAmpDroidChecks.Run(check);
+        SessionTitleChecks.Run(check);
         return c.Done();
     }
 }

@@ -48,7 +48,7 @@ func copilotAmpDroidChecks(_ check: (Bool, String) -> Void) {
             event("tool.execution_start", 4, ["toolCallId": "c1", "toolName": "bash"]),
             event("assistant.message", 5, ["messageId": "s1", "content": "", "model": "sub-model", "outputTokens": 5], agent: "sub-1"),
         ]), state.appendingPathComponent("copilot-working/events.jsonl"))
-        try write(Data("id: copilot-done\ncwd: \"/tmp/YamlProject\"\nsummary: PRIVATE_SUMMARY\n".utf8),
+        try write(Data("id: copilot-done\ncwd: \"/tmp/YamlProject\"\nsummary: 'Copilot''s fixture\tsummary'\nsummary_count: 0\n".utf8),
                   state.appendingPathComponent("copilot-done/workspace.yaml"))
         try write(lines([
             event("user.message", 1, ["content": "PRIVATE"]),
@@ -89,8 +89,8 @@ func copilotAmpDroidChecks(_ check: (Bool, String) -> Void) {
         check(done?.active == false && done?.activityState == .complete && done?.lastOutputTokens == 50
               && done?.lastTurnDurationSeconds == nil && done?.speedMeasurement == nil,
               "Copilot CLI: a turn_end after a reply without tool requests must complete the turn with its whole output, no speed")
-        check(done?.project == "YamlProject" && done?.projectPath == "/tmp/YamlProject",
-              "Copilot CLI: workspace.yaml cwd was not used when the log has no session.start")
+        check(done?.project == "YamlProject" && done?.projectPath == "/tmp/YamlProject" && done?.title == "Copilot's fixture summary",
+              "Copilot CLI: workspace.yaml cwd was not used when the log has no session.start, or its generated summary is no title")
         let asking = copilot.first { $0.sessionID == "copilot-permission" }
         copilotNow = start.addingTimeInterval(1_200)
         let later = copilotTracker.sample()
@@ -101,14 +101,22 @@ func copilotAmpDroidChecks(_ check: (Bool, String) -> Void) {
         check(crashed?.active == false && crashed?.activityState == .unfinished,
               "Copilot CLI: an open turn whose inuse lock names an exited process stayed live")
         let encoded = String(decoding: (try? JSONEncoder().encode(copilot)) ?? Data(), as: UTF8.self)
-        check(!encoded.contains("PRIVATE"), "Copilot CLI: prompt, reply, tool input or workspace summary text leaked")
+        check(!encoded.contains("PRIVATE") && working?.title == nil,
+              "Copilot CLI: prompt, reply or tool input text leaked, or a session without workspace.yaml got a title")
+        // A rename writes `name:` (and the same `summary:`); the yaml is read again although the event log did not change.
+        try write(Data("id: copilot-done\ncwd: \"/tmp/YamlProject\"\nsummary: \"Renamed \\\"fixture\\\" #1\"\nname: \"Renamed \\\"fixture\\\" #1\"\n".utf8),
+                  state.appendingPathComponent("copilot-done/workspace.yaml"))
+        check(copilotTracker.sample().first { $0.sessionID == "copilot-done" }?.title == "Renamed \"fixture\" #1"
+              && CopilotLogReader.yamlValues("name: |-\n  Block\n  title\nsummary: plain: text\n", keys: ["name", "summary"])
+                == ["name": "Block\ntitle", "summary": "plain: text"],
+              "Copilot CLI: a renamed workspace.yaml did not update the title, or a quoted, block or plain scalar was misread")
 
         // Amp
         let ampHome = root.appendingPathComponent("amp")
         let threads = ampHome.appendingPathComponent(".local/share/amp/threads")
-        func thread(_ id: String, _ messages: [[String: Any]], ledger: [[String: Any]] = []) -> Data {
+        func thread(_ id: String, _ messages: [[String: Any]], ledger: [[String: Any]] = [], title: String = "Amp fixture title") -> Data {
             (try? JSONSerialization.data(withJSONObject: [
-                "v": 3, "id": id, "created": Int(start.timeIntervalSince1970 * 1_000), "title": "PRIVATE_TITLE",
+                "v": 3, "id": id, "created": Int(start.timeIntervalSince1970 * 1_000), "title": title,
                 "env": ["initial": ["trees": [["displayName": "AmpProject", "uri": "file:///tmp/AmpProject"]]]],
                 "messages": messages, "usageLedger": ["events": ledger],
             ])) ?? Data()
@@ -149,7 +157,13 @@ func copilotAmpDroidChecks(_ check: (Bool, String) -> Void) {
         check(amp.first { $0.sessionID == "T-blocked" }?.activityState == .input,
               "Amp: a tool blocked on the person must wait for input")
         let ampEncoded = String(decoding: (try? JSONEncoder().encode(amp)) ?? Data(), as: UTF8.self)
-        check(amp.count == 3 && !ampEncoded.contains("PRIVATE"), "Amp: thread text or title leaked, or a thread was missed")
+        check(amp.count == 3 && !ampEncoded.contains("PRIVATE") && ampDone?.title == "Amp fixture title",
+              "Amp: thread text leaked, a thread was missed, or its title was not kept")
+        try write(thread("T-done", [ampUser(0, 1, prompt), ampReply(1, 2, tokens: 70, stop: "end_turn")], title: "Amp renamed thread"),
+                  threads.appendingPathComponent("T-done.json"), modified: 6)
+        check(TokenTracker(homeDirectory: ampHome, environment: [:], now: { start.addingTimeInterval(10) }).sample()
+                .first { $0.sessionID == "T-done" }?.title == "Amp renamed thread",
+              "Amp: a renamed thread snapshot did not update the title")
 
         // Droid
         let droidHome = root.appendingPathComponent("droid")
@@ -202,8 +216,26 @@ func copilotAmpDroidChecks(_ check: (Bool, String) -> Void) {
               && droidDone?.recentOutputs.last?.tokens == 60 && droidDone?.recentOutputs.last?.at == start.addingTimeInterval(25),
               "Droid: growth of the settings output total was not logged at its write time and credited to the turn")
         let droidEncoded = String(decoding: (try? JSONEncoder().encode(droidDone)) ?? Data(), as: UTF8.self)
-        check(!droidEncoded.contains("PRIVATE") && DroidLogReader.modelName("claude-opus-4-1") == "claude-opus-4-1",
-              "Droid: transcript text leaked, or a plain model name was rewritten")
+        check(!droidEncoded.contains("PRIVATE") && droidDone?.title == nil && DroidLogReader.modelName("claude-opus-4-1") == "claude-opus-4-1",
+              "Droid: transcript text or the first-message title leaked, or a plain model name was rewritten")
+        // Droid rewrites its first line with a generated title, then with a rename that keeps the file's times.
+        let droidBody = try Data(contentsOf: droidLog)
+        func retitle(_ header: [String: Any]) throws {
+            let rest = droidBody[droidBody.firstIndex(of: 10).map { droidBody.index(after: $0) }!...]
+            var data = lines([header])
+            data.append(rest)
+            let times = try FileManager.default.attributesOfItem(atPath: droidLog.path)[.modificationDate]
+            try data.write(to: droidLog)
+            if let times { try FileManager.default.setAttributes([.modificationDate: times], ofItemAtPath: droidLog.path) }
+        }
+        let header: [String: Any] = ["type": "session_start", "id": "droid-session", "cwd": "/tmp/DroidProject", "version": 2]
+        try retitle(header.merging(["title": "Droid fixture title", "sessionTitleAutoStage": "first_message",
+                                    "isSessionTitleManuallySet": false]) { $1 })
+        droidNow = start.addingTimeInterval(30)
+        let generated = TokenTracker(homeDirectory: droidHome, environment: [:], now: { droidNow }).sample().first?.title
+        try retitle(header.merging(["title": "Droid renamed", "isSessionTitleManuallySet": true]) { $1 })
+        check(generated == "Droid fixture title" && droidTracker.sample().first?.title == "Droid renamed",
+              "Droid: a generated or renamed session_start title was not shown, or the in-place rename was missed")
     } catch {
         check(false, "Copilot/Amp/Droid fixtures could not be written: \(error)")
     }

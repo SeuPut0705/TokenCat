@@ -537,7 +537,8 @@ sealed class FlowCard : Border
         chart.Set(flow.Hero, flow.Fresh, loading);
     }
 
-    /// "지금 속도 · TokenCat  52.3 요청 tok/s": the label drops first when the row is tight, then the project.
+    /// "지금 속도 · TokenCat  52.3 요청 tok/s": the label drops first when the row is tight, then the session (its title, else
+    /// project) is cut short, then it goes; help and the screen reader always name the session.
     static FrameworkElement SpeedHeadlineView(SpeedHeadline headline, double room)
     {
         // The label is the line's first run, so it shares the value's baseline.
@@ -548,9 +549,24 @@ sealed class FlowCard : Border
             if (label is not null) line.Inlines.InsertBefore(line.Inlines.FirstInline, Ui.Run(label + " ", Font.Meta, Theme.Secondary));
             return line;
         }
-        var view = Dashboard.Fit(room,
-            () => Value(headline.Project is { } project ? Loc("지금 속도 · ", "Speed now · ") + project : Loc("지금 속도", "Speed now")),
-            () => Value(headline.Project ?? Loc("지금 속도", "Speed now")), () => Value());
+        // A long title ends in "…" within 140 DIP instead of hiding the label.
+        FrameworkElement Cut(string label)
+        {
+            var text = Ui.Text(label, Font.Meta, Theme.Secondary);
+            text.MaxWidth = 140;
+            text.VerticalAlignment = VerticalAlignment.Bottom;
+            var value = Value();
+            value.VerticalAlignment = VerticalAlignment.Bottom;
+            return Dashboard.Row(6, text, value);
+        }
+        var candidates = new List<Func<FrameworkElement>>
+        {
+            () => Value(headline.Label is { } label ? Loc("지금 속도 · ", "Speed now · ") + label : Loc("지금 속도", "Speed now")),
+            () => Value(headline.Label ?? Loc("지금 속도", "Speed now")),
+        };
+        if (headline.Label is { } cut) candidates.Add(() => Cut(cut));
+        candidates.Add(() => Value());
+        var view = Dashboard.Fit(room, [.. candidates]);
         view.ToolTip = headline.Help;
         System.Windows.Automation.AutomationProperties.SetName(view, Loc("지금 속도", "Speed now") + ", " + headline.Spoken);
         return view;

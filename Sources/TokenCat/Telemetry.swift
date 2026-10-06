@@ -22,15 +22,18 @@ struct TelemetryReading: Codable {
 }
 
 /// One Claude usage-limit window: the percentage and times only, as Claude Code last piped it to its status line,
-/// the Claude desktop app last recorded it or a live read returned it.
+/// the Claude desktop app last recorded it, omp or Pi recorded its own check, or a live read returned it.
 struct ClaudeLimitWindow: Codable, Equatable {
     var usedPercent: Double
     /// Nil from the desktop app, which records no reset time; the window then counts as reset one window after the record.
     var resetsAt: Date?
-    /// When TokenCat received it (the status line JSON carries no record time of its own), or the desktop app's record time.
+    /// When TokenCat received it (the status line JSON carries no record time of its own), or the desktop app's, omp's or
+    /// Pi's record time.
     var receivedAt: Date
     /// From a live read of Anthropic's usage endpoint (`LiveLimits`); `receivedAt` is then the read time.
     var live: Bool? = nil
+    /// "omp" or "Pi": that client's own usage check (`AgentUsageHistory`), never live.
+    var recordedBy: String? = nil
 }
 
 /// `rate_limits.five_hour` and `.seven_day` from the status line JSON (Claude.ai subscribers, after the first response).

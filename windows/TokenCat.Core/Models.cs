@@ -88,8 +88,24 @@ public static class ModelText
         /// while their folder (%USERPROFILE%\.gemini, \.qwen) exists.
         public static IReadOnlyList<TokenSource> TelemetryClients => telemetryClients;
 
-        /// The clients always listed; live usage limits poll only these.
+        /// The clients always listed, and the only subscriptions whose usage limits TokenCat reads (live polls, the status
+        /// line bridge, and omp's and Pi's usage history).
         public static IReadOnlyList<TokenSource> DefaultClients => defaultClients;
+
+        /// The subscription whose usage limits a model's requests count against, whichever client sends them (omp, OpenCode,
+        /// Cline, …): Claude models → Claude, OpenAI GPT, o-series and Codex models → Codex; null for any other model.
+        /// A provider prefix ("anthropic/claude-opus-5-5", "openai-codex/gpt-5.5") is allowed.
+        public static TokenSource? LimitProvider(string? model)
+        {
+            if (model is null) return null;
+            var name = model.ToLowerInvariant();
+            var slash = name.LastIndexOf('/');
+            var stem = slash < 0 ? name : name[(slash + 1)..];
+            if (stem.Contains("claude", StringComparison.Ordinal)) return TokenSource.Claude;
+            if (stem.StartsWith("gpt", StringComparison.Ordinal) || name.Contains("codex", StringComparison.Ordinal)
+                || (stem.Length > 1 && stem[0] == 'o' && char.IsAsciiDigit(stem[1]))) return TokenSource.Codex;
+            return null;
+        }
 
         /// Sources a list names: the default clients always (a Codex and Claude Code user sees no change), any other
         /// once its data folder is detected or a reading carries it.
@@ -140,6 +156,8 @@ public sealed record TokenRateLimit(double UsedPercent, int? WindowMinutes, Date
 {
     /// From a live poll (LiveLimits), not a log; `RecordedAt` is then the poll time.
     public bool Live { get; init; }
+    /// "omp" or "Pi": another client's own usage check (`AgentUsageHistory`); `RecordedAt` is then its record time.
+    public string? RecordedBy { get; init; }
 }
 
 /// Context occupied by the latest request. Claude reports no window size, so `WindowTokens` stays null there.
@@ -163,6 +181,8 @@ public sealed record TokenReading
     public string? ParentSessionID { get; init; }
     public string? AgentID { get; init; }
     public string? Project { get; init; }
+    /// The client's newest session title (`SessionTitle.Clean`ed); never prompt text. Memory only, never stored.
+    public string? Title { get; init; }
     /// Full working directory, used only for "Open in Explorer"; never displayed.
     public string? ProjectPath { get; init; }
     public string? Model { get; init; }
@@ -256,11 +276,13 @@ public sealed partial record TokenSpeedMeasurement
 }
 
 /// One Claude usage-limit window. `ResetsAt` is null from the desktop app, which records no reset time.
-/// `ReceivedAt` is when TokenCat received it, or the desktop app's record time.
+/// `ReceivedAt` is when TokenCat received it, or the desktop app's, omp's or Pi's record time.
 public sealed record ClaudeLimitWindow(double UsedPercent, DateTimeOffset? ResetsAt, DateTimeOffset ReceivedAt)
 {
     /// From a live poll (LiveLimits), not the status line or the desktop app. Not stored: a relaunch shows it as a record.
     [JsonIgnore] public bool Live { get; init; }
+    /// "omp" or "Pi": that client's own usage check (`AgentUsageHistory`), never live. Stored with the window.
+    public string? RecordedBy { get; init; }
 }
 
 /// `rate_limits.five_hour` and `.seven_day`. Merge/decode live in WP2's `ClaudeUsage`; persisted under `DefaultsKey` in

@@ -108,6 +108,16 @@ public static class SessionPresentationChecks
               && ClientLine(codexParent) == "Codex · 모델 기록 대기", "short identity and the one-text client line");
         check(SpokenLabel(modelled, S.Input) == "입력 필요, TokenCat, Claude Code claude-opus-5-5"
               && SpokenLabel(codexChild, S.Working) == "하위 에이전트 sample_runner, 진행", "VoiceOver row labels");
+        // A client-generated title names a lead row; the project stays on the row as meta, in help and in VoiceOver.
+        var titled = modelled with { Title = "Fix login redirect" };
+        var titledNoProject = titled with { Project = null };
+        check(RowTitle(titled) == "Fix login redirect" && RowProject(titled) == "TokenCat"
+              && RowTitle(modelled) == "TokenCat" && RowProject(modelled) == null
+              && RowTitle(titledNoProject) == "Fix login redirect" && RowProject(titledNoProject) == null
+              && ClientLine(titled) == "TokenCat · Claude Code · claude-opus-5-5 · xhigh"
+              && TitleHelp(titled) == "Fix login redirect · TokenCat" && TitleHelp(modelled) == null
+              && SpokenLabel(titled, S.Input) == "입력 필요, Fix login redirect, TokenCat, Claude Code claude-opus-5-5",
+              "a titled row leads with its title and keeps the project as meta, in help and in VoiceOver");
         var roleChild = claudeChild with { AgentRole = "Explore" };
         var reviewChild = codexChild with { AgentRole = "guardian" };
         check(ChildTitle(roleChild) == ("Explore", "b1234567") && ChildTitle(claudeChild) == ("b1234567", null)
@@ -604,15 +614,19 @@ public static class SessionPresentationChecks
         var speedAlpha = timed("claude:alpha", TokenSource.Claude, "Alpha", "m1", ago: -30);
         var speedBeta = timed("codex:beta", TokenSource.Codex, "Beta", "g1", ago: -10, interval: 20);
         var pair = headline([speedAlpha, speedBeta]);
-        check(pair?.Value == "50.0" && pair?.Kind == "생성 tok/s" && pair?.Project == "Beta" && pair?.Spoken == "생성 속도 초당 50.0 토큰, Beta"
+        check(pair?.Value == "50.0" && pair?.Kind == "생성 tok/s" && pair?.Label == "Beta" && pair?.Spoken == "생성 속도 초당 50.0 토큰, Beta"
               && pair?.Help.StartsWith("Beta · Codex g1 · 측정 1분 이내\n서버 실측 토큰 간 시간 20.000 ms", StringComparison.Ordinal) == true
               && pair?.Help.EndsWith("세션끼리 합치거나 평균내지 않습니다", StringComparison.Ordinal) == true,
               "the newest fresh measurement wins, with its kind and session; 44.1 and 50.0 are never summed or averaged");
+        var titledPair = headline([speedAlpha, speedBeta with { Title = "Fix login redirect" }]);
+        check(titledPair?.Label == "Fix login redirect" && titledPair?.Spoken == "생성 속도 초당 50.0 토큰, Fix login redirect"
+              && titledPair?.Help.StartsWith("Fix login redirect · Beta · Codex g1 · 측정", StringComparison.Ordinal) == true,
+              "a titled session names the speed headline by its title, its project kept in help");
         var switched = timed("codex:beta", TokenSource.Codex, "Beta", "g1", measuredModel: "g0", ago: -5, interval: 20);
         check(headline([speedAlpha, switched])?.Value == "44.1" && headline([speedAlpha, switched])?.Kind == "요청 tok/s",
               "a measurement from the session's previous model is left out");
         var restartWaiting = headline([speedAlpha, speedBeta], only(TokenSource.Codex, TokenSource.Claude));
-        check(headline([speedAlpha, speedBeta], only(TokenSource.Codex))?.Project == "Alpha"
+        check(headline([speedAlpha, speedBeta], only(TokenSource.Codex))?.Label == "Alpha"
               && restartWaiting?.Value == "—" && restartWaiting?.Known == false
               && restartWaiting?.Help == "실측 연결됨 · Codex·Claude Code를 새로 실행하면 속도가 표시됩니다",
               "clients waiting for a restart are left out, like the row speed");

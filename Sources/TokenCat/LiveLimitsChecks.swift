@@ -130,11 +130,11 @@ func runLiveLimitChecks() -> [String] {
     func codexLive(_ percent: Double, _ recorded: TimeInterval) -> TokenRateLimit {
         TokenRateLimit(usedPercent: percent, windowMinutes: 10_080, resetsAt: reset5d, recordedAt: at(recorded), live: true)
     }
-    let overridden = SessionPresentation.usageLimit([codexLog(40, -900)], live: [codexLive(31, -20)], now: now)
-    let repeated = SessionPresentation.usageLimit([codexLog(31, -5)], live: [codexLive(31, -60)], now: now)
-    let newer = SessionPresentation.usageLimit([codexLog(32, -5)], live: [codexLive(31, -60)], now: now)
-    let stale = SessionPresentation.usageLimit([], live: [codexLive(33, -300)], now: now)
-    let staleTie = SessionPresentation.usageLimit([codexLog(31, -5)], live: [codexLive(31, -300)], now: now)
+    let overridden = SessionPresentation.usageLimit([codexLog(40, -900)], reads: [codexLive(31, -20)], now: now)
+    let repeated = SessionPresentation.usageLimit([codexLog(31, -5)], reads: [codexLive(31, -60)], now: now)
+    let newer = SessionPresentation.usageLimit([codexLog(32, -5)], reads: [codexLive(31, -60)], now: now)
+    let stale = SessionPresentation.usageLimit([], reads: [codexLive(33, -300)], now: now)
+    let staleTie = SessionPresentation.usageLimit([codexLog(31, -5)], reads: [codexLive(31, -300)], now: now)
     check(overridden?.usedPercent == 31 && overridden?.details(now: now) == ["5일 2시간 후 초기화 · 실시간", "5일 2시간 후 초기화"]
           && overridden?.detail(now: now) == "5일 2시간 후 초기화 · 실시간" && overridden?.help(now: now).contains("OpenAI") == true,
           "a fresher Codex live read does not override the log or is not labelled 실시간")
@@ -163,11 +163,13 @@ func runLiveLimitChecks() -> [String] {
           "the Telemetry row does not tell a live read from the desktop record")
     AppLanguage.with(.en) {
         check(overridden?.details(now: now).first == "Resets in 5d 2h · live" && stale?.details(now: now).first == "Resets in 5d 2h · recorded 5m ago"
-              && SessionPresentation.usageLimit([], live: [TokenRateLimit(usedPercent: 3, windowMinutes: 300, resetsAt: nil, recordedAt: at(-5), live: true)],
+              && SessionPresentation.usageLimit([], reads: [TokenRateLimit(usedPercent: 3, windowMinutes: 300, resetsAt: nil, recordedAt: at(-5), live: true)],
                                                 now: now)?.details(now: now) == ["Live"]
               && TelemetryStatusRow.claudeLimits(notes: [], bridged: true, received: at(-20), live: true, now: now).text == "Checked live <1m ago",
               "English live labels")
     }
+
+    runAgentUsageHistoryChecks(check, now: now, folder: folder)
 
     // The toggle: on by default, remembered, outside "기본값으로 되돌리기".
     if let scratch = ScratchDefaults("TokenCat-live") {

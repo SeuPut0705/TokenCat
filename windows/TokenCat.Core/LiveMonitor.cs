@@ -9,7 +9,7 @@ namespace TokenCat;
 // log-watcher paths wake it too, at most every 0.25 s. Named LiveMonitor because System.Threading.Monitor is an implicit using.
 
 /// `SampleSystem` is the App's Windows sampler (called on a worker thread, at most once at a time). Without `Telemetry` (checks)
-/// the collector reads as stopped and no Claude desktop history is read, as on the mac's verification path. `ReadLimits` is
+/// the collector reads as stopped and no Claude desktop or omp/Pi usage history is read, as on the mac's verification path. `ReadLimits` is
 /// `LiveLimits.Read`; without it nothing is polled.
 public sealed record MonitorOptions(string Home, string SupportDirectory, Func<SystemSnapshot> SampleSystem,
     TelemetryCollector? Telemetry = null, Func<DateTimeOffset>? Clock = null,
@@ -69,6 +69,7 @@ public sealed class LiveMonitor : IDisposable
     readonly SettingsStore store;
     readonly TokenTracker tracker;
     readonly ClaudeUsage.DesktopReader? desktop;
+    readonly AgentUsageHistoryReader? agentUsage;
     readonly object gate = new();
 
     // Everything below is guarded by `gate`.
@@ -89,6 +90,8 @@ public sealed class LiveMonitor : IDisposable
     bool limitsEnabled, limitsWatched, limitsOpened;
     readonly Dictionary<TokenSource, LiveLimits.Poll> polls = TokenSource.DefaultClients.ToDictionary(source => source, _ => new LiveLimits.Poll());
     IReadOnlyList<TokenRateLimit> codexLive = [];
+    /// Codex windows omp or Pi recorded from their own usage checks (`AgentUsageHistory`), weighed like log records.
+    IReadOnlyList<TokenRateLimit> codexRecorded = [];
     MonitorState current;
     CancellationTokenSource? running;
     Channel<string[]>? wake;
@@ -100,7 +103,11 @@ public sealed class LiveMonitor : IDisposable
         clock = options.Clock ?? (() => DateTimeOffset.UtcNow);
         store = new SettingsStore(Path.Combine(options.SupportDirectory, "settings.json"));
         tracker = new TokenTracker(options.Home, clock);
-        if (options.Telemetry is not null) desktop = new ClaudeUsage.DesktopReader(AppPaths.ClaudeDesktopHistory());
+        if (options.Telemetry is not null)
+        {
+            desktop = new ClaudeUsage.DesktopReader(AppPaths.ClaudeDesktopHistory());
+            agentUsage = new AgentUsageHistoryReader(options.Home, Environment.GetEnvironmentVariable);
+        }
         foreach (var (id, seconds) in store.Get<Dictionary<string, double>>(PendingRestartKey) ?? new Dictionary<string, double>())
             foreach (var source in TokenSource.TelemetryClients.Where(value => value.Id == id))
                 pendingRestart[source] = DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1_000));
@@ -304,7 +311,8 @@ public sealed class LiveMonitor : IDisposable
         foreach (var measurement in measurements) Later(received, measurement.Provider, measurement.At);
         // Any batch from a restarted client clears its notice, even one TokenCat cannot decode yet.
         var batchAt = telemetry?.LastBatchAt ?? new Dictionary<TokenSource, DateTimeOffset>();
-        var limits = telemetry is null ? ClaudeUsageLimits.Empty : ClaudeUsage.Merged(telemetry.ClaudeLimits, desktop!.Read());
+        var agent = telemetry is null ? AgentUsageHistory.Limits.Empty : agentUsage!.Read();
+        var limits = telemetry is null ? ClaudeUsageLimits.Empty : ClaudeUsage.Merged(ClaudeUsage.Merged(telemetry.ClaudeLimits, desktop!.Read()), agent.Claude);
         var state = telemetry?.State ?? TelemetryCollectorState.Stopped;
         var status = telemetry?.Status ?? Loc("실측 꺼짐 · 실행 중인 TokenCat 수집기 없음", "Telemetry off · no TokenCat collector running");
         var retryAt = telemetry?.NextRetryAt;
@@ -319,6 +327,7 @@ public sealed class LiveMonitor : IDisposable
             if (detected is not null) detectedSources = detected;
             foreach (var (source, at) in received) Later(lastReceived, source, at);
             foreach (var (source, at) in batchAt) Later(batches, source, at);
+            codexRecorded = agent.Codex;
             var merged = limits.IsEmpty ? claudeLimits : ClaudeUsage.Merged(claudeLimits, limits);
             if (merged != claudeLimits)
             {
@@ -330,8 +339,9 @@ public sealed class LiveMonitor : IDisposable
         }
     }
 
-    /// Starts each provider's live limit poll that is due (LiveLimits.Due): "active" while one of its sessions runs or a dashboard
-    /// shows. An answer replaces Codex's live windows or merges into Claude's (newer per window) and publishes. Caller holds `gate`.
+    /// Starts each provider's live limit poll that is due (LiveLimits.Due): "active" while a session uses it (any client running
+    /// its models, `SessionCounts.LimitSources`) or a dashboard shows. An answer replaces Codex's live windows or merges into
+    /// Claude's (newer per window) and publishes. Caller holds `gate`.
     void PollLimits(CancellationToken token)
     {
         var opened = limitsOpened;
@@ -339,7 +349,7 @@ public sealed class LiveMonitor : IDisposable
         if (options.ReadLimits is not { } read || !limitsEnabled || token.IsCancellationRequested) return;
         foreach (var (source, poll) in polls)
         {
-            var running = current.Groups.Any(group => group.Lead.Reading.Source == source && group.State.IsRunning);
+            var running = current.Sessions.Counts.LimitSources.Contains(source);
             var since = poll.Started is { } started ? Stopwatch.GetElapsedTime(started).TotalSeconds : (double?)null;
             if (poll.Running || !LiveLimits.Due(since, poll.Failures, running || limitsWatched, opened)) continue;
             (poll.Running, poll.Started) = (true, Stopwatch.GetTimestamp());
@@ -400,7 +410,7 @@ public sealed class LiveMonitor : IDisposable
     {
         var now = tokensSampledAt is { } sampled && sampled > system.SampledAt ? sampled : system.SampledAt;
         current = State(now, FlowSeries.Make(tokens, now), SessionPresentation.Groups(tokens, now),
-                        SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed, codexLive: codexLive));
+                        SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed, codexReads: [.. codexLive, .. codexRecorded]));
         if (running is { IsCancellationRequested: false }) Updated?.Invoke(current);
     }
 

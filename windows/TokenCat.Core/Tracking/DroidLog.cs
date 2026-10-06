@@ -5,7 +5,9 @@ namespace TokenCat;
 /// DroidLog.swift: Factory Droid's `sessions\<project-slug>\<session>.jsonl` (older builds: directly in `sessions\`) with
 /// `<session>.settings.json` beside it. Turn state from the JSONL messages; tokens from growth of the settings file's
 /// `tokenUsage.outputTokens` session total at its write time (the first total read is a baseline); model and effort from
-/// the settings file; no speed.
+/// the settings file; title from `session_start.title` once Droid generated it (`sessionTitleAutoStage`) or the person
+/// renamed it (`isSessionTitleManuallySet`); before that it holds the first message's opening, which is never read as a
+/// title. No speed.
 public sealed partial record TokenLogFormat
 {
     public static readonly TokenLogFormat Droid = new(DroidFiles, path => path.EndsWith(".jsonl", StringComparison.Ordinal),
@@ -35,13 +37,16 @@ public sealed class DroidLogReader(string path) : ITokenLogReader
     string? cwd;
     string? model;
     string? effort;
+    string? title;
+    (long, long, long)? headerStamp;
     /// The settings file's output total at its latest read; null until one was read.
     int? outputTotal;
 
     public bool IsRecent(DateTimeOffset now) => turn.IsRecent(now);
 
     public IEnumerable<TokenReading> Readings(string id, DateTimeOffset now) =>
-        turn.Reading(TokenSource.Droid, id, model, cwd, now) is { } reading ? [reading with { SessionID = sessionID, Effort = effort }] : [];
+        turn.Reading(TokenSource.Droid, id, model, cwd, now) is { } reading
+            ? [reading with { SessionID = sessionID, Effort = effort, Title = title }] : [];
 
     public void Read(int tailLimit, DateTimeOffset now)
     {
@@ -53,15 +58,34 @@ public sealed class DroidLogReader(string path) : ITokenLogReader
             outputTotal = null;
             settingsStamp = null;
         }, Consume);
-        if (initial && tail.SkippedHead && tail.FirstLine() is { } header && Json.Parse(header) is { } record
-            && record.Field("type")?.Text == "session_start")
+        ReadHeader(skipped: initial && tail.SkippedHead);
+        // After the log, so a turn opened in this read starts from the total before its output.
+        ReadSettings(now);
+    }
+
+    /// Droid rewrites the `session_start` line in place to set the title (a rename keeps the file's times), so that line is
+    /// read again whenever the log's file, size or time changed. When the first tail skipped it, it also names the id and cwd.
+    void ReadHeader(bool skipped)
+    {
+        var info = new FileInfo(tail.Path);
+        if (!info.Exists) return;
+        var current = (info.CreationTimeUtc.Ticks, info.Length, info.LastWriteTimeUtc.Ticks);
+        if (current == headerStamp) return;
+        headerStamp = current;
+        if (tail.FirstLine(16_384) is not { } header || Json.Parse(header) is not { } record
+            || record.Field("type")?.Text != "session_start") return;
+        if (skipped)
         {
             sessionID = LogFields.Text(record.Field("id")) ?? sessionID;
             cwd = LogFields.Text(record.Field("cwd")) ?? cwd;
         }
-        // After the log, so a turn opened in this read starts from the total before its output.
-        ReadSettings(now);
+        title = Title(record);
     }
+
+    /// A generated or renamed title only: Droid starts every session titled with its first message's opening.
+    public static string? Title(JsonElement start) =>
+        start.Field("isSessionTitleManuallySet")?.Bool == true || start.Field("sessionTitleAutoStage")?.ValueKind == JsonValueKind.String
+            ? SessionTitle.Clean(start.Field("title")) : null;
 
     void Consume(byte[] data)
     {

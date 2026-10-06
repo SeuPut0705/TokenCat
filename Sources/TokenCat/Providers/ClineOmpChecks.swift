@@ -39,7 +39,7 @@ func runClineOmpChecks(root: URL, check: (Bool, String) -> Void) {
                                      "timestamp": ms(seconds - 2), "completedAt": ms(seconds), "duration": 2_000, "ttft": 500,
                                      "usage": ["input": 10, "output": output, "cacheRead": 9_000, "cacheWrite": 990], "content": content])
         }
-        try append(main, [["type": "title", "title": "PRIVATE_TITLE"],
+        try append(main, [["type": "title", "title": "Omp fixture title"],
                           ["type": "session", "version": 3, "id": "omp-main", "timestamp": iso(0), "cwd": "/tmp/Fixture/OmpProject"],
                           ["type": "model_change", "timestamp": iso(0), "model": "fixture/omp-model"],
                           ["type": "thinking_level_change", "timestamp": iso(0), "thinkingLevel": "high"],
@@ -51,8 +51,9 @@ func runClineOmpChecks(root: URL, check: (Bool, String) -> Void) {
         check(row?.source == .omp && row?.active == true && row?.activityState == .tool && row?.toolName == "bash"
               && row?.toolCategory == .command && row?.currentTurnOutputTokens == 40 && row?.model == "omp-model"
               && row?.project == "OmpProject" && row?.projectPath == "/tmp/Fixture/OmpProject" && row?.sessionID == "omp-main"
-              && row?.effort == "high" && row?.context?.usedTokens == 10_000 && row?.recentOutputs.map(\.tokens) == [40],
-              "omp: a reply calling a tool was not a running tool turn with its output, model, effort, context and project")
+              && row?.effort == "high" && row?.context?.usedTokens == 10_000 && row?.recentOutputs.map(\.tokens) == [40]
+              && row?.title == "Omp fixture title",
+              "omp: a reply calling a tool was not a running tool turn with its output, model, effort, context, project and title")
         check(row?.speedMeasurement?.outputTokens == 40 && row?.speedMeasurement?.requestDurationMs == 2_000
               && row?.speedMeasurement?.ttftMs == 500 && row?.speedMeasurement?.tokensPerSecond == 20
               && row?.speedMeasurement?.model == "omp-model",
@@ -91,7 +92,7 @@ func runClineOmpChecks(root: URL, check: (Bool, String) -> Void) {
               && child?.lastOutputTokens == 12,
               "omp: a subagent was not grouped under its root session, named, or finished by its exit record")
         let encoded = String(decoding: (try? JSONEncoder().encode(sampled)) ?? Data(), as: UTF8.self)
-        check(!encoded.contains("PRIVATE"), "omp: message text, a title or tool arguments leaked into a reading")
+        check(!encoded.contains("PRIVATE"), "omp: message text or tool arguments leaked into a reading")
 
         try append(main, [assistant(7_201, output: 3, stop: "aborted")])
         now = start.addingTimeInterval(7_202)

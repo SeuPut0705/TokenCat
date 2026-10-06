@@ -231,10 +231,10 @@ public sealed record SessionListModel
     }
 
     /// `restart`: clients waiting for a relaunch, whose rows show no speed cell. `calendar` defaults to `DayCalendar.Current`.
-    /// `codexLive`: the newest live Codex poll (LiveLimits), weighed into the usage limit.
+    /// `codexReads`: the newest live Codex poll (LiveLimits) and omp's or Pi's recorded Codex windows, weighed into the usage limit.
     public static SessionListModel Make(IReadOnlyList<TokenReading> readings, DateTimeOffset now, bool expanded,
                                         IReadOnlySet<TokenSource>? restart = null, DayCalendar? calendar = null,
-                                        IReadOnlyList<TokenRateLimit>? codexLive = null)
+                                        IReadOnlyList<TokenRateLimit>? codexReads = null)
     {
         var restarting = restart ?? new HashSet<TokenSource>();
         var groups = SessionPresentation.Groups(readings, now);
@@ -315,7 +315,7 @@ public sealed record SessionListModel
         }
         return new SessionListModel
         {
-            Blocks = blocks, Counts = new SessionCounts(groups), UsageLimit = SessionPresentation.UsageLimit(readings, now, codexLive),
+            Blocks = blocks, Counts = new SessionCounts(groups), UsageLimit = SessionPresentation.UsageLimit(readings, now, codexReads),
             HiddenGroups = ordered.Count - shown.Count, HiddenChildren = hiddenChildren, OlderCount = olderCount,
             ShowsSpeedColumn = showsSpeedColumn,
         }.Measured();

@@ -123,6 +123,18 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.clientLine(codexParent) == "Codex · 모델 기록 대기", "short identity and the one-text client line")
     check(SessionPresentation.spokenLabel(modelled, state: .input) == "입력 필요, TokenCat, Claude Code claude-opus-5-5"
           && SessionPresentation.spokenLabel(codexChild, state: .working) == "하위 에이전트 sample_runner, 진행", "VoiceOver row labels")
+    // A client-generated title names a lead row; the project stays on the row as meta, in help and in VoiceOver.
+    var titled = modelled
+    titled.title = "Fix login redirect"
+    var titledNoProject = titled
+    titledNoProject.project = nil
+    check(SessionPresentation.rowTitle(titled) == "Fix login redirect" && SessionPresentation.rowProject(titled) == "TokenCat"
+          && SessionPresentation.rowTitle(modelled) == "TokenCat" && SessionPresentation.rowProject(modelled) == nil
+          && SessionPresentation.rowTitle(titledNoProject) == "Fix login redirect" && SessionPresentation.rowProject(titledNoProject) == nil
+          && SessionPresentation.clientLine(titled) == "TokenCat · Claude Code · claude-opus-5-5 · xhigh"
+          && SessionPresentation.titleHelp(titled) == "Fix login redirect · TokenCat" && SessionPresentation.titleHelp(modelled) == nil
+          && SessionPresentation.spokenLabel(titled, state: .input) == "입력 필요, Fix login redirect, TokenCat, Claude Code claude-opus-5-5",
+          "a titled row leads with its title and keeps the project as meta, in help and in VoiceOver")
     var roleChild = claudeChild
     roleChild.agentRole = "Explore"
     var reviewChild = codexChild
@@ -767,15 +779,21 @@ func runSessionPresentationChecks() -> [String] {
     let speedAlpha = timed("claude:alpha", .claude, project: "Alpha", model: "m1", ago: -30)
     let speedBeta = timed("codex:beta", .codex, project: "Beta", model: "g1", ago: -10, interval: 20)
     let pair = headline([speedAlpha, speedBeta])
-    check(pair?.value == "50.0" && pair?.kind == "생성 tok/s" && pair?.project == "Beta" && pair?.spoken == "생성 속도 초당 50.0 토큰, Beta"
+    check(pair?.value == "50.0" && pair?.kind == "생성 tok/s" && pair?.label == "Beta" && pair?.spoken == "생성 속도 초당 50.0 토큰, Beta"
           && pair?.help.hasPrefix("Beta · Codex g1 · 측정 1분 이내\n서버 실측 토큰 간 시간 20.000 ms") == true
           && pair?.help.hasSuffix("세션끼리 합치거나 평균내지 않습니다") == true,
           "the newest fresh measurement wins, with its kind and session; 44.1 and 50.0 are never summed or averaged")
+    var titledBeta = speedBeta
+    titledBeta.title = "Fix login redirect"
+    let titledPair = headline([speedAlpha, titledBeta])
+    check(titledPair?.label == "Fix login redirect" && titledPair?.spoken == "생성 속도 초당 50.0 토큰, Fix login redirect"
+          && titledPair?.help.hasPrefix("Fix login redirect · Beta · Codex g1 · 측정") == true,
+          "a titled session names the speed headline by its title, its project kept in help")
     let switched = timed("codex:beta", .codex, project: "Beta", model: "g1", measured: "g0", ago: -5, interval: 20)
     check(headline([speedAlpha, switched])?.value == "44.1" && headline([speedAlpha, switched])?.kind == "요청 tok/s",
           "a measurement from the session's previous model is left out")
     let restartWaiting = headline([speedAlpha, speedBeta], restart: [.codex, .claude])
-    check(headline([speedAlpha, speedBeta], restart: [.codex])?.project == "Alpha"
+    check(headline([speedAlpha, speedBeta], restart: [.codex])?.label == "Alpha"
           && restartWaiting?.value == "—" && restartWaiting?.known == false && restartWaiting?.help == "실측 연결됨 · Codex·Claude Code를 새로 실행하면 속도가 표시됩니다",
           "clients waiting for a restart are left out, like the row speed")
     let staleAlpha = timed("claude:alpha", .claude, project: "Alpha", model: "m1", ago: -130)

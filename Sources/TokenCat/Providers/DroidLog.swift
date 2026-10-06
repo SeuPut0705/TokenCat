@@ -10,6 +10,8 @@ import Foundation
 ///   output at the file's write time; the first total read is a baseline, so a turn counts only when its start came
 ///   after a known total. There is no per-message usage or duration, so no speed is measured.
 /// - Model and effort: the settings file's `model` and `reasoningEffort`.
+/// - Title: `session_start.title` once Droid generated it (`sessionTitleAutoStage`) or the person renamed it
+///   (`isSessionTitleManuallySet`); before that it holds the first message's opening, which is never read as a title.
 extension TokenLogFormat {
     static let droid = TokenLogFormat(files: { roots, discovery in
         var found: [URL] = []
@@ -32,6 +34,8 @@ final class DroidLogReader: TokenLogReader {
     private var cwd: String?
     private var model: String?
     private var effort: String?
+    private var title: String?
+    private var headerStamp: String?
     /// The settings file's output total at its latest read; nil until one was read.
     private var outputTotal: Int?
 
@@ -47,6 +51,7 @@ final class DroidLogReader: TokenLogReader {
         guard var reading = turn.reading(source: .droid, id: id, model: model, cwd: cwd, now: now) else { return [] }
         reading.sessionID = sessionID
         reading.effort = effort
+        reading.title = title
         return [reading]
     }
 
@@ -60,13 +65,32 @@ final class DroidLogReader: TokenLogReader {
         }) { line in
             consume(line)
         }
-        if initial, tail.skippedHead, let header = tail.firstLine(), let record = LogFields.object(header),
-           record["type"] as? String == "session_start" {
+        readHeader(skipped: initial && tail.skippedHead)
+        // After the log, so a turn opened in this read starts from the total before its output.
+        readSettings(now: now)
+    }
+
+    /// Droid rewrites the `session_start` line in place to set the title (a rename keeps the file's times), so that line is
+    /// read again whenever the log's file, size or time changed. When the first tail skipped it, it also names the id and cwd.
+    private func readHeader(skipped: Bool) {
+        var info = stat()
+        guard stat(tail.url.path, &info) == 0 else { return }
+        let current = "\(info.st_ino)-\(info.st_size)-\(info.st_mtimespec.tv_sec)-\(info.st_mtimespec.tv_nsec)"
+        guard current != headerStamp else { return }
+        headerStamp = current
+        guard let header = tail.firstLine(limit: 16_384), let record = LogFields.object(header),
+              record["type"] as? String == "session_start" else { return }
+        if skipped {
             sessionID = LogFields.text(record["id"]) ?? sessionID
             cwd = LogFields.text(record["cwd"]) ?? cwd
         }
-        // After the log, so a turn opened in this read starts from the total before its output.
-        readSettings(now: now)
+        title = Self.title(record)
+    }
+
+    /// A generated or renamed title only: Droid starts every session titled with its first message's opening.
+    static func title(_ start: [String: Any]) -> String? {
+        guard start["isSessionTitleManuallySet"] as? Bool == true || start["sessionTitleAutoStage"] is String else { return nil }
+        return SessionTitle.clean(start["title"])
     }
 
     private func consume(_ data: Data) {

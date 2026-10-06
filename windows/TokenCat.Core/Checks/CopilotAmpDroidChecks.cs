@@ -50,7 +50,8 @@ public static class CopilotAmpDroidChecks
                 Event("assistant.message", 3, """{"messageId":"m1","content":"PRIVATE_REPLY","model":"gpt-5","outputTokens":40,"toolRequests":[{"toolCallId":"c1","name":"bash","arguments":{"command":"PRIVATE"}}]}"""),
                 Event("tool.execution_start", 4, """{"toolCallId":"c1","toolName":"bash"}"""),
                 Event("assistant.message", 5, """{"messageId":"s1","content":"","model":"sub-model","outputTokens":5}""", agent: "sub-1")));
-            Write(Path.Combine(state, "copilot-done", "workspace.yaml"), Encoding.UTF8.GetBytes("id: copilot-done\ncwd: \"/tmp/YamlProject\"\nsummary: PRIVATE_SUMMARY\n"));
+            Write(Path.Combine(state, "copilot-done", "workspace.yaml"),
+                Encoding.UTF8.GetBytes("id: copilot-done\ncwd: \"/tmp/YamlProject\"\nsummary: 'Copilot''s fixture\tsummary'\nsummary_count: 0\n"));
             Write(Path.Combine(state, "copilot-done", "events.jsonl"), Lines(
                 Event("user.message", 1, """{"content":"PRIVATE"}"""),
                 Event("assistant.turn_start", 2, """{"turnId":"0"}"""),
@@ -84,8 +85,8 @@ public static class CopilotAmpDroidChecks
             var done = copilot.FirstOrDefault(r => r.SessionID == "copilot-done");
             check(done is { Active: false, ActivityState: TokenActivityState.Complete, LastOutputTokens: 50, LastTurnDurationSeconds: null, SpeedMeasurement: null },
                   "Copilot CLI: a turn_end after a reply without tool requests must complete the turn with its whole output, no speed");
-            check(done?.Project == "YamlProject" && done.ProjectPath == "/tmp/YamlProject",
-                  "Copilot CLI: workspace.yaml cwd was not used when the log has no session.start");
+            check(done?.Project == "YamlProject" && done.ProjectPath == "/tmp/YamlProject" && done.Title == "Copilot's fixture summary",
+                  "Copilot CLI: workspace.yaml cwd was not used when the log has no session.start, or its generated summary is no title");
             var asking = copilot.FirstOrDefault(r => r.SessionID == "copilot-permission");
             copilotNow = Start.AddSeconds(1_200);
             var later = copilotTracker.Sample();
@@ -96,14 +97,21 @@ public static class CopilotAmpDroidChecks
             var crashed = copilot.FirstOrDefault(r => r.SessionID == "copilot-crashed");
             check(crashed is { Active: false, ActivityState: TokenActivityState.Unfinished },
                   "Copilot CLI: an open turn whose inuse lock names an exited process stayed live");
-            check(!Encoding.UTF8.GetString(Json.Serialize(copilot)).Contains("PRIVATE", StringComparison.Ordinal),
-                  "Copilot CLI: prompt, reply, tool input or workspace summary text leaked");
+            check(!Encoding.UTF8.GetString(Json.Serialize(copilot)).Contains("PRIVATE", StringComparison.Ordinal) && working?.Title is null,
+                  "Copilot CLI: prompt, reply or tool input text leaked, or a session without workspace.yaml got a title");
+            // A rename writes `name:` (and the same `summary:`); the yaml is read again although the event log did not change.
+            Write(Path.Combine(state, "copilot-done", "workspace.yaml"),
+                Encoding.UTF8.GetBytes("id: copilot-done\ncwd: \"/tmp/YamlProject\"\nsummary: \"Renamed \\\"fixture\\\" #1\"\nname: \"Renamed \\\"fixture\\\" #1\"\n"));
+            var yaml = CopilotLogReader.YamlValues("name: |-\n  Block\n  title\nsummary: plain: text\n", ["name", "summary"]);
+            check(copilotTracker.Sample().FirstOrDefault(r => r.SessionID == "copilot-done")?.Title == "Renamed \"fixture\" #1"
+                  && yaml.Count == 2 && yaml.GetValueOrDefault("name") == "Block\ntitle" && yaml.GetValueOrDefault("summary") == "plain: text",
+                  "Copilot CLI: a renamed workspace.yaml did not update the title, or a quoted, block or plain scalar was misread");
 
             // Amp
             var ampHome = Path.Combine(root, "amp");
             var threads = Path.Combine(ampHome, ".local", "share", "amp", "threads");
-            static byte[] Thread(string id, string messages, string ledger = "[]") => Encoding.UTF8.GetBytes(
-                $$$"""{"v":3,"id":"{{{id}}}","created":{{{Ms(0)}}},"title":"PRIVATE_TITLE","env":{"initial":{"trees":[{"displayName":"AmpProject","uri":"file:///tmp/AmpProject"}]}},"messages":[{{{messages}}}],"usageLedger":{"events":{{{ledger}}}}}""");
+            static byte[] Thread(string id, string messages, string ledger = "[]", string title = "Amp fixture title") => Encoding.UTF8.GetBytes(
+                $$$"""{"v":3,"id":"{{{id}}}","created":{{{Ms(0)}}},"title":"{{{title}}}","env":{"initial":{"trees":[{"displayName":"AmpProject","uri":"file:///tmp/AmpProject"}]}},"messages":[{{{messages}}}],"usageLedger":{"events":{{{ledger}}}}}""");
             static string User(int id, double at, string content) =>
                 $$$"""{"role":"user","messageId":{{{id}}},"content":{{{content}}},"meta":{"sentAt":{{{Ms(at)}}}}}""";
             static string Reply(int id, double? at, int? tokens, string stop, string? tool = null)
@@ -136,8 +144,13 @@ public static class CopilotAmpDroidChecks
                   "Amp: an end_turn reply must complete the turn, counting usageLedger output for a message without usage");
             check(amp.FirstOrDefault(r => r.SessionID == "T-blocked")?.ActivityState == TokenActivityState.Input,
                   "Amp: a tool blocked on the person must wait for input");
-            check(amp.Count == 3 && !Encoding.UTF8.GetString(Json.Serialize(amp)).Contains("PRIVATE", StringComparison.Ordinal),
-                  "Amp: thread text or title leaked, or a thread was missed");
+            check(amp.Count == 3 && !Encoding.UTF8.GetString(Json.Serialize(amp)).Contains("PRIVATE", StringComparison.Ordinal) && ampDone?.Title == "Amp fixture title",
+                  "Amp: thread text leaked, a thread was missed, or its title was not kept");
+            Write(Path.Combine(threads, "T-done.json"), Thread("T-done", string.Join(",", User(0, 1, Prompt), Reply(1, 2, 70, "end_turn")),
+                title: "Amp renamed thread"), 6);
+            check(new TokenTracker(ampHome, () => Start.AddSeconds(10), environment: _ => null).Sample()
+                      .FirstOrDefault(r => r.SessionID == "T-done")?.Title == "Amp renamed thread",
+                  "Amp: a renamed thread snapshot did not update the title");
 
             // Droid
             var droidHome = Path.Combine(root, "droid");
@@ -182,9 +195,24 @@ public static class CopilotAmpDroidChecks
             check(droidDone is { ActivityState: TokenActivityState.Complete, LastOutputTokens: 60 }
                   && droidDone.RecentOutputs.LastOrDefault() is { Tokens: 60 } last && last.At == Start.AddSeconds(25),
                   "Droid: growth of the settings output total was not logged at its write time and credited to the turn");
-            check(!Encoding.UTF8.GetString(Json.Serialize(droidDone)).Contains("PRIVATE", StringComparison.Ordinal)
+            check(!Encoding.UTF8.GetString(Json.Serialize(droidDone)).Contains("PRIVATE", StringComparison.Ordinal) && droidDone?.Title is null
                   && DroidLogReader.ModelName(JsonDocument.Parse("\"claude-opus-4-1\"").RootElement) == "claude-opus-4-1",
-                  "Droid: transcript text leaked, or a plain model name was rewritten");
+                  "Droid: transcript text or the first-message title leaked, or a plain model name was rewritten");
+            // Droid rewrites its first line with a generated title, then with a rename that keeps the file's times.
+            var droidBody = File.ReadAllBytes(droidLog);
+            void Retitle(string header)
+            {
+                var rest = droidBody[(Array.IndexOf(droidBody, (byte)10) + 1)..];
+                var times = File.GetLastWriteTimeUtc(droidLog);
+                File.WriteAllBytes(droidLog, [.. Lines(N(header)), .. rest]);
+                File.SetLastWriteTimeUtc(droidLog, times);
+            }
+            Retitle("""{"type":"session_start","id":"droid-session","cwd":"/tmp/DroidProject","version":2,"title":"Droid fixture title","sessionTitleAutoStage":"first_message","isSessionTitleManuallySet":false}""");
+            droidNow = Start.AddSeconds(30);
+            var generated = new TokenTracker(droidHome, () => droidNow, environment: _ => null).Sample().FirstOrDefault()?.Title;
+            Retitle("""{"type":"session_start","id":"droid-session","cwd":"/tmp/DroidProject","version":2,"title":"Droid renamed","isSessionTitleManuallySet":true}""");
+            check(generated == "Droid fixture title" && droidTracker.Sample().FirstOrDefault()?.Title == "Droid renamed",
+                  "Droid: a generated or renamed session_start title was not shown, or the in-place rename was missed");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {

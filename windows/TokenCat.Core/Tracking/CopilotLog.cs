@@ -8,7 +8,8 @@ namespace TokenCat;
 /// CopilotLog.swift: GitHub Copilot CLI's `session-state\<session>\events.jsonl` (older builds:
 /// `session-state\<session>.jsonl`). Turn rules, tokens (`assistant.message.outputTokens`; the per-call
 /// `assistant.usage` is ephemeral, so no speed), `inuse.<PID>.lock` liveness and the workspace.yaml `cwd:` fallback
-/// match the mac.
+/// match the mac. Title: workspace.yaml `name:` (a rename), else `summary:` (the name the CLI generates with a model); the
+/// yaml is read again whenever it changes. The `session.title_changed` event is ephemeral and never written.
 public sealed partial record TokenLogFormat
 {
     public static readonly TokenLogFormat Copilot = new(CopilotFiles, path =>
@@ -42,7 +43,8 @@ public sealed class CopilotLogReader : ITokenLogReader
     string? model;
     string? effort;
     string? cwd;
-    bool workspaceRead;
+    (long, long, long)? workspaceStamp;
+    string? title;
     /// The last model reply of the open turn requested tools, so a turn_end continues the agent loop.
     bool requestedTools;
     /// Lock files were seen for this session, so their absence means the process is gone.
@@ -59,7 +61,8 @@ public sealed class CopilotLogReader : ITokenLogReader
     public bool IsRecent(DateTimeOffset now) => turn.IsRecent(now);
 
     public IEnumerable<TokenReading> Readings(string id, DateTimeOffset now) =>
-        turn.Reading(TokenSource.Copilot, id, model, cwd, now) is { } reading ? [reading with { SessionID = sessionID, Effort = effort }] : [];
+        turn.Reading(TokenSource.Copilot, id, model, cwd, now) is { } reading
+            ? [reading with { SessionID = sessionID, Effort = effort, Title = title }] : [];
 
     public void Read(int tailLimit, DateTimeOffset now)
     {
@@ -73,7 +76,7 @@ public sealed class CopilotLogReader : ITokenLogReader
             requestedTools = false;
         }, Consume);
         if (initial && tail.SkippedHead && tail.FirstLine() is { } header) ConsumeHeader(header);
-        if (cwd is null && !workspaceRead) ReadWorkspace();
+        ReadWorkspace();
         if (turn.TurnOpen && ProcessEnded()) turn.Close(TokenActivityState.Unfinished, null, model);
     }
 
@@ -165,27 +168,65 @@ public sealed class CopilotLogReader : ITokenLogReader
         }
     }
 
-    /// `cwd:` from workspace.yaml (one plain or quoted scalar); its other keys are never kept.
+    /// `cwd:` (when the events named none), `name:` and `summary:` from workspace.yaml (plain, quoted or block scalars
+    /// on top-level keys), whenever its size, time or file changed; its other keys are never kept.
     void ReadWorkspace()
     {
-        workspaceRead = true;
         if (folder is null) return;
         try
         {
             var file = new FileInfo(Path.Combine(folder, "workspace.yaml"));
-            if (file is not { Exists: true, Length: <= 65_536 }) return;
-            using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            using var reader = new StreamReader(stream, Encoding.UTF8);
-            while (reader.ReadLine() is { } line)
+            if (!file.Exists) return;
+            var current = (file.CreationTimeUtc.Ticks, file.Length, file.LastWriteTimeUtc.Ticks);
+            if (current == workspaceStamp) return;
+            workspaceStamp = current;
+            if (file.Length > 65_536) return;
+            byte[] data;
+            using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
-                if (!line.StartsWith("cwd:", StringComparison.Ordinal)) continue;
-                var value = line[4..].Trim(' ', '\t');
-                if (value.Length >= 2 && value[0] is '"' or '\'' && value[^1] == value[0]) value = value[1..^1];
-                cwd = value.Length == 0 ? null : value;
-                return;
+                data = new byte[stream.Length];
+                stream.ReadExactly(data);
             }
+            var values = YamlValues(Encoding.UTF8.GetString(data), ["cwd", "name", "summary"]);
+            if (cwd is null && values.GetValueOrDefault("cwd") is { Length: > 0 } path) cwd = path;
+            title = SessionTitle.Clean(values.GetValueOrDefault("name")) ?? SessionTitle.Clean(values.GetValueOrDefault("summary"));
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+    }
+
+    /// Top-level scalar values of a flat YAML mapping, for the given keys only.
+    public static Dictionary<string, string> YamlValues(string text, HashSet<string> keys)
+    {
+        var lines = text.Split(["\r\n", "\n", "\r"], StringSplitOptions.None);
+        var values = new Dictionary<string, string>();
+        var index = 0;
+        while (index < lines.Length)
+        {
+            var line = lines[index];
+            index += 1;
+            var colon = line.IndexOf(':');
+            if (colon < 0 || char.IsWhiteSpace(line[0])) continue;
+            var key = line[..colon];
+            if (!keys.Contains(key)) continue;
+            var value = line[(colon + 1)..].Trim();
+            if (value.Length > 0 && value[0] is '|' or '>')
+            {
+                // A block scalar: the indented lines that follow, joined (SessionTitle folds them to one line anyway).
+                var block = new List<string>();
+                while (index < lines.Length && (lines[index].Length == 0 || char.IsWhiteSpace(lines[index][0])))
+                {
+                    block.Add(lines[index].Trim());
+                    index += 1;
+                }
+                values[key] = string.Join("\n", block);
+            }
+            else if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+                values[key] = Json.Parse(Encoding.UTF8.GetBytes(value))?.Text ?? value[1..^1];
+            else if (value.Length >= 2 && value[0] == '\'' && value[^1] == '\'')
+                values[key] = value[1..^1].Replace("''", "'", StringComparison.Ordinal);
+            else values[key] = value;
+        }
+        return values;
     }
 
     /// The CLI keeps `inuse.<PID>.lock` in the session folder while it runs; a crash can leave one behind.

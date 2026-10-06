@@ -133,7 +133,7 @@ final class TokenDiscovery {
     }
 }
 
-private extension Dictionary where Key == String, Value == String {
+extension Dictionary where Key == String, Value == String {
     /// A non-empty environment value as a file URL.
     func path(_ key: String) -> URL? {
         self[key].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }

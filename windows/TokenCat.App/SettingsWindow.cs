@@ -745,9 +745,9 @@ sealed class SettingsView : Grid
     }
 
     /// The usage-limit sources, checked top to bottom. `desktop`: the newest reading is the Claude desktop app's own record;
-    /// `live`: a live poll's.
+    /// `live`: a live poll's; `recordedBy`: omp's or Pi's own usage check.
     public static (StatusRow Row, string Text, string? Detail) ClaudeLimitsStatus(IReadOnlyList<TelemetrySetupNote> notes, bool? bridged, DateTimeOffset? received,
-        bool desktop, DateTimeOffset now, bool live = false)
+        bool desktop, DateTimeOffset now, bool live = false, string? recordedBy = null)
     {
         if (notes.Contains(TelemetrySetupNote.OriginalUnknown))
             return (StatusRow.Problem, Loc("상태 표시줄이 비어 보일 수 있음", "Status line may look empty"), Loc("settings.json의 statusLine을 직접 고쳐 주세요", "Fix statusLine in settings.json by hand"));
@@ -757,6 +757,8 @@ sealed class SettingsView : Grid
         var detail = notes.Contains(TelemetrySetupNote.OriginalRecreated) ? Loc("원래 상태 표시줄 명령을 백업 기록에서 다시 만들었습니다", "Recreated the original status line command from backup")
             : notes.Contains(TelemetrySetupNote.StatusLineKept) ? TelemetrySetupNote.StatusLineKept.Text : null;
         if (received is { } polled && live) return (StatusRow.Received, Loc("실시간 확인 ", "Checked live ") + SessionPresentation.HelpAge(polled, now, false), detail);
+        if (received is { } recorded && recordedBy is { } by)
+            return (StatusRow.Received, Loc($"{by} 기록 · {Format.Age(recorded, now)}", $"{by} · recorded {Format.Age(recorded, now)}"), detail);
         if (received is { } at && desktop)
             return (StatusRow.Received, Loc($"Claude 데스크톱 앱 기록 · {Format.Age(at, now)}", $"Claude desktop app · recorded {Format.Age(at, now)}"), detail);
         if (received is { } last) return (StatusRow.Received, Loc("최근 수신 ", "Last received ") + SessionPresentation.HelpAge(last, now, false), detail);
@@ -836,13 +838,14 @@ sealed class SettingsView : Grid
         }
         // Whether the bridge delivers: the newer of the two windows' receipts (no reset time: the desktop app).
         var newest = new[] { state.ClaudeLimits.FiveHour, state.ClaudeLimits.SevenDay }.OfType<ClaudeLimitWindow>().MaxBy(window => window.ReceivedAt);
-        var limits = ClaudeLimitsStatus(dashboard.ConnectNotes, dashboard.ClaudeBridged, newest?.ReceivedAt, newest is { ResetsAt: null }, now, newest is { Live: true });
+        var limits = ClaudeLimitsStatus(dashboard.ConnectNotes, dashboard.ClaudeBridged, newest?.ReceivedAt, newest is { ResetsAt: null }, now, newest is { Live: true },
+            newest?.RecordedBy);
         rows.Add(Labeled(Label(Loc("Claude 한도", "Claude limits")), StatusLine(limits.Row, limits.Text, limits.Detail)));
         // Non-breaking hyphens (U+2011) keep the flag on one line.
         var exe = snapshot ? @"%LOCALAPPDATA%\Programs\TokenCat\TokenCat.exe" : Environment.ProcessPath;
         var command = $"& \"{exe}\" \u2011\u2011disconnect\u2011telemetry | Out-Host";
-        var footer = Caption(Loc($"실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 해제하려면 PowerShell에서 {command}를 실행합니다.",
-            $"Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the Claude desktop app's usage history. Restart running clients to apply. To disconnect, run {command} in PowerShell."));
+        var footer = Caption(Loc($"실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱·omp·Pi 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다. 해제하려면 PowerShell에서 {command}를 실행합니다.",
+            $"Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the usage history of the Claude desktop app, omp and Pi. Restart running clients to apply. To disconnect, run {command} in PowerShell."));
         var files = new (string Title, string Path)[]
         {
             (Loc("백업 폴더 보기", "Show Backup Folder"), Path.Combine(AppPaths.Support, "telemetry-backups")),

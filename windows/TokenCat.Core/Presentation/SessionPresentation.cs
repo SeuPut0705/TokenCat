@@ -124,6 +124,9 @@ public sealed record SessionCounts
     /// Every member waiting for input is a plan approval, so the copy says "승인".
     public bool InputPlansOnly { get; init; }
     public IReadOnlyDictionary<TokenSource, int> Running { get; init; } = new Dictionary<TokenSource, int>();
+    /// Subscriptions a running session uses (`TokenSource.LimitProvider`): a Codex or Claude Code session, or any client's
+    /// running member on a Claude or OpenAI model. LiveMonitor polls these every minute.
+    public IReadOnlySet<TokenSource> LimitSources { get; init; } = new HashSet<TokenSource>();
     /// Newest record among waiting rows, for "N분째 새 기록 없음".
     public DateTimeOffset? WaitingSince { get; init; }
     /// Newest activity of any session group (telemetry rows excluded), for "마지막 활동 2시간 전".
@@ -142,6 +145,7 @@ public sealed record SessionCounts
         var memberStates = new HashSet<SessionDisplayState>();
         var tools = new Dictionary<ToolCategory, int>();
         var running = new Dictionary<TokenSource, int>();
+        var limitSources = new HashSet<TokenSource>();
         int inputMembers = 0, planMembers = 0;
         foreach (var group in groups)
         {
@@ -154,13 +158,19 @@ public sealed record SessionCounts
                 case SessionDisplayState.Working: Working++; break;
                 case SessionDisplayState.Waiting: Waiting++; break;
             }
-            if (group.State.IsRunning) running[group.Lead.Reading.Source] = running.GetValueOrDefault(group.Lead.Reading.Source) + 1;
+            if (group.State.IsRunning)
+            {
+                running[group.Lead.Reading.Source] = running.GetValueOrDefault(group.Lead.Reading.Source) + 1;
+                if (TokenSource.DefaultClients.Contains(group.Lead.Reading.Source)) limitSources.Add(group.Lead.Reading.Source);
+            }
             if (group.State != SessionDisplayState.Measurement && group.LastActivity != DateTimeOffset.MinValue
                 && (NewestActivity is not { } newest || group.LastActivity > newest)) NewestActivity = group.LastActivity;
             foreach (var member in group.Members)
             {
                 memberStates.Add(member.State);
                 if (member.Reading.IsSubagent && member.State.IsRunning) RunningSubagents++;
+                if (group.State.IsRunning && member.State.IsRunning && TokenSource.LimitProvider(member.Reading.Model) is { } provider)
+                    limitSources.Add(provider);
                 if (member.State == SessionDisplayState.Tool)
                 {
                     ToolMembers++;
@@ -180,6 +190,7 @@ public sealed record SessionCounts
         }
         ToolCategories = tools;
         Running = running;
+        LimitSources = limitSources;
         InputPlansOnly = inputMembers > 0 && planMembers == inputMembers;
         Phase = PhaseOf(SessionDisplayState.MostUrgent(memberStates));
     }
@@ -210,7 +221,8 @@ public sealed record SpeedSlot(string? Prefix, string Value, string? Kind, bool 
 public sealed record AverageSpeed(double Rate, IReadOnlyList<TokenSource> Sources);
 
 /// The flow card's "지금 속도": one measured rate from one visible live session, never a sum or an average.
-public sealed record SpeedHeadline(string Value, string? Kind, string? Project, string Help, string Spoken)
+/// `Label`: the measured session's title, else its project (always the project for a subagent); shown when it fits.
+public sealed record SpeedHeadline(string Value, string? Kind, string? Label, string Help, string Spoken)
 {
     public bool Known => Kind is not null;
 }
@@ -219,7 +231,8 @@ public sealed record SpeedHeadline(string Value, string? Kind, string? Project, 
 public sealed record ContextSlot(string Text, string Short, double? Fraction, bool Warning, string? Compacted, string Help, string Spoken);
 
 /// An account usage-limit window as last recorded: Codex from its logs, Claude from the status line bridge or the Claude
-/// desktop app's history (no reset time); either one also from a live poll (LiveLimits). Never projected forward.
+/// desktop app's history (no reset time); either one from omp's or Pi's own usage check (`RecordedBy`, its record time) or
+/// from a live poll (LiveLimits). Never projected forward.
 public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, DateTimeOffset? ResetsAt, DateTimeOffset RecordedAt)
 {
     public TokenSource Source { get; init; } = TokenSource.Codex;
@@ -227,6 +240,8 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
     public OtherWindow? Other { get; init; }
     /// Read from OpenAI or Anthropic by a live poll; `RecordedAt` is that poll.
     public bool Live { get; init; }
+    /// "omp" or "Pi" when that client's own usage check recorded the value; named beside the record age.
+    public string? RecordedBy { get; init; }
 
     /// A live poll in the last 2 minutes: "실시간" takes the place of the record age.
     public bool IsLive(DateTimeOffset now) => Live && (now - RecordedAt).TotalSeconds < LiveLimits.LiveFor;
@@ -255,25 +270,33 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
     public bool IsOld(DateTimeOffset now) => (now - RecordedAt).TotalSeconds > 600;
     string WaitingText => Loc($"초기화됨 · 다음 {Name} 기록 대기", $"Reset · waiting for a {Name} record");
 
+    /// "4분 전 기록", or "omp 4분 전 기록" when another client recorded it; `start` capitalizes the English sentence start.
+    string Recorded(string age, bool start = false) => RecordedBy is { } by
+        ? Loc($"{by} {age} 기록", $"{by} recorded {age}")
+        : Loc($"{age} 기록", start ? $"Recorded {age}" : $"recorded {age}");
+
     /// Help and VoiceOver wording.
     public string Detail(DateTimeOffset now, bool spoken = false)
     {
         if (Expired(now)) return WaitingText;
         var age = SessionPresentation.HelpAge(RecordedAt, now, spoken);
-        if (ResetsAt is not { } resetsAt) return IsLive(now) ? Loc("실시간", "Live") : Loc($"{age} 기록 기준", $"As of {age}");
+        var basis = RecordedBy is { } by ? Loc($"{by} {age} 기록 기준", $"as of {by}'s record {age}") : Loc($"{age} 기록 기준", $"as of {age}");
+        if (ResetsAt is not { } resetsAt) return IsLive(now) ? Loc("실시간", "Live") : RecordedBy is null ? Loc($"{age} 기록 기준", $"As of {age}") : basis;
         var reset = SessionPresentation.Countdown(resetsAt, now, spoken);
-        return IsLive(now) ? Loc($"{reset} 후 초기화 · 실시간", $"Resets in {reset} · live") : Loc($"{reset} 후 초기화 · {age} 기록 기준", $"Resets in {reset} · as of {age}");
+        return Loc($"{reset} 후 초기화 · ", $"Resets in {reset} · ") + (IsLive(now) ? Loc("실시간", "live") : basis);
     }
 
-    /// On-screen variants, widest first; the reset countdown is never the part that is dropped.
+    /// On-screen variants, widest first; the reset countdown is never the part that is dropped, the recording client is
+    /// dropped before the age.
     public IReadOnlyList<string> Details(DateTimeOffset now)
     {
         if (Expired(now)) return [WaitingText];
         var age = SessionPresentation.HelpAge(RecordedAt, now);
-        if (ResetsAt is not { } resetsAt) return [IsLive(now) ? Loc("실시간", "Live") : Loc($"{age} 기록", $"Recorded {age}")];
+        if (ResetsAt is not { } resetsAt) return [IsLive(now) ? Loc("실시간", "Live") : Recorded(age, start: true)];
         var countdown = SessionPresentation.Countdown(resetsAt, now);
         var reset = Loc($"{countdown} 후 초기화", $"Resets in {countdown}");
-        return [reset + " · " + (IsLive(now) ? Loc("실시간", "live") : Loc($"{age} 기록", $"recorded {age}")), reset];
+        if (IsLive(now)) return [reset + " · " + Loc("실시간", "live"), reset];
+        return [.. RecordedBy is null ? [] : new[] { reset + " · " + Recorded(age) }, reset + " · " + Loc($"{age} 기록", $"recorded {age}"), reset];
     }
 
     /// "주간 한도 31% 사용 · 3일 4시간 후 초기화" while the other window has not reset.
@@ -302,13 +325,15 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
         {
             (true, TokenSource.Codex) => Loc("Codex에 저장된 로그인으로 OpenAI에서 확인한 계정 사용량입니다.", "Account usage checked with OpenAI using Codex's saved sign-in."),
             (true, TokenSource.Claude) => Loc("Claude Code에 저장된 로그인으로 Anthropic에서 확인한 계정 사용량입니다.", "Account usage checked with Anthropic using Claude Code's saved sign-in."),
+            (false, _) when RecordedBy is { } by => Loc($"{by}가 자체 사용량 확인으로 기록한 마지막 {Name} 계정 사용량입니다. 실시간 잔여량이 아니며 {by}를 사용할 때만 갱신됩니다.",
+                $"The last {Name} account usage {by} recorded from its own usage check. It isn't a live balance and updates only while you use {by}."),
             (false, TokenSource.Codex) => Loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
                 "The last account usage recorded in the Codex logs. It isn't a live balance and updates only while you use Codex."),
             (false, TokenSource.Claude) => Loc("Claude Code가 상태 표시줄로 보냈거나 Claude 데스크톱 앱이 기록한 마지막 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude를 사용할 때만 갱신됩니다.",
                 "The last Claude account usage sent by Claude Code to its status line or recorded by the Claude desktop app. It isn't a live balance and updates only while you use Claude."),
             _ => "",
-        } + (Live ? Loc(" 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
-                        " It's checked every minute while a session runs or this window is open, otherwise every 10 minutes.") : "");
+        } + (Live ? Loc(" 이 계정의 모델을 쓰는 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
+                        " It's checked every minute while a session on its models runs or this window is open, otherwise every 10 minutes.") : "");
         return basis + Loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.")
             + (OtherText(now) is { } other ? "\n" + other : "");
     }
@@ -540,9 +565,22 @@ public static class SessionPresentation
     public static string? ChildProjectSuffix(TokenReading child, TokenReading parent) =>
         child.Project is { Length: > 0 } project && project != parent.Project ? project : null;
 
-    /// A live row's second line, one text with one separator: "Claude Code · claude-opus-5-5 · xhigh".
+    /// A lead or stand-alone row's name: the client's session title, else the project folder.
+    public static string RowTitle(TokenReading reading) => reading.Title ?? reading.Project ?? Loc("프로젝트 미확인", "Unknown project");
+
+    /// The project beside a titled row's name, so the folder stays visible; null when the project is the name.
+    public static string? RowProject(TokenReading reading) =>
+        reading.Title is not null && reading.Project is { Length: > 0 } project ? project : null;
+
+    /// A titled row's hover line: the whole title (the row cuts it) and the project.
+    public static string? TitleHelp(TokenReading reading) =>
+        reading.Title is { } title ? string.Join(" · ", new[] { title, reading.Project }.OfType<string>()) : null;
+
+    /// A live row's second line, one text with one separator: "Claude Code · claude-opus-5-5 · xhigh"; a titled row
+    /// leads with its project ("TokenCat · Claude Code · …").
     public static string ClientLine(TokenReading reading) =>
-        string.Join(" · ", new[] { reading.ClientTitle, reading.Model ?? Loc("모델 기록 대기", "waiting for model"), EffortLabel(reading) }.OfType<string>());
+        string.Join(" · ", new[] { RowProject(reading), reading.ClientTitle, reading.Model ?? Loc("모델 기록 대기", "waiting for model"), EffortLabel(reading) }
+            .OfType<string>());
 
     /// Raw client value, lowercased and never translated.
     public static string? EffortLabel(TokenReading reading) => reading.Effort?.Trim() is { Length: > 0 } effort ? effort.ToLowerInvariant() : null;
@@ -583,13 +621,14 @@ public static class SessionPresentation
         };
     }
 
-    /// VoiceOver row label (P-3): "<상태>, <프로젝트>, <클라이언트> <모델>"; subagents "하위 에이전트 <제목>, <상태>".
+    /// VoiceOver row label (P-3): "<상태>, [<제목>,] <프로젝트>, <클라이언트> <모델>"; subagents "하위 에이전트 <제목>, <상태>".
     public static string SpokenLabel(TokenReading reading, SessionDisplayState state)
     {
         var word = StateTitle(state, reading);
         if (reading.IsSubagent)
             return Loc($"하위 에이전트 {ChildTitle(reading).Title}, {word}", $"Subagent {ChildTitle(reading).Title}, {word}");
-        return $"{word}, {reading.Project ?? Loc("프로젝트 미확인", "Unknown project")}, {reading.ClientTitle} {reading.Model ?? Loc("모델 미확인", "unknown model")}";
+        var name = string.Join(", ", new[] { reading.Title, reading.Project ?? Loc("프로젝트 미확인", "Unknown project") }.OfType<string>());
+        return $"{word}, {name}, {reading.ClientTitle} {reading.Model ?? Loc("모델 미확인", "unknown model")}";
     }
 
     /// "재시도 2/10 · 4초 후" / "Retry 2/10 · in 4s"; `api` starts it "API 재시도" / "API retry".
@@ -713,17 +752,18 @@ public static class SessionPresentation
     /// Replay-proof per window length: its newest reset wins, then the highest percentage inside it. Among windows that have
     /// not reset the higher use wins (a tie goes to the longer window); when all have reset, the latest reset.
     /// Without any reset time the windows cannot be told apart, so only the newest record counts.
-    /// `codexLive`: the windows of the newest live poll (LiveLimits), weighed with the log records like one more session.
-    public static UsageLimitSummary? UsageLimit(IReadOnlyList<TokenReading> readings, DateTimeOffset now, IReadOnlyList<TokenRateLimit>? codexLive = null)
+    /// `reads`: the windows of the newest live poll (LiveLimits) and of omp's or Pi's own usage checks, weighed with the log
+    /// records like more sessions.
+    public static UsageLimitSummary? UsageLimit(IReadOnlyList<TokenReading> readings, DateTimeOffset now, IReadOnlyList<TokenRateLimit>? reads = null)
     {
         // Live polls last: past 2 minutes old they lose a tie to a later record of the same value.
         var limits = readings.Where(reading => reading.Source == TokenSource.Codex).Select(reading => reading.RateLimit).OfType<TokenRateLimit>()
-            .Concat(codexLive ?? []).Where(limit => double.IsFinite(limit.UsedPercent)).ToList();
+            .Concat(reads ?? []).Where(limit => double.IsFinite(limit.UsedPercent)).ToList();
         if (limits.Count == 0) return null;
         if (limits.All(limit => limit.ResetsAt is null))
         {
             var last = limits.MaxBy(limit => limit.RecordedAt)!;
-            return new UsageLimitSummary(last.UsedPercent, last.WindowMinutes, null, last.RecordedAt) { Live = last.Live };
+            return new UsageLimitSummary(last.UsedPercent, last.WindowMinutes, null, last.RecordedAt) { Live = last.Live, RecordedBy = last.RecordedBy };
         }
         // A live poll overrides older records of its window; under 2 minutes old it also wins a tie with a later record of the
         // same value, so the row keeps "실시간".
@@ -734,9 +774,10 @@ public static class SessionPresentation
             var window = group.Where(limit => Math.Abs(Seconds(limit.ResetsAt!.Value, newest)) <= 60).ToList();
             if (window.Where(limit => limit.Live).Select(limit => (DateTimeOffset?)limit.RecordedAt).Max() is { } polled)
                 window = window.Where(limit => limit.RecordedAt >= polled).ToList();
-            var top = window.MaxBy(limit => (limit.UsedPercent, Fresh(limit)))!;
+            // An equal value goes to the newer record, so the source named beside the age is the one that recorded it.
+            var top = window.MaxBy(limit => (limit.UsedPercent, Fresh(limit), limit.RecordedAt))!;
             return new UsageLimitSummary(top.UsedPercent, top.WindowMinutes, top.ResetsAt, top.Live ? top.RecordedAt : window.Max(limit => limit.RecordedAt))
-                { Live = top.Live };
+                { Live = top.Live, RecordedBy = top.RecordedBy };
         }).ToList();
         var live = windows.Where(window => window.ResetsAt > now).ToList();
         return live.Count > 0 ? live.MaxBy(window => (window.UsedPercent, window.WindowMinutes ?? 0)) : windows.MaxBy(window => (window.ResetsAt, window.WindowMinutes ?? 0));
@@ -758,7 +799,7 @@ public static class SessionPresentation
             .Select(pair => pair.Window.ResetsAt is { } at ? new UsageLimitSummary.OtherWindow(pair.Window.UsedPercent, pair.Minutes, at) : null)
             .FirstOrDefault();
         return new UsageLimitSummary(top.Window.UsedPercent, top.Minutes, top.Window.ResetsAt, top.Window.ReceivedAt)
-        { Source = TokenSource.Claude, Other = other, Live = top.Window.Live };
+        { Source = TokenSource.Claude, Other = other, Live = top.Window.Live, RecordedBy = top.Window.Live ? null : top.Window.RecordedBy };
     }
 
     /// The flow card's "지금 속도": the newest measurement under 2 minutes old among visible live rows (leads and
@@ -788,15 +829,18 @@ public static class SessionPresentation
         }
         var reading = newest.Row.Reading;
         var project = reading.Project ?? Loc("프로젝트 미확인", "Unknown project");
-        var session = string.Join(" · ", new[] { project, reading.IsSubagent ? Loc("하위 ", "subagent ") + ChildTitle(reading).Title : null,
+        // A subagent's row is named by its agent, so the headline keeps the project there.
+        var label = reading.IsSubagent ? project : RowTitle(reading);
+        var session = string.Join(" · ", new[] { reading.IsSubagent ? null : reading.Title, project,
+                                                 reading.IsSubagent ? Loc("하위 ", "subagent ") + ChildTitle(reading).Title : null,
                                                  reading.ClientTitle + (reading.Model is { } model ? " " + model : "") }.OfType<string>());
         var value = Format.Tps(newest.Rate);
         var age = HelpAge(newest.Measurement.At, now);
         var kind = SpokenKind(newest.Measurement.Kind);
-        return new SpeedHeadline(value, newest.Measurement.Kind?.Title ?? "tok/s", project,
+        return new SpeedHeadline(value, newest.Measurement.Kind?.Title ?? "tok/s", label,
             Loc($"{session} · 측정 {age}\n{newest.Measurement.Details}\n가장 최근 실측 한 건이며 세션끼리 합치거나 평균내지 않습니다",
                 $"{session} · measured {age}\n{newest.Measurement.Details}\nThe single latest measurement; sessions are never summed or averaged"),
-            Loc($"{kind} 초당 {value} 토큰, {project}", $"{kind} {value} tokens per second, {project}"));
+            Loc($"{kind} 초당 {value} 토큰, {label}", $"{kind} {value} tokens per second, {label}"));
     }
 
     /// Visible live rows: leads and subagents.

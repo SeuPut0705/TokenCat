@@ -1,12 +1,14 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 
 namespace TokenCat;
 
 // OpenCode's SQLite store; mirrors the mac's Providers/OpenCodeLog.swift. Only roles, times, finish reasons, token counts,
-// model, agent, cwd and tool names/states are read; message text, tool input and output are never kept.
+// model, agent, cwd, tool names/states and the session's generated or renamed title are read; message text, tool input
+// and output are never kept.
 
 public sealed partial record TokenLogFormat
 {
@@ -59,12 +61,14 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
         if (database is null || !database.Execute("BEGIN")) return;
         try
         {
-            var listed = new List<(string Id, string? Parent, string? Directory, string? Agent, string? Model, DateTimeOffset Updated)>();
-            const string columns = "id, parent_id, directory, agent, model, time_updated FROM session";
+            var listed = new List<(string Id, string? Parent, string? Directory, string? Agent, string? Model, DateTimeOffset Updated, string? Title)>();
+            // The title is bounded in SQL; a generated or renamed one is short.
+            const string columns = "id, parent_id, directory, agent, model, time_updated, substr(title, 1, 1024) FROM session";
             const string order = "ORDER BY time_updated DESC LIMIT 64";
             void Collect(OpenCodeDatabase.Row row)
             {
-                if (row.Text(0) is { } id && row.Date(5) is { } updated) listed.Add((id, row.Text(1), row.Text(2), row.Text(3), row.Text(4), updated));
+                if (row.Text(0) is { } id && row.Date(5) is { } updated)
+                    listed.Add((id, row.Text(1), row.Text(2), row.Text(3), row.Text(4), updated, row.Text(6)));
             }
             // Older schemas lack time_archived.
             if (!database.Query($"SELECT {columns} WHERE time_archived IS NULL {order}", [], Collect)
@@ -82,6 +86,7 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
                 session.Directory = row.Directory;
                 session.Agent = row.Agent;
                 session.SessionModel = row.Model is { } model ? ModelID(model) : null;
+                session.Title = Title(row.Title);
                 session.Updated = row.Updated;
                 if ((moved || (now - row.Updated).TotalSeconds <= 3_600 || session.Summary.Open) && !Refresh(session, database))
                 {
@@ -98,24 +103,7 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
         finally { database.Execute("COMMIT"); }
     }
 
-    /// Database identity, size and write time, the WAL's size and write time, and the WAL index header (the first 48 bytes
-    /// of `-shm`, whose change counter and frame count move on every commit).
-    long[]? CurrentSignature()
-    {
-        var info = new FileInfo(Path);
-        if (!info.Exists) return null;
-        var wal = new FileInfo(Path + "-wal");
-        var header = new byte[48];
-        try
-        {
-            using var shm = new FileStream(Path + "-shm", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 0);
-            shm.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
-        return [info.CreationTimeUtc.Ticks, info.Length, info.LastWriteTimeUtc.Ticks,
-                wal.Exists ? wal.Length : -1, wal.Exists ? wal.LastWriteTimeUtc.Ticks : -1,
-                .. Enumerable.Range(0, 6).Select(index => BitConverter.ToInt64(header, index * 8))];
-    }
+    long[]? CurrentSignature() => OpenCodeDatabase.Signature(Path);
 
     /// False when the database refused a read; the session then keeps its previous messages.
     bool Refresh(OpenCodeSession session, OpenCodeDatabase database)
@@ -225,6 +213,7 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
             readings.Add(new TokenReading(TokenSource.OpenCode, $"{id}#{session.Id}")
             {
                 SessionID = session.Id,
+                Title = session.Title,
                 IsSubagent = session.ParentID is not null,
                 ParentSessionID = session.ParentID,
                 AgentID = session.ParentID is not null ? session.Id : null,
@@ -273,6 +262,14 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
         "question" => ToolCategory.Question,
         _ => ToolCategory.Other,
     };
+
+    /// `session.title` once generated or renamed; OpenCode's placeholder ("New session - <ISO time>", "Child session - …",
+    /// its `isDefaultTitle`) is no title.
+    public static string? Title(string? raw) =>
+        raw is null || Placeholder.IsMatch(raw) ? null : SessionTitle.Clean(raw);
+
+    static readonly Regex Placeholder =
+        new(@"^(New session - |Child session - )[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$", RegexOptions.CultureInvariant);
 
     static string? ModelID(string json)
     {
@@ -377,6 +374,7 @@ sealed class OpenCodeSession(string id)
     public string? Directory { get; set; }
     public string? Agent { get; set; }
     public string? SessionModel { get; set; }
+    public string? Title { get; set; }
     public DateTimeOffset Updated { get; set; } = DateTimeOffset.MinValue;
     /// Newest first, at most 200.
     public List<OpenCodeMessage> Messages { get; set; } = [];
@@ -478,12 +476,12 @@ sealed record OpenCodeSummary
     }
 }
 
-/// A connection to an SQLite database through the OS library: winsqlite3.dll (Windows 10+); on a mac or Linux host (checks)
-/// the system libsqlite3. OpenCode's database is only ever opened read-only; `create` is for check fixtures.
+/// A connection to an SQLite database (OpenCode's; omp's and Pi's usage history) through the OS library: winsqlite3.dll
+/// (Windows 10+); on a mac or Linux host (checks) the system libsqlite3. Opened read-only; `create` is for check fixtures.
 sealed class OpenCodeDatabase : IDisposable
 {
     const string Library = "winsqlite3";
-    const int Ok = 0, RowReady = 100, Done = 101, Integer = 1, Null = 5;
+    const int Ok = 0, RowReady = 100, Done = 101, Integer = 1, Float = 2, Null = 5;
     const int OpenReadOnly = 0x1, OpenReadWrite = 0x2, OpenCreate = 0x4, OpenNoMutex = 0x8000;
     static readonly IntPtr Transient = new(-1);
     IntPtr handle;
@@ -523,6 +521,25 @@ sealed class OpenCodeDatabase : IDisposable
             return null;
         }
         catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException) { return null; }
+    }
+
+    /// Database identity, size and write time, the WAL's size and write time, and the WAL index header (the first 48 bytes
+    /// of `-shm`, whose change counter and frame count move on every commit). Null when the database is missing.
+    public static long[]? Signature(string path)
+    {
+        var info = new FileInfo(path);
+        if (!info.Exists) return null;
+        var wal = new FileInfo(path + "-wal");
+        var header = new byte[48];
+        try
+        {
+            using var shm = new FileStream(path + "-shm", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 0);
+            shm.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        return [info.CreationTimeUtc.Ticks, info.Length, info.LastWriteTimeUtc.Ticks,
+                wal.Exists ? wal.Length : -1, wal.Exists ? wal.LastWriteTimeUtc.Ticks : -1,
+                .. Enumerable.Range(0, 6).Select(index => BitConverter.ToInt64(header, index * 8))];
     }
 
     public void Dispose()
@@ -574,6 +591,10 @@ sealed class OpenCodeDatabase : IDisposable
                 ? DateTimeOffset.FromUnixTimeMilliseconds(value) : null;
 
         public long? Int64(int column) => sqlite3_column_type(statement, column) == Integer ? sqlite3_column_int64(statement, column) : null;
+
+        /// REAL or INTEGER as a number; null for NULL or text.
+        public double? Double(int column) =>
+            sqlite3_column_type(statement, column) is Float or Integer ? sqlite3_column_double(statement, column) : null;
     }
 
     /// The first `count` bytes of a message's `data`, read in place (incremental blob I/O), so a body of hundreds of MB is
@@ -612,6 +633,7 @@ sealed class OpenCodeDatabase : IDisposable
     [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern int sqlite3_finalize(IntPtr statement);
     [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern int sqlite3_column_type(IntPtr statement, int column);
     [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern long sqlite3_column_int64(IntPtr statement, int column);
+    [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern double sqlite3_column_double(IntPtr statement, int column);
     [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern IntPtr sqlite3_column_text(IntPtr statement, int column);
     [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern int sqlite3_column_bytes(IntPtr statement, int column);
 }
