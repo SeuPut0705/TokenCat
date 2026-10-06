@@ -261,7 +261,9 @@ static class AppChecks
 
             var frames = new WidgetView();
             frames.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, items, true, true), StatusBarLayout.Compact);
+            // Both themes once first: their brushes and the per-theme icon caches are built here, not counted as a leak.
             Snapshot.Render(() => frames, dark: true);
+            Snapshot.Render(() => frames, dark: false);
             // The 300 RenderTargetBitmaps are the harness's, not the widget's: let them finalize before counting.
             static (uint Gdi, uint User) Settled()
             {
