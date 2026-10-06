@@ -197,7 +197,8 @@ private func menuTile(_ canvas: Canvas, _ menu: MenuMatrix, state: Int, theme: T
 /// The three display layouts, each as a menu bar strip with the item at its right end.
 func menubarLayouts(_ theme: Theme, minimal: MenuMatrix, twoLine: MenuMatrix, oneLine: MenuMatrix) -> CGImage {
     let look = Look.of(theme)
-    let state = MenuMatrix.stateNames.firstIndex(of: "도구 실행")!
+    // Measured by four clients: the Average speed item shows three of their icons beside the AI count.
+    let state = MenuMatrix.stateNames.firstIndex(of: "속도 · 4개")!
     let entries: [(title: String, note: String, menu: MenuMatrix)] = [
         (loc("최소", "Minimal"), loc("캐릭터 · AI 상태 · 세션 수", "Character · AI status · session count"), minimal),
         (loc("두 줄 · 기본", "Two Lines · default"), loc("시스템 지표와 AI를 두 줄로", "System stats and AI on two lines"), twoLine),
@@ -266,9 +267,10 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
     let pad: CGFloat = 56, leftWidth: CGFloat = 470, leftGap: CGFloat = 340, midWidth: CGFloat = 280
     let rightGap: CGFloat = 96, rightWidth: CGFloat = 380
     let groupLabel: CGFloat = 60, cardGap: CGFloat = 16, groupInset: CGFloat = 24, systemGap: CGFloat = 28
-    let jsonl = CGRect(x: pad + groupInset, y: pad + groupLabel, width: leftWidth - 2 * groupInset, height: 136)
+    let jsonl = CGRect(x: pad + groupInset, y: pad + groupLabel, width: leftWidth - 2 * groupInset, height: 164)
     let otlp = CGRect(x: jsonl.minX, y: jsonl.maxY + cardGap, width: jsonl.width, height: 136)
-    let codeGroup = CGRect(x: pad, y: pad, width: leftWidth, height: otlp.maxY + 22 - pad)
+    let limits = CGRect(x: jsonl.minX, y: otlp.maxY + cardGap, width: jsonl.width, height: 136)
+    let codeGroup = CGRect(x: pad, y: pad, width: leftWidth, height: limits.maxY + 22 - pad)
     let system = CGRect(x: pad, y: codeGroup.maxY + systemGap, width: leftWidth, height: 112)
     let canvas = Canvas(Int(pad * 2 + leftWidth + leftGap + midWidth + rightGap + rightWidth), Int(system.maxY + pad))
     look.paintWall(canvas, glowScale: 0.8)
@@ -305,12 +307,16 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
 
     // Sources.
     box(codeGroup, group, radius: 24)
-    canvas.text("Codex · Claude Code", x: codeGroup.minX + 24, baseline: codeGroup.minY + 40, size: 21, bold: true,
+    canvas.text(loc("코딩 에이전트", "Coding agents"), x: codeGroup.minX + 24, baseline: codeGroup.minY + 40, size: 21, bold: true,
                 color: look.secondary)
-    source(jsonl, loc("로컬 JSONL 기록", "Local JSONL logs"), ["~/.codex/sessions", "~/.claude/projects"])
+    // Every client's own data folder; OpenCode and omp also record each request's duration (a measured speed).
+    source(jsonl, loc("로컬 기록 · 데이터베이스", "Local logs · databases"),
+           ["Codex · Claude Code · OpenCode", "Gemini CLI · Qwen Code · Copilot CLI", "Amp · Cline · omp · Pi · Droid"])
     // Both reach the same loopback collector: OTLP for speeds, the Claude Code status line bridge for usage limits.
     source(otlp, loc("OTLP 실측 · 상태 표시줄", "OTLP telemetry · status line"),
-           [loc("HTTP/JSON · 속도 실측", "HTTP/JSON · measured speed"), loc("Claude Code 상태 표시줄 · 사용 한도", "Claude Code status line · usage limits")])
+           [loc("Codex · Claude · Gemini · Qwen 속도", "Codex · Claude · Gemini · Qwen speed"), loc("Claude Code 상태 표시줄 · 사용 한도", "Claude Code status line · usage limits")])
+    source(limits, loc("사용 한도", "Usage limits"),
+           [loc("codex app-server · Anthropic 실시간", "codex app-server · Anthropic live"), loc("Claude 데스크톱 · omp/Pi agent.db", "Claude desktop · omp/Pi agent.db")])
     source(system, loc("macOS 시스템 지표", "macOS system stats"), [loc("CPU · 메모리 · 저장 공간 · 배터리 · 네트워크", "CPU · memory · storage · battery · network")])
 
     // Menu bar item (the app's own render) shown inside the output card.
@@ -343,9 +349,10 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
     canvas.text(loc("알림은 켠 경우에만", "Notifications only if turned on"), x: output.minX + 24, baseline: bar.maxY + 72, size: 20, color: look.secondary)
 
     // Wires: each source lands on its own height of the TokenCat card.
-    wireTo(CGPoint(x: jsonl.maxX, y: jsonl.midY), CGPoint(x: app.minX, y: app.midY - 52), label: loc("파일 변경 감지 · 추가분만 읽기", "File changes · new lines only"))
-    wireTo(CGPoint(x: otlp.maxX, y: otlp.midY), CGPoint(x: app.minX, y: app.midY), label: "127.0.0.1:16493")
-    wireTo(CGPoint(x: system.maxX, y: system.midY), CGPoint(x: app.minX, y: app.midY + 52))
+    wireTo(CGPoint(x: jsonl.maxX, y: jsonl.midY), CGPoint(x: app.minX, y: app.midY - 72), label: loc("파일 변경 감지 · 추가분만 읽기", "File changes · new lines only"))
+    wireTo(CGPoint(x: otlp.maxX, y: otlp.midY), CGPoint(x: app.minX, y: app.midY - 24), label: "127.0.0.1:16493")
+    wireTo(CGPoint(x: limits.maxX, y: limits.midY), CGPoint(x: app.minX, y: app.midY + 24))
+    wireTo(CGPoint(x: system.maxX, y: system.midY), CGPoint(x: app.minX, y: app.midY + 72))
     wireTo(CGPoint(x: app.maxX, y: app.midY), CGPoint(x: output.minX, y: output.midY))
     return roundCorners(canvas, radius: 28)
 }

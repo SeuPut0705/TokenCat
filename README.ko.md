@@ -29,7 +29,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/hero-dark.png">
-    <img src="docs/images/ko/hero-light.png" width="800" alt="macOS 메뉴 막대의 TokenCat 항목(노란 물음표와 세션 수 3) 아래로 열린 상세 화면. 최근 5분 출력 토큰 막대와 지금 속도(docs-site 55.6 생성 tok/s), Codex 주간 한도와 Claude 5시간 한도, 입력이 필요한 세션 두 개와 진행 중인 세션 하나, 시스템 지표가 보이고 왼쪽에는 캐릭터 설정 창이 있습니다.">
+    <img src="docs/images/ko/hero-light.png" width="800" alt="macOS 메뉴 막대의 TokenCat 항목(노란 물음표와 입력 필요 세션 수 2) 아래로 열린 상세 화면. 위에서부터 Codex 주간 28% 사용과 omp가 1분 전 기록한 Claude 5시간 42%·주간 31%가 있는 한도 카드, 클라이언트별로 나눈 출력 토큰 7,800 tok과 5초 막대, 지금 속도(Install guide 55.6 생성 tok/s)가 있는 출력 카드, 입력을 기다리는 Rate limiter·Settings cleanup과 진행 중인 Install guide 세션 행(각각 프로젝트·클라이언트·모델 포함), 시스템 지표가 보이고 왼쪽에는 캐릭터 설정 창이 있습니다.">
   </picture>
 </p>
 
@@ -62,20 +62,20 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/popover-flow-dark.png">
-    <img src="docs/images/ko/popover-flow-light.png" width="468" alt="상세 화면 위쪽. Codex 주간 28% 사용과 Claude 5시간 42% 사용, 그 아래 Claude 주간 31% 사용이 있는 한도 카드, 제목 줄에 출력 토큰 7,800 tok과 클라이언트별 내역, 다음 줄에 마지막 기록 +760 tok 40초 전과 지금 속도 docs-site 55.6 생성 tok/s, 5초 단위 막대가 있는 출력 카드.">
+    <img src="docs/images/ko/popover-flow-light.png" width="468" alt="상세 화면 위쪽. Codex 주간 28% 사용과 Claude 5시간 42% 사용, 그 아래 Claude 주간 31% 사용(omp 1분 전 기록)이 있는 한도 카드, 제목 줄에 출력 토큰 7,800 tok과 클라이언트별 내역, 다음 줄에 마지막 기록 +760 tok 40초 전과 지금 속도 Install guide 55.6 생성 tok/s, 5초 단위 막대가 있는 출력 카드.">
   </picture>
 </p>
 
 최근 5분 동안 로그에 기록된 출력 토큰을 5초 단위 막대로 보여 주고, 합계는 카드 제목 줄에 둡니다. 여러 클라이언트가 함께 기록하면 제목 옆에 `Claude Code 6.6k · Codex 1.2k`처럼 많은 순서로 나눠 보이고, 다 들어가지 않으면 작은 쪽부터 `외 N`으로 접습니다. 제목 아래 줄에는 마지막 기록이 나오고, 30초 동안 새 기록이 없으면 그 자리에서 지금 기다리는 이유(API 재시도, `명령 실행 중` 같은 도구 범주, 로그 대기)를 알려 줍니다. 입력을 기다리는 세션은 머리말과 그 행이 이미 말하므로 카드에서 되풀이하지 않습니다. 막대는 기록량이며 속도로 환산하지 않고, 막대 눈금은 그래프 도움말에 있습니다.
 
-그 줄 끝의 **지금 속도**는 보이는 진행 세션 가운데 2분 안의 가장 최근 실측 한 건입니다(`지금 속도 · docs-site 55.6 생성 tok/s`). 수집기가 받은 실측이거나 OpenCode·omp가 응답마다 기록한 요청 시간입니다. 그 세션의 현재 모델로 잰 값만 쓰고, 재시작을 기다리는 클라이언트는 빼며, 세션끼리 합치거나 평균내지 않습니다. 진행·도구 실행·API 재시도 중인데 실측이 없으면 `속도 실측 없음`, 입력이나 로그만 기다리면 숨깁니다. 로그 시각으로 만든 속도는 쓰지 않습니다.
+그 줄 끝의 **지금 속도**는 보이는 진행 세션 가운데 2분 안의 가장 최근 실측 한 건이며, 그 세션의 제목을 붙입니다(`지금 속도 · Install guide 55.6 생성 tok/s`). 수집기가 받은 실측이거나 OpenCode·omp가 응답마다 기록한 요청 시간입니다. 그 세션의 현재 모델로 잰 값만 쓰고, 재시작을 기다리는 클라이언트는 빼며, 세션끼리 합치거나 평균내지 않습니다. 진행·도구 실행·API 재시도 중인데 실측이 없으면 `속도 실측 없음`, 입력이나 로그만 기다리면 숨깁니다. 로그 시각으로 만든 속도는 쓰지 않습니다.
 
 ### 세션마다 지금 하는 일
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/popover-sessions-dark.png">
-    <img src="docs/images/ko/popover-sessions-light.png" width="468" alt="세션 목록. 압축 1분 전 표시와 실측 44.1 요청 tok/s가 붙은 Claude Code 세션, 컨텍스트 91%를 쓴 Codex 세션, 로그 대기 세션, 접힌 이전 세션 한 줄.">
+    <img src="docs/images/ko/popover-sessions-light.png" width="468" alt="세션 제목으로 이름 붙은 세션 목록. 압축 1분 전 표시와 실측 44.1 요청 tok/s가 붙은 Draft the FAQ section(Claude Code, docs-site), 컨텍스트 91%를 쓴 Align the session rows(Codex, TokenCat), 제목이 없어 프로젝트 api-server로 보이는 로그 대기 세션, 쉬는 이전 세션 Try a denser layout.">
   </picture>
 </p>
 
@@ -88,7 +88,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/popover-subagents-dark.png">
-    <img src="docs/images/ko/popover-subagents-light.png" width="468" alt="Codex 세션 아래 하위 에이전트 두 개, Claude Code 세션 아래 하위 에이전트 세 개가 트리로 이어지고 마지막 줄에 +3 하위 로그 대기가 묶여 있습니다.">
+    <img src="docs/images/ko/popover-subagents-light.png" width="468" alt="Codex 세션 Review the release notes 아래 하위 에이전트 두 개(자동 검토, explorer), Claude Code 세션 Speed up log parsing 아래 하위 에이전트 세 개(Explore, 하위 에이전트 · a2222222, a3333333)가 트리로 이어지고 마지막 줄에 +3 하위 로그 대기가 묶여 있습니다.">
   </picture>
 </p>
 
@@ -110,7 +110,7 @@ Codex와 Claude Code의 하위 에이전트를 정확한 부모 세션 식별자
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/popover-limits-dark.png">
-    <img src="docs/images/ko/popover-limits-light.png" width="468" alt="사용 한도 줄의 여러 상태. Codex 주간 28% 사용, 87% 주황, 97% 빨강, 초기화된 뒤의 대시, 실시간으로 확인한 31%와 5분 전 기록 33%, 아래에 주간 31%가 붙은 Claude 5시간 42%, 주간 64%가 붙은 91% 주황, 초기화된 Claude 주간 한도의 대시, 주간 33%가 붙은 실시간 확인 48%.">
+    <img src="docs/images/ko/popover-limits-light.png" width="468" alt="사용 한도 줄의 여러 상태. Codex 주간 28% 사용, 87% 주황, 97% 빨강, 초기화된 뒤의 대시, 실시간으로 확인한 31%, 5분 전 기록 33%, omp가 4분 전 기록한 35%, 아래에 주간 31%가 붙은 Claude 5시간 42%, 주간 64%가 붙은 91% 주황, 초기화된 Claude 주간 한도의 대시, 주간 33%가 붙은 실시간 확인 48%.">
   </picture>
 </p>
 
@@ -127,11 +127,11 @@ Codex와 Claude Code의 하위 에이전트를 정확한 부모 세션 식별자
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/menubar-layouts-dark.png">
-    <img src="docs/images/ko/menubar-layouts-light.png" width="522" alt="메뉴 막대 표시 방식 세 가지. 최소는 고양이와 AI 상태, 두 줄은 CPU·RAM·DISK·BAT·네트워크·AI를 두 줄로, 한 줄은 같은 항목을 한 줄로 보여 줍니다.">
+    <img src="docs/images/ko/menubar-layouts-light.png" width="522" alt="네 세션이 진행 중일 때의 메뉴 막대 표시 방식 세 가지. 최소는 고양이와 AI 상태, 두 줄은 CPU·RAM·DISK·BAT·네트워크·AI와 평균 속도 항목(클라이언트 아이콘 세 개를 나란히, 123 tok/s)을 두 줄로, 한 줄은 같은 항목을 한 줄로 보여 줍니다.">
   </picture>
 </p>
 
-**최소**(약 72pt), **두 줄**(기본, 약 272pt), **한 줄**(약 410pt) 중에서 고르고, 항목을 켜고 끄거나 끌어서 순서를 바꿉니다. 항목마다 폭이 고정이라 값이 바뀌어도 옆 아이콘이 흔들리지 않고, 라벨은 막대의 밝은·어두운 모양을 따라 색이 비치는 막대에서도 잘 보입니다. 배터리가 없는 Mac에서는 배터리 항목을 숨깁니다.
+**최소**(약 72pt), **두 줄**(기본, 약 272pt), **한 줄**(약 410pt) 중에서 고르고, 항목을 켜고 끄거나 끌어서 순서를 바꿉니다. 캐릭터 체크 상자가 그 목록 맨 위에 있습니다. 항목마다 폭이 고정이라 값이 바뀌어도 옆 아이콘이 흔들리지 않고, 라벨은 막대의 밝은·어두운 모양을 따라 색이 비치는 막대에서도 잘 보입니다. 배터리가 없는 Mac에서는 배터리 항목을 숨깁니다.
 
 기본으로 꺼져 있는 항목도 하나 있습니다. 설정 › 메뉴 막대에서 켜는 **평균 속도**(`AVG`)는 상세 화면의 **지금 속도** 규칙이 받아들이는 모든 클라이언트의 세션별 실측 속도를 평균합니다. 실측값만 평균하고 아무것도 추정하지 않으며, 설정의 항목 줄 도움말에도 그렇게 적혀 있습니다. 라벨 자리에는 지금 실측을 보태는 클라이언트의 아이콘을 빠른 순서로 보여 줍니다. 하나면 아이콘 하나, 여럿이면 최대 세 개를 1pt 간격으로 나란히, 잘리지 않게 그립니다. 최근 실측이 없으면 `AVG`와 `—`로 표시합니다.
 
@@ -182,7 +182,7 @@ AI 숫자는 진행 중이거나 입력을 기다리는 최상위 세션 수입�
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/settings-dark.png">
-    <img src="docs/images/ko/settings-light.png" width="796" alt="설정 창의 다섯 탭. 일반(로그인 시 열기, 알림), 메뉴 막대(시스템 모니터 프리셋), 캐릭터, 실측(다른 앱이 포트를 쓰는 예시, Claude 한도 수신, 실시간 한도 확인 스위치), 정보(새 버전 자동 확인, 새 버전 1.0.0과 업데이트·지금 확인 버튼, 새 버전 알림이 있는 업데이트 섹션).">
+    <img src="docs/images/ko/settings-light.png" width="796" alt="설정 창의 다섯 탭. 일반(로그인 시 열기, 알림, 맨 아래 따로 둔 기본값으로 되돌리기), 메뉴 막대(시스템 모니터 프리셋, 캐릭터가 맨 위에 있는 항목 목록), 캐릭터, 실측(다른 앱이 포트를 쓰는 예시, Claude 한도 수신, 연결 해제 버튼, 실시간 한도 확인 스위치), 정보(개인정보 세 줄과 새 버전 자동 확인, 새 버전 1.0.0과 업데이트 버튼 하나, 새 버전 알림이 있는 업데이트 섹션).">
   </picture>
 </p>
 
@@ -223,7 +223,7 @@ macOS 13 이상에서 실행되며, 한 앱으로 Apple silicon과 Intel Mac을 
 3. 처음 한 번은 아래 [처음 열 때](#처음-열-때) 순서로 엽니다.
 
 > [!IMPORTANT]
-> 처음 실행하면 실측을 받기 위해 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 이 Mac(`127.0.0.1:16493`)으로 보내는 설정을 **자동으로** 추가하고(파일이 없으면 새로 만듭니다), Claude Code의 상태 표시줄(`statusLine`) 명령을 TokenCat 브리지로 감쌉니다(원래 상태 표시줄 출력은 그대로). `~/.gemini`나 `~/.qwen`이 있으면 Gemini CLI `~/.gemini/settings.json`, Qwen Code `~/.qwen/settings.json`의 `telemetry` 항목도 설정하며, 이미 다른 곳으로 실측을 보내거나 순수 JSON이 아닌 파일은 건너뛰고 그대로 둡니다. 원본은 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다. 되돌리는 방법은 [연결 해제와 제거](#연결-해제와-제거)에 있습니다.
+> 처음 실행하면 실측을 받기 위해 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 이 Mac(`127.0.0.1:16493`)으로 보내는 설정을 **자동으로** 추가하고(파일이 없으면 새로 만듭니다), Claude Code의 상태 표시줄(`statusLine`) 명령을 TokenCat 브리지로 감쌉니다(원래 상태 표시줄 출력은 그대로). `~/.gemini`나 `~/.qwen`이 있으면 Gemini CLI `~/.gemini/settings.json`, Qwen Code `~/.qwen/settings.json`의 `telemetry` 항목도 설정하며, 이미 다른 곳으로 실측을 보내거나 순수 JSON이 아닌 파일은 건너뛰고 그대로 둡니다. 원본은 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 실행할 때마다 연결을 다시 확인하며, 연결을 해제하면(설정 › 실측의 `연결 해제…` 또는 `--disconnect-telemetry`) `다시 연결`을 누르거나 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다. 되돌리는 방법은 [연결 해제와 제거](#연결-해제와-제거)에 있습니다.
 
 ### 처음 열 때
 
@@ -278,7 +278,7 @@ open dist/TokenCat.app
 
 1. 메뉴 막대에 고양이가 나타납니다. 고양이를 클릭하면 TokenCat이 바꾼 내용을 볼 수 있습니다. Dock 아이콘은 없으며, 실행 중에 앱을 다시 열면 설정 창이 열립니다. 메뉴 막대가 꽉 차 노치 뒤에 고양이가 숨으면 앱을 다시 열고 설정 › 메뉴 막대 › 프리셋에서 최소를 고릅니다.
 2. 로컬 수집기가 준비되면 [설치](#설치)의 안내대로 설정을 바꿉니다. 수집기가 준비되지 않으면 아무것도 바꾸지 않습니다.
-3. 두 클라이언트는 **다음에 새로 실행할 때부터** 실측과 Claude 사용 한도를 보냅니다. 진행 중인 작업은 재시작하지 않습니다. 세션 상태와 토큰 수는 로그에서 읽고 실시간 한도는 직접 확인하므로 바로 보입니다.
+3. 연결한 클라이언트(Codex·Claude Code, 설치돼 있으면 Gemini CLI·Qwen Code)는 **다음에 새로 실행할 때부터** 실측을, Claude Code는 사용 한도도 보냅니다. 진행 중인 작업은 재시작하지 않습니다. 세션 상태와 토큰 수는 로그에서 읽고(지원하는 클라이언트는 폴더가 생기는 대로 읽음) 실시간 한도는 직접 확인하므로 바로 보입니다.
 
 <p align="center">
   <picture>
@@ -342,7 +342,7 @@ Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 - **알림 영역 아이콘**: 캐릭터와 상태를 보여 줍니다. 모서리의 노란 점은 입력 필요, 주황 점은 API 재시도입니다. 마우스를 올리면 짧은 요약이, 클릭하면 모든 숫자가 있는 상세 화면이, 우클릭하면 빠른 메뉴가 열립니다.
 - **크기는 디스플레이 배율을 따릅니다**: 100–175 %에서는 작업 중에 까딱이는 고양이 머리이고, 200 % 이상에서는 고른 캐릭터의 전신입니다.
 - **WSL은 추적하지 않습니다**: Windows에서 직접 실행한 클라이언트만 수집합니다(`%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.claude\projects`처럼 `%USERPROFILE%` 아래 폴더).
-- **Claude 한도**: 이미 있는 Claude Code `statusLine`은 감싸지 않으므로, 이때 Claude 한도는 실시간 확인(Claude Code 토큰을 `%USERPROFILE%\.claude\.credentials.json`에서 읽음) 말고는 Claude 데스크톱 앱을 쓰는 경우 그 사용량 기록에서만 읽습니다.
+- **Claude 한도**: 이미 있는 Claude Code `statusLine`은 감싸지 않으므로, 이때 Claude 한도는 실시간 확인(Claude Code 토큰을 `%USERPROFILE%\.claude\.credentials.json`에서 읽음) 말고는 Claude 데스크톱 앱을 쓰는 경우 그 사용량 기록과 omp·Pi의 사용량 기록(`%USERPROFILE%\.omp\agent\agent.db`, `%USERPROFILE%\.pi\agent\agent.db`)에서만 읽습니다.
 - **언어**: Windows 표시 언어를 따릅니다(한국어면 한국어, 그 밖에는 영어).
 
 **업데이트**는 Mac과 같습니다. GitHub를 확인하고(설정 › 정보 › `새 버전 자동 확인`), `새 버전`과 `업데이트` 버튼을 보여 주며, `TokenCat-Windows.zip`을 내려받아 SHA-256을 확인한 뒤 `TokenCat.exe`를 바꾸고 다시 실행합니다. 압축 파일 안, 임시 폴더, 쓰기 권한이 없는 폴더(Program Files 등)에서는 TokenCat을 종료하고 `TokenCat.exe`를 직접 바꿉니다.
@@ -363,7 +363,7 @@ Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/ko/architecture-dark.png">
-  <img src="docs/images/ko/architecture-light.png" width="839" alt="Codex·Claude Code의 로컬 JSONL 기록(파일 변경 감지, 추가분만 읽기)과 OTLP 실측·Claude Code 상태 표시줄의 사용 한도(127.0.0.1:16493), macOS 시스템 지표가 TokenCat으로 들어가 이 Mac 안에서 처리되고 메뉴 막대와 상세 화면에 표시되는 구조">
+  <img src="docs/images/ko/architecture-light.png" width="839" alt="지원하는 모든 코딩 에이전트의 로컬 기록·데이터베이스(파일 변경 감지, 추가분만 읽기), Codex·Claude Code·Gemini CLI·Qwen Code의 OTLP 실측과 Claude Code 상태 표시줄의 사용 한도(127.0.0.1:16493), 그 밖의 사용 한도 경로(codex app-server, Anthropic 실시간 확인, Claude 데스크톱 기록, omp·Pi agent.db), macOS 시스템 지표가 TokenCat으로 들어가 이 Mac 안에서 처리되고 메뉴 막대와 상세 화면에 표시되는 구조">
 </picture>
 
 - **로그**에서 세션, 모델, 출력 토큰, 진행 상태를 읽습니다. 로그가 기록한 시점에만 반영하므로 Claude Code처럼 메시지가 끝날 때 기록하는 클라이언트는 메시지 완료 후 숫자가 오릅니다. 진행 표시는 마지막 기록 뒤 허용 시간(모델 응답 대기 10분, Claude Code 도구 15분, Codex 도구 120초) 안에서만 유지하고, 지나면 `로그 대기`로 바꿉니다. OS 프로세스가 살아 있는지를 뜻하지는 않습니다.
@@ -421,7 +421,7 @@ TokenCat이 Apple 공증을 받지 않은 앱이라 나오는 안내입니다. [
 
 <br>
 
-실측이 아직 없다는 뜻입니다. TokenCat은 로그 시각으로 속도를 만들지 않습니다. 실측을 받으려면 TokenCat이 실행 중이어야 하고, 연결 뒤 Codex·Claude Code·Gemini CLI·Qwen Code를 새로 실행해야 합니다. 설정 › 실측 탭에서 클라이언트별 수신 여부를 확인할 수 있습니다. 클라이언트 버전이나 서버 응답에 따라 지표가 오지 않을 수도 있습니다. 출력 카드의 `지금 속도`는 2분 안에 받은 실측만 쓰므로, 그보다 오래됐거나 세션이 지금과 다른 모델로 잰 값이면 행에 속도가 있어도 `—`로 둡니다. 이유는 `—`에 포인터를 올리면 보입니다.
+실측이 아직 없다는 뜻입니다. TokenCat은 로그 시각으로 속도를 만들지 않습니다. 실측을 받으려면 TokenCat이 실행 중이어야 하고, 연결 뒤 Codex·Claude Code·Gemini CLI·Qwen Code를 새로 실행해야 합니다(OpenCode·omp는 요청 시간을 스스로 기록하므로 따로 할 일이 없습니다). 설정 › 실측 탭에서 클라이언트별 수신 여부를 확인할 수 있습니다. 클라이언트 버전이나 서버 응답에 따라 지표가 오지 않을 수도 있습니다. 출력 카드의 `지금 속도`는 2분 안에 받은 실측만 쓰므로, 그보다 오래됐거나 세션이 지금과 다른 모델로 잰 값이면 행에 속도가 있어도 `속도 실측 없음`으로 둡니다. 이유는 그 문구나 행의 `—`에 포인터를 올리면 보입니다.
 
 </details>
 
@@ -546,13 +546,16 @@ mkdir -p work && swiftc -O docs/Generator/*.swift -o work/docs-generator && work
 
 | 경로 (`Sources/TokenCat/` 기준) | 내용 |
 |---|---|
-| `Entry.swift` | 진입점과 명령줄 옵션(검사·스냅숏·진단·실측 연결·업데이트 확인) |
+| `Entry.swift` | 진입점과 명령줄 옵션(검사·스냅숏·진단·실측 연결·업데이트 확인·실시간 한도) |
 | `App.swift` | 앱 수명, 메뉴 막대 항목, 팝오버·패널, 설정 값 |
 | `Models.swift` | 시스템·토큰·세션 상태 데이터 모델 |
 | `StatusBarView.swift` | 메뉴 막대 렌더링 |
 | `DashboardView.swift`, `SessionPresentation.swift`, `TokenFlow.swift` | 상세 화면, 세션 묶음과 상태, 출력 막대 |
 | `SettingsView.swift` | 설정 창 |
 | `TokenTracker.swift`, `LogWatcher.swift` | 로컬 JSONL 파싱과 파일 변경 감지 |
+| `TokenProviders.swift`, `Providers/` | 클라이언트 목록과 그 밖의 클라이언트별 기록 읽기(OpenCode, Gemini CLI·Qwen Code, Copilot CLI, Amp, Cline/Roo/Kilo, omp/Pi, Droid) |
+| `SessionTitle.swift` | 클라이언트가 만들었거나 사용자가 바꾼 세션 제목 |
+| `LiveLimits.swift`, `AgentUsageHistory.swift` | 실시간 한도 확인(`codex app-server`, Anthropic)과 omp·Pi 사용량 기록 |
 | `Telemetry.swift`, `TelemetrySetup.swift`, `TokenSpeed.swift` | 로컬 OTLP·상태 표시줄 수집기, 클라이언트 설정 연결·복구와 Claude Code 상태 표시줄 브리지, 실측 속도 |
 | `Updater.swift` | GitHub 최신 릴리스 확인, 내려받기·SHA-256 검증·앱 교체·다시 실행 |
 | `SystemSampler.swift` | CPU·메모리·저장 공간·배터리·네트워크 |

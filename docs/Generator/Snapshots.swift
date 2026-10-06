@@ -102,7 +102,8 @@ struct MenuMatrix {
 
     let image: CGImage
     let rows: [Range<Int>]
-    let columns: [Range<Int>]
+    /// Per row: each row's strips are as wide as its items (the average speed rows are wider), so columns are found per row.
+    let columns: [[Range<Int>]]
     let bar: [Theme: UInt32]
 
     init(_ path: String) {
@@ -115,17 +116,29 @@ struct MenuMatrix {
             for x in 0..<pixels.width where pixels.rgb(x, y) != grey { count += 1 }
             return count * 2 > pixels.width
         }
-        let middle = (rows.first?.lowerBound ?? 0) + (rows.first?.count ?? 0) / 2
-        columns = bands(pixels.width, mergeGap: 7, minLength: 100) { pixels.rgb($0, middle) != grey }
-        guard rows.count == MenuMatrix.stateNames.count, columns.count == 4 else {
-            fail("메뉴 막대 매트릭스 구조가 예상과 다름(\(rows.count)행 × \(columns.count)열): \(path)")
+        // Every column starts at the same x (row 0 finds them); a strip's width varies per row, and its middle line can have
+        // wide gaps (`AVG —`), so each strip runs on while any of its lines isn't grey, up to a gap longer than 7 px.
+        let first = rows.first.map { row in bands(pixels.width, mergeGap: 7, minLength: 100) { pixels.rgb($0, row.lowerBound + row.count / 2) != grey } } ?? []
+        columns = rows.map { row in
+            first.map { start in
+                var end = start.lowerBound, x = start.lowerBound
+                while x < pixels.width, x - end <= 8 {
+                    if row.contains(where: { pixels.rgb(x, $0) != grey }) { end = x + 1 }
+                    x += 1
+                }
+                return start.lowerBound..<end
+            }
         }
-        bar = [.light: pixels.rgb(columns[0].lowerBound + 4, middle), .dark: pixels.rgb(columns[1].lowerBound + 4, middle)]
+        guard rows.count == MenuMatrix.stateNames.count, columns.allSatisfy({ $0.count == 4 }) else {
+            fail("메뉴 막대 매트릭스 구조가 예상과 다름(\(rows.count)행 × \(columns.map(\.count))열): \(path)")
+        }
+        let middle = rows[0].lowerBound + rows[0].count / 2
+        bar = [.light: pixels.rgb(columns[0][0].lowerBound + 4, middle), .dark: pixels.rgb(columns[0][1].lowerBound + 4, middle)]
         guard luminance(bar[.dark]!) < luminance(bar[.light]!) else { fail("메뉴 막대 열 순서가 예상과 다름: \(path)") }
     }
 
     func cell(_ state: Int, _ column: Column) -> CGRect {
-        let x = columns[column.rawValue], y = rows[state]
+        let x = columns[state][column.rawValue], y = rows[state]
         return CGRect(x: x.lowerBound, y: y.lowerBound, width: x.count, height: y.count)
     }
 

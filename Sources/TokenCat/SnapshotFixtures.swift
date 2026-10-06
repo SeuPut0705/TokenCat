@@ -61,7 +61,7 @@ enum SnapshotFixtures {
         return written == fixtures().count + components().count ? 0 : 1
     }
 
-    /// Component sheets: the five first-run outcomes (never part of a dashboard snapshot) and the limit row states (Codex six, Claude four; the last ones live reads).
+    /// Component sheets: the five first-run outcomes (never part of a dashboard snapshot) and the limit row states (Codex seven, the last an omp record; Claude four, the last ones live reads).
     @MainActor
     private static func components() -> [(String, AnyView)] {
         let down = SessionPresentation.telemetryNotice(state: .busyOtherApp, note: nil, restart: [])
@@ -78,12 +78,14 @@ enum SnapshotFixtures {
         let onboarding = VStack(spacing: 12) {
             ForEach(Array(outcomes.enumerated()), id: \.offset) { OnboardingCard(outcome: $0.element, settings: {}, dismiss: {}) }
         }
-        // Codex: four log records, then a live read 20 s ago ("실시간") and one 5 minutes ago (back to the record age).
+        // Codex: four log records, then a live read 20 s ago ("실시간"), one 5 minutes ago (back to the record age) and omp's own check.
+        var ompCheck = UsageLimitSummary(usedPercent: 35, windowMinutes: 10_080, resetsAt: at(5 * 86_400 + 2 * 3_600), recordedAt: at(-240))
+        ompCheck.recordedBy = "omp"
         let codex = [limit(28, resetsIn: 5 * 86_400 + 8 * 3_600, recorded: -4 * 3_600), limit(87, resetsIn: 2 * 86_400 + 4 * 3_600, recorded: -95),
                      limit(97, resetsIn: 3 * 3_600 + 20 * 60, recorded: -30), limit(64, resetsIn: -600, recorded: -7_000),
                      limit(31, resetsIn: 5 * 86_400 + 2 * 3_600, recorded: -20, live: true), limit(33, resetsIn: 5 * 86_400 + 2 * 3_600, recorded: -300, live: true)]
             .map { UsageLimitSummary(usedPercent: $0.usedPercent, windowMinutes: $0.windowMinutes, resetsAt: $0.resetsAt, recordedAt: $0.recordedAt,
-                                     live: $0.live == true) }
+                                     live: $0.live == true) } + [ompCheck]
         // Claude: both windows live (each its own row, the higher first), the 5-hour window at the warning level, both reset,
         // then a live read.
         let claude = [claudeLimits(fiveHour: (42, 2 * 3_600 + 13 * 60), weekly: (31, 3 * 86_400 + 4 * 3_600), recorded: -50),
@@ -233,9 +235,11 @@ enum SnapshotFixtures {
     }
 
     private static func claudeLimits(fiveHour: (Double, TimeInterval), weekly: (Double, TimeInterval), recorded: TimeInterval,
-                                     live: Bool = false) -> ClaudeUsageLimits {
-        ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: fiveHour.0, resetsAt: at(fiveHour.1), receivedAt: at(recorded), live: live ? true : nil),
-                          sevenDay: ClaudeLimitWindow(usedPercent: weekly.0, resetsAt: at(weekly.1), receivedAt: at(recorded), live: live ? true : nil))
+                                     live: Bool = false, by recorder: String? = nil) -> ClaudeUsageLimits {
+        ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: fiveHour.0, resetsAt: at(fiveHour.1), receivedAt: at(recorded), live: live ? true : nil,
+                                                      recordedBy: recorder),
+                          sevenDay: ClaudeLimitWindow(usedPercent: weekly.0, resetsAt: at(weekly.1), receivedAt: at(recorded), live: live ? true : nil,
+                                                      recordedBy: recorder))
     }
 
     /// A Codex server rate ("생성 tok/s"): one token every `interval` ms.
@@ -254,6 +258,7 @@ enum SnapshotFixtures {
         var question = reading("input01", .claude, project: "TokenCat", model: "claude-opus-5-5", state: .input,
                                last: -192, turn: -1_400, output: 12_480, outputs: quiet)
         question.toolCategory = .question
+        question.title = "Settings cleanup"
         question.toolName = "AskUserQuestion"
         question.context = TokenContextUsage(usedTokens: 182_331, windowTokens: nil, recordedAt: at(-192))
         var docs = reading("docs01", .codex, project: "docs-site", model: "gpt-6.1-sol", state: .working, last: -8,
@@ -261,15 +266,18 @@ enum SnapshotFixtures {
         docs.effort = "xhigh"
         docs.context = TokenContextUsage(usedTokens: 158_204, windowTokens: 258_400, recordedAt: at(-45))
         docs.rateLimit = limit(28, resetsIn: 5 * 86_400 + 11 * 3_600, recorded: -720)
+        docs.title = "Install guide"
         var plan = reading("plan01", .claude, project: "api-server", model: "claude-opus-5-5", state: .input, last: -40,
                            turn: -600, output: 4_020)
         plan.toolCategory = .question
         plan.toolName = "ExitPlanMode"
+        plan.title = "Rate limiter"
         // The Codex session's fresh server rate is the card's "지금 속도"; both account limits sit under the card.
         var docsMeasured = docs
         generated(&docsMeasured, interval: 18, ago: -12)
+        // omp recorded the Claude windows a minute ago (its own usage check); the quiet row keeps its project as the title.
         let input = Fixture(name: "input-needed", tokens: [question, docsMeasured, plan, idle("idle01", project: "notes-app", ago: -1_800)],
-                            claudeLimits: claudeLimits(fiveHour: (42, 2 * 3_600 + 13 * 60), weekly: (31, 3 * 86_400 + 4 * 3_600), recorded: -50))
+                            claudeLimits: claudeLimits(fiveHour: (42, 2 * 3_600 + 13 * 60), weekly: (31, 3 * 86_400 + 4 * 3_600), recorded: -60, by: "omp"))
 
         // 2. API retries: countdown and network-down.
         var retrying = reading("retry01", .claude, project: "api-server", model: "claude-opus-5-5", state: .working, last: -3,
@@ -310,8 +318,10 @@ enum SnapshotFixtures {
         full.effort = "ultra"
         full.context = TokenContextUsage(usedTokens: 235_100, windowTokens: 258_400, recordedAt: at(-12))
         full.rateLimit = limit(87, resetsIn: 2 * 86_400 + 4 * 3_600, recorded: -95)
+        full.title = "Align the session rows"
         var replayed = full
         replayed.id += ".fork"
+        replayed.title = "Try a denser layout"
         replayed.sessionID = sessionPrefix + "0000000fork1"
         replayed.rateLimit = limit(99, resetsIn: -86_400, recorded: -10)
         replayed.recentOutputs = []
@@ -324,6 +334,7 @@ enum SnapshotFixtures {
                                 output: 1_840, outputs: [-2: 312])
         compacted.context = TokenContextUsage(usedTokens: 18_204, windowTokens: nil, recordedAt: at(-2), compactedAt: at(-75))
         measured(&compacted, tokens: 200, milliseconds: 4_532, ago: -30)
+        compacted.title = "Draft the FAQ section"
         let silent = reading("ctx03", .claude, project: "api-server", model: "claude-sonnet-5", state: .stale, active: false,
                              last: -200, output: nil)
         let context = Fixture(name: "context-limit", tokens: [full, replayed, compacted, silent])
@@ -345,7 +356,12 @@ enum SnapshotFixtures {
         let review = child(codexRoot, "sample_reviewer", role: "guardian", state: .working, last: -6, output: 1_204,
                            outputs: [-40: 1_204])
         let chat = child(codexRoot, "sample_scout", role: "explorer", state: .working, last: -9, output: 88, project: "sample-chat")
-        let grouped = Fixture(name: "grouped-children", tokens: [parent, explore, writer, waiter] + stale + [codexRoot, review, chat])
+        // Titles go on the roots only after the children are made, so no child inherits one.
+        var titledParent = parent
+        titledParent.title = "Speed up log parsing"
+        var titledRoot = codexRoot
+        titledRoot.title = "Review the release notes"
+        let grouped = Fixture(name: "grouped-children", tokens: [titledParent, explore, writer, waiter] + stale + [titledRoot, review, chat])
 
         // 6. Expanded list with date captions; older sessions fold behind one row.
         let day: TimeInterval = 86_400

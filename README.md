@@ -29,7 +29,7 @@ English · [한국어](README.ko.md)
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/hero-dark.png">
-    <img src="docs/images/en/hero-light.png" width="800" alt="The dashboard open under TokenCat's macOS menu bar item (a yellow question mark and a session count of 3). It shows a bar chart of output tokens over the last 5 minutes and Speed now (docs-site 55.6 generation tok/s), the Codex weekly limit and the Claude 5-hour limit, two sessions needing input and one working, and system metrics, with the Character settings window on the left.">
+    <img src="docs/images/en/hero-light.png" width="800" alt="The dashboard open under TokenCat's macOS menu bar item (a yellow question mark and a count of 2 sessions needing input). From the top: a limits card with Codex weekly 28% used and Claude 5-hour 42% and weekly 31%, recorded by omp a minute ago; the output tokens card with 7,800 tok split by client, 5-second bars and Speed now (Install guide 55.6 generation tok/s); session rows titled Rate limiter and Settings cleanup waiting for input and Install guide working, each with its project, client and model; and system metrics. The Character settings window is on the left.">
   </picture>
 </p>
 
@@ -62,20 +62,20 @@ The numbers are shown as they are. Token counts are the values actually recorded
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-flow-dark.png">
-    <img src="docs/images/en/popover-flow-light.png" width="468" alt="The top of the dashboard: a limits card with Codex weekly at 28% used and Claude 5-hour at 42% with Claude weekly at 31% under it; then the output card with 7,800 tok and the per-client breakdown on its title line, the last record +760 tok 40s ago and Speed now docs-site 55.6 generation tok/s on the next line, and 5-second bars.">
+    <img src="docs/images/en/popover-flow-light.png" width="468" alt="The top of the dashboard: a limits card with Codex weekly at 28% used and Claude 5-hour at 42% with Claude weekly at 31% under it, the weekly one recorded by omp 1 minute ago; then the output card with 7,800 tok and the per-client breakdown on its title line, the last record +760 tok 40s ago and Speed now Install guide 55.6 generation tok/s on the next line, and 5-second bars.">
   </picture>
 </p>
 
 Output tokens recorded in the logs over the last 5 minutes are shown as 5-second bars, with the total on the card's title line. When more than one client records, the total is split beside the title, largest first, as in `Claude Code 6.6k · Codex 1.2k`; when they don't all fit, the smallest fold into `+N more`. The line under the title shows the last record; after 30 seconds without a new one, it tells you what is being waited on instead (an API retry, a tool category such as `Running command`, or a log). A session waiting for your input says so in the header and on its row, so the card doesn't repeat it. The bars are amounts recorded and are never converted into a speed; their scale is in the chart's help.
 
-**Speed now**, at the end of that line, is the single most recent measurement from the visible working sessions within the last 2 minutes (`Speed now · docs-site 55.6 generation tok/s`): telemetry received by the collector, or the request times OpenCode and omp record for each reply. Only a value measured with that session's current model counts, clients waiting for a restart are left out, and sessions are never summed or averaged. If sessions are working, running a tool or retrying the API with no measurement, it says `No measured speed`; if they are only waiting for input or logs, it's hidden. Speeds derived from log timestamps are never used.
+**Speed now**, at the end of that line, is the single most recent measurement from the visible working sessions within the last 2 minutes, named by its session's title (`Speed now · Install guide 55.6 generation tok/s`): telemetry received by the collector, or the request times OpenCode and omp record for each reply. Only a value measured with that session's current model counts, clients waiting for a restart are left out, and sessions are never summed or averaged. If sessions are working, running a tool or retrying the API with no measurement, it says `No measured speed`; if they are only waiting for input or logs, it's hidden. Speeds derived from log timestamps are never used.
 
 ### What each session is doing
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-sessions-dark.png">
-    <img src="docs/images/en/popover-sessions-light.png" width="468" alt="The session list: a Claude Code session marked as compacted 1 minute ago with a measured 44.1 request tok/s, a Codex session using 91% of its context, a session waiting for log, and one collapsed line of earlier sessions.">
+    <img src="docs/images/en/popover-sessions-light.png" width="468" alt="The session list, each row titled by its session: Draft the FAQ section (Claude Code, docs-site) compacted 1 minute ago with a measured 44.1 request tok/s, Align the session rows (Codex, TokenCat) using 91% of its context, an untitled session shown by its project api-server waiting for log, and a quiet earlier session, Try a denser layout.">
   </picture>
 </p>
 
@@ -88,7 +88,7 @@ Working sessions move to the top. Every row's title (the session's title, else i
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-subagents-dark.png">
-    <img src="docs/images/en/popover-subagents-light.png" width="468" alt="Two subagents under a Codex session and three under a Claude Code session, joined as a tree, with a last line that groups +3 subagents waiting for log.">
+    <img src="docs/images/en/popover-subagents-light.png" width="468" alt="Two subagents (Auto review and explorer) under the Codex session Review the release notes and three under the Claude Code session Speed up log parsing (Explore, Subagent · a2222222 and a3333333), joined as a tree, with a last line that groups +3 subagents waiting for log.">
   </picture>
 </p>
 
@@ -110,7 +110,7 @@ Click a row or press Return to expand its session ID, model, running tool and re
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-limits-dark.png">
-    <img src="docs/images/en/popover-limits-light.png" width="468" alt="States of the usage limit rows: Codex weekly at 28% used, 87% in orange, 97% in red, a dash after the reset, 31% checked live and 33% recorded 5 minutes ago; Claude 5-hour at 42% with weekly 31% under it, 91% in orange with weekly 64%, a dash for a Claude weekly limit that has reset, and 48% checked live with weekly 33%.">
+    <img src="docs/images/en/popover-limits-light.png" width="468" alt="States of the usage limit rows: Codex weekly at 28% used, 87% in orange, 97% in red, a dash after the reset, 31% checked live, 33% recorded 5 minutes ago and 35% that omp recorded 4 minutes ago; Claude 5-hour at 42% with weekly 31% under it, 91% in orange with weekly 64%, a dash for a Claude weekly limit that has reset, and 48% checked live with weekly 33%.">
   </picture>
 </p>
 
@@ -127,11 +127,11 @@ With **Live usage limits** on (the default, in Settings › Telemetry), TokenCat
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/menubar-layouts-dark.png">
-    <img src="docs/images/en/menubar-layouts-light.png" width="522" alt="The three menu bar layouts: Minimal shows the cat and the AI status, Two Lines shows CPU, RAM, DISK, BAT, network and AI on two lines, and One Line shows the same items on one line.">
+    <img src="docs/images/en/menubar-layouts-light.png" width="522" alt="The three menu bar layouts with four sessions working: Minimal shows the cat and the AI status, Two Lines shows CPU, RAM, DISK, BAT, network, AI and the Average speed item (three client icons side by side over 123 tok/s) on two lines, and One Line shows the same items on one line.">
   </picture>
 </p>
 
-Choose **Minimal** (about 72 pt), **Two Lines** (the default, about 272 pt) or **One Line** (about 410 pt), then turn items on or off and drag them to reorder. Each item has a fixed width, so the icons next to it don't shift when values change, and labels follow the bar's light or dark appearance so they stay readable on tinted bars. On a Mac without a battery, the battery item is hidden.
+Choose **Minimal** (about 72 pt), **Two Lines** (the default, about 272 pt) or **One Line** (about 410 pt), then turn items on or off and drag them to reorder; the character's own checkbox heads that list. Each item has a fixed width, so the icons next to it don't shift when values change, and labels follow the bar's light or dark appearance so they stay readable on tinted bars. On a Mac without a battery, the battery item is hidden.
 
 One more item is off by default: **Average speed** (`AVG`), turned on in Settings › Menu Bar, is an explicit opt-in mean of the per-session measured rates of every client that the dashboard's **Speed now** rule accepts; it averages only measured rates and estimates nothing, and its Settings row's tooltip says so. In place of its label it shows the icons of the clients contributing a rate right now, fastest first: one icon for one client, or up to three side by side, each whole and 1 pt apart. Without a fresh measurement it shows `AVG` and `—`.
 
@@ -182,7 +182,7 @@ Presets set up the menu bar in one step: **Minimal**, **AI Focus** (AI, CPU and 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/settings-dark.png">
-    <img src="docs/images/en/settings-light.png" width="796" alt="The five tabs of the Settings window: General (open at login, notifications), Menu Bar (with the System Monitor preset), Character, Telemetry (an example of another app using the port, Claude limit reception and the Live usage limits switch), and About (an Updates section with Check for updates automatically, New version 1.0.0 with Update and Check Now buttons, and Notify about new versions).">
+    <img src="docs/images/en/settings-light.png" width="796" alt="The five tabs of the Settings window: General (open at login, notifications, and Restore Defaults in its own section at the bottom), Menu Bar (with the System Monitor preset and the item list headed by the character), Character, Telemetry (an example of another app using the port, Claude limit reception, the Disconnect button and the Live usage limits switch), and About (three privacy lines and an Updates section with Check for updates automatically, New version 1.0.0 with a single Update button, and Notify about new versions).">
   </picture>
 </p>
 
@@ -223,7 +223,7 @@ TokenCat runs on macOS 13 and later, and one universal app supports both Apple s
 3. The first time, open it following [Opening it the first time](#opening-it-the-first-time) below.
 
 > [!IMPORTANT]
-> On first launch, to receive measurements, TokenCat **automatically** adds settings to Codex `~/.codex/config.toml` and Claude Code `~/.claude/settings.json` (creating them if they don't exist yet) that send telemetry to this Mac (`127.0.0.1:16493`), and wraps Claude Code's status line (`statusLine`) command with the TokenCat bridge (the original status line output stays the same). If `~/.gemini` or `~/.qwen` exists, it also sets the `telemetry` section of Gemini CLI `~/.gemini/settings.json` or Qwen Code `~/.qwen/settings.json`; one that already sends telemetry elsewhere or isn't plain JSON is skipped and left as it is. It backs up the originals first and turns off prompt and response text logging. It checks the connection on every launch; after you disconnect with `--disconnect-telemetry`, it won't reconnect until you run `--connect-telemetry`. How to undo it is in [Disconnect and uninstall](#disconnect-and-uninstall).
+> On first launch, to receive measurements, TokenCat **automatically** adds settings to Codex `~/.codex/config.toml` and Claude Code `~/.claude/settings.json` (creating them if they don't exist yet) that send telemetry to this Mac (`127.0.0.1:16493`), and wraps Claude Code's status line (`statusLine`) command with the TokenCat bridge (the original status line output stays the same). If `~/.gemini` or `~/.qwen` exists, it also sets the `telemetry` section of Gemini CLI `~/.gemini/settings.json` or Qwen Code `~/.qwen/settings.json`; one that already sends telemetry elsewhere or isn't plain JSON is skipped and left as it is. It backs up the originals first and turns off prompt and response text logging. It checks the connection on every launch; after you disconnect (`Disconnect…` in Settings › Telemetry or `--disconnect-telemetry`), it won't reconnect until you click `Reconnect` or run `--connect-telemetry`. How to undo it is in [Disconnect and uninstall](#disconnect-and-uninstall).
 
 ### Opening it the first time
 
@@ -278,7 +278,7 @@ open dist/TokenCat.app
 
 1. The cat appears in the menu bar. Click it to see what TokenCat changed. There's no Dock icon, and opening the app again while it's running opens the Settings window. If a full menu bar hides the cat behind the notch, open the app again and choose Menu Bar › Preset › Minimal in Settings.
 2. Once the local collector is ready, TokenCat makes the settings changes in the note under [Install](#install). If the collector isn't ready, nothing is changed.
-3. Both clients send measurements and Claude usage limits **from their next launch**. Work in progress isn't restarted. Session state and token counts come from the logs, and live usage limits are checked directly, so they show right away.
+3. The connected clients (Codex, Claude Code, and Gemini CLI and Qwen Code when installed) send measurements, and Claude Code its usage limits, **from their next launch**. Work in progress isn't restarted. Session state and token counts come from the logs (every supported client is read as soon as its folder exists), and live usage limits are checked directly, so they show right away.
 
 <p align="center">
   <picture>
@@ -342,7 +342,7 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 - **Tray icon**: the character and its state. A yellow corner dot means input is needed, an orange one an API retry. Hover for a short summary, click for the dashboard with all the numbers, and right-click for the quick menu.
 - **Size follows the display scale**: at 100–175 % the icon is the cat head, which bobs while working; at 200 % and above it's the full-body character you picked.
 - **WSL isn't tracked**: only clients running on Windows itself are collected (their folders under `%USERPROFILE%`, such as `%USERPROFILE%\.codex\sessions` and `%USERPROFILE%\.claude\projects`).
-- **Claude limits**: an existing Claude Code `statusLine` isn't wrapped, so apart from the live check (which reads Claude Code's token from `%USERPROFILE%\.claude\.credentials.json`), Claude limits then come only from the Claude desktop app's usage history, if you use the desktop app.
+- **Claude limits**: an existing Claude Code `statusLine` isn't wrapped, so apart from the live check (which reads Claude Code's token from `%USERPROFILE%\.claude\.credentials.json`), Claude limits then come only from the Claude desktop app's usage history, if you use the desktop app, and from omp's or Pi's usage history (`%USERPROFILE%\.omp\agent\agent.db`, `%USERPROFILE%\.pi\agent\agent.db`).
 - **Language**: follows the Windows display language (Korean if it's Korean, English otherwise).
 
 **Updates** work as on the Mac: TokenCat checks GitHub (Settings › About › `Check for updates automatically`), shows `New version` with an `Update` button, downloads `TokenCat-Windows.zip`, verifies its SHA-256, swaps `TokenCat.exe` and relaunches. From inside the zip, a temporary folder or a folder you can't write to (such as Program Files), quit TokenCat and replace `TokenCat.exe` by hand instead.
@@ -363,7 +363,7 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/architecture-dark.png">
-  <img src="docs/images/en/architecture-light.png" width="839" alt="How it fits together: local Codex and Claude Code JSONL logs (file change detection, reading only what was appended), OTLP measurements and Claude Code status line usage limits (127.0.0.1:16493), and macOS system metrics flow into TokenCat, are processed inside this Mac, and are shown in the menu bar and the dashboard.">
+  <img src="docs/images/en/architecture-light.png" width="839" alt="How it fits together: the local logs and databases of every supported coding agent (file change detection, reading only what was appended), OTLP measurements from Codex, Claude Code, Gemini CLI and Qwen Code plus Claude Code status line usage limits (127.0.0.1:16493), the other usage limit sources (codex app-server, Anthropic live check, Claude desktop history, omp and Pi agent.db), and macOS system metrics flow into TokenCat, are processed inside this Mac, and are shown in the menu bar and the dashboard.">
 </picture>
 
 - **Logs** provide sessions, models, output tokens and progress. They're reflected only when the log is written, so for a client like Claude Code that writes at the end of a message, the numbers go up after the message completes. A session shows as working only within an allowance after its last record (10 minutes waiting for a model response, 15 minutes for a Claude Code tool, 120 seconds for a Codex tool); after that it changes to `Waiting for log`. This doesn't say whether the OS process is alive.
@@ -421,7 +421,7 @@ When a new version is out, a `New version` line appears at the bottom of the das
 
 <br>
 
-It means there's no measurement yet. TokenCat doesn't derive speeds from log timestamps. To receive measurements, TokenCat has to be running, and Codex, Claude Code, Gemini CLI or Qwen Code has to be launched again after connecting. You can check whether each client's measurements are arriving in the Settings › Telemetry tab. Depending on the client version or server response, the metrics may not arrive at all. `Speed now` in the output card uses only measurements received within the last 2 minutes, so if a measurement is older than that, or was measured with a different model than the session uses now, it stays `—` even when the row has a speed. Hover over `—` to see why.
+It means there's no measurement yet. TokenCat doesn't derive speeds from log timestamps. To receive measurements, TokenCat has to be running, and Codex, Claude Code, Gemini CLI or Qwen Code has to be launched again after connecting (OpenCode and omp record their own request times, so they need nothing). You can check whether each client's measurements are arriving in the Settings › Telemetry tab. Depending on the client version or server response, the metrics may not arrive at all. `Speed now` in the output card uses only measurements received within the last 2 minutes, so if a measurement is older than that, or was measured with a different model than the session uses now, it reads `No measured speed` even when the row has a speed. Hover over it or the row's `—` to see why.
 
 </details>
 
@@ -546,13 +546,16 @@ All commands and what they check are in [Details › Verification commands](docs
 
 | Path (under `Sources/TokenCat/`) | Contents |
 |---|---|
-| `Entry.swift` | Entry point and command-line options (checks, snapshots, diagnostics, telemetry connection, update check) |
+| `Entry.swift` | Entry point and command-line options (checks, snapshots, diagnostics, telemetry connection, update check, live limits) |
 | `App.swift` | App lifecycle, menu bar item, popover and panel, settings values |
 | `Models.swift` | Data models for system, token and session state |
 | `StatusBarView.swift` | Menu bar rendering |
 | `DashboardView.swift`, `SessionPresentation.swift`, `TokenFlow.swift` | Dashboard, session grouping and state, output bars |
 | `SettingsView.swift` | Settings window |
 | `TokenTracker.swift`, `LogWatcher.swift` | Local JSONL parsing and file change detection |
+| `TokenProviders.swift`, `Providers/` | The client registry and one log reader per other client (OpenCode, Gemini CLI and Qwen Code, Copilot CLI, Amp, Cline/Roo/Kilo, omp/Pi, Droid) |
+| `SessionTitle.swift` | Client-generated or renamed session titles |
+| `LiveLimits.swift`, `AgentUsageHistory.swift` | Live usage limit checks (`codex app-server`, Anthropic) and omp's and Pi's usage history |
 | `Telemetry.swift`, `TelemetrySetup.swift`, `TokenSpeed.swift` | Local OTLP and status line collector, connecting and restoring client settings and the Claude Code status line bridge, measured speeds |
 | `Updater.swift` | GitHub latest release check, download, SHA-256 verification, app replacement and relaunch |
 | `SystemSampler.swift` | CPU, memory, storage, battery and network |
