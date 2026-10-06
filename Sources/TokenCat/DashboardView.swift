@@ -1272,15 +1272,16 @@ private struct EmptySessions: View {
             }
             .frame(width: Runner.size.width * 2, height: Runner.size.height * 2)
             .accessibilityHidden(true)
-            Text(foldersFound ? loc("아직 Codex·Claude Code 세션 기록이 없습니다", "No Codex or Claude Code sessions yet")
-                 : loc("Codex·Claude Code 기록 폴더를 찾지 못했습니다", "Couldn't find Codex or Claude Code log folders"))
+            let names = TokenProvider.readTitles
+            Text(foldersFound ? loc("아직 \(names.korean) 세션 기록이 없습니다", "No \(names.english) sessions yet")
+                 : loc("\(names.korean) 기록 폴더를 찾지 못했습니다", "Couldn't find \(names.english) log folders"))
                 .font(TCFont.bodyMedium).multilineTextAlignment(.center).padding(.top, 8)
             VStack(spacing: 2) {
                 if foldersFound {
                     Text(loc("새 세션을 시작하면 여기에 표시됩니다", "New sessions appear here when you start them"))
                     Text(Self.webNote)
                 } else {
-                    Text("~/.codex/sessions · ~/.claude/projects").font(TCFont.meta.monospaced())
+                    Text(TokenProvider.readRootsText(home: FileManager.default.homeDirectoryForCurrentUser)).font(TCFont.meta.monospaced())
                 }
             }
             .font(TCFont.meta).toneSecondary().padding(.top, 4)

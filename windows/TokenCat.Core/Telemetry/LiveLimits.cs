@@ -58,9 +58,13 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
         return elapsed >= wait || (opened && failures == 0 && elapsed >= OpenedAfter);
     }
 
-    /// The monitor's reader; one call per provider at a time.
-    public Task<LiveLimitResult> Read(TokenSource source, CancellationToken token) => source == TokenSource.Claude ? ReadClaude(token)
-        : FindCodex() is { } codex ? ReadCodex(codex, version, Timeout, token) : Task.FromResult(new LiveLimitResult());
+    /// The monitor's reader; one call per provider at a time. Only the telemetry clients (Codex, Claude Code) have live limits.
+    public Task<LiveLimitResult> Read(TokenSource source, CancellationToken token) => source switch
+    {
+        TokenSource.Claude => ReadClaude(token),
+        TokenSource.Codex when FindCodex() is { } codex => ReadCodex(codex, version, Timeout, token),
+        _ => Task.FromResult(new LiveLimitResult()),
+    };
 
     // MARK: Codex
 

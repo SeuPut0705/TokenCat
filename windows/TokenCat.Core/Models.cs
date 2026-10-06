@@ -8,7 +8,9 @@ namespace TokenCat;
 // changed with `with`. Behaviour belongs to the package that owns it: records that Swift gives computed members are `partial`
 // (members marked [JsonIgnore], since Codable only encodes stored fields) and enums get C# 14 `extension` blocks.
 
-public enum TokenSource { Codex, Claude }
+/// Every client TokenCat recognises; `TokenProvider.All` (Tracking/TokenProviders.cs) says where each keeps its logs and which are read.
+/// JSON names are the Swift raw values (`Id`); camelCase gives them for every case but OpenCode.
+public enum TokenSource { Codex, Claude, [JsonStringEnumMemberName("opencode")] OpenCode, Gemini, Qwen, Copilot, Amp, Cline, Omp, Droid }
 
 /// `idle`… `input` as in Models.swift: `stale` is an open turn past its liveness horizon but logged within 30 minutes,
 /// `unfinished` one with no log for longer, `input` waits for the person.
@@ -27,9 +29,74 @@ public static class ModelText
     extension(TokenSource source)
     {
         /// The Swift raw value, used in ids and JSON.
-        public string Id => source == TokenSource.Codex ? "codex" : "claude";
-        public string Title => source == TokenSource.Codex ? "Codex" : "Claude Code";
+        public string Id => source switch
+        {
+            TokenSource.Codex => "codex",
+            TokenSource.Claude => "claude",
+            TokenSource.OpenCode => "opencode",
+            TokenSource.Gemini => "gemini",
+            TokenSource.Qwen => "qwen",
+            TokenSource.Copilot => "copilot",
+            TokenSource.Amp => "amp",
+            TokenSource.Cline => "cline",
+            TokenSource.Omp => "omp",
+            TokenSource.Droid => "droid",
+            _ => throw new ArgumentOutOfRangeException(nameof(source)),
+        };
+
+        public string Title => source switch
+        {
+            TokenSource.Codex => "Codex",
+            TokenSource.Claude => "Claude Code",
+            TokenSource.OpenCode => "OpenCode",
+            TokenSource.Gemini => "Gemini CLI",
+            TokenSource.Qwen => "Qwen Code",
+            TokenSource.Copilot => "Copilot CLI",
+            TokenSource.Amp => "Amp",
+            TokenSource.Cline => "Cline",
+            TokenSource.Omp => "omp",
+            TokenSource.Droid => "Droid",
+            _ => throw new ArgumentOutOfRangeException(nameof(source)),
+        };
+
+        /// The vendor name alone, before a word like "한도" ("Claude 5시간 한도").
+        public string ShortTitle => source switch
+        {
+            TokenSource.Claude => "Claude",
+            TokenSource.Gemini => "Gemini",
+            TokenSource.Qwen => "Qwen",
+            TokenSource.Copilot => "Copilot",
+            _ => source.Title,
+        };
+
+        /// The command that resumes a session when followed by its ID; null where none is known.
+        public string? ResumeCommand => source switch
+        {
+            TokenSource.Codex => "codex resume",
+            TokenSource.Claude => "claude --resume",
+            TokenSource.OpenCode => "opencode --session",
+            TokenSource.Gemini => "gemini --resume",
+            TokenSource.Copilot => "copilot --resume",
+            TokenSource.Amp => "amp threads continue",
+            _ => null,
+        };
     }
+
+    extension(TokenSource)
+    {
+        /// The clients telemetry setup, live limits, the status line bridge and the per-client speed items apply to.
+        public static IReadOnlyList<TokenSource> TelemetryClients => telemetryClients;
+
+        /// Sources a list names: the telemetry clients always (a Codex and Claude Code user sees no change), any other
+        /// once its data folder is detected or a reading carries it.
+        public static IReadOnlyList<TokenSource> Listed(IReadOnlySet<TokenSource> detected, IEnumerable<TokenReading> readings)
+        {
+            var seen = readings.Select(reading => reading.Source).ToHashSet();
+            return [.. Enum.GetValues<TokenSource>().Where(source => telemetryClients.Contains(source) || detected.Contains(source) || seen.Contains(source))];
+        }
+    }
+
+    static readonly TokenSource[] telemetryClients = [TokenSource.Codex, TokenSource.Claude];
 
     extension(TokenRateKind kind)
     {

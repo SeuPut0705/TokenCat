@@ -90,8 +90,12 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
         if (Record(line) is not { } record) return;
         ConsumeMetadata(record);
         var date = Date(record.Field("timestamp"));
-        if (Source == TokenSource.Codex) ConsumeCodex(record, date);
-        else ConsumeClaude(record, date, LastLogAt);
+        // Only Codex and Claude Code logs reach this parser.
+        switch (Source)
+        {
+            case TokenSource.Codex: ConsumeCodex(record, date); break;
+            case TokenSource.Claude: ConsumeClaude(record, date, LastLogAt); break;
+        }
         if (date is { } at) LastLogAt = Max(LastLogAt, at);
     }
 
@@ -797,12 +801,13 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
                 && !text.Contains("\"type\":\"custom_tool_call_output\"", StringComparison.Ordinal)) return;
             id = Value("call_id");
         }
-        else
+        else if (Source == TokenSource.Claude)
         {
             if (!text.Contains("\"type\":\"user\"", StringComparison.Ordinal) || !text.Contains("\"type\":\"tool_result\"", StringComparison.Ordinal)
                 || !IsSubagent && text.Contains("\"isSidechain\":true", StringComparison.Ordinal)) return;
             id = Value("tool_use_id");
         }
+        else return;
         if (id is null || !RemovePendingTool(id)) return;
         if (TurnOpen) observedState = pendingTools.Count == 0 ? TokenActivityState.Working : TokenActivityState.Tool;
     }

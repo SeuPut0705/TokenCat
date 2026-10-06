@@ -484,12 +484,20 @@ sealed class SpeedGlyph : FrameworkElement
 
     protected override void OnRender(DrawingContext context) => Draw(context, source, new Rect(RenderSize));
 
-    /// Smooth scaling even inside the widget, which draws its pixel art nearest-neighbour.
+    /// Smooth scaling even inside the widget, which draws its pixel art nearest-neighbour. Only the telemetry clients have a
+    /// glyph; any other source draws nothing.
     public static void Draw(DrawingContext context, TokenSource source, Rect box)
     {
+        BitmapSource? image = source switch
+        {
+            TokenSource.Codex => Codex,
+            TokenSource.Claude => Claude,
+            _ => null,
+        };
+        if (image is null) return;
         var group = new DrawingGroup();
         RenderOptions.SetBitmapScalingMode(group, BitmapScalingMode.HighQuality);
-        group.Children.Add(new ImageDrawing(source == TokenSource.Codex ? Codex : Claude, box));
+        group.Children.Add(new ImageDrawing(image, box));
         context.DrawDrawing(group);
     }
 

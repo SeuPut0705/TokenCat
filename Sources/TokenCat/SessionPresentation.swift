@@ -217,7 +217,7 @@ struct UsageLimitSummary: Equatable {
     func isShown(now: Date) -> Bool { !expired(now: now) || now.timeIntervalSince(resetDate ?? .distantPast) < 86_400 }
     /// "Claude", not "Claude Code": the window belongs to the Claude account, whichever app used it.
     var title: String {
-        let name = source == .codex ? "Codex" : "Claude", window = SessionPresentation.windowLabel(windowMinutes)
+        let name = source.shortTitle, window = SessionPresentation.windowLabel(windowMinutes)
         return loc("\(name) \(window) 한도", "\(name) \(window) limit")
     }
     /// The number alone ("28"); "%" and " 사용" are drawn smaller beside it. "사용" because Codex's own UI counts what is left.
@@ -226,7 +226,7 @@ struct UsageLimitSummary: Equatable {
     /// More than 10 minutes since the client reported it: the value is shown weaker.
     func isOld(now: Date) -> Bool { now.timeIntervalSince(recordedAt) > 600 }
     private var waitingText: String {
-        let name = source == .codex ? "Codex" : "Claude"
+        let name = source.shortTitle
         return loc("초기화됨 · 다음 \(name) 기록 대기", "Reset · waiting for a \(name) record")
     }
     /// A live read under 2 minutes old: "실시간" replaces the record age.
@@ -890,7 +890,7 @@ enum SessionPresentation {
 
     /// "실측 수신: Codex 기록 없음 · Claude Code 2분 전", minute-granular for a stable tooltip.
     static func telemetryReceipt(_ lastReceived: [TokenSource: Date], now: Date) -> String {
-        loc("실측 수신: ", "Telemetry received: ") + TokenSource.allCases.map { "\($0.title) \(helpAge(lastReceived[$0], now: now))" }.joined(separator: " · ")
+        loc("실측 수신: ", "Telemetry received: ") + TokenSource.telemetryClients.map { "\($0.title) \(helpAge(lastReceived[$0], now: now))" }.joined(separator: " · ")
     }
 
     /// Newest measurement per client from the readings, for a model that does not track receipts itself.
@@ -956,15 +956,17 @@ enum SessionPresentation {
     /// POSIX single quoting: `'` becomes `'\''`.
     static func shellQuote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
-    /// "cd '<project>' && claude --resume <id>" or "… && codex resume <id>"; nil for subagents or without an ID or folder.
+    /// "cd '<project>' && <`TokenSource.resumeCommand`> <id>"; nil for subagents, without an ID or folder, or for a client
+    /// with no known resume command.
     /// Backslashes (fish reads `\'` inside single quotes) and control characters (keystrokes on paste) are refused.
     static func resumeCommand(_ reading: TokenReading) -> String? {
         let unsafe: (String) -> Bool = { $0.unicodeScalars.contains { $0 == "\\" || $0.properties.generalCategory == .control } }
-        guard !reading.isSubagent, !isTelemetry(reading), let session = reading.sessionID, !session.isEmpty,
+        guard !reading.isSubagent, !isTelemetry(reading), let command = reading.source.resumeCommand,
+              let session = reading.sessionID, !session.isEmpty,
               let path = reading.projectPath, path.hasPrefix("/"), !unsafe(path), !unsafe(session) else { return nil }
         let plain = session.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }
         let id = plain ? session : shellQuote(session)
-        return "cd \(shellQuote(path)) && " + (reading.source == .codex ? "codex resume \(id)" : "claude --resume \(id)")
+        return "cd \(shellQuote(path)) && \(command) \(id)"
     }
 
     struct RowAction: Identifiable, Equatable {

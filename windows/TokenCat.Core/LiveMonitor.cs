@@ -16,13 +16,19 @@ public sealed record MonitorOptions(string Home, string SupportDirectory, Func<S
     Func<TokenSource, CancellationToken, Task<LiveLimitResult>>? ReadLimits = null);
 
 /// DashboardModel's published state, immutable per publish. Fixtures construct it directly (WP5 snapshots).
+/// `DetectedSources`: clients whose data folder exists (`TokenTracker.DetectedSources`), refreshed with the folder check.
 public sealed record MonitorState(
     DateTimeOffset Now, SystemSnapshot System, bool HasSample, IReadOnlyList<double> CpuHistory,
     IReadOnlyList<TokenReading> Tokens, DateTimeOffset? TokensSampledAt, IReadOnlyList<SessionGroup> Groups,
     SessionListModel Sessions, FlowSeries Flow, DateTimeOffset? NewestOutputAt,
     TelemetryCollectorState TelemetryState, string TelemetryStatus, DateTimeOffset? TelemetryNextRetryAt,
     IReadOnlySet<TokenSource> TelemetryRestartNeeded, IReadOnlySet<TokenSource> TelemetryRestartExpired,
-    IReadOnlyDictionary<TokenSource, DateTimeOffset> TelemetryLastReceived, ClaudeUsageLimits ClaudeLimits, bool LogFoldersFound);
+    IReadOnlyDictionary<TokenSource, DateTimeOffset> TelemetryLastReceived, ClaudeUsageLimits ClaudeLimits, bool LogFoldersFound,
+    IReadOnlySet<TokenSource> DetectedSources)
+{
+    /// Sources UI lists name: the telemetry clients, detected clients and any a reading carries (`TokenSource.Listed`).
+    public IReadOnlyList<TokenSource> ListedSources => TokenSource.Listed(DetectedSources, Tokens);
+}
 
 /// Clients whose config TokenCat changed and that have not sent a reading since.
 /// After 24 h without one the notice changes, since that client may never emit the metric.
@@ -68,6 +74,7 @@ public sealed class LiveMonitor : IDisposable
     // Everything below is guarded by `gate`.
     SystemSnapshot system = new();
     bool hasSample, sessionsExpanded, logFoldersFound = true;
+    IReadOnlySet<TokenSource> detectedSources = new HashSet<TokenSource>();
     readonly List<double> cpuHistory = [];
     IReadOnlyList<TokenReading> tokens = [];
     DateTimeOffset? tokensSampledAt, nextRetryAt;
@@ -80,7 +87,7 @@ public sealed class LiveMonitor : IDisposable
     // Live usage limits: the setting, a dashboard on screen, one that just opened, each provider's poll, Codex's last answer
     // (Claude's merges into `claudeLimits`).
     bool limitsEnabled, limitsWatched, limitsOpened;
-    readonly Dictionary<TokenSource, LiveLimits.Poll> polls = Enum.GetValues<TokenSource>().ToDictionary(source => source, _ => new LiveLimits.Poll());
+    readonly Dictionary<TokenSource, LiveLimits.Poll> polls = TokenSource.TelemetryClients.ToDictionary(source => source, _ => new LiveLimits.Poll());
     IReadOnlyList<TokenRateLimit> codexLive = [];
     MonitorState current;
     CancellationTokenSource? running;
@@ -95,7 +102,7 @@ public sealed class LiveMonitor : IDisposable
         tracker = new TokenTracker(options.Home, clock);
         if (options.Telemetry is not null) desktop = new ClaudeUsage.DesktopReader(AppPaths.ClaudeDesktopHistory());
         foreach (var (id, seconds) in store.Get<Dictionary<string, double>>(PendingRestartKey) ?? new Dictionary<string, double>())
-            foreach (var source in Enum.GetValues<TokenSource>().Where(value => value.Id == id))
+            foreach (var source in TokenSource.TelemetryClients.Where(value => value.Id == id))
                 pendingRestart[source] = DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1_000));
         claudeLimits = LoadClaudeLimits(store);
         UpdateRestartState(clock());
@@ -250,23 +257,25 @@ public sealed class LiveMonitor : IDisposable
                 var wait = MinimumTokenInterval - Stopwatch.GetElapsedTime(lastStart).TotalSeconds;
                 if (wait > 0) await Task.Delay(TimeSpan.FromSeconds(wait), token).ConfigureAwait(false);
                 var paths = new List<string>();
-                while (reader.TryRead(out var batch)) paths.AddRange(batch.Where(path => path.EndsWith(".jsonl", StringComparison.Ordinal)).Take(64));
+                while (reader.TryRead(out var batch)) paths.AddRange(batch.Where(tracker.IsLog).Take(64));
                 if (paths.Count > 256) paths.RemoveRange(0, paths.Count - 256);
                 lastStart = Stopwatch.GetTimestamp();
                 try
                 {
                     bool? found = null;
+                    IReadOnlySet<TokenSource>? detected = null;
                     if (lastFolderCheck == 0 || Stopwatch.GetElapsedTime(lastFolderCheck).TotalSeconds >= FolderCheckInterval)
                     {
                         lastFolderCheck = lastStart;
                         var existing = tracker.WatchedDirectories.Where(Directory.Exists).ToHashSet();
                         found = existing.Count > 0;
+                        detected = tracker.DetectedSources();
                         // A folder created after the watcher started (first Codex or Claude Code run): watch it and read it now.
                         if (foldersSeen is not null && !existing.IsSubsetOf(foldersSeen))
                             lock (gate) if (!token.IsCancellationRequested) watcher?.Start(tracker.WatchedDirectories);
                         foldersSeen = existing;
                     }
-                    SampleTokens(paths, found, token);
+                    SampleTokens(paths, found, detected, token);
                 }
                 // A failed sample keeps the previous values; the footer's collection delay shows it.
                 catch (Exception error) when (error is not OperationCanceledException) { }
@@ -275,7 +284,7 @@ public sealed class LiveMonitor : IDisposable
         catch (OperationCanceledException) { }
     }
 
-    void SampleTokens(List<string> paths, bool? foldersFound, CancellationToken token)
+    void SampleTokens(List<string> paths, bool? foldersFound, IReadOnlySet<TokenSource>? detected, CancellationToken token)
     {
         tracker.NoteChanged(paths);
         var logs = tracker.Sample();
@@ -298,6 +307,7 @@ public sealed class LiveMonitor : IDisposable
             tokensSampledAt = measuredAt;
             (telemetryState, telemetryStatus, nextRetryAt) = (state, status, retryAt);
             if (foldersFound is { } found) logFoldersFound = found;
+            if (detected is not null) detectedSources = detected;
             foreach (var (source, at) in received) Later(lastReceived, source, at);
             foreach (var (source, at) in batchAt) Later(batches, source, at);
             var merged = limits.IsEmpty ? claudeLimits : ClaudeUsage.Merged(claudeLimits, limits);
@@ -374,7 +384,7 @@ public sealed class LiveMonitor : IDisposable
         now, system, hasSample, cpuHistory.ToArray(), tokens, tokensSampledAt, groups, sessions, flow,
         tokens.Where(reading => !SessionPresentation.IsTelemetry(reading)).Select(reading => reading.LastOutputAt).Max(),
         telemetryState, telemetryStatus, nextRetryAt, restart.Needed, restart.Expired,
-        new Dictionary<TokenSource, DateTimeOffset>(lastReceived), claudeLimits, logFoldersFound);
+        new Dictionary<TokenSource, DateTimeOffset>(lastReceived), claudeLimits, logFoldersFound, detectedSources);
 
     /// Rebuilds the presentation on the shared clock and raises Updated while running. Caller holds `gate`.
     void Publish()

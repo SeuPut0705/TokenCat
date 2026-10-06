@@ -18,9 +18,53 @@ struct SystemSnapshot: Codable {
     var sampledAt: Date = Date()
 }
 
+/// Every client TokenCat recognises; `TokenProvider.all` (TokenProviders.swift) says where each keeps its logs and which are read.
 enum TokenSource: String, Codable, CaseIterable {
-    case codex, claude
-    var title: String { self == .codex ? "Codex" : "Claude Code" }
+    case codex, claude, opencode, gemini, qwen, copilot, amp, cline, omp, droid
+    var title: String {
+        switch self {
+        case .codex: return "Codex"
+        case .claude: return "Claude Code"
+        case .opencode: return "OpenCode"
+        case .gemini: return "Gemini CLI"
+        case .qwen: return "Qwen Code"
+        case .copilot: return "Copilot CLI"
+        case .amp: return "Amp"
+        case .cline: return "Cline"
+        case .omp: return "omp"
+        case .droid: return "Droid"
+        }
+    }
+    /// The vendor name alone, before a word like "한도" ("Claude 5시간 한도").
+    var shortTitle: String {
+        switch self {
+        case .claude: return "Claude"
+        case .gemini: return "Gemini"
+        case .qwen: return "Qwen"
+        case .copilot: return "Copilot"
+        default: return title
+        }
+    }
+    /// The command that resumes a session when followed by its ID; nil where none is known.
+    var resumeCommand: String? {
+        switch self {
+        case .codex: return "codex resume"
+        case .claude: return "claude --resume"
+        case .opencode: return "opencode --session"
+        case .gemini: return "gemini --resume"
+        case .copilot: return "copilot --resume"
+        case .amp: return "amp threads continue"
+        case .qwen, .cline, .omp, .droid: return nil
+        }
+    }
+    /// The clients telemetry setup, live limits, the status line bridge and the per-client speed items apply to.
+    static let telemetryClients: [TokenSource] = [.codex, .claude]
+    /// Sources a list names: the telemetry clients always (a Codex and Claude Code user sees no change), any other
+    /// once its data folder is detected or a reading carries it.
+    static func listed(detected: Set<TokenSource>, readings: [TokenReading]) -> [TokenSource] {
+        let seen = Set(readings.map(\.source))
+        return allCases.filter { telemetryClients.contains($0) || detected.contains($0) || seen.contains($0) }
+    }
 }
 
 /// `stale`: an open turn past its liveness horizon (tool or model wait) but logged within

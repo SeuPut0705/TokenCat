@@ -567,6 +567,21 @@ func runTrackerChecks() -> [String] {
               "Changing the current model reassigned an earlier measurement to the new model")
         check(TokenTracker(homeDirectory: root.appendingPathComponent("empty"), now: { now }).sample().isEmpty,
               "An empty log directory fabricated provider rows")
+        // A client found by its data folder but without a parser is detected and yields no rows; an override env var moves its root.
+        let detectedHome = root.appendingPathComponent("detected")
+        let geminiHome = root.appendingPathComponent("gemini-home")
+        for folder in [detectedHome.appendingPathComponent(".gemini/tmp/repo/chats"), detectedHome.appendingPathComponent(".factory/sessions"),
+                       geminiHome.appendingPathComponent(".gemini/tmp")] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        try line(["type": "gemini", "timestamp": "2026-10-04T04:00:00Z"]).write(to: detectedHome.appendingPathComponent(".gemini/tmp/repo/chats/session-1.jsonl"))
+        let detecting = TokenTracker(homeDirectory: detectedHome, environment: [:], now: { now })
+        let overridden = TokenTracker(homeDirectory: root.appendingPathComponent("empty"), environment: ["GEMINI_CLI_HOME": geminiHome.path], now: { now })
+        check(detecting.detectedSources() == [.gemini, .droid] && detecting.sample().isEmpty
+              && !detecting.watchedDirectories.contains { $0.path.contains(".gemini") } && overridden.detectedSources() == [.gemini]
+              && TokenProvider.all.map(\.source) == TokenSource.allCases && TokenProvider.readSources == TokenSource.telemetryClients
+              && TokenSource.listed(detected: [.droid], readings: [TokenReading(source: .amp)]) == [.codex, .claude, .amp, .droid],
+              "A client without a parser was not detected by its folder, produced rows, was watched, or the registry is out of order")
 
         let claudeProject = root.appendingPathComponent(".claude/projects/fixture-project")
         let subagentFolder = claudeProject.appendingPathComponent("shared/subagents")
@@ -1018,6 +1033,9 @@ func runTrackerChecks() -> [String] {
         burst.noteChanged(paths: [unseen.path])
         check(left != nil && capped == 35 && burst.sample().count == 36,
               "A write to a log outside the discovery caps reran discovery, or a new log did not")
+        check(burst.isLog(unseen.path) && burst.isLog(left ?? "") && !burst.isLog(burstFolder.appendingPathComponent("journal.jsonl").path)
+              && !burst.isLog(root.appendingPathComponent("elsewhere/agent-x.jsonl").path),
+              "A changed path was matched to a client by its extension alone: a Claude subagent journal or a log outside every root counted")
     } catch {
         checks += 1
         failures.append("Incremental file fixture error: \(error.localizedDescription)")

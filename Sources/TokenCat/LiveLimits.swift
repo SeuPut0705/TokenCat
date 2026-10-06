@@ -249,6 +249,7 @@ enum LiveLimits {
             if outcome.failed { outcome.note = "codex app-server gave no limits" }
             return outcome
         }
+        guard source == .claude else { outcome.note = "no live limits for \(source.title)"; return outcome }
         let saved = readClaudeCredential(keychain: keychain)
         outcome.keychainRefused = saved.refused
         guard let credential = saved.credential else { outcome.note = "no Claude Code sign-in found"; return outcome }
@@ -269,7 +270,7 @@ enum LiveLimits {
     /// `--live-limits`: one read per provider, printed as numbers only; a token is never printed. Exit 1 when neither reads.
     static func commandLineCheck() -> Int32 {
         var read = 0
-        for source in TokenSource.allCases {
+        for source in TokenSource.telemetryClients {
             let started = Date()
             let outcome = Self.read(source, rejected: nil, keychain: true)
             let windows: [(Double, Int?, Date?)] = outcome.codex?.map { ($0.usedPercent, $0.windowMinutes, $0.resetsAt) }
@@ -304,7 +305,7 @@ final class LiveLimitPoller {
     func tick(now: Date, open: Bool, live: (TokenSource) -> Bool, deliver: @escaping (LiveLimits.Outcome) -> Void) {
         let opened = open && !wasOpen
         wasOpen = open
-        for source in TokenSource.allCases {
+        for source in TokenSource.telemetryClients {
             var slot = slots[source] ?? Slot()
             guard !slot.inFlight, LiveLimits.due(last: slot.last, retryAt: slot.retryAt, now: now, live: live(source), open: open, opened: opened)
             else { continue }

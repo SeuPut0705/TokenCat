@@ -234,7 +234,7 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
     public bool Expired(DateTimeOffset now) => ResetDate is { } reset && reset <= now;
     /// A reset window stays on screen for one day to say "초기화됨", then the row goes away.
     public bool IsShown(DateTimeOffset now) => !Expired(now) || (now - (ResetDate ?? DateTimeOffset.MinValue)).TotalSeconds < 86_400;
-    string Name => Source == TokenSource.Codex ? "Codex" : "Claude";
+    string Name => Source.ShortTitle;
     /// "Claude", not "Claude Code": the window belongs to the Claude account, whichever app used it.
     public string Title
     {
@@ -293,17 +293,18 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
 
     public string Help(DateTimeOffset now)
     {
-        var basis = Live
-            ? (Source == TokenSource.Codex
-                ? Loc("Codex에 저장된 로그인으로 OpenAI에서 확인한 계정 사용량입니다.", "Account usage checked with OpenAI using Codex's saved sign-in.")
-                : Loc("Claude Code에 저장된 로그인으로 Anthropic에서 확인한 계정 사용량입니다.", "Account usage checked with Anthropic using Claude Code's saved sign-in."))
-              + Loc(" 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
-                    " It's checked every minute while a session runs or this window is open, otherwise every 10 minutes.")
-            : Source == TokenSource.Codex
-            ? Loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
-                  "The last account usage recorded in the Codex logs. It isn't a live balance and updates only while you use Codex.")
-            : Loc("Claude Code가 상태 표시줄로 보냈거나 Claude 데스크톱 앱이 기록한 마지막 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude를 사용할 때만 갱신됩니다.",
-                  "The last Claude account usage sent by Claude Code to its status line or recorded by the Claude desktop app. It isn't a live balance and updates only while you use Claude.");
+        // Usage limits come from the telemetry clients only (Codex and Claude Code).
+        var basis = (Live, Source) switch
+        {
+            (true, TokenSource.Codex) => Loc("Codex에 저장된 로그인으로 OpenAI에서 확인한 계정 사용량입니다.", "Account usage checked with OpenAI using Codex's saved sign-in."),
+            (true, TokenSource.Claude) => Loc("Claude Code에 저장된 로그인으로 Anthropic에서 확인한 계정 사용량입니다.", "Account usage checked with Anthropic using Claude Code's saved sign-in."),
+            (false, TokenSource.Codex) => Loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",
+                "The last account usage recorded in the Codex logs. It isn't a live balance and updates only while you use Codex."),
+            (false, TokenSource.Claude) => Loc("Claude Code가 상태 표시줄로 보냈거나 Claude 데스크톱 앱이 기록한 마지막 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude를 사용할 때만 갱신됩니다.",
+                "The last Claude account usage sent by Claude Code to its status line or recorded by the Claude desktop app. It isn't a live balance and updates only while you use Claude."),
+            _ => "",
+        } + (Live ? Loc(" 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
+                        " It's checked every minute while a session runs or this window is open, otherwise every 10 minutes.") : "");
         return basis + Loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.")
             + (OtherText(now) is { } other ? "\n" + other : "");
     }
@@ -1016,7 +1017,7 @@ public static class SessionPresentation
     /// "실측 수신: Codex 기록 없음 · Claude Code 2분 전", minute-granular for a stable tooltip.
     public static string TelemetryReceipt(IReadOnlyDictionary<TokenSource, DateTimeOffset> lastReceived, DateTimeOffset now) =>
         Loc("실측 수신: ", "Telemetry received: ")
-        + string.Join(" · ", Sources.Select(source => $"{source.Title} {HelpAge(lastReceived.TryGetValue(source, out var at) ? at : null, now)}"));
+        + string.Join(" · ", TokenSource.TelemetryClients.Select(source => $"{source.Title} {HelpAge(lastReceived.TryGetValue(source, out var at) ? at : null, now)}"));
 
     /// Expanded-list date captions from the model clock.
     public static string DaySection(DateTimeOffset date, DateTimeOffset now, DayCalendar calendar)
@@ -1075,17 +1076,17 @@ public static class SessionPresentation
     public static string ShellQuote(string text) =>
         "'" + string.Concat(text.Select(c => c is '\'' or '\u2018' or '\u2019' or '\u201A' or '\u201B' ? $"{c}{c}" : c.ToString())) + "'";
 
-    /// "cd -LiteralPath '<project>'; claude --resume <id>" or "…; codex resume <id>" for PowerShell (5.1 has no `&&`); null for
+    /// "cd -LiteralPath '<project>'; <client resume command> <id>" (e.g. "claude --resume <id>") for PowerShell (5.1 has no `&&`); null for
     /// subagents or without an ID or folder. Control characters (keystrokes on paste) and cmd.exe's metacharacters (a paste
-    /// into cmd would run them) are refused.
+    /// into cmd would run them) are refused, as is a client without a known resume command.
     public static string? ResumeCommand(TokenReading reading)
     {
         static bool Unsafe(string text) => text.Any(c => char.IsControl(c) || c is '&' or '|' or '<' or '>' or '^' or '%');
-        if (reading.IsSubagent || IsTelemetry(reading) || reading.SessionID is not { Length: > 0 } session
+        if (reading.Source.ResumeCommand is not { } resume || reading.IsSubagent || IsTelemetry(reading) || reading.SessionID is not { Length: > 0 } session
             || reading.ProjectPath is not { } path || !IsWindowsAbsolute(path) || Unsafe(path) || Unsafe(session)) return null;
         var plain = session.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
         var id = plain ? session : ShellQuote(session);
-        return $"cd -LiteralPath {ShellQuote(path)}; " + (reading.Source == TokenSource.Codex ? $"codex resume {id}" : $"claude --resume {id}");
+        return $"cd -LiteralPath {ShellQuote(path)}; {resume} {id}";
     }
 
     /// Copies first, then File Explorer reveals.

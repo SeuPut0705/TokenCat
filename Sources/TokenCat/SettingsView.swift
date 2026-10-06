@@ -702,7 +702,7 @@ private struct TelemetryPane: View {
             Section {
                 collector
                 if let note = model.telemetrySetupNote { settingsCaption(note, color: TCColor.warning) }
-                ForEach(TokenSource.allCases, id: \.self) { source in
+                ForEach(TokenSource.telemetryClients, id: \.self) { source in
                     let status = TelemetryStatusRow.client(restartNeeded: model.telemetryRestartNeeded.contains(source),
                                                            expired: model.telemetryRestartExpired.contains(source),
                                                            lastReceived: model.telemetryLastReceived[source],

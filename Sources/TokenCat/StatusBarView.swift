@@ -107,8 +107,10 @@ enum StatusBarContent {
     }
 
     /// `counts`, `ai`, `recorded` and `speeds` come from the popover's per-publish presentation so both show the same numbers.
+    /// `sources` names the clients in the AI item's per-client counts (`DashboardModel.listedSources`).
     static func metrics(system: SystemSnapshot, counts: SessionCounts, ai: StatusAISummary, recorded: Int,
                         speeds: [MetricID: Double], preferences: Preferences, layout: StatusBarLayout? = nil,
+                        sources: [TokenSource] = TokenSource.telemetryClients,
                         hasSample: Bool, hasTokenSample: Bool) -> [StatusBarMetric] {
         func percentage(_ number: Double?) -> String {
             guard hasSample, let number, number.isFinite else { return "—" }
@@ -152,7 +154,7 @@ enum StatusBarContent {
                 let detail = hasTokenSample
                     ? "\(headline) · \(aiCountLine(counts, ai))\n"
                         + loc("최근 5분 출력 기록 \(Format.tokens(recorded)) tok", "Output in the last 5 min: \(Format.tokens(recorded)) tok")
-                        + " · Codex \(counts.running[.codex] ?? 0), Claude Code \(counts.running[.claude] ?? 0)"
+                        + " · " + runningBySource(counts, sources: sources)
                     : loc("AI 기록 확인 중", "Reading AI records")
                 return StatusBarMetric(id: id, label: "AI", value: value, symbol: "", detail: detail,
                                        isActive: hasTokenSample && ai.running > 0, activityState: state)
@@ -173,6 +175,12 @@ enum StatusBarContent {
         loc("진행 중 \(ai.running - ai.input)개 · 도구 실행 \(counts.toolMembers) · 하위 에이전트 \(counts.runningSubagents) · 로그 대기 \(counts.waiting)",
             "Working \(ai.running - ai.input) · Running tool \(counts.toolMembers) · Subagents \(counts.runningSubagents) · Waiting for log \(counts.waiting)")
             + (ai.input > 0 ? loc(" · 입력 필요 \(ai.input)", " · Input needed \(ai.input)") : "")
+    }
+
+    /// "Codex 1, Claude Code 0": running groups per listed client, plus any other client whose sessions run.
+    static func runningBySource(_ counts: SessionCounts, sources: [TokenSource]) -> String {
+        TokenSource.allCases.filter { sources.contains($0) || (counts.running[$0] ?? 0) > 0 }
+            .map { "\($0.title) \(counts.running[$0] ?? 0)" }.joined(separator: ", ")
     }
 
     /// Tooltip holds only slow-changing context the bar does not show; live values stay in the AX value.

@@ -107,6 +107,10 @@ cat's (brand)", Runner.swift).
   developers.openai.com/codex/config-basic; search summaries]
 * Parity: the mac app reads `<home>/.codex/sessions` and `<home>/.claude/projects` and ignores `CODEX_HOME`/`CLAUDE_CONFIG_DIR`.
   Windows v1 does the same (`home = %USERPROFILE%`). WSL logs are out of scope.
+* Other agents (OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline/Roo/Kilo, omp, Droid) are detected automatically by their data
+  folders through the provider registry (`TokenProvider.All`, `Core/Tracking/TokenProviders.cs`, mirroring `TokenProviders.swift`). A
+  provider is read once its parser (`TokenLogFormat`) lands; parsers are listed there as they do. For now only Codex and Claude Code are
+  read; telemetry, live limits and the status line bridge stay with `TokenSource.TelemetryClients` (Codex, Claude Code).
 * Codex `cwd` and Claude `cwd` in Windows logs look like `C:\Users\me\proj`. The project name must come from splitting on **both** `\`
   and `/`. .NET's `Path.GetFileName` splits on both only on Windows; on macOS it returns the whole `C:\…` string, so the checks running on
   the Mac would disagree.
@@ -694,7 +698,8 @@ gives PASS (Localization suite ported).
 
 Shared contracts (WP0, `Models.cs`):
 ```csharp
-public enum TokenSource { Codex, Claude }                  // ids/JSON use "codex"/"claude"; Title "Codex"/"Claude Code"
+public enum TokenSource { Codex, Claude, OpenCode, Gemini, Qwen, Copilot, Amp, Cline, Omp, Droid } // ids/JSON = Swift raw values ("codex", "opencode"…);
+// Title/ShortTitle/ResumeCommand per source; static TokenSource.TelemetryClients = [Codex, Claude]; TokenSource.Listed(detected, readings)
 public enum TokenActivityState { Idle, Working, Tool, Output, Complete, Interrupted, Stale, Unfinished, Input }
 public enum ToolCategory { Command, File, Web, Agent, Mcp, Question, Other }
 public sealed record TokenRetryState(int Attempt, int? MaxAttempts, DateTimeOffset? RetryAt, bool NetworkDown, DateTimeOffset At);
@@ -716,10 +721,18 @@ Owns `Core/Tracking/*` (incl. `TokenDiagnostics.cs` behind `--diagnose-tokens`),
 API:
 ```csharp
 public sealed class TokenTracker {
-  public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 5);
-  public IReadOnlyList<string> WatchedDirectories { get; }
+  public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 5,
+      Func<string, string?>? environment = null, IReadOnlyList<TokenProvider>? providers = null);
+  public IReadOnlyList<string> WatchedDirectories { get; }   // roots of providers with a format
+  public IReadOnlySet<TokenSource> DetectedSources();        // providers with an existing root, read or not
+  public bool IsLog(string path);
   public void NoteChanged(IEnumerable<string> paths);
   public List<TokenReading> Sample(); }
+public sealed record TokenProvider(TokenSource Source, Func<string, Func<string, string?>, IReadOnlyList<string>> Roots, TokenLogFormat? Format);
+public sealed record TokenLogFormat(Func<IReadOnlyList<string>, TokenDiscovery, IEnumerable<string>> Files, Func<string, bool> IsLog,
+    Func<string, ITokenLogReader> Open);                     // TokenLogFormat.Codex / .Claude
+public interface ITokenLogReader { void Read(int tailLimit, DateTimeOffset now); IEnumerable<TokenReading> Readings(string id, DateTimeOffset now);
+    bool IsRecent(DateTimeOffset now); }
 public sealed class TokenLogParser { /* public for checks, as in Swift */ }
 public static class TokenSpeed { public static List<TokenReading> Apply(IReadOnlyList<TokenReading> readings, IReadOnlyList<TelemetryReading> measurements); }
 public sealed record FlowSeries(...) { public static FlowSeries Make(IReadOnlyList<TokenReading> readings, DateTimeOffset now); }
@@ -774,7 +787,8 @@ public sealed record MonitorState(
   SessionListModel Sessions, FlowSeries Flow, DateTimeOffset? NewestOutputAt,
   TelemetryCollectorState TelemetryState, string TelemetryStatus, DateTimeOffset? TelemetryNextRetryAt,
   IReadOnlySet<TokenSource> TelemetryRestartNeeded, IReadOnlySet<TokenSource> TelemetryRestartExpired,
-  IReadOnlyDictionary<TokenSource, DateTimeOffset> TelemetryLastReceived, ClaudeUsageLimits ClaudeLimits, bool LogFoldersFound);
+  IReadOnlyDictionary<TokenSource, DateTimeOffset> TelemetryLastReceived, ClaudeUsageLimits ClaudeLimits, bool LogFoldersFound,
+  IReadOnlySet<TokenSource> DetectedSources) { public IReadOnlyList<TokenSource> ListedSources { get; } }
 // plus SessionPresentation/StatusSummary/QuickMenuSummary/AttentionTracker/Preferences with the Swift member names
 ```
 Done: suites ported and passing. `MonitorChecks` (temp home, fake sampler, 6 s run) asserts the ~1 s cadence, that repeated `Start` keeps

@@ -80,7 +80,7 @@ static class Fixtures
             SessionPresentation.Groups(fixture.Tokens, now), SessionListModel.Make(fixture.Tokens, now, false, fixture.Restart), flow,
             fixture.Tokens.Where(reading => !SessionPresentation.IsTelemetry(reading)).Select(reading => reading.LastOutputAt).Max(),
             fixture.Telemetry, fixture.Telemetry.Status, null, fixture.Restart, new HashSet<TokenSource>(),
-            new Dictionary<TokenSource, DateTimeOffset>(), fixture.ClaudeLimits, fixture.FoldersFound);
+            new Dictionary<TokenSource, DateTimeOffset>(), fixture.ClaudeLimits, fixture.FoldersFound, new HashSet<TokenSource>());
         return new DashboardInput(state, fixture.Update is { } install ? Update(install, now) : new UpdateState(),
             null, null, fixture.Note, fixture.Failure, [], null, OnboardingSeen: true, OptedOut: false);
     }

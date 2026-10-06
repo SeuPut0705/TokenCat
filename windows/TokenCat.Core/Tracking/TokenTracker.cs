@@ -3,45 +3,58 @@ using System.Security;
 
 namespace TokenCat;
 
-/// Passive, bounded log reader. It never changes either CLI's configuration or saves transcripts.
+/// Passive, bounded log reader. It never changes any client's configuration or saves transcripts.
+/// Which clients and logs it reads comes from the provider registry (`TokenProvider.All`).
 /// Not thread-safe, like the Swift original: one caller runs NoteChanged and Sample.
 public sealed class TokenTracker
 {
     public const double RecentOutputWindow = 600;
     readonly string home;
+    readonly Func<string, string?> environment;
+    readonly IReadOnlyList<TokenProvider> providers;
     readonly Func<DateTimeOffset> clock;
     readonly int initialTailBytes;
     readonly double discoveryInterval;
     DateTimeOffset? lastDiscovery;
-    Dictionary<string, TokenFileCursor> files = new(StringComparer.Ordinal);
+    Dictionary<string, (TokenSource Source, ITokenLogReader Reader)> files = new(StringComparer.Ordinal);
     /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out ranks again at the
     /// periodic rescan instead of rerunning discovery on each file event.
-    readonly HashSet<string> known = new(StringComparer.Ordinal);
+    HashSet<string> known = new(StringComparer.Ordinal);
 
-    public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 5)
+    public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 5,
+        Func<string, string?>? environment = null, IReadOnlyList<TokenProvider>? providers = null)
     {
         this.home = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
+        this.environment = environment ?? Environment.GetEnvironmentVariable;
+        this.providers = providers ?? TokenProvider.All;
         clock = now ?? (() => DateTimeOffset.UtcNow);
         this.initialTailBytes = Math.Max(128, initialTailBytes);
         discoveryInterval = discoveryIntervalSeconds;
     }
 
-    /// Folders for `LogWatcher`.
-    public IReadOnlyList<string> WatchedDirectories => [AppPaths.CodexSessions(home), AppPaths.ClaudeProjects(home)];
+    /// Candidate roots of every client with a parser, for `LogWatcher`; the watcher and the folder check keep the existing ones.
+    public IReadOnlyList<string> WatchedDirectories =>
+        [.. providers.Where(provider => provider.Format is not null).SelectMany(provider => provider.Roots(home, environment))];
+
+    /// Clients whose data folder exists, read or not. Touches only the file system, never tracker state.
+    public IReadOnlySet<TokenSource> DetectedSources() =>
+        providers.Where(provider => provider.ExistingRoots(home, environment).Count > 0).Select(provider => provider.Source).ToHashSet();
+
+    /// Whether a changed path is a log some client's format would list: under one of that client's roots (Windows paths are
+    /// matched with `/`, case-insensitively) and accepted by its `IsLog`. A Claude workflow journal is then never a Codex log.
+    public bool IsLog(string path)
+    {
+        var normalized = path.Replace('\\', '/');
+        return providers.Any(provider => provider.Format is { } format && format.IsLog(path)
+            && provider.Roots(home, environment).Any(root =>
+                normalized.StartsWith(Path.TrimEndingDirectorySeparator(root).Replace('\\', '/') + "/", StringComparison.OrdinalIgnoreCase)));
+    }
 
     /// File-system events name changed paths. A log that is not tracked yet triggers
     /// discovery on the next sample instead of waiting for the periodic rescan.
     public void NoteChanged(IEnumerable<string> paths)
     {
-        // Workflow journals and other side files under subagents/ are never tracked. Windows paths are matched with `/`.
-        bool Candidate(string path)
-        {
-            var normalized = path.Replace('\\', '/');
-            return path.EndsWith(".jsonl", StringComparison.Ordinal) && !files.ContainsKey(path) && !known.Contains(path)
-                && (!normalized.Contains("/subagents/", StringComparison.Ordinal)
-                    || normalized[(normalized.LastIndexOf('/') + 1)..].StartsWith("agent-", StringComparison.Ordinal));
-        }
-        if (paths.Any(Candidate)) lastDiscovery = null;
+        if (paths.Any(path => !files.ContainsKey(path) && !known.Contains(path) && IsLog(path))) lastDiscovery = null;
     }
 
     public List<TokenReading> Sample()
@@ -52,49 +65,13 @@ public sealed class TokenTracker
             Discover(now);
             lastDiscovery = now;
         }
-        foreach (var file in files.Values) file.Read(initialTailBytes, now);
+        foreach (var file in files.Values) file.Reader.Read(initialTailBytes, now);
         var readings = new List<TokenReading>();
-        foreach (var file in files.Values)
+        foreach (var (path, file) in files)
         {
-            var parser = file.Parser;
-            if (parser.LastActivity is null) continue;
-            var completion = parser.Completion;
-            var path = file.Path;
             var relative = path.Length > home.Length + 1 && path.StartsWith(home, StringComparison.Ordinal) && path[home.Length] is '/' or '\\'
                 ? path[(home.Length + 1)..] : path;
-            var tool = parser.RunningTool;
-            readings.Add(new TokenReading(parser.Source, $"{parser.Source.Id}:{relative.Replace('\\', '/')}")
-            {
-                SessionID = parser.SessionID,
-                ParentSessionID = parser.ParentSessionID,
-                AgentID = parser.AgentID,
-                Project = parser.Project,
-                ProjectPath = parser.ProjectPath,
-                IsSubagent = parser.IsSubagent,
-                AgentRole = file.SidecarRole ?? parser.AgentRole,
-                Effort = parser.Effort,
-                LastTurnDurationSeconds = parser.LastTurnDuration,
-                ToolName = tool?.Name,
-                ToolCategory = tool is { } running ? running.Name is { } name ? TokenLogParser.Category(name) : ToolCategory.Other : null,
-                Retry = parser.Retry,
-                RateLimit = parser.RateLimit,
-                Context = parser.Context,
-                Model = parser.Model ?? completion?.Model,
-                LastActivity = parser.LastActivity,
-                LastLogAt = parser.LastLogAt,
-                MeasurementAt = completion?.FinishedAt ?? parser.LastActivity,
-                Active = parser.IsActive(now),
-                ActivityState = parser.ActivityState(now),
-                CurrentTurnStartedAt = parser.CurrentTurnStartedAt,
-                CurrentTurnOutputTokens = parser.CurrentTurnOutputTokens,
-                LastOutputAt = parser.LastOutputAt,
-                LastOutputDelta = parser.LastOutputDelta,
-                RequestIDs = [.. parser.RequestIDs],
-                RecentOutputs = [.. parser.RecentOutputs.Where(e => (now - e.At).TotalSeconds is >= -5 and <= RecentOutputWindow)],
-                SampledAt = now,
-                // Output of the last fully observed completed turn; its duration is a separate field.
-                LastOutputTokens = completion?.Output,
-            });
+            readings.AddRange(file.Reader.Readings($"{file.Source.Id}:{relative.Replace('\\', '/')}", now));
         }
         readings.Sort((a, b) =>
             a.Active != b.Active ? (a.Active ? -1 : 1)
@@ -105,89 +82,90 @@ public sealed class TokenTracker
 
     void Discover(DateTimeOffset now)
     {
-        known.Clear();
+        var discovery = new TokenDiscovery(now);
         var retained = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var (source, paths) in new[] { (TokenSource.Codex, CodexFiles()), (TokenSource.Claude, ClaudeFiles()) })
-            foreach (var path in paths)
+        foreach (var provider in providers)
+        {
+            if (provider.Format is not { } format) continue;
+            var roots = provider.ExistingRoots(home, environment);
+            if (roots.Count == 0) continue;
+            foreach (var path in format.Files(roots, discovery))
             {
                 retained.Add(path);
-                if (!files.ContainsKey(path)) files[path] = new TokenFileCursor(path, source);
+                if (!files.ContainsKey(path)) files[path] = (provider.Source, format.Open(path));
             }
+        }
+        known = discovery.Known;
         // A quiet session in a turn, or logged within the hour, is not evicted by a burst of
         // newer subagent logs; re-adding it later would restart from a bounded tail.
-        foreach (var (path, cursor) in files.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-            if (!retained.Contains(path) && retained.Count < 256 && cursor.Parser.IsRecent(now) && File.Exists(path)) retained.Add(path);
+        foreach (var (path, file) in files.OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            if (!retained.Contains(path) && retained.Count < 256 && file.Reader.IsRecent(now) && File.Exists(path)) retained.Add(path);
         files = files.Where(pair => retained.Contains(pair.Key)).ToDictionary(StringComparer.Ordinal);
     }
+}
 
-    /// `contentsOfDirectory(…, options: .skipsHiddenFiles)`; a missing folder or a file is empty.
-    static List<FileSystemInfo> Children(string directory)
+public sealed partial record TokenLogFormat
+{
+    public static readonly TokenLogFormat Codex = new(CodexFiles, path => path.EndsWith(".jsonl", StringComparison.Ordinal),
+        path => new TokenFileCursor(path, TokenSource.Codex));
+
+    public static readonly TokenLogFormat Claude = new(ClaudeFiles, path =>
     {
-        try
-        {
-            return [.. new DirectoryInfo(directory).EnumerateFileSystemInfos()
-                .Where(entry => !entry.Name.StartsWith('.') && !entry.Attributes.HasFlag(FileAttributes.Hidden))];
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or SecurityException) { return []; }
-    }
+        // Workflow journals and other side files under subagents/ are never tracked. Windows paths are matched with `/`.
+        var normalized = path.Replace('\\', '/');
+        return path.EndsWith(".jsonl", StringComparison.Ordinal)
+            && (!normalized.Contains("/subagents/", StringComparison.Ordinal)
+                || normalized[(normalized.LastIndexOf('/') + 1)..].StartsWith("agent-", StringComparison.Ordinal));
+    }, path => new TokenFileCursor(path, TokenSource.Claude));
 
-    static bool IsLog(FileSystemInfo entry) => Path.GetExtension(entry.Name) == ".jsonl";
+    static bool IsJsonl(FileSystemInfo entry) => Path.GetExtension(entry.Name) == ".jsonl";
     static bool HasNoExtension(FileSystemInfo entry) => Path.GetExtension(entry.Name).Length == 0;
     static IOrderedEnumerable<FileSystemInfo> Descending(IEnumerable<FileSystemInfo> entries) =>
         entries.OrderByDescending(entry => entry.Name, StringComparer.Ordinal);
 
-    /// The 32 newest logs by the enumeration's modification time (discovery ranking only; reads use a fresh query, rule 8),
-    /// plus up to 32 more modified since `since` (the retention hour), so a cold start opens them too.
-    /// ponytail: NTFS may report a stale time for a log held open since before launch; tracked recent logs are retained,
-    /// so it only matters with 32+ newer files.
-    List<string> Recent(IEnumerable<FileSystemInfo> entries, DateTime? since = null)
-    {
-        var logs = entries.Where(IsLog).ToList();
-        known.UnionWith(logs.Select(entry => entry.FullName));
-        return [.. logs.OrderByDescending(entry => entry.LastWriteTimeUtc)
-            .Where((entry, rank) => rank < 32 || (rank < 64 && entry.LastWriteTimeUtc >= since)).Select(entry => entry.FullName)];
-    }
-
-    List<string> CodexFiles()
+    static List<string> CodexFiles(IReadOnlyList<string> roots, TokenDiscovery discovery)
     {
         // A resumed conversation stays in its original UTC date directory. Select by file
         // modification time across date directories, without reading transcript bodies here.
         var found = new List<FileSystemInfo>();
-        var years = Children(AppPaths.CodexSessions(home))
-            .Where(entry => long.TryParse(entry.Name, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _));
-        foreach (var year in Descending(years))
-            foreach (var month in Descending(Children(year.FullName)))
-                foreach (var day in Descending(Children(month.FullName)))
-                    found.AddRange(Children(day.FullName).Where(IsLog));
-        return Recent(found);
+        foreach (var root in roots)
+        {
+            var years = TokenDiscovery.Children(root)
+                .Where(entry => long.TryParse(entry.Name, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _));
+            foreach (var year in Descending(years))
+                foreach (var month in Descending(TokenDiscovery.Children(year.FullName)))
+                    foreach (var day in Descending(TokenDiscovery.Children(month.FullName)))
+                        found.AddRange(TokenDiscovery.Children(day.FullName).Where(IsJsonl));
+        }
+        return discovery.Recent(found);
     }
 
-    List<string> ClaudeFiles()
+    static List<string> ClaudeFiles(IReadOnlyList<string> roots, TokenDiscovery discovery)
     {
         var main = new List<FileSystemInfo>();
         var subagents = new List<FileSystemInfo>();
-        foreach (var project in Children(AppPaths.ClaudeProjects(home)))
+        foreach (var project in roots.SelectMany(TokenDiscovery.Children))
         {
-            var entries = Children(project.FullName);
-            main.AddRange(entries.Where(IsLog));
+            var entries = TokenDiscovery.Children(project.FullName);
+            main.AddRange(entries.Where(IsJsonl));
             foreach (var session in entries.Where(HasNoExtension))
                 subagents.AddRange(ClaudeSubagentFiles(Path.Combine(session.FullName, "subagents"), 2));
         }
         // Workflow agents create many files; they get their own cap so main sessions stay visible.
-        return [.. Recent(main), .. Recent(subagents, clock().UtcDateTime.AddHours(-1))];
+        return [.. discovery.Recent(main), .. discovery.Recent(subagents, discovery.Now.UtcDateTime.AddHours(-1))];
     }
 
     static List<FileSystemInfo> ClaudeSubagentFiles(string directory, int remainingDepth)
     {
-        var entries = Children(directory);
-        var found = entries.Where(entry => IsLog(entry) && entry.Name.StartsWith("agent-", StringComparison.Ordinal)).ToList();
+        var entries = TokenDiscovery.Children(directory);
+        var found = entries.Where(entry => IsJsonl(entry) && entry.Name.StartsWith("agent-", StringComparison.Ordinal)).ToList();
         if (remainingDepth > 0)
             foreach (var child in entries.Where(HasNoExtension)) found.AddRange(ClaudeSubagentFiles(child.FullName, remainingDepth - 1));
         return found;
     }
 }
 
-sealed class TokenFileCursor(string path, TokenSource source)
+sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
 {
     public string Path { get; } = path;
     public TokenLogParser Parser { get; private set; } = NewParser(path, source);
@@ -227,6 +205,49 @@ sealed class TokenFileCursor(string path, TokenSource source)
         var ownSession = source == TokenSource.Codex && Guid.TryParseExact(suffix, "D", out _) ? suffix.ToLowerInvariant() : null;
         return new TokenLogParser(source, source == TokenSource.Claude && path.Replace('\\', '/').Contains("/subagents/", StringComparison.Ordinal),
             ownSession);
+    }
+
+    public bool IsRecent(DateTimeOffset now) => Parser.IsRecent(now);
+
+    /// One row once the log showed activity, none before.
+    public IEnumerable<TokenReading> Readings(string id, DateTimeOffset now)
+    {
+        var parser = Parser;
+        if (parser.LastActivity is null) return [];
+        var completion = parser.Completion;
+        var tool = parser.RunningTool;
+        return [new TokenReading(parser.Source, id)
+        {
+            SessionID = parser.SessionID,
+            ParentSessionID = parser.ParentSessionID,
+            AgentID = parser.AgentID,
+            Project = parser.Project,
+            ProjectPath = parser.ProjectPath,
+            IsSubagent = parser.IsSubagent,
+            AgentRole = SidecarRole ?? parser.AgentRole,
+            Effort = parser.Effort,
+            LastTurnDurationSeconds = parser.LastTurnDuration,
+            ToolName = tool?.Name,
+            ToolCategory = tool is { } running ? running.Name is { } name ? TokenLogParser.Category(name) : ToolCategory.Other : null,
+            Retry = parser.Retry,
+            RateLimit = parser.RateLimit,
+            Context = parser.Context,
+            Model = parser.Model ?? completion?.Model,
+            LastActivity = parser.LastActivity,
+            LastLogAt = parser.LastLogAt,
+            MeasurementAt = completion?.FinishedAt ?? parser.LastActivity,
+            Active = parser.IsActive(now),
+            ActivityState = parser.ActivityState(now),
+            CurrentTurnStartedAt = parser.CurrentTurnStartedAt,
+            CurrentTurnOutputTokens = parser.CurrentTurnOutputTokens,
+            LastOutputAt = parser.LastOutputAt,
+            LastOutputDelta = parser.LastOutputDelta,
+            RequestIDs = [.. parser.RequestIDs],
+            RecentOutputs = [.. parser.RecentOutputs.Where(e => (now - e.At).TotalSeconds is >= -5 and <= TokenTracker.RecentOutputWindow)],
+            SampledAt = now,
+            // Output of the last fully observed completed turn; its duration is a separate field.
+            LastOutputTokens = completion?.Output,
+        }];
     }
 
     public void Read(int tailLimit, DateTimeOffset now)

@@ -260,9 +260,13 @@ final class DashboardModel: ObservableObject {
     var dashboardVisible: () -> Bool = { false }
     var livePaused = false
     private let liveLimits = LiveLimitPoller()
-    /// Whether ~/.codex/sessions or ~/.claude/projects exists. Checked every 5 s on the token queue, never in a
-    /// view body; a folder that appears later restarts the log watcher. Fixtures pin it.
+    /// Whether a log folder of a client TokenCat reads exists (`TokenTracker.watchedDirectories`). Checked every 5 s on the
+    /// token queue, never in a view body; a folder that appears later restarts the log watcher. Fixtures pin it.
     @Published var logFoldersFound = true
+    /// Clients whose data folder exists, read or not (`TokenTracker.detectedSources`), refreshed with `logFoldersFound`.
+    @Published var detectedSources: Set<TokenSource> = []
+    /// Sources lists name: Codex and Claude Code always, other clients once detected or read.
+    var listedSources: [TokenSource] { TokenSource.listed(detected: detectedSources, readings: tokens) }
     /// A top-level group (`SessionGroup.id`) the dashboard should select and scroll to, from a notification or the quick menu.
     @Published var focusRequest: String?
     /// Newest `lastOutputAt` across all readings, recomputed on every publish.
@@ -407,13 +411,15 @@ final class DashboardModel: ObservableObject {
         tokenQueue.async { [weak self] in
             guard let self else { return }
             let existing = Set(self.tracker.watchedDirectories.map(\.path).filter { FileManager.default.fileExists(atPath: $0) })
+            let detected = self.tracker.detectedSources()
             DispatchQueue.main.async {
                 self.folderCheckInFlight = false
                 guard self.running, self.generation == currentGeneration else { return }
                 if self.logFoldersFound != !existing.isEmpty { self.logFoldersFound = !existing.isEmpty }
+                if self.detectedSources != detected { self.detectedSources = detected }
                 let seen = self.foldersSeen
                 self.foldersSeen = existing
-                // A folder created after the watcher started (first Codex or Claude Code run): watch it and read it now.
+                // A folder created after the watcher started (a client's first run): watch it and read it now.
                 guard let seen, !existing.isSubset(of: seen) else { return }
                 self.watcher?.start(directories: self.tracker.watchedDirectories)
                 self.refreshTokens()
@@ -422,7 +428,7 @@ final class DashboardModel: ObservableObject {
     }
     private func logsChanged(_ paths: [String]) {
         guard running else { return }
-        changedPaths.append(contentsOf: paths.filter { $0.hasSuffix(".jsonl") }.prefix(64))
+        changedPaths.append(contentsOf: paths.filter(tracker.isLog).prefix(64))
         if changedPaths.count > 256 { changedPaths.removeFirst(changedPaths.count - 256) }
         logEventCount += 1
         refreshTokens()
@@ -887,7 +893,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let preferences = model.preferences
         let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, ai: ai, recorded: model.flow.total,
             speeds: StatusBarContent.speeds(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
-            preferences: preferences, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
+            preferences: preferences, sources: model.listedSources, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         statusView.update(metrics: metrics, layout: preferences.statusBarLayout, showRunner: preferences.showRunner)
         if statusItem.length != statusView.requiredWidth { statusItem.length = statusView.requiredWidth }
         statusView.frame = NSRect(x: 0, y: 0, width: statusView.requiredWidth,
@@ -1338,7 +1344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard let button = statusItem.button, let statusView else { return }
         let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, ai: ai, recorded: model.flow.total,
             speeds: StatusBarContent.speeds(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
-            preferences: model.preferences, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
+            preferences: model.preferences, sources: model.listedSources, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         let report: [String: Any] = [
             "version": AppInfo.version,
             "layout": model.preferences.statusBarLayout.rawValue,

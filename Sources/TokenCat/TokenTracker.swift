@@ -1,43 +1,73 @@
 import Foundation
 import CoreFoundation
 
-/// Passive, bounded log reader. It never changes either CLI's configuration or saves transcripts.
+/// Passive, bounded log reader. It never changes any client's configuration or saves transcripts.
+/// Which clients and logs it reads comes from the provider registry (`TokenProvider.all`).
 final class TokenTracker {
     private let home: URL
+    private let environment: [String: String]
+    private let providers: [TokenProvider]
     private let clock: () -> Date
     private let initialTailBytes: Int
     private let discoveryInterval: TimeInterval
     private var lastDiscovery: Date?
-    private var files: [String: TokenFileCursor] = [:]
+    private var files: [String: (source: TokenSource, reader: TokenLogReader)] = [:]
     /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out ranks again at the
     /// periodic rescan instead of rerunning discovery on each file event.
     private var known = Set<String>()
     private let manager = FileManager.default
+    /// Each read client's root prefixes as given, under the real home and with the root's symlinks resolved: FSEvents and
+    /// listings name real paths (/private/var for a temporary home, a symlinked ~/.codex by its target).
+    private let logRoots: [(prefixes: [String], format: TokenLogFormat)]
     static let recentOutputWindow: TimeInterval = 600
 
     init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+         environment: [String: String] = ProcessInfo.processInfo.environment,
+         providers: [TokenProvider] = TokenProvider.all,
          now: @escaping () -> Date = Date.init,
          initialTailBytes: Int = 1_048_576,
          discoveryInterval: TimeInterval = 5) {
         home = homeDirectory
+        self.environment = environment
+        self.providers = providers
+        func real(_ path: String) -> String? {
+            guard let resolved = realpath(path, nil) else { return nil }
+            defer { free(resolved) }
+            return String(cString: resolved)
+        }
+        let realHome = real(homeDirectory.path).map { URL(fileURLWithPath: $0, isDirectory: true) }
+        logRoots = providers.compactMap { provider in
+            provider.format.map { format in
+                let given = provider.roots(homeDirectory, environment).map(\.path)
+                let paths = given + (realHome.map { provider.roots($0, environment).map(\.path) } ?? []) + given.compactMap(real)
+                return (Array(Set(paths.map { $0 + "/" })), format)
+            }
+        }
         clock = now
         self.initialTailBytes = max(128, initialTailBytes)
         self.discoveryInterval = discoveryInterval
     }
 
+    /// Candidate roots of every client with a parser; the watcher and the folder check keep the existing ones.
     var watchedDirectories: [URL] {
-        [home.appendingPathComponent(".codex/sessions"), home.appendingPathComponent(".claude/projects")]
+        providers.filter { $0.format != nil }.flatMap { $0.roots(home, environment) }
+    }
+
+    /// Clients whose data folder exists, read or not. Touches only the file system, never tracker state.
+    func detectedSources() -> Set<TokenSource> {
+        Set(providers.filter { !$0.existingRoots(home: home, environment: environment).isEmpty }.map(\.source))
+    }
+
+    /// Whether a changed path is a log of the client whose root holds it (a Claude subagent journal is not a Codex log).
+    /// Uses only immutable state, so any thread may ask.
+    func isLog(_ path: String) -> Bool {
+        logRoots.contains { root in root.prefixes.contains(where: path.hasPrefix) && root.format.isLog(path) }
     }
 
     /// File-system events name changed paths. A log that is not tracked yet triggers
     /// discovery on the next sample instead of waiting for the periodic rescan.
     func noteChanged(paths: [String]) {
-        // Workflow journals and other side files under subagents/ are never tracked.
-        func candidate(_ path: String) -> Bool {
-            path.hasSuffix(".jsonl") && files[path] == nil && !known.contains(path)
-                && (!path.contains("/subagents/") || (path as NSString).lastPathComponent.hasPrefix("agent-"))
-        }
-        if paths.contains(where: candidate) { lastDiscovery = nil }
+        if paths.contains(where: { files[$0] == nil && !known.contains($0) && isLog($0) }) { lastDiscovery = nil }
     }
 
     func sample() -> [TokenReading] {
@@ -47,51 +77,11 @@ final class TokenTracker {
             lastDiscovery = now
         }
         // One pool per file: a cold start parses MBs of tails, and without it every temporary lives until the sample ends.
-        for file in files.values { autoreleasepool { file.read(tailLimit: initialTailBytes, now: now) } }
+        for file in files.values { autoreleasepool { file.reader.read(tailLimit: initialTailBytes, now: now) } }
         let prefix = home.path + "/"
-        return files.values.compactMap { file -> TokenReading? in
-            let parser = file.parser
-            guard parser.lastActivity != nil else { return nil }
-            let completion = parser.completion
-            let running = parser.isActive(at: now)
-            let path = file.url.path
+        return files.flatMap { path, file -> [TokenReading] in
             let relative = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
-            var reading = TokenReading(source: parser.source, id: "\(parser.source.rawValue):\(relative)")
-            reading.sessionID = parser.sessionID
-            reading.parentSessionID = parser.parentSessionID
-            reading.agentID = parser.agentID
-            reading.project = parser.project
-            reading.projectPath = parser.projectPath
-            reading.isSubagent = parser.isSubagent
-            reading.agentRole = file.sidecarRole ?? parser.agentRole
-            reading.effort = parser.effort
-            reading.lastTurnDurationSeconds = parser.lastTurnDuration
-            if let tool = parser.runningTool {
-                reading.toolName = tool.name
-                reading.toolCategory = tool.name.map(TokenLogParser.category) ?? .other
-            }
-            reading.retry = parser.retry
-            reading.rateLimit = parser.rateLimit
-            reading.context = parser.context
-            reading.model = parser.model ?? completion?.model
-            reading.lastActivity = parser.lastActivity
-            reading.lastLogAt = parser.lastLogAt
-            reading.measurementAt = completion?.finishedAt ?? parser.lastActivity
-            reading.active = running
-            reading.activityState = parser.activityState(at: now)
-            reading.currentTurnStartedAt = parser.currentTurnStartedAt
-            reading.currentTurnOutputTokens = parser.currentTurnOutputTokens
-            reading.lastOutputAt = parser.lastOutputAt
-            reading.lastOutputDelta = parser.lastOutputDelta
-            reading.requestIDs = parser.requestIDs
-            reading.recentOutputs = parser.recentOutputs.filter {
-                let age = now.timeIntervalSince($0.at)
-                return age >= -5 && age <= Self.recentOutputWindow
-            }
-            reading.sampledAt = now
-            // Output of the last fully observed completed turn; its duration is a separate field.
-            reading.lastOutputTokens = completion?.output
-            return reading
+            return file.reader.readings(id: "\(file.source.rawValue):\(relative)", now: now)
         }.sorted {
             if $0.active != $1.active { return $0.active }
             if $0.lastActivity != $1.lastActivity {
@@ -102,85 +92,77 @@ final class TokenTracker {
     }
 
     private func discover(now: Date) {
-        known.removeAll(keepingCapacity: true)
-        let roots: [(TokenSource, [URL])] = [
-            (.codex, codexFiles()), (.claude, claudeFiles())
-        ]
+        let discovery = TokenDiscovery(now: now)
         var retained = Set<String>()
-        for (source, urls) in roots {
-            for url in urls {
+        for provider in providers {
+            guard let format = provider.format else { continue }
+            let roots = provider.existingRoots(home: home, environment: environment)
+            guard !roots.isEmpty else { continue }
+            for url in format.files(roots, discovery) {
                 retained.insert(url.path)
-                if files[url.path] == nil { files[url.path] = TokenFileCursor(url: url, source: source) }
+                if files[url.path] == nil { files[url.path] = (provider.source, format.open(url)) }
             }
         }
+        known = discovery.known
         // A quiet session in a turn, or logged within the hour, is not evicted by a burst of
         // newer subagent logs; re-adding it later would restart from a bounded tail.
-        for (path, cursor) in files.sorted(by: { $0.key < $1.key })
-        where !retained.contains(path) && retained.count < 256 && cursor.parser.isRecent(at: now)
+        for (path, file) in files.sorted(by: { $0.key < $1.key })
+        where !retained.contains(path) && retained.count < 256 && file.reader.isRecent(at: now)
             && manager.fileExists(atPath: path) {
             retained.insert(path)
         }
         files = files.filter { retained.contains($0.key) }
     }
+}
 
-    private func children(_ directory: URL) -> [URL] {
-        (try? manager.contentsOfDirectory(at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
-            options: [.skipsHiddenFiles])) ?? []
-    }
-
-    /// The 32 newest, plus up to 32 more modified since `cutoff` (the retention hour), so a cold start opens them too.
-    private func recent(_ urls: [URL], keepingSince cutoff: Date = .distantFuture) -> [URL] {
-        let dated: [(url: URL, modified: Date)] = urls.filter { $0.pathExtension == "jsonl" }
-            .map { ($0, (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast) }
-        known.formUnion(dated.map(\.url.path))
-        return dated.sorted { $0.modified > $1.modified }.enumerated()
-            .filter { $0.offset < 32 || ($0.offset < 64 && $0.element.modified >= cutoff) }.map { $0.element.url }
-    }
-
-    private func codexFiles() -> [URL] {
+extension TokenLogFormat {
+    static let codex = TokenLogFormat(files: { roots, discovery in
         // A resumed conversation stays in its original UTC date directory. Select by file
         // modification time across date directories, without reading transcript bodies here.
-        let root = home.appendingPathComponent(".codex/sessions")
         var found: [URL] = []
-        for year in children(root).filter({ Int($0.lastPathComponent) != nil }).sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
-            for month in children(year).sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
-                for day in children(month).sorted(by: { $0.lastPathComponent > $1.lastPathComponent }) {
-                    found.append(contentsOf: children(day).filter { $0.pathExtension == "jsonl" })
+        func descending(_ urls: [URL]) -> [URL] { urls.sorted { $0.lastPathComponent > $1.lastPathComponent } }
+        for root in roots {
+            for year in descending(discovery.children(root).filter({ Int($0.lastPathComponent) != nil })) {
+                for month in descending(discovery.children(year)) {
+                    for day in descending(discovery.children(month)) {
+                        found.append(contentsOf: discovery.children(day).filter { $0.pathExtension == "jsonl" })
+                    }
                 }
             }
         }
-        return recent(found)
-    }
+        return discovery.recent(found)
+    }, isLog: { $0.hasSuffix(".jsonl") }, open: { TokenFileCursor(url: $0, source: .codex) })
 
-    private func claudeFiles() -> [URL] {
-        let root = home.appendingPathComponent(".claude/projects")
+    static let claude = TokenLogFormat(files: { roots, discovery in
+        func subagentFiles(in directory: URL, remainingDepth: Int) -> [URL] {
+            let entries = discovery.children(directory)
+            var found = entries.filter { $0.pathExtension == "jsonl" && $0.lastPathComponent.hasPrefix("agent-") }
+            if remainingDepth > 0 {
+                for child in entries where child.pathExtension.isEmpty {
+                    found.append(contentsOf: subagentFiles(in: child, remainingDepth: remainingDepth - 1))
+                }
+            }
+            return found
+        }
         var main: [URL] = []
         var subagents: [URL] = []
-        for project in children(root) {
-            let entries = children(project)
+        for project in roots.flatMap(discovery.children) {
+            let entries = discovery.children(project)
             main.append(contentsOf: entries.filter { $0.pathExtension == "jsonl" })
             for session in entries where session.pathExtension.isEmpty {
-                subagents.append(contentsOf: claudeSubagentFiles(in: session.appendingPathComponent("subagents"), remainingDepth: 2))
+                subagents.append(contentsOf: subagentFiles(in: session.appendingPathComponent("subagents"), remainingDepth: 2))
             }
         }
         // Workflow agents create many files; they get their own cap so main sessions stay visible.
-        return recent(main) + recent(subagents, keepingSince: clock().addingTimeInterval(-3_600))
-    }
-
-    private func claudeSubagentFiles(in directory: URL, remainingDepth: Int) -> [URL] {
-        let entries = children(directory)
-        var found = entries.filter { $0.pathExtension == "jsonl" && $0.lastPathComponent.hasPrefix("agent-") }
-        if remainingDepth > 0 {
-            for child in entries where child.pathExtension.isEmpty {
-                found.append(contentsOf: claudeSubagentFiles(in: child, remainingDepth: remainingDepth - 1))
-            }
-        }
-        return found
-    }
+        return discovery.recent(main) + discovery.recent(subagents, keepingSince: discovery.now.addingTimeInterval(-3_600))
+    }, isLog: { path in
+        // Workflow journals and other side files under subagents/ are never tracked.
+        path.hasSuffix(".jsonl") && (!path.contains("/subagents/") || (path as NSString).lastPathComponent.hasPrefix("agent-"))
+    }, open: { TokenFileCursor(url: $0, source: .claude) })
 }
 
-private final class TokenFileCursor {
+/// Codex and Claude Code logs: a bounded JSONL tail fed line by line to `TokenLogParser`.
+private final class TokenFileCursor: TokenLogReader {
     let url: URL
     private(set) var parser: TokenLogParser
     private var offset: UInt64 = 0
@@ -195,6 +177,49 @@ private final class TokenFileCursor {
     init(url: URL, source: TokenSource) {
         self.url = url
         parser = Self.parser(for: url, source: source)
+    }
+
+    func isRecent(at now: Date) -> Bool { parser.isRecent(at: now) }
+
+    func readings(id: String, now: Date) -> [TokenReading] {
+        guard parser.lastActivity != nil else { return [] }
+        let completion = parser.completion
+        var reading = TokenReading(source: parser.source, id: id)
+        reading.sessionID = parser.sessionID
+        reading.parentSessionID = parser.parentSessionID
+        reading.agentID = parser.agentID
+        reading.project = parser.project
+        reading.projectPath = parser.projectPath
+        reading.isSubagent = parser.isSubagent
+        reading.agentRole = sidecarRole ?? parser.agentRole
+        reading.effort = parser.effort
+        reading.lastTurnDurationSeconds = parser.lastTurnDuration
+        if let tool = parser.runningTool {
+            reading.toolName = tool.name
+            reading.toolCategory = tool.name.map(TokenLogParser.category) ?? .other
+        }
+        reading.retry = parser.retry
+        reading.rateLimit = parser.rateLimit
+        reading.context = parser.context
+        reading.model = parser.model ?? completion?.model
+        reading.lastActivity = parser.lastActivity
+        reading.lastLogAt = parser.lastLogAt
+        reading.measurementAt = completion?.finishedAt ?? parser.lastActivity
+        reading.active = parser.isActive(at: now)
+        reading.activityState = parser.activityState(at: now)
+        reading.currentTurnStartedAt = parser.currentTurnStartedAt
+        reading.currentTurnOutputTokens = parser.currentTurnOutputTokens
+        reading.lastOutputAt = parser.lastOutputAt
+        reading.lastOutputDelta = parser.lastOutputDelta
+        reading.requestIDs = parser.requestIDs
+        reading.recentOutputs = parser.recentOutputs.filter {
+            let age = now.timeIntervalSince($0.at)
+            return age >= -5 && age <= TokenTracker.recentOutputWindow
+        }
+        reading.sampledAt = now
+        // Output of the last fully observed completed turn; its duration is a separate field.
+        reading.lastOutputTokens = completion?.output
+        return [reading]
     }
 
     /// The sidecar may be written after the log, so it is retried while the log grows.
@@ -505,6 +530,8 @@ final class TokenLogParser {
         switch source {
         case .codex: consumeCodex(record, date: date)
         case .claude: consumeClaude(record, date: date, previousLog: lastLogAt)
+        // Only Codex and Claude Code logs reach this parser (`TokenLogFormat.codex`/`.claude`).
+        default: return
         }
         if let date { lastLogAt = max(lastLogAt ?? date, date) }
     }
@@ -1141,6 +1168,7 @@ final class TokenLogParser {
             guard text.contains("\"type\":\"user\""), text.contains("\"type\":\"tool_result\""),
                   isSubagent || !text.contains("\"isSidechain\":true") else { return }
             id = value(after: "tool_use_id")
+        default: return
         }
         guard let id, removePendingTool(id) else { return }
         if turnOpen { observedState = pendingTools.isEmpty ? .working : .tool }

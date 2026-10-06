@@ -328,8 +328,13 @@ sealed class SessionList : Border
         sprite.HorizontalAlignment = HorizontalAlignment.Center;
         stack.Children.Add(sprite);
         TextBlock Centered(TextBlock text) { text.TextAlignment = TextAlignment.Center; text.HorizontalAlignment = HorizontalAlignment.Center; text.TextWrapping = TextWrapping.Wrap; return text; }
-        var title = Centered(Ui.Text(foldersFound ? Loc("아직 Codex·Claude Code 세션 기록이 없습니다", "No Codex or Claude Code sessions yet")
-            : Loc("Codex·Claude Code 기록 폴더를 찾지 못했습니다", "Couldn't find Codex or Claude Code log folders"), Font.BodyMedium));
+        // The clients TokenCat reads (providers with a format): "Codex·Claude Code" / "Codex or Claude Code" / "A, B or C".
+        var read = TokenProvider.All.Where(provider => provider.Format is not null).ToList();
+        var titles = read.Select(provider => provider.Source.Title).ToList();
+        var names = Loc(string.Join("·", titles),
+            titles.Count < 2 ? string.Concat(titles) : string.Join(", ", titles.SkipLast(1)) + " or " + titles[^1]);
+        var title = Centered(Ui.Text(foldersFound ? Loc($"아직 {names} 세션 기록이 없습니다", $"No {names} sessions yet")
+            : Loc($"{names} 기록 폴더를 찾지 못했습니다", $"Couldn't find {names} log folders"), Font.BodyMedium));
         title.Margin = new Thickness(0, 8, 0, 4);
         stack.Children.Add(title);
         if (foldersFound)
@@ -340,7 +345,9 @@ sealed class SessionList : Border
         }
         else
         {
-            stack.Children.Add(Centered(Ui.Text(@"%USERPROFILE%\.codex\sessions · %USERPROFILE%\.claude\projects", Font.MetaMono, Theme.Secondary)));
+            // Default folders, home written as %USERPROFILE% (no environment override applied).
+            var folders = read.SelectMany(provider => provider.Roots("%USERPROFILE%", _ => null));
+            stack.Children.Add(Centered(Ui.Text(string.Join(" · ", folders), Font.MetaMono, Theme.Secondary)));
             var again = Ui.SmallButton(Loc("다시 확인", "Check Again"), () => Recheck?.Invoke());
             again.HorizontalAlignment = HorizontalAlignment.Center;
             again.Margin = new Thickness(0, 8, 0, 0);

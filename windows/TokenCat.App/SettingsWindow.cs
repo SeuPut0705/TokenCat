@@ -825,7 +825,7 @@ sealed class SettingsView : Grid
         }
         var rows = new List<UIElement?> { Labeled(Label(Loc("수집기", "Collector")), collector) };
         if (dashboard.SetupNote is { } note) rows.Add(Caption(note, Theme.Warning));
-        foreach (var source in Enum.GetValues<TokenSource>())
+        foreach (var source in TokenSource.TelemetryClients)
         {
             var status = ClientStatus(state.TelemetryRestartNeeded.Contains(source), state.TelemetryRestartExpired.Contains(source),
                 state.TelemetryLastReceived.TryGetValue(source, out var received) ? received : null,

@@ -872,18 +872,50 @@ public static class TrackerChecks
             burst.NoteChanged([unseen]);
             check(capped == 35 && burst.Sample().Count == 36, "A write to a log outside the discovery caps reran discovery, or a new log did not");
 
-            // Windows (DESIGN WP1): watcher hints use backslashes there; only agent-* logs under subagents\ are tracked.
+            // Windows (DESIGN WP1): watcher hints use backslashes there; only agent-* logs under subagents\ are tracked, and only
+            // paths under a client's root count.
             var hintHome = Path.Combine(root, "hints");
             var hintFolder = Path.Combine(hintHome, ".claude", "projects", "p");
             Directory.CreateDirectory(hintFolder);
             var hintTracker = new TokenTracker(hintHome, () => now, discoveryIntervalSeconds: 3_600);
             hintTracker.Sample();
             File.WriteAllBytes(Path.Combine(hintFolder, "late.jsonl"), Line(ClaudeUser("h", "2026-10-04T04:00:00Z", "go", """{"sessionId":"late"}""")));
-            hintTracker.NoteChanged([@"C:\Users\me\.claude\projects\p\s\subagents\journal.jsonl", @"C:\Users\me\.claude\projects\p\notes.txt"]);
+            var hinted = hintFolder.Replace('/', '\\');
+            hintTracker.NoteChanged([hinted + @"\s\subagents\journal.jsonl", hinted + @"\notes.txt", @"C:\Elsewhere\other.jsonl"]);
             var ignoredHint = hintTracker.Sample().Count == 0;
-            hintTracker.NoteChanged([@"C:\Users\me\.claude\projects\p\s\subagents\agent-x.jsonl"]);
+            hintTracker.NoteChanged([hinted + @"\s\subagents\agent-x.jsonl"]);
             check(ignoredHint && hintTracker.Sample().Any(r => r.SessionID == "late"),
                   @"Windows: a subagents\ side file triggered discovery, or an agent-* log did not");
+
+            // Provider registry: a client counts as detected by its data folder (environment overrides honoured); one without a
+            // format is never read. Lists name Codex and Claude Code always, any other once detected or carried by a reading.
+            var detectHome = Path.Combine(root, "detect");
+            var dataHome = Path.Combine(root, "detect-data");
+            Directory.CreateDirectory(Path.Combine(detectHome, ".gemini", "tmp", "p"));
+            File.WriteAllBytes(Path.Combine(detectHome, ".gemini", "tmp", "p", "logs.jsonl"), Line(Codex("task_started", "2026-10-04T04:00:00Z", """{"turn_id":"g"}""")));
+            Directory.CreateDirectory(Path.Combine(detectHome, ".factory", "sessions"));
+            Directory.CreateDirectory(Path.Combine(dataHome, "amp", "threads"));
+            Directory.CreateDirectory(Path.Combine(detectHome, ".claude", "projects"));
+            var environment = new Dictionary<string, string> { ["XDG_DATA_HOME"] = dataHome, ["OPENCODE_DB"] = "" };
+            var detectTracker = new TokenTracker(detectHome, () => now, environment: key => environment.GetValueOrDefault(key));
+            var detectedSources = detectTracker.DetectedSources();
+            check(detectedSources.SetEquals([TokenSource.Claude, TokenSource.Gemini, TokenSource.Amp, TokenSource.Droid]) && detectTracker.Sample().Count == 0,
+                  "Provider registry: detection by data folder (with environment overrides) is wrong, or an unread format produced rows");
+            check(detectTracker.WatchedDirectories.SequenceEqual([AppPaths.CodexSessions(Path.GetFullPath(detectHome)), AppPaths.ClaudeProjects(Path.GetFullPath(detectHome))])
+                  && !detectTracker.IsLog(Path.Combine(detectHome, ".claude", "projects", "p", "notes.txt"))
+                  && !detectTracker.IsLog(Path.Combine(detectHome, ".gemini", "tmp", "p", "logs.jsonl"))
+                  && detectTracker.IsLog(Path.Combine(detectHome, ".claude", "projects", "p", "x.jsonl")),
+                  "Provider registry: watched roots or changed-log matching are wrong");
+            check(TokenProvider.All.Select(provider => provider.Source).SequenceEqual(Enum.GetValues<TokenSource>())
+                  && TokenSource.TelemetryClients.SequenceEqual([TokenSource.Codex, TokenSource.Claude])
+                  && TokenSource.Listed(new HashSet<TokenSource>(), []).SequenceEqual([TokenSource.Codex, TokenSource.Claude])
+                  && TokenSource.Listed(detectedSources, [new TokenReading(TokenSource.Qwen)])
+                      .SequenceEqual([TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.Qwen, TokenSource.Amp, TokenSource.Droid])
+                  && Enum.GetValues<TokenSource>().Select(source => source.Id).SequenceEqual(["codex", "claude", "opencode", "gemini", "qwen", "copilot", "amp", "cline", "omp", "droid"]),
+                  "Provider registry order, telemetry clients, listed sources or source ids are wrong");
+            var sourceJson = string.Concat(Encoding.UTF8.GetString(Json.Serialize(Enum.GetValues<TokenSource>())).Where(c => !char.IsWhiteSpace(c)));
+            check(sourceJson == """["codex","claude","opencode","gemini","qwen","copilot","amp","cline","omp","droid"]""",
+                  $"Source JSON names differ from the Swift raw values: {sourceJson}");
 
             // Windows (DESIGN WP1): CRLF line ends, read forward and scanned backward for a Claude turn start.
             var crlfHome = Path.Combine(root, "crlf");

@@ -127,9 +127,20 @@ public sealed class TelemetrySetup
 
     string ActiveManifest => Path.Combine(support, "telemetry-connection.json");
     string BridgeScript => Path.Combine(support, StatusLineScriptName);
-    string ConfigPath(TokenSource source) => source == Codex ? AppPaths.CodexConfig(home) : AppPaths.ClaudeSettings(home);
+    // Telemetry setup covers `TokenSource.TelemetryClients` (Codex, Claude Code) only.
+    string ConfigPath(TokenSource source) => source switch
+    {
+        Codex => AppPaths.CodexConfig(home),
+        Claude => AppPaths.ClaudeSettings(home),
+        _ => throw new ArgumentOutOfRangeException(nameof(source)),
+    };
     string BackupDirectory(Manifest manifest) => Path.Combine(support, "telemetry-backups", manifest.BackupDirectory);
-    static string BackupPath(TokenSource source, string directory) => Path.Combine(directory, source == Codex ? "codex-config.toml" : "claude-settings.json");
+    static string BackupPath(TokenSource source, string directory) => Path.Combine(directory, source switch
+    {
+        Codex => "codex-config.toml",
+        Claude => "claude-settings.json",
+        _ => throw new ArgumentOutOfRangeException(nameof(source)),
+    });
 
     sealed record Change(TokenSource Source, string Path, byte[]? Original, byte[] Replacement);
 
@@ -294,8 +305,12 @@ public sealed class TelemetrySetup
                 }
                 if (entry.Source == Claude) statusLine = RestoreStatusLine(manifest, directory);
                 if (Read(path) is not { } current) continue;
-                if ((entry.Source == Claude ? RevertClaude(current, backup, bridged: manifest.StatusLine is not null) : RevertCodex(current, backup))
-                    is not { } reverted)
+                if ((entry.Source switch
+                    {
+                        Claude => RevertClaude(current, backup, bridged: manifest.StatusLine is not null),
+                        Codex => RevertCodex(current, backup),
+                        _ => null,
+                    }) is not { } reverted)
                 {
                     refused.Add(entry.Source);
                     continue;
