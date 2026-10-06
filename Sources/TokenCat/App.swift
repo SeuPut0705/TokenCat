@@ -3,7 +3,9 @@ import Combine
 import SwiftUI
 
 enum MetricID: String, CaseIterable, Codable, Identifiable {
-    case cpu, memory, disk, battery, network, ai
+    case cpu, memory, disk, battery, network, ai, codexSpeed, claudeSpeed
+    /// Shown by default and by the full presets; the speed items are opt-in.
+    static let standard: [MetricID] = [.cpu, .memory, .disk, .battery, .network, .ai]
     var id: String { rawValue }
     var title: String {
         switch self {
@@ -13,6 +15,16 @@ enum MetricID: String, CaseIterable, Codable, Identifiable {
         case .battery: return loc("배터리", "Battery")
         case .network: return loc("네트워크", "Network")
         case .ai: return loc("AI 세션", "AI sessions")
+        case .codexSpeed: return loc("Codex 속도", "Codex speed")
+        case .claudeSpeed: return loc("Claude 속도", "Claude speed")
+        }
+    }
+    /// The client whose "지금 속도" a speed item shows.
+    var speedSource: TokenSource? {
+        switch self {
+        case .codexSpeed: return .codex
+        case .claudeSpeed: return .claude
+        default: return nil
         }
     }
 }
@@ -53,7 +65,8 @@ final class Preferences: ObservableObject {
         var ordered: [MetricID] = []
         for id in saved + MetricID.allCases where !ordered.contains(id) { ordered.append(id) }
         order = ordered
-        visible = Set((defaults.stringArray(forKey: "visibleMetrics") ?? MetricID.allCases.map(\.rawValue)).compactMap(migrated))
+        // Items added later (the speed items) append to a stored order and stay hidden until turned on.
+        visible = Set((defaults.stringArray(forKey: "visibleMetrics") ?? MetricID.standard.map(\.rawValue)).compactMap(migrated))
         // New installs, the legacy "tokens" value and an unconfirmed older "cpu" start on AI activity.
         animationSource = RunnerMotion.stored(defaults.string(forKey: "animationSource"),
                                               confirmed: defaults.bool(forKey: RunnerMotion.confirmedKey))
@@ -113,7 +126,7 @@ final class Preferences: ObservableObject {
         var order: [MetricID], visible: Set<MetricID>, animationSource: RunnerMotion, showRunner: Bool, character: RunnerCharacter
         var statusBarLayout: StatusBarLayout, notifyTurnComplete: Bool, notifyInput: Bool, notifyInputSound: Bool, notifyUpdate: Bool
     }
-    static let defaultSnapshot = Snapshot(order: MetricID.allCases, visible: Set(MetricID.allCases), animationSource: .activity,
+    static let defaultSnapshot = Snapshot(order: MetricID.allCases, visible: Set(MetricID.standard), animationSource: .activity,
                                           showRunner: true, character: .cat, statusBarLayout: .compact, notifyTurnComplete: false,
                                           notifyInput: false, notifyInputSound: false, notifyUpdate: false)
     var snapshot: Snapshot {
@@ -183,7 +196,8 @@ enum DisplayPreset: String, CaseIterable, Identifiable {
         switch self {
         case .minimal: return nil
         case .aiFocus: return [.ai, .cpu, .memory]
-        case .systemMonitor, .everythingInline: return MetricID.allCases
+        // Fixed sets: a later item never turns an existing setup into 사용자 지정.
+        case .systemMonitor, .everythingInline: return MetricID.standard
         }
     }
 }
@@ -869,6 +883,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard let button = statusItem?.button, let statusView else { return }
         let preferences = model.preferences
         let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, ai: ai, recorded: model.flow.total,
+            speeds: StatusBarContent.speeds(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
             preferences: preferences, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         statusView.update(metrics: metrics, layout: preferences.statusBarLayout, showRunner: preferences.showRunner)
         if statusItem.length != statusView.requiredWidth { statusItem.length = statusView.requiredWidth }
@@ -1319,6 +1334,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private func writeStatusReadback(path: String) {
         guard let button = statusItem.button, let statusView else { return }
         let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, ai: ai, recorded: model.flow.total,
+            speeds: StatusBarContent.speeds(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
             preferences: model.preferences, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         let report: [String: Any] = [
             "version": AppInfo.version,

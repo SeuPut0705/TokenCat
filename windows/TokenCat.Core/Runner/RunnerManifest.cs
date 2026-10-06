@@ -38,9 +38,16 @@ public static class RunnerCharacterText
         public string Sheet => character == RunnerCharacter.Cat ? "runner-v2" : $"runner-{character.Id}";
     }
 
+    /// The Swift raw value of a case: its name with a lowercase first letter ("sit", "codexSpeed").
+    public static string Raw<T>(T value) where T : struct, Enum
+    {
+        var name = value.ToString();
+        return char.ToLowerInvariant(name[0]) + name[1..];
+    }
+
     /// The raw value back to the case; null for anything else (an unknown stored id falls back to the caller's default).
     public static T? Parse<T>(string? raw) where T : struct, Enum =>
-        Enum.GetValues<T>().Where(value => value.ToString().ToLowerInvariant() == raw).Cast<T?>().FirstOrDefault();
+        Enum.GetValues<T>().Where(value => Raw(value) == raw).Cast<T?>().FirstOrDefault();
 }
 
 /// Frame timing for one pose (K-6), seconds. Equality compares the lists' contents (rule 2).

@@ -132,6 +132,8 @@ With **Live usage limits** on (the default, in Settings › Telemetry), TokenCat
 
 Choose **Minimal** (about 72 pt), **Two Lines** (the default, about 272 pt) or **One Line** (about 410 pt), then turn items on or off and drag them to reorder. Each item has a fixed width, so the icons next to it don't shift when values change, and labels follow the bar's light or dark appearance so they stay readable on tinted bars. On a Mac without a battery, the battery item is hidden.
 
+Two more items are off by default: turn on **Codex speed** or **Claude speed** in Settings › Menu Bar to show a `>_` or `✦` glyph with that client's current speed in tok/s, picked by the same rule as the dashboard's **Speed now**, or `—` without a fresh measurement.
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/menubar-states-dark.png">
@@ -172,7 +174,7 @@ The cat is pixel art drawn 1:1, without blur, in a 32 × 20 pt cell. The dashboa
 
 Besides the cat, you can pick a dog, hamster, penguin or robot in Settings › Character or in the quick menu's Character submenu. All five share the same poses and pace, so only the look changes; the dashboard header and the app icon keep the cat.
 
-Presets set up the menu bar in one step: **Minimal**, **AI Focus** (AI, CPU and memory on two lines), **System Monitor** (every item on two lines) or **All on One Line** (every item on one line). Choose one in Settings › Menu Bar › Preset. Picking a preset also shows the character again, and when the layout or items no longer match any preset, the picker shows **Custom**.
+Presets set up the menu bar in one step: **Minimal**, **AI Focus** (AI, CPU and memory on two lines), **System Monitor** (CPU, memory, storage, battery, network and AI on two lines) or **All on One Line** (the same items on one line). Choose one in Settings › Menu Bar › Preset. Picking a preset also shows the character again, and when the layout or items no longer match any preset, the picker shows **Custom**.
 
 ### Settings and notifications
 
@@ -334,7 +336,8 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 
 **What's different from macOS**
 
-- **Widget on screen**: the taskbar can't show text, so the menu bar item floats on screen instead: the character, the AI status and session count (Minimal), or the menu bar's Two Lines and One Line layouts. Pick a preset in Settings › General. Drag it anywhere (edges snap); it's remembered per monitor setup, never takes the focus and hides while a full-screen app is in front. Click it for the dashboard, right-click for the quick menu. To hide it, right-click › **Hide Widget** or turn off `Show widget on screen` in Settings › General.
+- **Widget on screen**: the taskbar can't show text, so the menu bar item floats on screen instead: the character, the AI status and session count (Minimal), or the menu bar's Two Lines and One Line layouts. Drag it anywhere (edges snap); it's remembered per monitor setup, never takes the focus and hides while a full-screen app is in front. Click it for the dashboard, right-click for the quick menu. To hide it, right-click › **Hide Widget** or turn off `Show widget on screen` in Settings › Widget.
+- **Settings › Widget** is the Mac's Menu Bar tab: preset, layout, and which items show in what order (drag a row, press Alt+↑/↓ or right-click it), including the Codex speed and Claude speed items, which are off by default. It also sets the widget's size, 100–300 %, which **Widget Size** in the right-click menu and Ctrl + mouse wheel over the widget change too; a resized widget keeps its nearest screen edges in place. `Show character in widget` is on the Character tab.
 - **Tray icon**: the character and its state. A yellow corner dot means input is needed, an orange one an API retry. Hover for a short summary, click for the dashboard with all the numbers, and right-click for the quick menu.
 - **Size follows the display scale**: at 100–175 % the icon is the cat head, which bobs while working; at 200 % and above it's the full-body character you picked.
 - **WSL isn't tracked**: only Codex and Claude Code running on Windows itself are collected (`%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.claude\projects`).

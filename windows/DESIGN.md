@@ -239,7 +239,7 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
 ### 3.2 Explicit cuts (v1) and their upgrade paths
 | Cut | Reason | Later |
 |---|---|---|
-| Menu-bar item editing (per-item visibility and drag ordering) | A tray item is one square icon | Since 0.12.0 the on-screen widget (§4.7) draws the layouts and presets; items change only through presets. |
+| Menu-bar item editing in the tray (per-item visibility and drag ordering) | A tray item is one square icon | Since 0.12.0 the on-screen widget (§4.7) draws the menu-bar item; since 0.13.0 Settings › Widget (§4.4) edits it like the mac's Menu Bar pane (items, order, layout, presets), with the character's visibility on the Character page. |
 | Character art below 30 px (dog/hamster/penguin/robot heads, small bodies) | No such art exists. Non-integer scaling ruins it. | `Assets/Generator` emits `tray-<character>-16/24` sheets; App loads them by manifest. |
 | Wrapping an **existing** Claude statusLine | Needs shell detection, unverifiable here | v1.1 after PC test (open question 2) |
 | WSL logs, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` | Parity with mac. WSL also needs polling over `\\wsl.localhost` (no change notifications) and a collector reachable from WSL2 NAT. | Extra roots in `AppPaths`; the empty state names WSL in v1 (§2.2) |
@@ -292,17 +292,44 @@ deactivates (hides) it, so a click within 300 ms of a hide does nothing instead 
 and raises `MouseDoubleClick`, not `MouseClick`, so that event shows it again. The spike has exactly this
 (`Native.ShowAt`). Sections and order are the mac `DashboardView.body`. Fonts: Segoe UI Variable/Segoe UI
 with `Typography.NumeralAlignment="Tabular"` for "mono" digits. Korean falls back to Malgun Gothic automatically.
+**Drag to detach** (the mac popover's `detachableWindow`): a left press on a part that doesn't click (the header, card backgrounds,
+empty space; not buttons, links, the session list, the System area or the scroll bar) moved past
+`SystemParameters.MinimumHorizontal/VerticalDragDistance` hides the flyout and opens "Open as window" with the grabbed point under the
+pointer (placed before it shows, through `ClientToScreen`: `PointToScreen` needs the RootVisual that only `Show` sets; a point lower
+than the window is tall stays 12 DIP inside its bottom edge) and the selected group still selected; while the button is held,
+`DragMove` (the system move loop) carries it on. A click without movement does nothing new.
+**Window bounds**: "Open as window" remembers its last position and height while neither minimized nor maximized
+(`dashboardWindowBounds` = `[x, y, width, height]`, physical pixels, written on close; the width stays fixed). It comes back moved and
+shortened into the work area holding most of it (`DashboardBounds.Restore`, Core); when none of it is on a current work area (that monitor
+is gone) it opens where Windows puts a new window, as on the first opening. Checks: Core — restore/clamp and the stored value; App — the
+header drags and the session list and Task Manager area don't, a click or a move within the drag distance doesn't detach, a one-axis
+drag hands over the grabbed offset, the window opens under the pointer (also for a point lower than it is tall) and comes back with its
+spot and height, and a selected child row or open detail becomes its top-level group in the window.
 
 ### 4.3 Right click → context menu (`ContextMenuStrip`)
 Disabled headline (`QuickMenuSummary.headline`), session rows with the state colour square (click focuses that group in the flyout),
-separator, **Open**, **Open as window**, separator, **Character ▸** (5, checked), **Motion source ▸** (4, checked), separator,
-update item (`UpdateState.quickMenuTitle`) when present, **Settings…**, **Task Manager**, **About TokenCat**, separator, **Quit TokenCat**.
-"Layout" and "Show in menu bar" are cut; **Show/Hide Widget** follows **Open as window** (§4.7). `Application.SetColorMode(SystemColorMode.System)` at start and again after a light/dark change should make the menu follow dark mode (PC check).
+separator, **Open**, **Open as window**, separator, **Layout ▸** (3, checked), **Character ▸** (5, checked, then a separator and
+**Show in Widget**, the mac "Show in Menu Bar": checked while shown, disabled when nothing else would be drawn), **Motion source ▸**
+(4, checked), separator, update item (`UpdateState.quickMenuTitle`) when present, **Settings…**, **Task Manager**, **About TokenCat**,
+separator, **Quit TokenCat**. **Show/Hide Widget** follows **Open as window**, then **Widget Size ▸** (the seven sizes, checked)
+while the widget is on (§4.7). The widget's right-click shows this same menu. `Application.SetColorMode(SystemColorMode.System)` at start and again after a light/dark change should make the menu follow dark mode (PC check).
 
 ### 4.4 Settings window
-Normal WPF window with four pages (left nav):
-* **General**: widget (show on screen, preset; §4.7), start at login (with Run/StartupApproved status text), notifications (input, turn end), Restore Defaults.
-* **Character**: picker with live 2× preview, motion source with `caption`/`subtitle` texts.
+Normal WPF window with the mac's five pages (left nav), "메뉴 막대" named **Widget**:
+* **General**: start at login (with Run/StartupApproved status text), notifications (input, turn end), Restore Defaults. Restore
+  Defaults also resets the widget's layout, item order and visibility, character visibility and size (the mac restores items, layout
+  and character); the login item, update settings, showing the widget and its saved positions stay. `Preferences.Reset` returns the
+  previous snapshot and `Restore` brings all of it back.
+* **Widget** (mac `MenuBarPane`): show on screen; a live preview (`WidgetView` at the chosen size on the current theme, frame 0 of the
+  current pose, cut with a 28 DIP fade when wider than the row) with its size in px; **Size** (a themed pop-up of the seven sizes; the
+  caption names Ctrl + wheel and the right-click menu); **Preset** (shows 사용자 지정 / Custom when none matches); **Layout** (segmented
+  최소 / 두 줄 / 한 줄). **Items**: one row per item in the stored order — drag handle, check box "title · bar label"
+  (a speed item: the title, then its glyph, named by the title; disabled when it is the last shown item with the character hidden, or
+  the battery on a PC without one: "이 PC에는 배터리가 없습니다"). Reorder by dragging a row (it takes each row's place as it passes, as on
+  the mac), Alt+↑/↓ on a focused row (focus follows, Narrator hears "메모리, 8개 중 1번째"), or the row menu (right-click, Apps key, Shift+F10: 위로 이동 / 아래로 이동). Rows are named check boxes in UI Automation.
+  WPF's ComboBox and ContextMenu don't follow dark mode, so the pop-ups are the WinForms menus the tray uses.
+* **Character**: picker with live 2× preview, "위젯에 캐릭터 표시" (mac "메뉴 막대에 캐릭터 표시"; disabled with its reason when nothing
+  else would be drawn; the tray icon always shows the character), motion source with `caption`/`subtitle` texts.
 * **Telemetry**: collector state with Retry Now, per-client status, Claude limits status, the `--disconnect-telemetry` command as text, and
   buttons that show the backups folder and both config files in File Explorer. Connecting and disconnecting stay in the CLI.
 * **About**: version, privacy note, licence, Show Welcome Again, and Updates (automatic check, check/install update, new-version notice).
@@ -326,9 +353,30 @@ The taskbar can't show text the way the mac menu bar does, so the menu-bar item 
   focus. Rounded by DWM like the flyout (no `AllowsTransparency`), opaque theme background so it reads over any wallpaper.
 * **Content** (`WidgetView`): `StatusBarContentView.drawContent` ported to `OnRender` in mac points: the same items (`StatusBarContent.Metrics`,
   Core), 32 × 20 runner slot, fixed cells (minimal 30; two lines 32 / NET 66 / AI 36; one line 52 / 114 / 46), marks and label tones
-  (labels and units at label 0.72, idle "0" at 0.45). One point is `round(display scale)` whole device pixels (100–125 % → 1, 150–200 % → 2),
-  so the runner — the tray's own `TrayFrame` body pixels — is integer-scaled and crisp; DPI changes re-measure. The one-line layout shows
-  the short names (CPU, RAM…) where the mac draws SF Symbols. Layout and items come from presets (Settings › General); default **minimal**.
+  (labels and units at label 0.72, idle "0" at 0.45). Without the character (mac rules) the runner slot goes, the minimal AI cell is 41
+  and a strip with nothing left is the 28 pt "TC"; `Preferences` never lets that happen outside the minimal layout. The one-line layout
+  shows the short names (CPU, RAM…) where the mac draws SF Symbols. The Codex and Claude speed items (opt-in, after AI without a
+  separator) draw the mac's `SpeedGlyph` (">_", "✦") in the label slot and that client's "지금 속도" (`SessionPresentation.CurrentSpeed`,
+  `Format.Tps` + a smaller "tok/s") or "—", in 66 pt (two lines) / 80 pt (one line) cells. Narrator reads the strip as one text
+  element (`StatusBarMetric.Spoken`). Layout, items, order and the character come from Settings › Widget (§4.4); default **two
+  lines** (like the mac bar), the six standard items, the character shown, 100 %.
+* **Size**: 100, 125, 150, 175, 200, 250 or 300 % (`widgetScale`, default 100; another stored value becomes the nearest). Device pixels
+  per point `p = max(1, round(display scale)) × size`, so 100 % is exactly 0.12.0 (100–125 % → 1, 150–200 % → 2); `WidgetView.Scale`
+  (DIP per point) is `p / display scale`, text is laid out at `p` pixels per DIP and separators stay one device pixel. The runner — the
+  tray's own `TrayFrame` body pixels — is drawn at `p` pixels per art pixel with nearest-neighbour when `p` is whole (crisp); at a
+  fractional `p` the art is made at `ceil(p)` and drawn smoothly (`HighQuality`) into the same 30 p box: even, slightly soft, never the
+  uneven pixels nearest-neighbour would give. DPI changes re-measure.
+* **Resizing**: Settings › Widget › Size, **Widget Size ▸** in the tray/right-click menu, or Ctrl + mouse wheel over the widget (one
+  size per notch, up for bigger; read from `WM_MOUSEWHEEL`'s own MK_CONTROL, so it works without activating the widget). Windows sends
+  the wheel to the inactive window under the pointer only while the mouse setting "Scroll inactive windows when I hover over them"
+  is on (the default); with it off the wheel goes to the focused app, so use the menu or Settings.
+* **Anchoring**: any resize but a drag (size, layout, items, the character, a DPI change) keeps the edges nearest the work area —
+  the right edge when the widget's centre is right of the work area's centre, the bottom edge when below — then keeps it inside the
+  area (`WidgetPlacement.Resized`). It is applied in `WM_WINDOWPOSCHANGING`, so the resize and the move are one step (WPF would grow it
+  from the top-left). Only the end of a drag is saved (its bounds): showing it again — a relaunch, after a full-screen app, a display
+  change, a size changed while hidden — places the current size from those bounds by the same rule, so the spot never drifts (the
+  strip is narrower before the first sample) and a dock/undock or DPI change never overwrites another monitor set's spot. The flyout
+  anchor uses the widget's bounds as before.
 * **Timers**: none of its own. Frames come from the tray animator's single frame timer (`RenderTray`); values, the full-screen check and
   showing/hiding come from the monitor publish (about 1 s).
 * **Full screen**: hidden while `SHQueryUserNotificationState` is `QUNS_BUSY`, `QUNS_RUNNING_D3D_FULL_SCREEN` or `QUNS_PRESENTATION_MODE`,
@@ -337,12 +385,16 @@ The taskbar can't show text the way the mac menu bar does, so the menu-bar item 
   stays inside the work area of the cursor's monitor. Click toggles the flyout, hung below the widget in the top half of the screen and
   above it otherwise; a double-click counts once. Right-click brings the app forward (so the menu closes on an outside click) and shows
   the tray menu.
-* **Persistence**: `showWidget` (default on) and the mac keys `statusBarLayout`, `metricOrder`, `visibleMetrics`; positions in
-  `widgetPositions` = `{ "<x,y,WxH per screen>": [x, y] }` in physical pixels, one per monitor set. A display change restores that set's
-  position, or keeps the widget on a remaining screen. "기본값으로 되돌리기" leaves all of these alone.
-* **Checks**: Core — metrics, the width contract, marks, snap/clamp, flyout anchor, full-screen mapping, positions and preferences.
-  App — measured width stable across values and equal to the contract, worst-case numbers unshrunk, 300 frames handle-flat.
-  Snapshot — `widget-{ko,en}.png`.
+* **Persistence**: `showWidget` (default on), the mac keys `statusBarLayout`, `metricOrder`, `visibleMetrics`, `showRunner`, and
+  `widgetScale`; positions in `widgetPositions` = `{ "<x,y,WxH per screen>": [x, y, width, height] }` (the last drag; 0.12.0's `[x, y]` still reads) in physical pixels, one per monitor set. A
+  display change restores that set's position, or keeps the widget on a remaining screen. "기본값으로 되돌리기" resets the layout, items,
+  character and size, and leaves `showWidget` and the positions alone.
+* **Checks**: Core — metrics, the width contract (with and without the character), marks, snap/clamp, resize anchoring, flyout anchor,
+  full-screen mapping, positions and preferences (items, order, the character rules, presets, sizes, reset and undo).
+  App — measured width stable across values and equal to the contract × size (100/150/200/300 %, with and without the character),
+  nearest-neighbour runner at whole pixels and smooth at fractional ones, the size menu and Ctrl + wheel, worst-case numbers unshrunk,
+  300 frames handle-flat; Settings › Widget rows, keys and the pages in ko/en.
+  Snapshot — `widget-{ko,en}.png` (with rows at 150 % and 200 % and without the character) and `settings-widget-{ko,en}.png`.
 
 ---
 
@@ -785,6 +837,8 @@ WP5 data binding finishes after WP3. All file ownership is disjoint. `Suites.cs`
    - [ ] Widget (§4.7): appears bottom-right; clicking it or the desktop never steals the focus from the app you're typing in. Drag
          snaps to edges, survives a restart, and comes back per monitor set (dock/undock, a second monitor at another scale: crisp
          after moving across). Click toggles the flyout (below it near the top edge); right-click menu closes on an outside click.
+         Size from the menu, Settings and Ctrl + wheel (on a 100 % display 125/150 % smooth, 200 % crisp); in a corner it grows away from the edges and
+         comes back there after a restart. Settings › Widget: drag, Alt+↑/↓ and the row menu reorder items; Narrator reads the rows.
          Hidden during a full-screen video/game/slideshow, back after; clicking the desktop doesn't hide it. Not in Alt+Tab or the taskbar.
    - [ ] Live latency: during a Codex turn the session row/tok updates within about 1 s (rule 8, open writer).
    - [ ] Defender: right-click the zip → Scan with Microsoft Defender. Record any detection name (§2.8).

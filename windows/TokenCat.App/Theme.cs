@@ -192,12 +192,19 @@ static class Ui
         return button;
     }
 
-    /// `.bordered .small`.
-    public static Button SmallButton(string title, Action click, string? help = null)
+    /// `.bordered .small`; `menu` adds a chevron for a button that opens a list of choices.
+    public static Button SmallButton(string title, Action click, string? help = null, bool menu = false)
     {
+        UIElement content = Text(title, Font.Meta);
+        if (menu)
+        {
+            var chevron = Icon(ChevronDown, 8, Theme.Secondary);
+            chevron.Margin = new Thickness(6, 1, 0, 0);
+            content = new StackPanel { Orientation = Orientation.Horizontal, Children = { content, chevron } };
+        }
         var chrome = new Border
         {
-            Child = Text(title, Font.Meta), Padding = new Thickness(8, 2, 8, 2), CornerRadius = new CornerRadius(5),
+            Child = content, Padding = new Thickness(8, 2, 8, 2), CornerRadius = new CornerRadius(5),
             Background = Theme.Brush(Theme.Primary(0.1)),
         };
         var button = new Button { Content = chrome, Template = PlainTemplate(), FocusVisualStyle = FocusRing(), Cursor = System.Windows.Input.Cursors.Hand, ToolTip = help };

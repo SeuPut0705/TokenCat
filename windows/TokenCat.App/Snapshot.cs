@@ -76,15 +76,17 @@ static class Snapshot
     }
 
     /// The widget on a wallpaper-like blue: minimal, two-line and one-line with tools running, the same with input needed,
-    /// then minimal before the first sample (sleeping, with its z).
+    /// minimal before the first sample (sleeping, with its z), minimal and two lines without the character, two lines at
+    /// 150 % (the runner resampled smoothly) and 200 %, then with the speed items on: Codex's measured rate beside Claude's
+    /// "—" on two lines, Codex's "—" beside Claude's rate on one line.
     static FrameworkElement Widgets()
     {
         var stack = new System.Windows.Controls.StackPanel { Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x6E, 0xA5)) };
-        void Add(string fixture, StatusBarLayout layout, RunnerPose pose)
+        void Add(string fixture, StatusBarLayout layout, RunnerPose pose, bool runner = true, int percent = 100, IReadOnlyList<MetricID>? items = null)
         {
             var state = Fixtures.Input(Fixtures.All().First(candidate => candidate.Name == fixture)).State;
             var view = new WidgetView();
-            view.Update(StatusBarContent.Metrics(state, layout, Enum.GetValues<MetricID>()), layout);
+            view.Update(StatusBarContent.Metrics(state, layout, items ?? MetricID.Standard), layout, runner, percent);
             view.UpdateRunner(RunnerCharacter.Cat, pose, 0, RunnerAnimator.StillFx(pose));
             stack.Children.Add(new System.Windows.Controls.Border
             {
@@ -95,6 +97,12 @@ static class Snapshot
         foreach (var layout in Enum.GetValues<StatusBarLayout>()) Add("tool-categories", layout, RunnerPose.Walk);
         foreach (var layout in Enum.GetValues<StatusBarLayout>()) Add("input-needed", layout, RunnerPose.Alert);
         Add("loading", StatusBarLayout.Minimal, RunnerPose.Sleep);
+        Add("tool-categories", StatusBarLayout.Minimal, RunnerPose.Walk, runner: false);
+        Add("tool-categories", StatusBarLayout.Compact, RunnerPose.Walk, runner: false);
+        Add("tool-categories", StatusBarLayout.Compact, RunnerPose.Walk, percent: 150);
+        Add("tool-categories", StatusBarLayout.Compact, RunnerPose.Walk, percent: 200);
+        Add("input-needed", StatusBarLayout.Compact, RunnerPose.Alert, items: Enum.GetValues<MetricID>());
+        Add("context-limit", StatusBarLayout.Inline, RunnerPose.Walk, items: Enum.GetValues<MetricID>());
         stack.Children.Add(new System.Windows.Controls.Border { Height = 12 });
         return stack;
     }

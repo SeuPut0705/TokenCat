@@ -790,6 +790,16 @@ func runSessionPresentationChecks() -> [String] {
     let child = headline([speedAlpha, helper])
     check(child?.value == "44.1" && child?.help.hasPrefix("Alpha · 하위 Explore · Claude Code m1") == true,
           "a visible live subagent's own measurement counts and is named")
+    // The menu bar's speed items: the same pick narrowed to one client.
+    func rate(_ tokens: [TokenReading], _ source: TokenSource, restart: Set<TokenSource> = []) -> Double? {
+        SessionPresentation.currentSpeed(make(tokens), source: source, now: now, restart: restart)?.rate
+    }
+    let gamma = timed("codex:gamma", .codex, project: "Gamma", model: "g1", ago: -40, interval: 10)
+    check(rate([speedAlpha, speedBeta, gamma], .codex) == 50 && rate([speedAlpha, speedBeta, gamma], .claude) == 44.1
+          && rate([gamma], .codex) == 100 && rate([speedAlpha, switched], .codex) == nil && rate([staleAlpha, speedBeta], .claude) == nil
+          && rate([speedAlpha, speedBeta], .codex, restart: [.codex]) == nil && rate([speedBeta], .claude) == nil
+          && rate([quiet, unmatched], .claude) == nil && rate([helper], .claude) == 44.1,
+          "a client's speed is its own newest fresh measurement on the current model, never another client's or one waiting for a restart")
 
     // English: plurals, word order, spoken text and composed titles.
     AppLanguage.with(.en) {

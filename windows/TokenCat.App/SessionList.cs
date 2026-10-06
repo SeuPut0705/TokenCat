@@ -195,6 +195,9 @@ sealed class SessionList : Border
         if (detailId is not null) Dispatcher.BeginInvoke(() => cache.GetValueOrDefault("block:" + BlockOf(id))?.BringIntoView());
     }
 
+    /// The group holding the open detail or the keyboard selection (a flyout dragged out keeps it).
+    public string? SelectedGroup => (detailId ?? selectedId) is { } id && id != SessionListModel.OlderID ? BlockOf(id) : null;
+
     string BlockOf(string id) => shown.Blocks.FirstOrDefault(block => block.Id == id || block.Children.Any(child => child.Id == id) || block.MoreID == id)?.Id ?? id;
 
     void OpenMenu(TokenReading reading)

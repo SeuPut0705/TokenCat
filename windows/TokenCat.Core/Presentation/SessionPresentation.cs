@@ -762,31 +762,15 @@ public static class SessionPresentation
     /// the person or a log, or nothing runs.
     public static SpeedHeadline? Headline(SessionListModel list, DateTimeOffset now, IReadOnlySet<TokenSource> restart)
     {
-        var rows = new List<SessionRowItem>();
-        foreach (var block in list.Blocks)
-        {
-            if (block.Lead.Kind == SessionRowKind.Live) rows.Add(block.Lead);
-            rows.AddRange(block.Children.Where(child => child.State.IsLive));
-        }
-        // Measured rows from clients not waiting for a restart, under 2 minutes old; `current` keeps those on the row's model.
-        List<(SessionRowItem Row, TokenSpeedMeasurement Measurement, double Rate)> Measured(bool current)
-        {
-            var found = new List<(SessionRowItem, TokenSpeedMeasurement, double)>();
-            foreach (var row in rows)
-                if (!restart.Contains(row.Reading.Source) && row.Reading.SpeedMeasurement is { } measurement
-                    && measurement.TokensPerSecond is { } rate && (measurement.Model == row.Reading.Model) == current
-                    && Seconds(now, measurement.At) is >= -5 and < 120) found.Add((row, measurement, rate));
-            return found;
-        }
-        var fresh = Measured(current: true);
-        if (fresh.Count == 0)
+        var rows = SpeedRows(list);
+        if (CurrentSpeed(list, now, restart) is not { } newest)
         {
             if (!rows.Any(row => row.State.ExpectsSpeed)) return null;
             var sources = Sources.Where(source => rows.Any(row => row.Reading.Source == source)).ToList();
             var waiting = sources.Where(restart.Contains).ToList();
             var names = string.Join(Loc("·", " and "), waiting.Select(source => source.Title));
             // A fresh measurement left out only for its model says so, rather than that none arrived.
-            var previous = Measured(current: false).Select(item => item.Measurement).MaxBy(measurement => measurement.At);
+            var previous = Measured(rows, now, restart, current: false).Select(item => item.Measurement).MaxBy(measurement => measurement.At);
             var reason = previous is not null
                 ? Loc($"최근 실측은 이전 모델{(previous.Model is { } k ? $"({k})" : "")} 기준이라 지금 속도로 쓰지 않습니다",
                       $"The latest measurement is from the previous model{(previous.Model is { } e ? $" ({e})" : "")}, so it isn't used as the current speed")
@@ -797,7 +781,6 @@ public static class SessionPresentation
                 : reason + (waiting.Count == 0 ? "" : Loc($"\n{names}를 새로 실행하면 속도가 표시됩니다", $"\nRestart {names} to show speed"));
             return new SpeedHeadline("—", null, null, help, Loc("속도 실측 없음", "No measured speed"));
         }
-        var newest = fresh.OrderByDescending(item => item.Measurement.At).ThenBy(item => item.Row.Id, StringComparer.Ordinal).First();
         var reading = newest.Row.Reading;
         var project = reading.Project ?? Loc("프로젝트 미확인", "Unknown project");
         var session = string.Join(" · ", new[] { project, reading.IsSubagent ? Loc("하위 ", "subagent ") + ChildTitle(reading).Title : null,
@@ -810,6 +793,35 @@ public static class SessionPresentation
                 $"{session} · measured {age}\n{newest.Measurement.Details}\nThe single latest measurement; sessions are never summed or averaged"),
             Loc($"{kind} 초당 {value} 토큰, {project}", $"{kind} {value} tokens per second, {project}"));
     }
+
+    /// Visible live rows: leads and subagents.
+    static List<SessionRowItem> SpeedRows(SessionListModel list)
+    {
+        var rows = new List<SessionRowItem>();
+        foreach (var block in list.Blocks)
+        {
+            if (block.Lead.Kind == SessionRowKind.Live) rows.Add(block.Lead);
+            rows.AddRange(block.Children.Where(child => child.State.IsLive));
+        }
+        return rows;
+    }
+
+    /// Measured rows from clients not waiting for a restart, under 2 minutes old; `current` keeps those on the row's model.
+    static IEnumerable<(SessionRowItem Row, TokenSpeedMeasurement Measurement, double Rate)> Measured(IEnumerable<SessionRowItem> rows,
+        DateTimeOffset now, IReadOnlySet<TokenSource> restart, bool current, TokenSource? source = null)
+    {
+        foreach (var row in rows)
+            if ((source is null || row.Reading.Source == source) && !restart.Contains(row.Reading.Source) && row.Reading.SpeedMeasurement is { } measurement
+                && measurement.TokensPerSecond is { } rate && (measurement.Model == row.Reading.Model) == current
+                && Seconds(now, measurement.At) is >= -5 and < 120) yield return (row, measurement, rate);
+    }
+
+    /// "지금 속도"'s pick (`Headline`): the newest fresh measurement; `source` narrows it to one client, as the widget's speed
+    /// items do.
+    public static (SessionRowItem Row, TokenSpeedMeasurement Measurement, double Rate)? CurrentSpeed(SessionListModel list, DateTimeOffset now,
+        IReadOnlySet<TokenSource> restart, TokenSource? source = null) =>
+        Measured(SpeedRows(list), now, restart, current: true, source).OrderByDescending(item => item.Measurement.At)
+            .ThenBy(item => item.Row.Id, StringComparer.Ordinal).Select(item => ((SessionRowItem, TokenSpeedMeasurement, double)?)item).FirstOrDefault();
 
     public static string SpokenKind(TokenRateKind? kind) => kind switch
     {

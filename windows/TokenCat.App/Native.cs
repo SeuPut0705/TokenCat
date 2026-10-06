@@ -25,6 +25,9 @@ static class Native
     [DllImport("user32.dll")] static extern int SetWindowLongW(IntPtr hwnd, int index, int value);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern bool IsZoomed(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref Drawing.Point point);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassNameW(IntPtr hwnd, System.Text.StringBuilder name, int capacity);
     [DllImport("shell32.dll")] static extern int SHQueryUserNotificationState(out int state);
     [DllImport("kernel32.dll")] static extern bool AttachConsole(int processId);
@@ -40,7 +43,7 @@ static class Native
     static PowerCallback? displayCallback;
 
     struct Rect { public int Left, Top, Right, Bottom; }
-    const uint SWP_NOSIZE = 0x1, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10;
+    const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10;
 
     [StructLayout(LayoutKind.Sequential)]
     public struct MemoryStatus
@@ -148,8 +151,26 @@ static class Native
     public static void Move(Window window, Drawing.Point at) =>
         SetWindowPos(new WindowInteropHelper(window).Handle, IntPtr.Zero, at.X, at.Y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
 
+    /// The client area's top-left in physical pixels; unlike PointToScreen it needs no RootVisual, so it works before the first Show.
+    public static Drawing.Point ClientOrigin(Window window)
+    {
+        var point = Drawing.Point.Empty;
+        ClientToScreen(new WindowInteropHelper(window).Handle, ref point);
+        return point;
+    }
+
     /// `dips` in the window's current monitor pixels.
     public static int Pixels(Window window, double dips) => (int)Math.Round(dips * GetDpiForWindow(new WindowInteropHelper(window).Handle) / 96);
+
+    /// `pixels` of the window's current monitor in DIPs.
+    public static double Dips(Window window, int pixels) => pixels * 96.0 / GetDpiForWindow(new WindowInteropHelper(window).Handle);
+
+    /// Neither minimized nor maximized right now. WPF's WindowState follows only on WM_SIZE, after the WM_MOVE of that change.
+    public static bool Restored(Window window)
+    {
+        var hwnd = new WindowInteropHelper(window).Handle;
+        return !IsIconic(hwnd) && !IsZoomed(hwnd);
+    }
 
     /// The widget's styles (§4.7): WS_EX_TOOLWINDOW keeps it out of Alt+Tab, WS_EX_NOACTIVATE keeps a click from taking the
     /// focus, and WM_MOUSEACTIVATE answers MA_NOACTIVATE as well, whatever WPF would do with the click.
@@ -164,6 +185,35 @@ static class Native
             return 3;
         });
     }
+
+    /// WM_MOUSEWHEEL with its own key state: MK_CONTROL in the message is right even while another app has the keyboard, which
+    /// WPF's Keyboard.Modifiers is not. `wheel(delta, control)` returns whether it handled the message. Windows sends the wheel
+    /// to an inactive window under the pointer only while "Scroll inactive windows" is on (the default).
+    public static void OnWheel(Window window, Func<int, bool, bool> wheel) =>
+        HwndSource.FromHwnd(new WindowInteropHelper(window).EnsureHandle())?.AddHook((IntPtr _, int message, IntPtr wParam, IntPtr _, ref bool handled) =>
+        {
+            if (message == 0x020A && wheel((short)((long)wParam >> 16), ((long)wParam & 0x0008) != 0)) handled = true;
+            return IntPtr.Zero;
+        });
+
+    /// WINDOWPOS, as marshalled (sequential fields).
+    record struct WindowPos(IntPtr Hwnd, IntPtr After, int X, int Y, int Width, int Height, uint Flags);
+
+    /// WM_WINDOWPOSCHANGING that resizes `window`: `place(current, size)` may give a new top-left (physical pixels), applied in
+    /// the same call as the resize, so it never shows grown from its old corner.
+    public static void OnResize(Window window, Func<Drawing.Rectangle, Drawing.Size, Drawing.Point?> place) =>
+        HwndSource.FromHwnd(new WindowInteropHelper(window).EnsureHandle())?.AddHook((IntPtr hwnd, int message, IntPtr _, IntPtr lParam, ref bool handled) =>
+        {
+            if (message != 0x0046) return IntPtr.Zero;
+            var change = Marshal.PtrToStructure<WindowPos>(lParam);
+            if ((change.Flags & SWP_NOSIZE) != 0 || !GetWindowRect(hwnd, out var r)) return IntPtr.Zero;
+            var current = Drawing.Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom);
+            if (current.Size == new Drawing.Size(change.Width, change.Height) || place(current, new(change.Width, change.Height)) is not { } at) return IntPtr.Zero;
+            (change.X, change.Y) = (at.X, at.Y);
+            change.Flags &= ~SWP_NOMOVE;
+            Marshal.StructureToPtr(change, lParam, false);
+            return IntPtr.Zero;
+        });
 
     /// A menu shown from a window that never activates closes on an outside click only once the app is in front (the
     /// NotifyIcon does the same); the click that opened it allows this.

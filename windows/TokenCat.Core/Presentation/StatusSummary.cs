@@ -9,8 +9,8 @@ namespace TokenCat;
 /// `StatusBarLayout`; raw values as stored ("minimal", "compact", "inline").
 public enum StatusBarLayout { Minimal, Compact, Inline }
 
-/// `MetricID`, the menu-bar items in their default order.
-public enum MetricID { Cpu, Memory, Disk, Battery, Network, Ai }
+/// `MetricID`, the menu-bar items in their default order. Stored as the Swift raw values ("cpu", "codexSpeed").
+public enum MetricID { Cpu, Memory, Disk, Battery, Network, Ai, CodexSpeed, ClaudeSpeed }
 
 /// `DisplayPreset`: one-pick widget setups. They set the layout and, except Minimal, the shown items with their order.
 public enum DisplayPreset { Minimal, AiFocus, SystemMonitor, EverythingInline }
@@ -35,6 +35,50 @@ public static class StatusBarLayouts
         };
     }
 
+    static readonly MetricID[] standard = [MetricID.Cpu, MetricID.Memory, MetricID.Disk, MetricID.Battery, MetricID.Network, MetricID.Ai];
+
+    extension(MetricID)
+    {
+        /// Shown by default and by the full presets; the speed items are opt-in.
+        public static IReadOnlyList<MetricID> Standard => standard;
+    }
+
+    extension(MetricID id)
+    {
+        /// The item list's name (mac `MetricID.title`).
+        public string Title => id switch
+        {
+            MetricID.Cpu => "CPU",
+            MetricID.Memory => Loc("메모리", "Memory"),
+            MetricID.Disk => Loc("저장 공간", "Storage"),
+            MetricID.Battery => Loc("배터리", "Battery"),
+            MetricID.Network => Loc("네트워크", "Network"),
+            MetricID.Ai => Loc("AI 세션", "AI sessions"),
+            MetricID.CodexSpeed => Loc("Codex 속도", "Codex speed"),
+            _ => Loc("Claude 속도", "Claude speed"),
+        };
+
+        /// The label the widget draws, shown after the title in the item list (mac `barLabel`); null when it equals the title, or
+        /// for a speed item, whose row shows its glyph instead.
+        public string? BarLabel => id switch
+        {
+            MetricID.Memory => "RAM",
+            MetricID.Disk => "DISK",
+            MetricID.Battery => "BAT",
+            MetricID.Network => "NET",
+            MetricID.Ai => "AI",
+            _ => null,
+        };
+
+        /// The client whose "지금 속도" a speed item shows.
+        public TokenSource? SpeedSource => id switch
+        {
+            MetricID.CodexSpeed => TokenSource.Codex,
+            MetricID.ClaudeSpeed => TokenSource.Claude,
+            _ => null,
+        };
+    }
+
     extension(DisplayPreset preset)
     {
         public string Title => preset switch
@@ -52,18 +96,25 @@ public static class StatusBarLayouts
             _ => StatusBarLayout.Compact,
         };
 
-        /// Null leaves the item list alone (the minimal layout ignores it).
+        /// Null leaves the item list alone (the minimal layout ignores it). Fixed sets: a later item never turns an existing setup
+        /// into 사용자 지정.
         public IReadOnlyList<MetricID>? Items => preset switch
         {
             DisplayPreset.Minimal => null,
             DisplayPreset.AiFocus => [MetricID.Ai, MetricID.Cpu, MetricID.Memory],
-            _ => Enum.GetValues<MetricID>(),
+            _ => MetricID.Standard,
         };
     }
 }
 
-/// One menu-bar item as drawn. The mac's SF Symbol name and VoiceOver detail are left out: the widget's help is the tray tooltip.
-public sealed record StatusBarMetric(MetricID Id, string Label, string Value, bool IsActive = false, TokenActivityState ActivityState = TokenActivityState.Idle);
+/// One menu-bar item as drawn. The mac's SF Symbol name is left out, and its VoiceOver `Detail` is kept only for the speed items,
+/// whose glyph has no words; the widget's help is the tray tooltip.
+public sealed record StatusBarMetric(MetricID Id, string Label, string Value, bool IsActive = false,
+    TokenActivityState ActivityState = TokenActivityState.Idle, string? Detail = null)
+{
+    /// What Narrator reads for the item: its detail, else the words drawn.
+    public string Spoken => Detail ?? $"{Label} {Value.Replace('\n', ' ')}";
+}
 
 /// AI summary, derived once per publish from the shared session groups.
 public sealed record StatusAISummary
@@ -116,21 +167,25 @@ public static class StatusBarContent
         return rounded.Value.ToString(rounded.Precision == 1 ? "F1" : "F0", CultureInfo.InvariantCulture) + Units[unit];
     }
 
-    /// The status item's geometry in points (`StatusBarContentView`, with the character always shown): 4 pt edges, the
-    /// 32 × 20 runner slot and fixed cells, so the width never follows the values.
+    /// The status item's geometry in points (`StatusBarContentView`): 4 pt edges, the 32 × 20 runner slot while the character
+    /// is shown and fixed cells, so the width never follows the values.
     public const double Edge = 4, RunnerWidth = 32, Height = 24, MarkSlot = 8 + 3;
 
-    public static double CellWidth(StatusBarLayout layout, MetricID id) => layout switch
+    /// Without the character the minimal AI cell widens to 41 pt. Speed items fit "9999.9 tok/s" (an 11 pt value, a thin space and
+    /// an 8.5 pt unit), so a 4-digit rate never shrinks.
+    public static double CellWidth(StatusBarLayout layout, MetricID id, bool showRunner = true) => layout switch
     {
-        StatusBarLayout.Minimal => 30,
-        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, _ => 32 },
-        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, _ => 52 },
+        StatusBarLayout.Minimal => showRunner ? 30 : 41,
+        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.CodexSpeed or MetricID.ClaudeSpeed => 66, _ => 32 },
+        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.CodexSpeed or MetricID.ClaudeSpeed => 80, _ => 52 },
     };
 
-    public static double RequiredWidth(StatusBarLayout layout, IEnumerable<MetricID> ids)
+    /// Neither items nor the character: the 28 pt "TC" placeholder.
+    public static double RequiredWidth(StatusBarLayout layout, IEnumerable<MetricID> ids, bool showRunner = true)
     {
-        var cells = ids.Select(id => CellWidth(layout, id)).ToList();
-        return Edge * 2 + RunnerWidth + (cells.Count == 0 ? 0 : 2) + cells.Sum();
+        var cells = ids.Select(id => CellWidth(layout, id, showRunner)).ToList();
+        if (cells.Count == 0 && !showRunner) return 28;
+        return Edge * 2 + (showRunner ? RunnerWidth + (cells.Count == 0 ? 0 : 2) : 0) + cells.Sum();
     }
 
     /// `StateGlyph` sizes in the bar: 7 pt, the input disc 8 pt (A0-3). Every state reserves `MarkSlot`, so the count never moves.
@@ -141,10 +196,19 @@ public static class StatusBarContent
         _ => 0,
     };
 
+    /// Each client's "지금 속도" by the dashboard's rule (`SessionPresentation.CurrentSpeed`); a client without one is absent.
+    public static IReadOnlyDictionary<TokenSource, double> Speeds(SessionListModel list, DateTimeOffset now, IReadOnlySet<TokenSource> restart)
+    {
+        var speeds = new Dictionary<TokenSource, double>();
+        foreach (var source in Enum.GetValues<TokenSource>())
+            if (SessionPresentation.CurrentSpeed(list, now, restart, source) is { } speed) speeds[source] = speed.Rate;
+        return speeds;
+    }
+
     /// `StatusBarContent.metrics`: `items` are the shown items in order (the minimal layout draws only AI). An absent battery
-    /// is omitted; values before the first sample are "—".
+    /// is omitted; values before the first sample are "—", and so is a speed item whose client has no rate in `speeds`.
     public static IReadOnlyList<StatusBarMetric> Metrics(SystemSnapshot system, StatusAISummary ai, StatusBarLayout layout,
-        IReadOnlyList<MetricID> items, bool hasSample, bool hasTokenSample)
+        IReadOnlyList<MetricID> items, bool hasSample, bool hasTokenSample, IReadOnlyDictionary<TokenSource, double>? speeds = null)
     {
         string Percentage(double? number) => hasSample && number is { } n && double.IsFinite(n) ? Format.Percent(n) : "—";
         var upload = NetworkRate(hasSample ? system.UploadBytesPerSecond : null);
@@ -167,13 +231,20 @@ public static class StatusBarContent
                     var state = !hasTokenSample ? TokenActivityState.Idle : ai.Running > 0 ? ai.Phase : waitingOnly ? TokenActivityState.Stale : TokenActivityState.Idle;
                     metrics.Add(new(id, "AI", value, hasTokenSample && ai.Running > 0, state));
                     break;
+                case MetricID.CodexSpeed or MetricID.ClaudeSpeed:
+                    // A glyph stands in for the label; the unit is split off and drawn smaller like "%".
+                    var rate = speeds is not null && speeds.TryGetValue(id.SpeedSource!.Value, out var measured) ? Format.Tps(measured) : null;
+                    metrics.Add(new(id, "", rate is null ? "—" : rate + "tok/s", Detail: id.Title + " "
+                        + (rate is null ? Loc("측정 없음", "no measurement") : Loc($"{rate} 토큰/초", $"{rate} tokens per second"))));
+                    break;
             }
         }
         return metrics;
     }
 
     public static IReadOnlyList<StatusBarMetric> Metrics(MonitorState state, StatusBarLayout layout, IReadOnlyList<MetricID> items) =>
-        Metrics(state.System, new StatusAISummary(state.Groups, state.Sessions.Counts), layout, items, state.HasSample, state.TokensSampledAt is not null);
+        Metrics(state.System, new StatusAISummary(state.Groups, state.Sessions.Counts), layout, items, state.HasSample, state.TokensSampledAt is not null,
+            Speeds(state.Sessions, state.Now, state.TelemetryRestartNeeded));
 
     /// "1.5kB/s" → ("1.5", "kB/s"); units are drawn smaller but never dropped.
     public static (string Number, string Unit) SplitRate(string text)

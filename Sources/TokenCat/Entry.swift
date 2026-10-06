@@ -269,6 +269,7 @@ enum TokenCatMain {
             let counts = model.sessions.counts
             view.update(metrics: StatusBarContent.metrics(system: model.system, counts: counts,
                 ai: StatusAISummary(groups: model.groups, counts: counts), recorded: model.flow.total,
+                speeds: StatusBarContent.speeds(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
                 preferences: model.preferences, layout: layout, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil),
                 layout: layout, showRunner: model.preferences.showRunner && !arguments.contains("--no-runner"))
             view.frame.size.width = view.requiredWidth
@@ -320,12 +321,27 @@ enum TokenCatMain {
             (loc("입력 필요", "Input needed"), [reading(4, .input), reading(6, .input), reading(5, .working)]),
             (loc("세션 12개", plural(12, "session")), (0..<12).map { reading($0, .tool) })
         ]
+        // The speed items, turned on for the last rows: measured 3 s ago on the session's model (Codex 55.6, Claude 312.5 tok/s), then none.
+        func measured(_ index: Int, interval: Double) -> TokenReading {
+            var value = reading(index, .working)
+            var measurement = TokenSpeedMeasurement(TelemetryReading(provider: value.source, at: at.addingTimeInterval(-3)))
+            measurement.model = value.model
+            measurement.serverTokenIntervalMs = interval
+            value.speedMeasurement = measurement
+            return value
+        }
+        let speedRows: [(String, [TokenReading])] = [
+            (loc("속도", "Speed"), [measured(1, interval: 18), measured(0, interval: 3.2)]),
+            (loc("속도 측정 없음", "No speed measured"), [reading(1, .working), reading(0, .working)])
+        ]
         var strips: [(String, [NSImage])] = []
-        for (title, tokens) in rows {
+        for (index, (title, tokens)) in (rows + speedRows).enumerated() {
+            if index == rows.count { preferences.visible.formUnion([.codexSpeed, .claudeSpeed]) }
             let groups = SessionPresentation.groups(tokens, now: at)
             let counts = SessionCounts(groups)
+            let speeds = StatusBarContent.speeds(SessionListModel.make(tokens: tokens, now: at, expanded: false), now: at, restart: [])
             let metrics = StatusBarContent.metrics(system: system, counts: counts, ai: StatusAISummary(groups: groups, counts: counts),
-                                                   recorded: 0, preferences: preferences, hasSample: true, hasTokenSample: true)
+                                                   recorded: 0, speeds: speeds, preferences: preferences, hasSample: true, hasTokenSample: true)
             var director = RunnerDirector()
             let activity = RunnerActivity(groups: groups, cpu: system.cpuPercent, now: at)
             director.observe(activity, now: at)
@@ -345,7 +361,7 @@ enum TokenCatMain {
             }
             strips.append((title, images))
         }
-        let cellWidth = (strips.first?.1.map(\.size.width).max() ?? 100) + 8
+        let cellWidth = (strips.flatMap(\.1).map(\.size.width).max() ?? 100) + 8
         let rowHeight: CGFloat = 34
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white]
         // The row label column: 76 pt, wider when a label (English) needs it.

@@ -93,9 +93,16 @@ enum StatusBarContent {
         return (String(text[..<index]), String(text[index...]))
     }
 
-    /// `counts`, `ai` and `recorded` come from the popover's per-publish presentation so both show the same numbers.
+    /// Each client's "지금 속도" by the dashboard's rule (`SessionPresentation.currentSpeed`); a client without one is absent.
+    static func speeds(_ list: SessionListModel, now: Date, restart: Set<TokenSource>) -> [TokenSource: Double] {
+        Dictionary(uniqueKeysWithValues: TokenSource.allCases.compactMap { source in
+            SessionPresentation.currentSpeed(list, source: source, now: now, restart: restart).map { (source, $0.rate) }
+        })
+    }
+
+    /// `counts`, `ai`, `recorded` and `speeds` come from the popover's per-publish presentation so both show the same numbers.
     static func metrics(system: SystemSnapshot, counts: SessionCounts, ai: StatusAISummary, recorded: Int,
-                        preferences: Preferences, layout: StatusBarLayout? = nil,
+                        speeds: [TokenSource: Double], preferences: Preferences, layout: StatusBarLayout? = nil,
                         hasSample: Bool, hasTokenSample: Bool) -> [StatusBarMetric] {
         func percentage(_ number: Double?) -> String {
             guard hasSample, let number, number.isFinite else { return "—" }
@@ -143,6 +150,12 @@ enum StatusBarContent {
                     : loc("AI 기록 확인 중", "Reading AI records")
                 return StatusBarMetric(id: id, label: "AI", value: value, symbol: "", detail: detail,
                                        isActive: hasTokenSample && ai.running > 0, activityState: state)
+            case .codexSpeed, .claudeSpeed:
+                // A glyph (`SpeedGlyph`) stands in for the label; the unit is split off and drawn smaller like "%".
+                let rate = id.speedSource.flatMap { speeds[$0] }.map(Format.tps)
+                return StatusBarMetric(id: id, label: "", value: rate.map { $0 + "tok/s" } ?? "—", symbol: "",
+                                       detail: id.title + " " + (rate.map { loc("\($0) 토큰/초", "\($0) tokens per second") }
+                                                                 ?? loc("측정 없음", "no measurement")))
             }
         }
     }
@@ -332,12 +345,16 @@ final class StatusBarContentView: NSView {
     func cellWidth(_ id: MetricID) -> CGFloat {
         switch layout {
         case .minimal: return showRunner ? 30 : 41
+        // Speed items fit "9999.9 tok/s" (an 11 pt value, a thin space and an 8.5 pt unit: 62 pt), so a 4-digit rate never shrinks.
         case .compact:
-            switch id { case .network: return 66; case .ai: return 36; default: return 32 }
+            switch id { case .network: return 66; case .ai: return 36; case .codexSpeed, .claudeSpeed: return 66; default: return 32 }
         case .inline:
-            switch id { case .network: return 114; case .ai: return 46; default: return 52 }
+            switch id { case .network: return 114; case .ai: return 46; case .codexSpeed, .claudeSpeed: return 80; default: return 52 }
         }
     }
+
+    /// Speed glyph sides: the two-line label row, and beside the value on one line.
+    static let glyphSide: (compact: CGFloat, inline: CGFloat) = (8, 10)
 
     /// `StateGlyph` sizes in the bar: 7 pt, the input disc 8 pt (A0-3).
     static func markWidth(_ state: TokenActivityState) -> CGFloat {
@@ -355,7 +372,7 @@ final class StatusBarContentView: NSView {
     }
 
     private func group(_ id: MetricID) -> Int {
-        switch id { case .network: return 1; case .ai: return 2; default: return 0 }
+        switch id { case .network: return 1; case .ai, .codexSpeed, .claudeSpeed: return 2; default: return 0 }
     }
 
     private struct Palette {
@@ -436,14 +453,24 @@ final class StatusBarContentView: NSView {
     private var valueFont: NSFont { .monospacedDigitSystemFont(ofSize: 11, weight: .medium) }
     private var labelFont: NSFont { .systemFont(ofSize: 8.5, weight: .semibold) }
 
-    /// Digits in label colour; '%' smaller and secondary. Unknown stays "—".
+    /// Digits in label colour; '%' or a letter unit ("tok/s", after a thin space) smaller and secondary. Unknown stays "—".
     private func valueRuns(_ value: String, _ palette: Palette) -> [Run] {
         if value == "—" { return [Run(text: value, font: valueFont, color: palette.secondary)] }
-        if value.hasSuffix("%") {
-            return [Run(text: String(value.dropLast()), font: valueFont, color: palette.label),
-                    Run(text: "%", font: .systemFont(ofSize: 8.5, weight: .medium), color: palette.secondary)]
-        }
-        return [Run(text: value, font: valueFont, color: palette.label)]
+        let parts = value.hasSuffix("%") ? (number: String(value.dropLast()), unit: "%") : StatusBarContent.splitRate(value)
+        guard !parts.unit.isEmpty else { return [Run(text: value, font: valueFont, color: palette.label)] }
+        return [Run(text: parts.number, font: valueFont, color: palette.label),
+                Run(text: (parts.unit == "%" ? "" : "\u{2009}") + parts.unit, font: .systemFont(ofSize: 8.5, weight: .medium), color: palette.secondary)]
+    }
+
+    /// A speed item's glyph, centred on `center` in the labels' secondary tone.
+    private func drawGlyph(_ source: TokenSource, side: CGFloat, center: NSPoint, _ palette: Palette) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let rect = CGRect(x: snap(center.x - side / 2), y: snap(center.y - side / 2), width: side, height: side)
+        context.saveGState()
+        context.setFillColor(palette.secondary.cgColor)
+        context.addPath(SpeedGlyph.path(source, in: rect))
+        context.fillPath()
+        context.restoreGState()
     }
 
     private func drawCompact(_ metric: StatusBarMetric, in cell: NSRect, _ palette: Palette) {
@@ -453,7 +480,11 @@ final class StatusBarContentView: NSView {
             return
         }
         let inner = cell.insetBy(dx: 1, dy: 0)
-        draw([Run(text: metric.label, font: labelFont, color: palette.secondary, kern: 0.3)], centerY: top + 4.5, in: inner)
+        if let source = metric.id.speedSource {
+            drawGlyph(source, side: Self.glyphSide.compact, center: NSPoint(x: inner.midX, y: top + 4.5), palette)
+        } else {
+            draw([Run(text: metric.label, font: labelFont, color: palette.secondary, kern: 0.3)], centerY: top + 4.5, in: inner)
+        }
         if metric.id == .ai {
             drawAI(metric, centerY: top + 15.5, in: inner, font: valueFont, palette, centered: true)
         } else {
@@ -471,6 +502,15 @@ final class StatusBarContentView: NSView {
             drawAI(metric, centerY: cell.midY, in: NSRect(x: cell.minX + 4, y: 0, width: cell.width - 6, height: cell.height),
                    font: valueFont, palette, centered: false,
                    prefix: [Run(text: "AI", font: .systemFont(ofSize: 9, weight: .semibold), color: palette.secondary, kern: 0.3)])
+            return
+        }
+        if let source = metric.id.speedSource {
+            // Like the "AI" caption: 4 pt clear of the cell's leading edge, then the value 3 pt after the glyph.
+            let side = Self.glyphSide.inline
+            drawGlyph(source, side: side, center: NSPoint(x: cell.minX + 4 + side / 2, y: cell.midY), palette)
+            let x = cell.minX + 4 + side + 3
+            draw(valueRuns(metric.value, palette), centerY: cell.midY, in: NSRect(x: x, y: 0, width: cell.maxX - x, height: cell.height),
+                 alignment: .left)
             return
         }
         // Natural aspect at an 11pt height, trailing-aligned in a 16pt slot so each icon hugs its own value.
@@ -651,6 +691,47 @@ final class StatusBarContentView: NSView {
     }
 }
 
+/// The speed items' glyphs: generic symbols, not the clients' logos. Coordinates in a 10 × 10 box, y-down, scaled to the
+/// centred square of `rect`; each is one fill (nonzero winding).
+/// - Codex, a terminal prompt ">_": the polyline (1, 1.75) (4.75, 5) (1, 8.25) and the line (5.75, 8.25) (9, 8.25), stroked
+///   1.5 wide with round caps and joins.
+/// - Claude, a four-point sparkle "✦": tips (5, 0) (10, 5) (5, 10) (0, 5) joined clockwise by quadratic curves whose controls
+///   sit 0.6 from the centre toward the corner between them: (5.6, 4.4) (5.6, 5.6) (4.4, 5.6) (4.4, 4.4).
+enum SpeedGlyph {
+    static func path(_ source: TokenSource, in rect: CGRect) -> CGPath {
+        let unit = min(rect.width, rect.height) / 10
+        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.midX + (x - 5) * unit, y: rect.midY + (y - 5) * unit) }
+        let path = CGMutablePath()
+        switch source {
+        case .codex:
+            path.addLines(between: [p(1, 1.75), p(4.75, 5), p(1, 8.25)])
+            path.addLines(between: [p(5.75, 8.25), p(9, 8.25)])
+            return path.copy(strokingWithWidth: 1.5 * unit, lineCap: .round, lineJoin: .round, miterLimit: 10)
+        case .claude:
+            path.move(to: p(5, 0))
+            path.addQuadCurve(to: p(10, 5), control: p(5.6, 4.4))
+            path.addQuadCurve(to: p(5, 10), control: p(5.6, 5.6))
+            path.addQuadCurve(to: p(0, 5), control: p(4.4, 5.6))
+            path.addQuadCurve(to: p(5, 0), control: p(4.4, 4.4))
+            path.closeSubpath()
+            return path
+        }
+    }
+
+    /// A template image for the Settings item list; the list tints it.
+    static func image(_ source: TokenSource, side: CGFloat) -> NSImage {
+        let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { rect in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.setFillColor(NSColor.black.cgColor)
+            context.addPath(path(source, in: rect))
+            context.fillPath()
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+}
+
 /// Menu-bar-like backdrops for settings previews and snapshots. The real bar is translucent; these approximate it.
 enum MenuBarStrip {
     /// `outlined` adds a hairline in the strip's own appearance so it stands apart from a same-toned form row.
@@ -720,8 +801,9 @@ final class MenuBarPreviewCache {
     func preview(model: DashboardModel, preferences: Preferences, pose: RunnerPose, now: Date = Date()) -> (images: [NSImage], width: CGFloat) {
         let counts = model.sessions.counts
         let metrics = StatusBarContent.metrics(system: model.system, counts: counts, ai: StatusAISummary(groups: model.groups, counts: counts),
-                                               recorded: model.flow.total, preferences: preferences, hasSample: model.hasSample,
-                                               hasTokenSample: model.tokensSampledAt != nil)
+                                               recorded: model.flow.total,
+                                               speeds: StatusBarContent.speeds(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
+                                               preferences: preferences, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         return preview(metrics: metrics, preferences: preferences, pose: pose, now: now)
     }
 
@@ -772,9 +854,10 @@ func runStatusBarChecks() -> [String] {
         return (counts, StatusAISummary(groups: groups, counts: counts))
     }
     func metrics(_ system: SystemSnapshot, _ tokens: [TokenReading], now: Date = at, layout: StatusBarLayout? = nil,
-                 hasSample: Bool = true, hasTokenSample: Bool = true) -> [StatusBarMetric] {
+                 hasSample: Bool = true, hasTokenSample: Bool = true, speeds: [TokenSource: Double]? = nil) -> [StatusBarMetric] {
         let (counts, ai) = summary(tokens, now: now)
-        return StatusBarContent.metrics(system: system, counts: counts, ai: ai, recorded: FlowSeries.make(tokens, now: now).total,
+        let speeds = speeds ?? StatusBarContent.speeds(SessionListModel.make(tokens: tokens, now: now, expanded: false), now: now, restart: [])
+        return StatusBarContent.metrics(system: system, counts: counts, ai: ai, recorded: FlowSeries.make(tokens, now: now).total, speeds: speeds,
                                         preferences: preferences, layout: layout, hasSample: hasSample, hasTokenSample: hasTokenSample)
     }
     let loading = metrics(system, [], hasSample: false, hasTokenSample: false)
@@ -792,7 +875,7 @@ func runStatusBarChecks() -> [String] {
           zero.first(where: { $0.id == .ai })?.value == "0" &&
           zero.first(where: { $0.id == .cpu })?.value == "0%")
     check("absent battery is omitted", !zero.contains(where: { $0.id == .battery }) &&
-          zero.count == MetricID.allCases.count - 1)
+          zero.count == MetricID.standard.count - 1)
     check("idle AI has no mark and is not active", zero.first(where: { $0.id == .ai }).map {
         !$0.isActive && StatusBarContentView.markWidth($0.activityState) == 0 } == true)
 
@@ -862,6 +945,25 @@ func runStatusBarChecks() -> [String] {
     let minimal = metrics(system, [tool], layout: .minimal)
     check("minimal layout shows the AI item even when it is hidden from the list",
           minimal.map(\.id) == [.ai] && minimal.first?.value == "1")
+    // Speed items: each client's own "지금 속도" (`Format.tps`, then a smaller "tok/s"), "—" without one, spoken per client.
+    preferences.order = MetricID.allCases
+    preferences.visible = [.codexSpeed, .claudeSpeed]
+    var timed = TokenReading(source: .codex, id: "timed", sessionID: "t1", model: "g1", active: true, activityState: .working, sampledAt: at)
+    var measurement = TokenSpeedMeasurement(TelemetryReading(provider: .codex, at: at.addingTimeInterval(-3)))
+    measurement.model = "g1"
+    measurement.serverTokenIntervalMs = 18
+    timed.speedMeasurement = measurement
+    let untimed = TokenReading(source: .claude, id: "untimed", sessionID: "u1", model: "m1", active: true, activityState: .working, sampledAt: at)
+    let speedItems = metrics(system, [timed, untimed])
+    check("speed items show each client's own rate with its unit, or a dash: \(speedItems.map(\.value)) / \(speedItems.map(\.detail))",
+          speedItems.map(\.id) == [.codexSpeed, .claudeSpeed] && speedItems.map(\.value) == ["55.6tok/s", "—"]
+          && speedItems.map(\.detail) == ["Codex 속도 55.6 토큰/초", "Claude 속도 측정 없음"]
+          && StatusBarContent.speeds(SessionListModel.make(tokens: [timed, untimed], now: at, expanded: false), now: at, restart: [.codex]).isEmpty
+          && metrics(system, [timed], layout: .minimal).map(\.id) == [.ai] && StatusBarContent.splitRate("55.6tok/s") == ("55.6", "tok/s"))
+    AppLanguage.with(.en) {
+        check("English speed items are spoken per client",
+              metrics(system, [timed, untimed]).map(\.detail) == ["Codex speed 55.6 tokens per second", "Claude speed no measurement"])
+    }
     check("rate split keeps the unit", StatusBarContent.splitRate("1.5kB/s") == ("1.5", "kB/s")
           && StatusBarContent.splitRate("≥999GB/s") == ("≥999", "GB/s") && StatusBarContent.splitRate("—") == ("—", ""))
     var busy = system
@@ -895,18 +997,24 @@ func runStatusBarChecks() -> [String] {
     let view = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 0, height: 22))
     var stable = true
     var widths: [String: CGFloat] = [:]
-    for layout in StatusBarLayout.allCases {
-        for runner in [true, false] {
-            view.update(metrics: metrics(missing, [], layout: layout, hasSample: false, hasTokenSample: false), layout: layout, showRunner: runner)
-            let width = view.requiredWidth
-            view.update(metrics: metrics(maximum, busyTokens, layout: layout), layout: layout, showRunner: runner)
-            stable = stable && width == view.requiredWidth && width > 0
-            widths["\(layout.rawValue)/\(runner)"] = width
+    for items in [MetricID.standard, MetricID.allCases] {
+        preferences.visible = Set(items)
+        for layout in StatusBarLayout.allCases {
+            for runner in [true, false] {
+                view.update(metrics: metrics(missing, [], layout: layout, hasSample: false, hasTokenSample: false), layout: layout, showRunner: runner)
+                let width = view.requiredWidth
+                view.update(metrics: metrics(maximum, busyTokens, layout: layout, speeds: [.codex: 999.94, .claude: 99_999]),
+                            layout: layout, showRunner: runner)
+                stable = stable && width == view.requiredWidth && width > 0
+                widths["\(layout.rawValue)/\(runner)" + (items == MetricID.standard ? "" : "/speed")] = width
+            }
         }
     }
     check("layout width is stable from unknown to maximum values", stable)
-    // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30 (41 without the cat).
-    let expected: [String: CGFloat] = ["compact/true": 272, "inline/true": 410, "minimal/true": 72, "minimal/false": 49]
+    // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30 (41 without the cat);
+    // each speed item 66 on two lines, 80 on one.
+    let expected: [String: CGFloat] = ["compact/true": 272, "inline/true": 410, "minimal/true": 72, "minimal/false": 49,
+                                       "compact/true/speed": 404, "inline/true/speed": 570, "minimal/true/speed": 72]
     check("cell widths match the layout contract", expected.allSatisfy { widths[$0.key] == $0.value })
     check("minimal layout fits beside a notch", (46...72).contains(widths["minimal/true"] ?? 0)
           && (widths["minimal/true"] ?? 0) < (widths["compact/true"] ?? 0))
@@ -918,7 +1026,8 @@ func runStatusBarChecks() -> [String] {
                                isActive: state != .idle, activityState: state)
     }
     let worst = [metric(.cpu, "100%"), metric(.memory, "100%"), metric(.disk, "100%"), metric(.battery, "100%"),
-                 metric(.network, "↑999MB/s\n↓125MB/s"), metric(.ai, "99", .input)]
+                 metric(.network, "↑999MB/s\n↓125MB/s"), metric(.ai, "99", .input),
+                 metric(.codexSpeed, "9999.9tok/s"), metric(.claudeSpeed, "9999.9tok/s")]
     var shrunk: [String] = []
     var drifting: [String] = []
     for layout in StatusBarLayout.allCases {
@@ -970,6 +1079,21 @@ func runStatusBarChecks() -> [String] {
     check("the inline symbol reaches 3.5:1 on a light bar (got \(String(format: "%.2f", symbolContrast)):1), dimmed once by 0.72 (0.8 contrast)",
           symbolContrast >= 3.5 && StatusBarContentView.symbolFraction(contrast: false) == 0.72
           && StatusBarContentView.symbolFraction(contrast: true) == 0.8)
+    // Speed items on one line: the glyph (8–18 pt: 4 pt edge, 4 pt into the cell) and "—" in the secondary tone, digits in
+    // the label tone, so the darkest glyph or dash pixel stays clearly lighter than the darkest digit pixel.
+    func darkest(_ metric: StatusBarMetric, columns: Range<Int>) -> Double {
+        let speedView = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
+        speedView.appearance = NSAppearance(named: .aqua)
+        speedView.update(metrics: [metric], layout: .inline, showRunner: false)
+        speedView.frame.size.width = speedView.requiredWidth
+        guard let pixels = render(speedView) else { return 1 }
+        return columns.flatMap { x in (0..<pixels.height).map { pixels.pixel(x, $0).luma } }.min() ?? 1
+    }
+    let glyphTone = darkest(metric(.claudeSpeed, "—"), columns: 16..<36), dashTone = darkest(metric(.claudeSpeed, "—"), columns: 42..<80)
+    let codexGlyphTone = darkest(metric(.codexSpeed, "55.6tok/s"), columns: 16..<36)
+    let digitTone = darkest(metric(.codexSpeed, "55.6tok/s"), columns: 42..<60)
+    check("speed glyphs and dashes are secondary, digits label-toned (luma \([glyphTone, codexGlyphTone, dashTone, digitTone]))",
+          [glyphTone, codexGlyphTone, dashTone].allSatisfy { $0 < 0.5 && $0 > digitTone * 1.5 })
 
     // The sleep z: a template mask at the sprite's snapped origin, label-coloured, nothing outside the mask (K-2).
     let fxView = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))

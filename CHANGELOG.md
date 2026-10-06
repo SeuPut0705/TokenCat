@@ -2,6 +2,22 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.13.0
+
+**macOS and Windows**
+
+- Settings › Menu Bar (Widget on Windows) can show Codex and Claude speed: a `>_` or `✦` glyph and that client's current speed in tok/s by the dashboard's Speed now rule, or `—` without a fresh measurement. Off by default. · 설정 › 메뉴 막대(Windows는 위젯)에서 Codex·Claude 속도 항목을 켤 수 있습니다. `>_`·`✦` 기호와 그 클라이언트의 현재 속도(tok/s)를 상세 화면의 지금 속도와 같은 규칙으로 보여 주고, 최근 실측이 없으면 `—`로 표시합니다. 기본은 꺼져 있습니다.
+
+**Windows (preview)**
+
+- Settings has a Widget tab like the Mac's Menu Bar tab: pick a preset and layout, turn items on or off, and reorder them by dragging, Alt+↑/↓ or right-click. The quick menu gains Layout too. · 설정에 Mac의 메뉴 막대 탭과 같은 위젯 탭이 생겼습니다. 프리셋과 표시 방식을 고르고, 항목을 켜고 끄며, 끌거나 Alt+↑·↓, 우클릭으로 순서를 바꿉니다. 빠른 메뉴에도 표시 방식이 생겼습니다.
+- Show character in widget on the Character tab (or Character › Show in Widget in the quick menu) hides the character in the widget; the tray icon always shows it. · 캐릭터 탭의 위젯에 캐릭터 표시(빠른 메뉴의 캐릭터 › 위젯에 표시)로 위젯에서 캐릭터를 숨길 수 있습니다. 알림 영역 아이콘에는 항상 표시됩니다.
+- The widget can be 100 to 300 % in size: set it in Settings › Widget, with Widget Size in the right-click menu, or with Ctrl + mouse wheel over the widget. · 위젯 크기를 100–300 % 사이에서 고를 수 있습니다. 설정 › 위젯, 우클릭 메뉴의 위젯 크기, 위젯 위에서 Ctrl+마우스 휠로 바꿉니다.
+- When the widget grows or shrinks (size, layout, items or display scale), it keeps its nearest screen edges in place and returns to the same spot after a restart. · 크기·표시 방식·항목·디스플레이 배율이 바뀌어 위젯이 커지거나 작아져도 가까운 화면 가장자리를 기준으로 자리를 지키고, 다시 실행해도 같은 자리로 돌아옵니다.
+- Restore Defaults also resets the widget's layout, items, size and Show character in widget; showing the widget and its position stay as they are. · 기본값으로 되돌리기가 위젯의 표시 방식·항목·크기와 위젯에 캐릭터 표시도 되돌립니다. 위젯 표시 여부와 위치는 그대로입니다.
+- The widget starts on two lines like the Mac menu bar; if you never changed its layout, it switches to two lines after this update. · 위젯이 Mac 메뉴 막대처럼 두 줄 배치로 시작합니다. 배치를 바꾼 적이 없다면 이번 업데이트 뒤 두 줄로 바뀝니다.
+- Drag the dashboard by its header or an empty spot to detach it into a window you can move, like dragging the Mac popover into a panel; the window remembers its place and height. · 상세 화면의 머리글이나 빈 곳을 잡고 끌면 Mac에서 팝오버를 끌어 패널로 분리하듯 옮길 수 있는 창으로 분리되고, 창은 위치와 높이를 기억합니다.
+
 ## 0.12.0
 
 **macOS and Windows**

@@ -4,6 +4,7 @@ using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using static TokenCat.Lang;
 
@@ -33,7 +34,82 @@ static class AppChecks
         guarded("fixtures", () => FixtureChecks(check));
         guarded("automation", () => Automation(check));
         guarded("widget", () => WidgetChecks(check));
+        guarded("widget settings", () => WidgetSettings(check));
+        guarded("detach", () => Detach(check)); // last: its windows must not move the handle counts above
         return c.Done();
+    }
+
+    static IEnumerable<DependencyObject> Tree(DependencyObject root) =>
+        LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>().SelectMany(child => Tree(child).Prepend(child));
+
+    /// Dragging the flyout out (§4.2), without a mouse: the header and the System area's edge start a drag, the session list and
+    /// the Task Manager area don't; a press released in place or within the drag distance stays a click, a longer drag along one
+    /// axis hands over the pointer and the grabbed offset, and the window opens with that point under the pointer (one grabbed
+    /// lower than the window is tall still lands inside it); closed, it comes back with the same spot and height. Real windows,
+    /// shown without activating, and a throwaway store.
+    static void Detach(Action<bool, string> check)
+    {
+        static void Settle() => System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        var path = Path.Combine(Path.GetTempPath(), $"tokencat-appchecks-{Guid.NewGuid():N}.json");
+        var store = new SettingsStore(path);
+        var flyout = new Flyout(DashboardActions.None) { ShowActivated = false };
+        DashboardWindow? window = null;
+        try
+        {
+            flyout.Show();
+            Settle();
+            var nodes = Tree(flyout).ToList();
+            var system = nodes.OfType<SystemArea>().Single();
+            check(flyout.Draggable(nodes.OfType<Header>().Single()) && flyout.Draggable(system) && !flyout.Draggable(nodes.OfType<SessionList>().Single())
+                  && !flyout.Draggable(Tree(system).OfType<FrameworkElement>().First(element => element.Cursor == System.Windows.Input.Cursors.Hand)),
+                "the flyout's header and empty space start a drag, the session list and the Task Manager area keep their clicks");
+            flyout.Hide();
+            (System.Drawing.Point Cursor, System.Drawing.Point Grab)? dragged = null;
+            flyout.DraggedOut += (cursor, grab) => dragged = (cursor, grab);
+            var origin = Native.Bounds(flyout).Location;
+            var press = new System.Drawing.Point(origin.X + 40, origin.Y + 12);
+            flyout.Press(press);
+            flyout.Release();
+            flyout.Press(press);
+            flyout.Drag(press with { X = press.X + 1 });
+            flyout.Release();
+            flyout.Drag(press with { X = press.X + 200 });
+            var clicks = dragged is null;
+            var pointer = press with { X = press.X + 60 };
+            flyout.Press(press);
+            flyout.Drag(pointer);
+            check(clicks && dragged == (pointer, new System.Drawing.Point(40, 12)),
+                "a flyout press released in place or within the drag distance stays a click, and a longer drag detaches with the grabbed offset");
+
+            window = new DashboardWindow(DashboardActions.None, store) { ShowActivated = false };
+            window.Follow(pointer, new(40, 12));
+            window.Show();
+            Settle();
+            var client = window.PointToScreen(new Point());
+            check(Math.Abs(client.X + 40 - pointer.X) <= 1 && Math.Abs(client.Y + 12 - pointer.Y) <= 1 && Native.Bounds(window).Contains(pointer),
+                "the detached window opens with the grabbed point under the pointer");
+            window.Follow(pointer, new(40, 5000));
+            var low = Native.Bounds(window).Contains(pointer);
+            window.Follow(pointer, new(40, 12));
+            check(low, "a point grabbed lower than the detached window is tall still lands inside it");
+            window.Height += 40;
+            Settle();
+            var closed = Native.Bounds(window);
+            window.Close();
+            window = new DashboardWindow(DashboardActions.None, store) { ShowActivated = false };
+            window.Show();
+            Settle();
+            var back = Native.Bounds(window);
+            var expected = DashboardBounds.Restore(closed, System.Windows.Forms.Screen.AllScreens.Select(screen => screen.WorkingArea));
+            check(expected is { } spot && Math.Abs(back.X - spot.X) <= 1 && Math.Abs(back.Y - spot.Y) <= 1 && Math.Abs(back.Height - spot.Height) <= 1,
+                $"the dashboard window comes back with its last position and height ({closed} → {back})");
+        }
+        finally
+        {
+            window?.Close();
+            flyout.Close();
+            File.Delete(path);
+        }
     }
 
     /// The widget view (§4.7): its width follows the layout, never the values, and is the Core contract at its scale; the
@@ -50,6 +126,8 @@ static class AppChecks
             };
             var busy = new StatusAISummary { Running = 99, Input = 99, Phase = TokenActivityState.Input };
             var items = Enum.GetValues<MetricID>();
+            // The speed items' worst realistic rate, "9999.9 tok/s" (a sub-millisecond time between tokens).
+            var speeds = new Dictionary<TokenSource, double> { [TokenSource.Codex] = 9999.94, [TokenSource.Claude] = 9999.94 };
             List<string> unstable = [], shrunk = [];
             foreach (var layout in Enum.GetValues<StatusBarLayout>())
             {
@@ -61,7 +139,7 @@ static class AppChecks
                     return view.DesiredSize.Width;
                 }
                 var unknown = Width(StatusBarContent.Metrics(new SystemSnapshot { BatteryPresent = true }, new StatusAISummary(), layout, items, false, false));
-                var full = StatusBarContent.Metrics(maximum, busy, layout, items, true, true);
+                var full = StatusBarContent.Metrics(maximum, busy, layout, items, true, true, speeds);
                 var width = Width(full);
                 var contract = (StatusBarContent.RequiredWidth(layout, full.Select(metric => metric.Id)) + 2 * WidgetView.Inset) * view.Scale;
                 if (unknown != width || Math.Abs(width - contract) > 0.01) unstable.Add($"{layout} {unknown}/{width}/{contract}");
@@ -70,6 +148,95 @@ static class AppChecks
             }
             check(unstable.Count == 0, "the widget's width follows its layout, not its values: " + string.Join(", ", unstable));
             check(shrunk.Count == 0, "worst-case widget values fit their cells without shrinking: " + string.Join(", ", shrunk));
+            // Narrator reads the items as one named text element; a speed item by its client, rate and unit.
+            var spoken = new WidgetView();
+            spoken.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, [MetricID.Cpu, MetricID.CodexSpeed, MetricID.ClaudeSpeed], true, true,
+                new Dictionary<TokenSource, double> { [TokenSource.Codex] = 55.56 }), StatusBarLayout.Compact);
+            check(UIElementAutomationPeer.CreatePeerForElement(spoken) is { } widgetPeer && widgetPeer.GetAutomationControlType() == AutomationControlType.Text
+                  && widgetPeer.GetName() == "CPU 100%, Codex 속도 55.6 토큰/초, Claude 속도 측정 없음",
+                  "Narrator reads the widget's items, the speed items by client and rate");
+            // Speed items on one line without the character (mac "speed glyphs and dashes are secondary"): the glyph (12–22 pt) and "—"
+            // in the secondary tone, digits in the label tone. The light label is black, so on the clear backdrop a pixel's alpha is its
+            // tone: secondary tops out at 184 (0.72), label at 217 (0.85).
+            var toned = StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Inline, [MetricID.CodexSpeed, MetricID.ClaudeSpeed], true, true,
+                new Dictionary<TokenSource, double> { [TokenSource.Codex] = 55.56 });
+            byte Darkest(StatusBarMetric metric, double from, double to)
+            {
+                var toneView = new WidgetView();
+                toneView.Update([metric], StatusBarLayout.Inline, nextRunner: false);
+                var image = Snapshot.Render(() => toneView, dark: false);
+                var pixels = new byte[image.PixelWidth * image.PixelHeight * 4];
+                image.CopyPixels(pixels, image.PixelWidth * 4, 0);
+                int first = (int)(from * toneView.Scale * 2), last = Math.Min(image.PixelWidth, (int)Math.Ceiling(to * toneView.Scale * 2));
+                byte darkest = 0;
+                for (var y = 0; y < image.PixelHeight; y++)
+                    for (var x = first; x < last; x++) darkest = Math.Max(darkest, pixels[(y * image.PixelWidth + x) * 4 + 3]);
+                return darkest;
+            }
+            byte[] tones = [Darkest(toned[0], 12, 22), Darkest(toned[1], 12, 22), Darkest(toned[1], 25, 45), Darkest(toned[0], 25, 45)];
+            check(tones[0] is >= 170 and <= 187 && tones[1] is >= 170 and <= 187 && tones[2] is > 60 and <= 187 && tones[3] > 190,
+                  $"speed glyphs and dashes are secondary, digits label-toned (alpha {string.Join(", ", tones)})");
+
+            // Sizes: the width is the contract × the size, with and without the character; whole pixels per point keep the runner
+            // nearest-neighbour at exactly that size, a fractional size scales the next whole size up down smoothly.
+            List<string> scaled = [], resampled = [];
+            foreach (var runner in new[] { true, false })
+                foreach (var layout in Enum.GetValues<StatusBarLayout>())
+                {
+                    var metrics = StatusBarContent.Metrics(maximum, busy, layout, items, true, true);
+                    var points = StatusBarContent.RequiredWidth(layout, metrics.Select(metric => metric.Id), runner) + 2 * WidgetView.Inset;
+                    double? natural = null;
+                    foreach (var percent in new[] { 100, 150, 200, 300 })
+                    {
+                        var view = new WidgetView();
+                        view.Update(metrics, layout, runner, percent);
+                        view.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                        natural ??= view.DesiredSize.Width;
+                        var dpi = VisualTreeHelper.GetDpi(view).DpiScaleX;
+                        var expected = points * WidgetView.DevicePixels(dpi, percent) / dpi;
+                        if (Math.Abs(view.DesiredSize.Width - expected) > 0.01 || Math.Abs(view.DesiredSize.Width - natural.Value * percent / 100) > 0.01)
+                            scaled.Add($"{layout}{(runner ? "" : " without the character")} {percent}% {view.DesiredSize.Width:F2}/{expected:F2}");
+                    }
+                }
+            foreach (var percent in Preferences.WidgetScales)
+            {
+                var view = new WidgetView();
+                view.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Minimal, items, true, true), StatusBarLayout.Minimal, true, percent);
+                Snapshot.Render(() => view, dark: false);
+                var whole = view.PixelsPerPoint == Math.Floor(view.PixelsPerPoint);
+                if (view.SpriteScaling != (whole ? BitmapScalingMode.NearestNeighbor : BitmapScalingMode.HighQuality)
+                    || view.SpritePixels != RunnerManifest.CellWidth * (int)Math.Ceiling(view.PixelsPerPoint))
+                    resampled.Add($"{percent}% at {view.PixelsPerPoint} px/pt: {view.SpriteScaling} {view.SpritePixels} px");
+            }
+            check(scaled.Count == 0, "the widget's width is its contract × its size, with and without the character: " + string.Join(", ", scaled));
+            check(resampled.Count == 0, "whole pixels per point draw the runner nearest-neighbour at that size, and fractional sizes resample the next size up smoothly: "
+                + string.Join(", ", resampled));
+
+            // "위젯 크기" (tray and widget menu, Settings) and Ctrl + wheel over the widget, through their handlers.
+            var store = Path.Combine(Path.GetTempPath(), $"tokencat-appchecks-{Guid.NewGuid():N}.json");
+            try
+            {
+                var preferences = new Preferences(new SettingsStore(store));
+                using var strip = new System.Windows.Forms.ContextMenuStrip();
+                Menus.Fill(strip, menu => Shell.SizeMenu(menu, preferences));
+                var sizes = strip.Items.OfType<System.Windows.Forms.ToolStripMenuItem>().ToList();
+                var listed = sizes.Select(item => item.Text).SequenceEqual(["100%", "125%", "150%", "175%", "200%", "250%", "300%"])
+                             && sizes.Count(item => item.Checked) == 1 && sizes[0].Checked;
+                sizes[2].PerformClick();
+                var picked = preferences.WidgetScale == 150;
+                var widget = new Widget();
+                widget.Zoomed += notches => Shell.Zoom(preferences, notches);
+                var steps = new List<int>();
+                foreach (var (delta, control) in new[] { (120, true), (60, true), (60, true), (-120, true), (120, false), (-360, true), (-120, true), (1_200, true) })
+                {
+                    widget.Wheel(delta, control);
+                    steps.Add(preferences.WidgetScale);
+                }
+                check(listed && picked && steps.SequenceEqual([175, 175, 200, 175, 175, 100, 100, 300]) && !widget.Wheel(120, false),
+                      "the size menu lists every size with the current one checked, and Ctrl + wheel steps one size per notch within 100–300 %: "
+                      + string.Join(", ", steps));
+            }
+            finally { File.Delete(store); }
 
             var frames = new WidgetView();
             frames.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, items, true, true), StatusBarLayout.Compact);
@@ -96,13 +263,102 @@ static class AppChecks
         finally { Theme.Dark = saved; }
     }
 
+    /// Settings › 위젯 and the pages it changed (§4.4): they build in ko and en with the widget's controls inside the page; the
+    /// item rows are check boxes named "title · bar label" in the stored order with the mac's locked and no-battery cases;
+    /// Alt+↑/↓ moves the focused item; the character toggle moved to Character.
+    static void WidgetSettings(Action<bool, string> check)
+    {
+        static IEnumerable<DependencyObject> Descendants(DependencyObject root) =>
+            LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>().SelectMany(child => Descendants(child).Prepend(child));
+        static AutomationPeer? Peer(UIElement element) => UIElementAutomationPeer.CreatePeerForElement(element);
+        static ToggleState? Toggled(UIElement element) => (Peer(element)?.GetPattern(PatternInterface.Toggle) as IToggleProvider)?.ToggleState;
+        static string? Named(IEnumerable<DependencyObject> tree, string name) =>
+            tree.OfType<System.Windows.Controls.Primitives.ToggleButton>().FirstOrDefault(toggle => AutomationProperties.GetName(toggle) == name) is { } found
+                ? Toggled(found)?.ToString() : null;
+        var saved = Theme.Dark;
+        var store = Path.Combine(Path.GetTempPath(), $"tokencat-appchecks-{Guid.NewGuid():N}.json");
+        try
+        {
+            var preferences = new Preferences(new SettingsStore(store));
+            var actions = new SettingsActions(preferences, () => { }, _ => { }, () => { }, _ => { });
+            var outside = new List<string>();
+            foreach (var language in new[] { AppLanguage.Ko, AppLanguage.En })
+                With(language, () =>
+                {
+                    foreach (var page in new[] { SettingsPage.General, SettingsPage.Widget, SettingsPage.Character })
+                    {
+                        SettingsView? view = null;
+                        var image = Snapshot.Render(() => view = new SettingsView(Fixtures.Settings(), actions, page, _ => { }, snapshot: true), dark: true);
+                        if (image.PixelWidth != (int)((SettingsView.NavWidth + SettingsView.PageWidth) * 2)) outside.Add($"{page}/{language.Code} {image.PixelWidth} px");
+                        var controls = Descendants(view!).OfType<FrameworkElement>()
+                            .Where(element => AutomationProperties.GetAutomationId(element).StartsWith("widget-", StringComparison.Ordinal)).ToList();
+                        if (page == SettingsPage.Widget && controls.Count != 3) outside.Add($"{page}/{language.Code} {controls.Count} controls");
+                        foreach (var control in controls)
+                        {
+                            var right = control.TransformToAncestor(view!).TransformBounds(new Rect(control.RenderSize)).Right;
+                            if (control.RenderSize.Width < 1 || right > SettingsView.NavWidth + SettingsView.PageWidth - 20 + 0.5)
+                                outside.Add($"{page}/{language.Code} {AutomationProperties.GetAutomationId(control)} ends at {right:F1}");
+                        }
+                    }
+                });
+            check(outside.Count == 0, "the General, Widget and Character pages build in ko and en, with the widget's size, preset and layout inside the page: "
+                + string.Join(", ", outside));
+
+            // Two lines, the character hidden, only memory drawn (the battery item is on, but this PC has none): memory is locked.
+            preferences.Apply(DisplayPreset.SystemMonitor);
+            preferences.HasBattery = false;
+            foreach (var id in new[] { MetricID.Cpu, MetricID.Disk, MetricID.Network, MetricID.Ai }) preferences.SetVisible(id, false);
+            preferences.SetShowRunner(false);
+            var settings = new SettingsView(Fixtures.Settings(), actions, SettingsPage.Widget, _ => { }, snapshot: true);
+            List<CheckBox> rows() => [.. Descendants(settings).OfType<CheckBox>()];
+            var shown = rows();
+            var named = shown.Select(row => Peer(row)?.GetName()).SequenceEqual(["CPU", "메모리 · RAM", "저장 공간 · DISK", "배터리 · BAT", "네트워크 · NET", "AI 세션 · AI",
+                "Codex 속도", "Claude 속도"]);
+            var states = shown.Select(row => (Toggled(row), row.IsEnabled)).SequenceEqual(
+                [(ToggleState.Off, true), (ToggleState.On, false), (ToggleState.Off, true), (ToggleState.Off, false), (ToggleState.Off, true), (ToggleState.Off, true),
+                 (ToggleState.Off, true), (ToggleState.Off, true)]);
+            var note = Descendants(settings).OfType<TextBlock>().Any(text => text.Text.Replace("⁠", "") == "이 PC에는 배터리가 없습니다");
+            // The speed rows show their glyph where the others show their label.
+            var glyphs = Descendants(settings).OfType<TextBlock>().SelectMany(text => text.Inlines.OfType<System.Windows.Documents.InlineUIContainer>())
+                .Select(container => container.Child).OfType<SpeedGlyph>().Count();
+            check(named && states && note && glyphs == 2,
+                "the widget's item rows are check boxes named title · bar label (a speed item by its title, its glyph beside it) in the stored order, "
+                + "locked and no-battery rows disabled with the note");
+
+            // UI Automation's Toggle (Narrator scan mode, voice access) raises no Click: it must still show and hide the item.
+            var cpu = (IToggleProvider)Peer(shown[0])!.GetPattern(PatternInterface.Toggle)!;
+            cpu.Toggle();
+            var toggledOn = preferences.Visible.Contains(MetricID.Cpu);
+            cpu.Toggle();
+            check(toggledOn && !preferences.Visible.Contains(MetricID.Cpu), "toggling an item row through UI Automation did not show and hide the item");
+
+            var handled = settings.RowKey(MetricID.Memory, Key.System, Key.Up, ModifierKeys.Alt);
+            var ignored = !settings.RowKey(MetricID.Memory, Key.Up, Key.None, ModifierKeys.None) && !settings.RowKey(MetricID.Memory, Key.System, Key.Up, ModifierKeys.Control);
+            var top = settings.RowKey(MetricID.Memory, Key.System, Key.Up, ModifierKeys.Alt) && preferences.Order[0] == MetricID.Memory;
+            settings.Refresh(Fixtures.Settings());
+            var rebuilt = AutomationProperties.GetName(rows()[0]) == "메모리 · RAM";
+            settings.RowKey(MetricID.Memory, Key.System, Key.Down, ModifierKeys.Alt);
+            check(handled && ignored && top && rebuilt && preferences.Order.SequenceEqual(Enum.GetValues<MetricID>()),
+                  "Alt+↑/↓ on an item row moves it one place (not past the top), other keys are left alone, and the rebuilt list follows");
+
+            var character = Descendants(new SettingsView(Fixtures.Settings(), actions, SettingsPage.Character, _ => { }, snapshot: true)).ToList();
+            var general = Descendants(new SettingsView(Fixtures.Settings(), actions, SettingsPage.General, _ => { }, snapshot: true)).ToList();
+            check(Named(character, "위젯에 캐릭터 표시") == nameof(ToggleState.Off) && Named(general, "화면에 위젯 표시") is null
+                  && Named(Descendants(settings), "화면에 위젯 표시") == nameof(ToggleState.On),
+                  "the widget's switch is on the Widget page and the character's in the widget on the Character page");
+        }
+        finally
+        {
+            Theme.Dark = saved;
+            File.Delete(store);
+        }
+    }
+
     /// What Narrator reads (UI Automation): rows, limits and the header by name, the detail with its copy buttons, switches and
     /// choices with their state, text buttons by their visible words. Also the keyboard selection's outline and the footer refit.
     static void Automation(Action<bool, string> check)
     {
         static AutomationPeer? Peer(UIElement element) => UIElementAutomationPeer.CreatePeerForElement(element);
-        static IEnumerable<DependencyObject> Tree(DependencyObject root) =>
-            LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>().SelectMany(child => Tree(child).Prepend(child));
         static Dashboard Shown(string name)
         {
             var fixture = Fixtures.All().First(fixture => fixture.Name == name);
@@ -123,6 +379,15 @@ static class AppChecks
               && statusPeer.GetChildren()?.Any(child => child.GetAutomationControlType() == AutomationControlType.Text) == true
               && Peer(limit) is { } limitPeer && limitPeer.GetAutomationControlType() == AutomationControlType.Text && limitPeer.GetName().StartsWith("Codex"),
               "the header status and limit rows reach UI Automation by name");
+        // A flyout dragged out (§4.2) hands the window the top-level group of its selected child row or open detail.
+        foreach (var name in new[] { "keyboard-selection", "detail-open" })
+        {
+            var group = Shown(name).SelectedGroup;
+            var target = new Dashboard(DashboardActions.None, panel: true, snapshot: true);
+            target.Show(Fixtures.Input(Fixtures.All().First(fixture => fixture.Name == name)));
+            if (group is not null) target.Focus(group);
+            check(group is not null && target.SelectedGroup == group, $"{name}: the selected group is still selected in the detached window ({group})");
+        }
         var detail = Tree(Shown("detail-open")).OfType<DetailView>().FirstOrDefault();
         check(detail is not null && Peer(detail)?.GetName() == "세션 상세"
               && Peer(detail)?.GetChildren()?.Any(child => child.GetAutomationControlType() == AutomationControlType.Button) == true,
@@ -329,7 +594,7 @@ static class AppChecks
     /// PreferenceChecks' Settings cases (T-1, T-3, T-4), with the Windows pages and startup captions.
     static void SettingsRows(Action<bool, string> check)
     {
-        check(SettingsPageTitles() == "일반 · 캐릭터 · 실측 · 정보", "Settings pages are not 일반 · 캐릭터 · 실측 · 정보");
+        check(SettingsPageTitles() == "일반 · 위젯 · 캐릭터 · 실측 · 정보", "Settings pages are not 일반 · 위젯 · 캐릭터 · 실측 · 정보");
         check(SettingsView.LegendEntries(RunnerMotion.Activity).Select(entry => entry.Pose).SequenceEqual([RunnerPose.Walk, RunnerPose.Run, RunnerPose.Alert, RunnerPose.Sit, RunnerPose.Sleep])
             && SettingsView.LegendEntries(RunnerMotion.Cpu).Select(entry => entry.Caption).SequenceEqual(["4% 미만", "20%까지", "20% 넘음"])
             && SettingsView.LegendEntries(RunnerMotion.Measured).Select(entry => entry.Caption).SequenceEqual(["실측 없음", "40 tok/s 미만", "40 이상"])
@@ -376,7 +641,7 @@ static class AppChecks
             "Korean captions can still break inside a word");
         With(AppLanguage.En, () =>
         {
-            check(SettingsPageTitles() == "General · Character · Telemetry · About"
+            check(SettingsPageTitles() == "General · Widget · Character · Telemetry · About"
                 && SettingsView.CollectorStatus(TelemetryCollectorState.BusyOtherApp).Text == "Off · another app is using port 16493"
                 && Client(false, false, at.AddSeconds(-30), at).Text == "Last received <1m ago"
                 && Limits([], true, at.AddSeconds(-180)).Text == "Last received 3m ago"

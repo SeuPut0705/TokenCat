@@ -2,6 +2,8 @@ using System.IO;
 using System.Diagnostics;
 using System.Reflection;
 using System.Windows;
+using System.Windows.Automation;
+using System.Windows.Automation.Peers;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -9,10 +11,11 @@ using static TokenCat.Lang;
 
 namespace TokenCat;
 
-/// The Settings pages (§4.4), in navigation order. The mac "메뉴 막대" tab is a section of General: the widget's toggle and presets (§4.7).
-enum SettingsPage { General, Character, Telemetry, About }
+/// The Settings pages (§4.4), in navigation order: the mac's, with "메뉴 막대" as "위젯" (the on-screen widget, §4.7).
+enum SettingsPage { General, Widget, Character, Telemetry, About }
 
-sealed record SettingsInput(DashboardInput Dashboard, IReadOnlyDictionary<TokenSource, DateTimeOffset> Batches, LoginItem.State Login);
+/// `Pose`: the character's current pose, which the widget preview shows (frame 0).
+sealed record SettingsInput(DashboardInput Dashboard, IReadOnlyDictionary<TokenSource, DateTimeOffset> Batches, LoginItem.State Login, RunnerPose Pose = RunnerPose.Sit);
 
 sealed record SettingsActions(Preferences Preferences, Action RetryTelemetry, Action<UpdateCommand> Update, Action ReshowOnboarding, Action<bool> SetLogin);
 
@@ -73,6 +76,7 @@ sealed class SettingsWindow : Window
     public static string Titles(SettingsPage page) => page switch
     {
         SettingsPage.General => Loc("일반", "General"),
+        SettingsPage.Widget => Loc("위젯", "Widget"),
         SettingsPage.Character => Loc("캐릭터", "Character"),
         SettingsPage.Telemetry => Loc("실측", "Telemetry"),
         _ => Loc("정보", "About"),
@@ -107,6 +111,13 @@ sealed class SettingsView : Grid
     SettingsPage page;
     string? signature;
     string? loginError;
+    /// The shown Widget page's live preview, and the one the last build made.
+    WidgetView? preview, builtPreview;
+    /// The item being dragged in the Widget page's list.
+    MetricID? dragging;
+    /// The item a keyboard move takes the focus to once the page is rebuilt.
+    string? follow;
+    const string DragFormat = "TokenCat.MetricRow";
 
     /// `snapshot`: nothing about this PC (config files, other processes, the exe path) is read.
     public SettingsView(SettingsInput input, SettingsActions actions, SettingsPage page, Action<SettingsPage> selected, bool snapshot = false)
@@ -135,7 +146,11 @@ sealed class SettingsView : Grid
         nav.Children.Clear();
         foreach (var item in Enum.GetValues<SettingsPage>())
         {
-            var icon = item switch { SettingsPage.General => Ui.Gear, SettingsPage.Character => '\uE7FC', SettingsPage.Telemetry => '\uE9D9', _ => Ui.InfoIcon };
+            var icon = item switch
+            {
+                SettingsPage.General => Ui.Gear, SettingsPage.Widget => '\uE7F4', SettingsPage.Character => '\uE7FC', SettingsPage.Telemetry => '\uE9D9',
+                _ => Ui.InfoIcon,
+            };
             var row = Dashboard.Row(10, Ui.Icon(icon, 14, item == page ? Theme.Accent : Theme.Secondary), Ui.Text(SettingsWindow.Titles(item), Font.Body));
             var button = Ui.HoverButton(new Border { Child = row, Padding = new Thickness(10, 7, 10, 7), CornerRadius = new CornerRadius(5),
                 Background = item == page ? Theme.Brush(Theme.Selection) : null }, () => Select(item), SettingsWindow.Titles(item));
@@ -154,25 +169,36 @@ sealed class SettingsView : Grid
     public void Refresh(SettingsInput next)
     {
         input = next;
+        builtPreview = null;
         var content = page switch
         {
             SettingsPage.General => General(),
+            SettingsPage.Widget => Widget(),
             SettingsPage.Character => Character(),
             SettingsPage.Telemetry => Telemetry(),
             _ => About(),
         };
         var built = Signature(content);
-        if (built == signature) return;
-        // A press in progress keeps its button until the next tick; swapping it now would lose the click.
-        if (host.IsMouseCaptureWithin) return;
+        // A press in progress keeps its button until the next tick; swapping it now would lose the click. The kept page's
+        // preview still follows the values.
+        if (built == signature || host.IsMouseCaptureWithin)
+        {
+            if (preview is not null) Preview(preview);
+            return;
+        }
         signature = built;
-        // Keyboard focus moves to the element at the same position in the new page.
+        // Keyboard focus moves to the element at the same position in the new page, or with the item a key just moved.
         var focused = host.IsKeyboardFocusWithin && host.Content is DependencyObject old && Keyboard.FocusedElement is UIElement focus
             ? Focusables(old).IndexOf(focus) : -1;
+        var moved = follow;
+        follow = null;
         host.Content = content;
+        preview = builtPreview;
         if (focused < 0) return;
         host.UpdateLayout();
-        Focusables(content).ElementAtOrDefault(focused)?.Focus();
+        var focusables = Focusables(content);
+        (focusables.FirstOrDefault(element => moved is not null && AutomationProperties.GetAutomationId(element) == moved)
+            ?? focusables.ElementAtOrDefault(focused))?.Focus();
     }
 
     /// Focusable elements in logical-tree order (the order Signature walks).
@@ -321,9 +347,9 @@ sealed class SettingsView : Grid
         var reset = Ui.SmallButton(Loc("기본값으로 되돌리기…", "Restore Defaults…"), () =>
         {
             var answer = MessageBox.Show(Window.GetWindow(this),
-                Loc("캐릭터, 움직임 기준과 알림 선택이 바뀝니다. 시작 프로그램과 새 버전 자동 확인은 그대로입니다.",
-                    "This resets the character, motion source and notification choices. The startup setting and automatic update checks stay as they are."),
-                Loc("캐릭터·알림 설정을 기본값으로 되돌릴까요?", "Restore the character and notification settings to their defaults?"),
+                Loc("위젯의 표시 방식·항목·크기, 캐릭터와 움직임 기준, 알림 선택이 바뀝니다. 시작 프로그램, 새 버전 자동 확인, 위젯 표시 여부와 위치는 그대로입니다.",
+                    "This resets the widget's layout, items and size, the character and motion source, and notification choices. The startup setting, automatic update checks, and whether and where the widget shows stay as they are."),
+                Loc("위젯·캐릭터·알림 설정을 기본값으로 되돌릴까요?", "Restore the widget, character and notification settings to their defaults?"),
                 MessageBoxButton.OKCancel, MessageBoxImage.Question, MessageBoxResult.Cancel);
             if (answer == MessageBoxResult.OK) preferences.Reset();
         });
@@ -333,19 +359,7 @@ sealed class SettingsView : Grid
             "Off by default, and never sent while the dashboard is visible. They include only the project, model, token count and duration, never questions or responses.")));
         reset.Margin = new Thickness(0, 8, 0, 0);
         notificationFooter.Children.Add(reset);
-        // The widget stands in for the mac menu-bar item (§4.7): the mac's preset picker, without per-item editing.
-        var presets = Choices(Enum.GetValues<DisplayPreset>().Select(preset => (DisplayPreset?)preset).ToList(), preferences.Preset,
-            preset => preset!.Value.Title, preset => Ui.Text(preset!.Value.Title, Font.Body), preset => preferences.Apply(preset!.Value));
         return Page(
-            Section(Loc("위젯", "Widget"),
-            [
-                Toggle(Loc("화면에 위젯 표시", "Show widget on screen"),
-                    Loc("작업 표시줄에는 글자를 넣을 수 없어 캐릭터와 AI 상태를 화면 위에 띄웁니다. 끌어서 옮기고, 전체 화면 앱을 쓰는 동안에는 숨깁니다.",
-                        "The taskbar can't show text, so the character and AI status float on screen. Drag it anywhere; it hides while a full-screen app is in front."),
-                    preferences.ShowWidget, on => preferences.ShowWidget = on),
-                Label(Loc("프리셋", "Preset"), preferences.Layout.Summary),
-                presets,
-            ]),
             Section(Loc("시작", "Startup"),
             [
                 Toggle(Loc("로그인 시 TokenCat 열기", "Open TokenCat at login"), LoginItem.Describe(login), LoginItem.IsOn(login), on =>
@@ -373,6 +387,227 @@ sealed class SettingsView : Grid
             ], notificationFooter));
     }
 
+    /// The mac "메뉴 막대" pane for the on-screen widget (§4.7): showing it, a live preview, its size, preset and layout, then the
+    /// items (MenuBarPane, MetricRows).
+    FrameworkElement Widget()
+    {
+        var preferences = actions.Preferences;
+        var view = builtPreview = new WidgetView();
+        Preview(view);
+        // The widget is its strip in points at the display scale rounded to whole pixels, times its size.
+        var pixels = WidgetView.DevicePixels(VisualTreeHelper.GetDpi(this).DpiScaleX, preferences.WidgetScale);
+        var (width, height) = ((int)Math.Round(view.PointSize.Width * pixels), (int)Math.Round(view.PointSize.Height * pixels));
+        var strip = new Border
+        {
+            Child = view, Background = Theme.Brush(Theme.Background), CornerRadius = new CornerRadius(8), BorderBrush = Theme.Brush(Theme.Hairline),
+            BorderThickness = new Thickness(1), HorizontalAlignment = HorizontalAlignment.Left,
+        };
+        // Wider than the row: cut with a short fade, never scaled (mac MenuBarPreview).
+        var clip = new Border { Child = strip, ClipToBounds = true };
+        clip.SizeChanged += (_, _) => clip.OpacityMask = view.PointSize.Width * view.Scale + 2 > clip.ActualWidth + 0.5
+            ? new LinearGradientBrush(Colors.Black, Colors.Transparent, new Point(clip.ActualWidth - 28, 0), new Point(clip.ActualWidth, 0)) { MappingMode = BrushMappingMode.Absolute }
+            : null;
+        var sized = Caption(Loc($"화면에서 약 {width} × {height} px", $"About {width} × {height} px on screen"));
+        sized.Margin = new Thickness(0, 6, 0, 0);
+        var shown = new StackPanel();
+        shown.Children.Add(clip);
+        shown.Children.Add(sized);
+
+        var size = Dropdown($"{preferences.WidgetScale}%", Loc("크기", "Size"), menu => Shell.SizeMenu(menu, preferences));
+        AutomationProperties.SetAutomationId(size, "widget-size");
+        var current = preferences.Preset;
+        var custom = Loc("사용자 지정", "Custom");
+        var preset = Dropdown(current?.Title ?? custom, Loc("프리셋", "Preset"), menu =>
+        {
+            foreach (var choice in Enum.GetValues<DisplayPreset>()) menu.Add(choice.Title, () => preferences.Apply(choice), check: current == choice);
+            if (current is null) menu.Add(custom, null, enabled: false, check: true);
+        }, Loc("표시 방식과 항목을 한 번에 바꿉니다", "Sets the layout and items in one step"));
+        AutomationProperties.SetAutomationId(preset, "widget-preset");
+        var layouts = Segmented(Enum.GetValues<StatusBarLayout>(), preferences.Layout, layout => layout.Title, layout => preferences.Layout = layout);
+        AutomationProperties.SetAutomationId(layouts, "widget-layout");
+        var footer = Caption(preferences.Layout == StatusBarLayout.Minimal
+            ? Loc("최소 표시는 캐릭터와 AI 상태·세션 수만 보여 줍니다. 항목 목록은 두 줄·한 줄 표시에 적용됩니다.",
+                "Minimal shows only the character, AI status and session count. The item list applies to the Two Lines and One Line layouts.")
+            : Loc("끌거나 Alt+↑·↓로 순서를 바꿉니다. 캐릭터를 숨기면 마지막 항목은 숨길 수 없습니다.",
+                "Drag or press Alt+↑ or Alt+↓ to reorder. With the character hidden, the last item can't be hidden."));
+        return Page(
+            Section(null,
+            [
+                Toggle(Loc("화면에 위젯 표시", "Show widget on screen"),
+                    Loc("작업 표시줄에는 글자를 넣을 수 없어 캐릭터와 AI 상태를 화면 위에 띄웁니다. 끌어서 옮기고, 전체 화면 앱을 쓰는 동안에는 숨깁니다.",
+                        "The taskbar can't show text, so the character and AI status float on screen. Drag it anywhere; it hides while a full-screen app is in front."),
+                    preferences.ShowWidget, on => preferences.ShowWidget = on),
+                shown,
+                Labeled(Label(Loc("크기", "Size"), Loc("위젯 위에서 Ctrl을 누른 채 마우스 휠을 돌리거나 위젯 우클릭 메뉴에서도 바꿀 수 있습니다.",
+                    "You can also hold Ctrl and turn the mouse wheel over the widget, or use its right-click menu.")), size),
+                Labeled(Label(Loc("프리셋", "Preset")), preset),
+                Labeled(Label(Loc("표시 방식", "Layout"), preferences.Layout.Summary), layouts),
+            ]),
+            Section(Loc("항목", "Items"), preferences.Order.Select(MetricRow), footer));
+    }
+
+    /// The widget as it is now: values, layout, items, character and size, the current pose at frame 0.
+    void Preview(WidgetView view)
+    {
+        var preferences = actions.Preferences;
+        view.Update(StatusBarContent.Metrics(input.Dashboard.State, preferences.Layout, preferences.ShownItems), preferences.Layout, preferences.ShowRunner,
+            preferences.WidgetScale);
+        view.UpdateRunner(preferences.Character, input.Pose, 0, RunnerAnimator.StillFx(input.Pose));
+    }
+
+    static string MetricKey(MetricID id) => "metric-" + id.ToString().ToLowerInvariant();
+
+    /// One item: a drag handle and a check box "title · bar label" (mac MetricRows). The row is the drag source and drop target
+    /// (the dragged item takes each row's place as it passes); Alt+↑/↓ on the focused box and its menu (right-click, the Apps key,
+    /// Shift+F10) move it too.
+    FrameworkElement MetricRow(MetricID id)
+    {
+        var preferences = actions.Preferences;
+        var missing = id == MetricID.Battery && !preferences.HasBattery;
+        var on = !missing && preferences.Visible.Contains(id);
+        var locked = on && !preferences.CanHide(id);
+        var mark = Ui.Icon(Ui.Check, 10, on ? (Theme.Dark ? Colors.Black : Colors.White) : Colors.Transparent);
+        mark.HorizontalAlignment = HorizontalAlignment.Center;
+        var box = new Border
+        {
+            Width = 16, Height = 16, CornerRadius = new CornerRadius(4), Child = mark, Background = on ? Theme.Brush(Theme.Accent) : null,
+            BorderBrush = Theme.Brush(on ? Theme.Accent : Theme.Primary(0.45)), BorderThickness = new Thickness(1),
+        };
+        var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        var line = id.BarLabel is { } bar ? Ui.Line(Ui.Run(id.Title, Font.Body), Ui.Run($" · {bar}", Font.Meta, Theme.Secondary)) : Ui.Line(Ui.Run(id.Title, Font.Body));
+        // A speed item shows its 9 DIP glyph where the others show their label; the check box's name is the title alone.
+        if (id.SpeedSource is { } source)
+        {
+            line.Inlines.Add(Ui.Run(" · ", Font.Meta, Theme.Secondary));
+            line.Inlines.Add(new System.Windows.Documents.InlineUIContainer(new SpeedGlyph(source, 9)) { BaselineAlignment = BaselineAlignment.Center });
+        }
+        text.Children.Add(line);
+        var noBattery = Loc("이 PC에는 배터리가 없습니다", "This PC has no battery");
+        if (missing) text.Children.Add(Caption(noBattery));
+        var title = id.BarLabel is { } label ? $"{id.Title} · {label}" : id.Title;
+        var lockedHelp = Loc("캐릭터를 숨긴 상태에서는 최소 한 항목을 표시해야 합니다", "With the character hidden, at least one item must stay visible");
+        // A CheckBox, so UI Automation reports the item by name with its checked state. Its own Checked/Unchecked act, so a UI
+        // Automation Toggle (Narrator scan mode, voice access), which raises no Click, changes the item too.
+        var check = Ui.Hover(new CheckBox { IsChecked = on }, Dashboard.Row(8, box, text), () => { }, title);
+        check.Checked += (_, _) => preferences.SetVisible(id, true);
+        check.Unchecked += (_, _) => preferences.SetVisible(id, false);
+        check.IsEnabled = !missing && !locked;
+        check.Opacity = check.IsEnabled ? 1 : 0.4;
+        check.Tag = on ? "on" : "off";
+        check.ToolTip = locked ? lockedHelp : Loc("끌어서 순서를 바꿉니다", "Drag to reorder");
+        ToolTipService.SetShowOnDisabled(check, true);
+        AutomationProperties.SetAutomationId(check, MetricKey(id));
+        AutomationProperties.SetHelpText(check, missing ? noBattery : locked ? lockedHelp : Loc("Alt+↑·↓로 순서를 바꿉니다", "Alt+Up or Alt+Down reorders it"));
+        var handle = new System.Windows.Shapes.Path
+        {
+            Data = Geometry.Parse("M0,0.5 H12 M0,4.5 H12 M0,8.5 H12"), Stroke = Theme.Brush(Theme.Tertiary), StrokeThickness = 1,
+            VerticalAlignment = VerticalAlignment.Center, SnapsToDevicePixels = true,
+        };
+        // Over the section's row padding, so the whole row takes drags and drops.
+        var row = new Border
+        {
+            Child = Dashboard.Row(10, handle, check), Background = Brushes.Transparent, AllowDrop = true,
+            Margin = new Thickness(-12, -9, -12, -9), Padding = new Thickness(12, 9, 12, 9),
+        };
+        Point? press = null;
+        row.PreviewMouseLeftButtonDown += (_, e) => press = e.GetPosition(row);
+        row.PreviewMouseLeftButtonUp += (_, _) => press = null;
+        row.PreviewMouseMove += (_, e) =>
+        {
+            if (press is not { } start || e.LeftButton != MouseButtonState.Pressed) return;
+            var moved = e.GetPosition(row) - start;
+            if (Math.Abs(moved.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(moved.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+            press = null;
+            dragging = id;
+            try { DragDrop.DoDragDrop(row, new DataObject(DragFormat, MetricKey(id)), DragDropEffects.Move); }
+            finally { dragging = null; }
+        };
+        // Moves live as it passes another row's middle in the direction of travel (the page is rebuilt under the pointer), so rows
+        // of different heights (the battery note) never swap back and forth; only drags from this list count.
+        row.DragOver += (_, e) =>
+        {
+            e.Handled = true;
+            e.Effects = DragDropEffects.None;
+            if (dragging is not { } moving || !e.Data.GetDataPresent(DragFormat)) return;
+            e.Effects = DragDropEffects.Move;
+            var order = preferences.Order.ToList();
+            if (moving != id && (order.IndexOf(id) > order.IndexOf(moving)) == (e.GetPosition(row).Y >= row.ActualHeight / 2))
+                preferences.Move(moving, onto: id);
+        };
+        row.Drop += (_, e) => e.Handled = true;
+        row.MouseRightButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            ItemMenu(row, id);
+        };
+        check.PreviewKeyDown += (_, e) => { if (RowKey(id, e.Key, e.SystemKey, Keyboard.Modifiers, row)) e.Handled = true; };
+        return row;
+    }
+
+    /// An item row's keys: Alt+↑/↓ moves the item; the Apps key or Shift+F10 opens its menu under `anchor`. True when handled.
+    internal bool RowKey(MetricID id, Key key, Key systemKey, ModifierKeys modifiers, FrameworkElement? anchor = null)
+    {
+        if (key == Key.System && modifiers == ModifierKeys.Alt && systemKey is Key.Up or Key.Down)
+        {
+            MoveItem(id, systemKey == Key.Up ? -1 : 1);
+            return true;
+        }
+        if (anchor is null || !(key == Key.Apps || key == Key.System && systemKey == Key.F10 && modifiers == ModifierKeys.Shift)) return false;
+        ItemMenu(anchor, id);
+        return true;
+    }
+
+    /// Moves one place; the focus follows the item into the rebuilt page and Narrator hears where it went.
+    void MoveItem(MetricID id, int by)
+    {
+        var order = actions.Preferences.Order;
+        actions.Preferences.Move(id, by);
+        var to = actions.Preferences.Order.ToList().IndexOf(id);
+        if (to == order.ToList().IndexOf(id)) return;
+        follow = MetricKey(id);
+        UIElementAutomationPeer.CreatePeerForElement(host)?.RaiseNotificationEvent(AutomationNotificationKind.ActionCompleted,
+            AutomationNotificationProcessing.MostRecent, Loc($"{id.Title}, {order.Count}개 중 {to + 1}번째", $"{id.Title}, {to + 1} of {order.Count}"), "tokencat.move");
+    }
+
+    void ItemMenu(FrameworkElement anchor, MetricID id)
+    {
+        var order = actions.Preferences.Order;
+        Menus.Show(anchor, menu =>
+        {
+            menu.Add(Loc("위로 이동", "Move Up"), () => MoveItem(id, -1), enabled: order[0] != id);
+            menu.Add(Loc("아래로 이동", "Move Down"), () => MoveItem(id, 1), enabled: order[^1] != id);
+        });
+    }
+
+    /// A themed pop-up button (WPF's ComboBox ignores dark mode): the current choice and a chevron; the choices open as a menu
+    /// with the current one checked.
+    static Button Dropdown(string current, string name, Action<MenuBuilder> build, string? help = null)
+    {
+        Button? button = null;
+        button = Ui.SmallButton(current, () => Menus.Show(button!, build), help, menu: true);
+        AutomationProperties.SetName(button, $"{name}: {current}");
+        return button;
+    }
+
+    /// The mac's segmented picker: one radio button per value in a row, the chosen one filled.
+    static FrameworkElement Segmented<T>(IReadOnlyList<T> values, T current, Func<T, string> title, Action<T> choose)
+    {
+        var row = new StackPanel { Orientation = Orientation.Horizontal };
+        foreach (var value in values)
+        {
+            var chosen = EqualityComparer<T>.Default.Equals(value, current);
+            var segment = Ui.Hover(new RadioButton { IsChecked = chosen, GroupName = typeof(T).Name },
+                new Border
+                {
+                    Child = Ui.Text(title(value), Font.Meta, chosen ? Theme.Label : Theme.Secondary), Padding = new Thickness(10, 3, 10, 3),
+                    CornerRadius = new CornerRadius(4), Background = chosen ? Theme.Brush(Theme.Selection) : null,
+                }, () => choose(value), title(value));
+            segment.Tag = chosen ? "chosen" : null;
+            row.Children.Add(segment);
+        }
+        return new Border { Child = row, Padding = new Thickness(2), CornerRadius = new CornerRadius(6), Background = Theme.Brush(Theme.Primary(0.06)) };
+    }
+
     FrameworkElement Character()
     {
         var preferences = actions.Preferences;
@@ -383,8 +618,14 @@ sealed class SettingsView : Grid
             motion => preferences.AnimationSource = motion);
         motions.ToolTip = preferences.AnimationSource.Caption;
         var entries = LegendEntries(preferences.AnimationSource);
+        // Mac "메뉴 막대에 캐릭터 표시"; the tray icon is the character, so it always shows there.
+        var canHide = preferences.CanHideRunner;
+        var runner = Toggle(Loc("위젯에 캐릭터 표시", "Show character in widget"),
+            canHide ? Loc("알림 영역 아이콘에는 항상 표시됩니다", "The notification area icon always shows it")
+                : Loc("표시할 항목이 없어 캐릭터를 숨길 수 없습니다", "The character can't be hidden because no other item is shown"),
+            preferences.ShowRunner, preferences.SetShowRunner, enabled: !preferences.ShowRunner || canHide);
         return Page(
-            Section(null, [Labeled(Label(Loc("캐릭터", "Character")), null), characters]),
+            Section(null, [Labeled(Label(Loc("캐릭터", "Character")), null), characters, runner]),
             Section(null,
             [
                 Label(Loc("움직임 기준", "Motion source"), preferences.AnimationSource.Subtitle), motions,

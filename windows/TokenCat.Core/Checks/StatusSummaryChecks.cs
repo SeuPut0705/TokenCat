@@ -150,6 +150,29 @@ public static class StatusSummaryChecks
               minimal.Select(metric => metric.Id).SequenceEqual([MetricID.Ai]) && minimal[0].Value == "1" && minimal[0].ActivityState == A.Tool);
         check("waiting-only AI shows the log-wait count with the half disc, not active",
               metrics(idleCpu, [stale]).First(metric => metric.Id == MetricID.Ai) is { Value: "1", IsActive: false, ActivityState: A.Stale });
+        // Speed items: each client's own "지금 속도" (`Format.Tps`, then a smaller "tok/s"), "—" without one, spoken per client;
+        // the minimal layout still draws only AI.
+        var timed = new TokenReading(TokenSource.Codex, "timed")
+        {
+            SessionID = "t1", Model = "g1", Active = true, ActivityState = A.Working, SampledAt = at,
+            SpeedMeasurement = new TokenSpeedMeasurement(new TelemetryReading { Provider = TokenSource.Codex, At = at.AddSeconds(-3) }) { Model = "g1", ServerTokenIntervalMs = 18 },
+        };
+        var untimed = new TokenReading(TokenSource.Claude, "untimed") { SessionID = "u1", Model = "m1", Active = true, ActivityState = A.Working, SampledAt = at };
+        IReadOnlyDictionary<TokenSource, double> speeds(IReadOnlyList<TokenReading> readings, params TokenSource[] restart) =>
+            StatusBarContent.Speeds(SessionListModel.Make(readings, at, false), at, restart.ToHashSet());
+        IReadOnlyList<StatusBarMetric> speedItems(StatusBarLayout layout = StatusBarLayout.Compact) =>
+            StatusBarContent.Metrics(idleCpu, summary([timed, untimed]).AI, layout, [MetricID.CodexSpeed, MetricID.ClaudeSpeed], true, true, speeds([timed, untimed]));
+        check($"speed items show each client's own rate with its unit, or a dash: {string.Join(" / ", speedItems().Select(item => $"{item.Value} {item.Spoken}"))}",
+              speedItems().Select(item => (item.Id, item.Label, item.Value, item.Spoken)).SequenceEqual(
+                  [(MetricID.CodexSpeed, "", "55.6tok/s", "Codex 속도 55.6 토큰/초"), (MetricID.ClaudeSpeed, "", "—", "Claude 속도 측정 없음")])
+              && speeds([timed, untimed], TokenSource.Codex).Count == 0 && speedItems(StatusBarLayout.Minimal).Select(item => item.Id).SequenceEqual([MetricID.Ai])
+              && StatusBarContent.SplitRate("55.6tok/s") == ("55.6", "tok/s") && zero.First(metric => metric.Id == MetricID.Cpu).Spoken == "CPU 0%"
+              && StatusBarContent.Metrics(idleCpu, new StatusAISummary(), StatusBarLayout.Compact, [MetricID.Network], true, true)[0].Spoken == "NET ↑— ↓—"
+              && MetricID.CodexSpeed.SpeedSource == TokenSource.Codex && MetricID.ClaudeSpeed.SpeedSource == TokenSource.Claude && MetricID.Ai.SpeedSource == null
+              && MetricID.CodexSpeed.BarLabel == null && MetricID.ClaudeSpeed.Title == "Claude 속도");
+        With(AppLanguage.En, () => check("English speed items are spoken per client",
+            speedItems().Select(item => item.Spoken).SequenceEqual(["Codex speed 55.6 tokens per second", "Claude speed no measurement"])
+            && MetricID.CodexSpeed.Title == "Codex speed"));
         check("marks are 7 pt glyphs, the input disc 8 pt, in the unchanged 11 pt slot",
               StatusBarContent.MarkWidth(A.Tool) == 7 && StatusBarContent.MarkWidth(A.Working) == 7 && StatusBarContent.MarkWidth(A.Stale) == 7
               && StatusBarContent.MarkWidth(A.Input) == 8 && StatusBarContent.MarkWidth(A.Output) == 0 && StatusBarContent.MarkSlot == 11);
@@ -163,18 +186,31 @@ public static class StatusSummaryChecks
         };
         var busyReadings = Enumerable.Range(0, 12).Select(index => new TokenReading(TokenSource.Codex, $"busy-{index}")
             { SessionID = $"b{index}", Active = true, ActivityState = A.Tool, SampledAt = at }).ToList();
-        var widths = new Dictionary<StatusBarLayout, double>();
+        var widths = new Dictionary<string, double>();
         var stable = true;
-        foreach (var layout in Enum.GetValues<StatusBarLayout>())
-        {
-            var unknown = StatusBarContent.RequiredWidth(layout, metrics(new SystemSnapshot { BatteryPresent = true }, [], layout, hasSample: false, hasTokenSample: false).Select(metric => metric.Id));
-            widths[layout] = StatusBarContent.RequiredWidth(layout, metrics(maximum, busyReadings, layout).Select(metric => metric.Id));
-            stable = stable && unknown == widths[layout];
-        }
+        foreach (var items in new[] { MetricID.Standard, everything })
+            foreach (var layout in Enum.GetValues<StatusBarLayout>())
+            {
+                var unknown = StatusBarContent.RequiredWidth(layout, metrics(new SystemSnapshot { BatteryPresent = true }, [], layout, items, hasSample: false, hasTokenSample: false)
+                    .Select(metric => metric.Id));
+                var full = StatusBarContent.Metrics(maximum, summary(busyReadings).AI, layout, items, true, true,
+                    new Dictionary<TokenSource, double> { [TokenSource.Codex] = 999.94, [TokenSource.Claude] = 99_999 });
+                var key = $"{layout}{(items == everything ? "/speed" : "")}";
+                widths[key] = StatusBarContent.RequiredWidth(layout, full.Select(metric => metric.Id));
+                stable = stable && unknown == widths[key];
+            }
         check("layout width is stable from unknown to maximum values", stable);
-        // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30.
-        check("cell widths match the layout contract", widths[StatusBarLayout.Compact] == 272 && widths[StatusBarLayout.Inline] == 410
-              && widths[StatusBarLayout.Minimal] == 72);
+        // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30; each speed item 66 on two
+        // lines, 80 on one.
+        check($"cell widths match the layout contract: {string.Join(", ", widths)}", widths["Compact"] == 272 && widths["Inline"] == 410 && widths["Minimal"] == 72
+              && widths["Compact/speed"] == 404 && widths["Inline/speed"] == 570 && widths["Minimal/speed"] == 72);
+        // Without the character (mac StatusBarContentView): no runner slot, the minimal AI cell 41, nothing at all the 28 pt "TC".
+        check("without the character the runner slot goes, the minimal cell widens and an empty strip is 28 pt",
+              StatusBarContent.RequiredWidth(StatusBarLayout.Minimal, [MetricID.Ai], showRunner: false) == 49
+              && StatusBarContent.RequiredWidth(StatusBarLayout.Compact, MetricID.Standard, showRunner: false) == 272 - 34
+              && StatusBarContent.RequiredWidth(StatusBarLayout.Inline, [MetricID.Cpu], showRunner: false) == 60
+              && StatusBarContent.RequiredWidth(StatusBarLayout.Compact, [], showRunner: false) == 28
+              && StatusBarContent.RequiredWidth(StatusBarLayout.Compact, []) == 40);
 
         // Widget placement (DESIGN §4.7), physical pixels.
         var area = new System.Drawing.Rectangle(0, 0, 1920, 1032);
@@ -188,6 +224,26 @@ public static class StatusSummaryChecks
         check("the flyout hangs below a widget in the top half and above one in the bottom half",
               WidgetPlacement.FlyoutAnchor(new(1800, 980, 100, 40), area, 6) == (new System.Drawing.Point(1850, 974), false)
               && WidgetPlacement.FlyoutAnchor(new(100, 10, 100, 40), area, 6) == (new System.Drawing.Point(150, 56), true));
+        // A resize that isn't a drag keeps the edges nearest the work area: corners, the exact middle, each quadrant, too big.
+        System.Drawing.Size bigger = new(200, 80);
+        check("a resized widget keeps the edges nearest its work area and stays inside it",
+              WidgetPlacement.Resized(new(1808, 980, 100, 40), bigger, area) == new System.Drawing.Point(1708, 940)
+              && WidgetPlacement.Resized(new(0, 0, 100, 40), bigger, area) == new System.Drawing.Point(0, 0)
+              && WidgetPlacement.Resized(new(910, 496, 100, 40), bigger, area) == new System.Drawing.Point(910, 496)
+              && WidgetPlacement.Resized(new(300, 200, 100, 40), bigger, area) == new System.Drawing.Point(300, 200)
+              && WidgetPlacement.Resized(new(1500, 100, 100, 40), bigger, area) == new System.Drawing.Point(1400, 100)
+              && WidgetPlacement.Resized(new(100, 800, 100, 40), bigger, area) == new System.Drawing.Point(100, 760)
+              && WidgetPlacement.Resized(new(1700, 900, 200, 80), new(100, 40), area) == new System.Drawing.Point(1800, 940)
+              && WidgetPlacement.Resized(new(2000, 900, 100, 40), bigger, new(1920, 0, 2560, 1400)) == new System.Drawing.Point(2000, 860)
+              && WidgetPlacement.Resized(new(1808, 980, 100, 40), new(2500, 1200), area) == new System.Drawing.Point(0, 0));
+        // Shown again from the last drag's bounds at another size (changed while hidden, or narrower before the first sample and
+        // then back): the same edges stay, nothing drifts; a 0.12.0 spot without a size keeps its top-left.
+        System.Drawing.Rectangle dropped = new(1500, 980, 300, 40);
+        var early = new System.Drawing.Rectangle(WidgetPlacement.Resized(dropped, new(250, 40), area), new(250, 40));
+        check("a widget shown at another size than its last drag keeps that drag's nearest edges, and an old saved spot its top-left",
+              WidgetPlacement.Resized(new(1708, 940, 200, 80), new(100, 40), area) == new System.Drawing.Point(1808, 980)
+              && early.Location == new System.Drawing.Point(1550, 980) && WidgetPlacement.Resized(early, dropped.Size, area) == dropped.Location
+              && WidgetPlacement.Resized(new(1808, 980, 0, 0), bigger, area) == new System.Drawing.Point(1720, 952));
         check("only a full-screen app, D3D full screen or presentation mode hides the widget, never the desktop",
               WidgetPlacement.HidesFor(2, "Chrome_WidgetWin_1") && WidgetPlacement.HidesFor(3, null) && WidgetPlacement.HidesFor(4, "PPTFrameClass")
               && !WidgetPlacement.HidesFor(1, null) && !WidgetPlacement.HidesFor(5, "Notepad") && !WidgetPlacement.HidesFor(6, null)
@@ -199,15 +255,17 @@ public static class StatusSummaryChecks
         {
             var store = new SettingsStore(Path.Combine(folder.FullName, "settings.json"));
             var before = WidgetPlacement.Saved(store, docked);
-            WidgetPlacement.Save(store, docked, new(3900, 1300));
-            WidgetPlacement.Save(store, WidgetPlacement.DisplayKey([laptop]), new(-5, 12));
+            WidgetPlacement.Save(store, docked, new(3900, 1300, 300, 40));
+            WidgetPlacement.Save(store, WidgetPlacement.DisplayKey([laptop]), new(-5, 12, 120, 40));
             store.Set("unrelatedKey", true);
-            var kept = WidgetPlacement.Saved(store, docked) == new System.Drawing.Point(3900, 1300)
-                       && WidgetPlacement.Saved(store, WidgetPlacement.DisplayKey([laptop])) == new System.Drawing.Point(-5, 12)
+            var kept = WidgetPlacement.Saved(store, docked) == new System.Drawing.Rectangle(3900, 1300, 300, 40)
+                       && WidgetPlacement.Saved(store, WidgetPlacement.DisplayKey([laptop])) == new System.Drawing.Rectangle(-5, 12, 120, 40)
                        && WidgetPlacement.Saved(store, WidgetPlacement.DisplayKey([monitor])) == null;
+            store.Set(WidgetPlacement.PositionsKey, new Dictionary<string, int[]> { [docked] = [3900, 1300], ["flat"] = [1, 2, 0, 40] });
+            var old = WidgetPlacement.Saved(store, docked) == new System.Drawing.Rectangle(3900, 1300, 0, 0) && WidgetPlacement.Saved(store, "flat") == null;
             store.Set(WidgetPlacement.PositionsKey, "garbage");
-            check("the widget position is remembered per monitor set and an unreadable value is ignored",
-                  before == null && kept && docked == "0,0,1920x1080;1920,0,2560x1440" && WidgetPlacement.Saved(store, docked) == null);
+            check("the widget's last drag is remembered per monitor set, a 0.12.0 top-left still reads, and an unreadable value is ignored",
+                  before == null && kept && old && docked == "0,0,1920x1080;1920,0,2560x1440" && WidgetPlacement.Saved(store, docked) == null);
         }
         finally { folder.Delete(true); }
         return c.Done();

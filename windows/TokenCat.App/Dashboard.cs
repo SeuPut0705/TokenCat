@@ -95,6 +95,8 @@ sealed class Dashboard : UserControl
     /// Selects and scrolls to a top-level group (notification or quick menu).
     public void Focus(string group) => list.Focus(group);
 
+    public string? SelectedGroup => list.SelectedGroup;
+
     static bool Loading(DashboardInput input) => input.State.TokensSampledAt is null;
     static bool FlowEmpty(DashboardInput input) =>
         !Loading(input) && input.State.Flow.Total == 0 && input.State.Sessions.Counts.LiveGroups == 0;

@@ -640,18 +640,8 @@ enum SessionPresentation {
     /// could be expected and its absence is the news), and nil while sessions only wait for the person or a log, or
     /// nothing runs (no generation to measure, so no placeholder).
     static func speedHeadline(_ list: SessionListModel, now: Date, restart: Set<TokenSource>) -> SpeedHeadline? {
-        let rows = list.blocks.flatMap { block in
-            (block.lead.kind == .live ? [block.lead] : []) + block.children.filter { $0.state.isLive }
-        }
-        let fresh = rows.compactMap { row -> (row: SessionRowItem, measurement: TokenSpeedMeasurement, rate: Double)? in
-            guard !restart.contains(row.reading.source), let measurement = row.reading.speedMeasurement,
-                  let rate = measurement.tokensPerSecond, measurement.model == row.reading.model else { return nil }
-            let age = now.timeIntervalSince(measurement.at)
-            return age >= -5 && age < 120 ? (row, measurement, rate) : nil
-        }
-        guard let newest = fresh.max(by: { a, b in
-            a.measurement.at != b.measurement.at ? a.measurement.at < b.measurement.at : a.row.id > b.row.id
-        }) else {
+        let rows = speedRows(list)
+        guard let newest = currentSpeed(list, now: now, restart: restart) else {
             guard rows.contains(where: { $0.state.expectsSpeed }) else { return nil }
             let sources = TokenSource.allCases.filter { source in rows.contains { $0.reading.source == source } }
             let waiting = sources.filter(restart.contains)
@@ -682,6 +672,24 @@ enum SessionPresentation {
                                        "\(session) · measured \(age)\n\(newest.measurement.details)\nThe single latest measurement; sessions are never summed or averaged"),
                              spoken: loc("\(spokenKind(newest.measurement.kind)) 초당 \(value) 토큰, \(project)",
                                          "\(spokenKind(newest.measurement.kind)) \(value) tokens per second, \(project)"))
+    }
+
+    /// Visible live rows: leads and subagents.
+    private static func speedRows(_ list: SessionListModel) -> [SessionRowItem] {
+        list.blocks.flatMap { block in (block.lead.kind == .live ? [block.lead] : []) + block.children.filter { $0.state.isLive } }
+    }
+
+    /// "지금 속도"'s pick (`speedHeadline`); `source` narrows it to one client, as the menu bar's speed items do.
+    static func currentSpeed(_ list: SessionListModel, source: TokenSource? = nil, now: Date, restart: Set<TokenSource>)
+        -> (row: SessionRowItem, measurement: TokenSpeedMeasurement, rate: Double)? {
+        let fresh = speedRows(list).compactMap { row -> (row: SessionRowItem, measurement: TokenSpeedMeasurement, rate: Double)? in
+            guard source == nil || row.reading.source == source, !restart.contains(row.reading.source),
+                  let measurement = row.reading.speedMeasurement, let rate = measurement.tokensPerSecond,
+                  measurement.model == row.reading.model else { return nil }
+            let age = now.timeIntervalSince(measurement.at)
+            return age >= -5 && age < 120 ? (row, measurement, rate) : nil
+        }
+        return fresh.max { a, b in a.measurement.at != b.measurement.at ? a.measurement.at < b.measurement.at : a.row.id > b.row.id }
     }
 
     static func spokenKind(_ kind: TokenRateKind?) -> String {

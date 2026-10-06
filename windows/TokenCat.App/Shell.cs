@@ -89,7 +89,8 @@ sealed class Shell
             Native.Foreground(widget);
             trayMenu.Show(Forms.Cursor.Position);
         };
-        widget.Dropped += at => WidgetPlacement.Save(SettingsStore.Shared, DisplayKey, at);
+        widget.Dropped += bounds => WidgetPlacement.Save(SettingsStore.Shared, DisplayKey, bounds);
+        widget.Zoomed += notches => Zoom(preferences, notches);
         // Built at open, like the mac quick menu. WinForms pre-cancels opening an empty strip, so un-cancel it once filled.
         trayMenu.Opening += (_, e) => { HideFlyout(); Menus.Fill(trayMenu, BuildTrayMenu); e.Cancel = false; };
         flyout.Deactivated += (_, _) => { if (!Menus.IsOpen) HideFlyout(); };
@@ -97,6 +98,7 @@ sealed class Shell
         // Alt+F4 hides it like Esc: a closed window can't be shown again. app.Shutdown closes it regardless.
         flyout.Closing += (_, e) => { e.Cancel = true; dispatcher.BeginInvoke(HideFlyout); };
         flyout.SizeChanged += (_, _) => { if (flyout.IsVisible) Native.Place(flyout, anchor, onto: false, below: anchorBelow); };
+        flyout.DraggedOut += Detach;
         Menus.Closed += () => { if (flyout.IsVisible) flyout.Activate(); };
         // The frame timer follows the animator's own arming only, so a publish with an unchanged plan never restarts it.
         animator.Scheduled = ArmFrame;
@@ -185,7 +187,7 @@ sealed class Shell
     {
         tray.Resize();
         RenderTray();
-        if (!quitting && widget.IsVisible) widget.Present(WidgetPlacement.Saved(SettingsStore.Shared, DisplayKey) ?? Native.Bounds(widget).Location);
+        if (!quitting && widget.IsVisible) widget.Present(WidgetPlacement.Saved(SettingsStore.Shared, DisplayKey) ?? Native.Bounds(widget));
     });
 
     void OnSessionSwitch(object? sender, SessionSwitchEventArgs e) => dispatcher.BeginInvoke(() =>
@@ -208,6 +210,8 @@ sealed class Shell
     {
         if (quitting) return;
         state = next;
+        // Before the first sample the snapshot says "no battery" by default.
+        if (next.HasSample) preferences.HasBattery = next.System.BatteryPresent;
         var groups = next.Groups;
         var now = DateTimeOffset.UtcNow;
         activity = new RunnerActivity(groups, next.HasSample ? next.System.CpuPercent : null, now) { Known = next.TokensSampledAt is not null };
@@ -227,7 +231,7 @@ sealed class Shell
     DashboardInput Input() => new(Current, update, preferences.DismissedUpdateVersion, quietSince, setupNote, setupFailure, connectNotes, claudeBridged,
         SettingsStore.Shared.Get<bool?>(OnboardingSeenKey) == true, SettingsStore.Shared.Get<bool?>(TelemetrySetup.OptOutKey) == true);
 
-    SettingsInput SettingsInput() => new(Input(), collector.LastBatchAt, LoginItem.Status);
+    SettingsInput SettingsInput() => new(Input(), collector.LastBatchAt, LoginItem.Status, animator.Current.Pose);
 
     /// Only what is on screen re-renders (the mac releases a closed popover's views).
     void RefreshViews()
@@ -299,7 +303,8 @@ sealed class Shell
             widget.Hide();
             return;
         }
-        widget.View.Update(StatusBarContent.Metrics(Current, preferences.Layout, preferences.ShownItems), preferences.Layout);
+        widget.View.Update(StatusBarContent.Metrics(Current, preferences.Layout, preferences.ShownItems), preferences.Layout, preferences.ShowRunner,
+            preferences.WidgetScale);
         var (pose, frame, fx) = animator.Current;
         widget.View.UpdateRunner(preferences.Character, pose, frame, fx);
         if (!widget.IsVisible) widget.Present(WidgetPlacement.Saved(SettingsStore.Shared, DisplayKey));
@@ -314,6 +319,16 @@ sealed class Shell
         var bounds = Native.Bounds(widget);
         var (at, below) = WidgetPlacement.FlyoutAnchor(bounds, Forms.Screen.FromRectangle(bounds).WorkingArea, Native.Pixels(widget, 6));
         ShowFlyout(at, below);
+    }
+
+    /// Ctrl + mouse wheel over the widget: one size per notch, up for bigger.
+    internal static void Zoom(Preferences preferences, int notches) => preferences.WidgetScale = Preferences.Step(preferences.WidgetScale, notches);
+
+    /// "위젯 크기": every size with the current one checked (the tray and widget menu, and Settings › 위젯).
+    internal static void SizeMenu(MenuBuilder menu, Preferences preferences)
+    {
+        foreach (var scale in Preferences.WidgetScales)
+            menu.Add($"{scale}%", () => preferences.WidgetScale = scale, check: preferences.WidgetScale == scale);
     }
 
     // MARK: Notifications
@@ -416,21 +431,36 @@ sealed class Shell
         if (focus is not null) target.Focus(focus);
     }
 
-    void OpenWindow()
+    void OpenWindow() => OpenWindow(null);
+
+    /// `place` positions the window before it shows.
+    void OpenWindow(Action<DashboardWindow>? place)
     {
         HideFlyout();
         if (window is null)
         {
-            window = new DashboardWindow(actions);
+            window = new DashboardWindow(actions, SettingsStore.Shared);
             window.Closed += (_, _) => { window = null; updater.ClearUpdatedNote(); SyncLimits(); };
             window.StateChanged += (_, _) => SyncLimits();
         }
+        place?.Invoke(window);
         updater.DashboardOpened();
         window.Dashboard.Show(Input());
         window.Show();
         Front(window);
         window.Dashboard.Opened();
         SyncLimits();
+    }
+
+    /// Dragging the flyout (§4.2; the mac popover detaches): the same dashboard goes on as the window, with the grabbed point under
+    /// the pointer and the selected group still selected, and the system move loop carries it until the button is released.
+    void Detach(Drawing.Point cursor, Drawing.Point grab)
+    {
+        var group = flyout.Dashboard.SelectedGroup;
+        OpenWindow(target => target.Follow(cursor, grab));
+        if (window is null) return;
+        if (group is not null) window.Dashboard.Focus(group);
+        if (System.Windows.Input.Mouse.LeftButton == System.Windows.Input.MouseButtonState.Pressed) window.DragMove();
     }
 
     void OpenSettings(SettingsPage? page = null)
@@ -483,10 +513,18 @@ sealed class Shell
         menu.Add(Loc("열기", "Open"), () => OpenDashboard());
         menu.Add(Loc("창으로 열기", "Open as Window"), OpenWindow);
         menu.Add(preferences.ShowWidget ? Loc("위젯 숨기기", "Hide Widget") : Loc("위젯 표시", "Show Widget"), () => preferences.ShowWidget = !preferences.ShowWidget);
+        if (preferences.ShowWidget) SizeMenu(menu.Sub(Loc("위젯 크기", "Widget Size")), preferences);
         menu.Separator();
+        var layouts = menu.Sub(Loc("표시 방식", "Layout"));
+        foreach (var layout in Enum.GetValues<StatusBarLayout>())
+            layouts.Add(layout.Title, () => preferences.Layout = layout, check: preferences.Layout == layout);
         var characters = menu.Sub(Loc("캐릭터", "Character"));
         foreach (var character in Enum.GetValues<RunnerCharacter>())
             characters.Add(character.Title, () => preferences.Character = character, check: preferences.Character == character);
+        // Mac "메뉴 막대에 표시"; the tray icon always shows the character.
+        characters.Separator();
+        characters.Add(Loc("위젯에 표시", "Show in Widget"), () => preferences.SetShowRunner(!preferences.ShowRunner),
+            enabled: !preferences.ShowRunner || preferences.CanHideRunner, check: preferences.ShowRunner);
         var motions = menu.Sub(Loc("움직임 기준", "Motion Source"));
         foreach (var motion in Enum.GetValues<RunnerMotion>())
             motions.Add(motion.Title, () => preferences.AnimationSource = motion, check: preferences.AnimationSource == motion);

@@ -140,7 +140,7 @@ final class SettingsState: ObservableObject {
 final class SettingsTabsController: NSTabViewController {
     static let width: CGFloat = 480
     /// The tallest pane must fit without scrolling.
-    static let maximumHeight: CGFloat = 580
+    static let maximumHeight: CGFloat = 600
     static let paneKey = "settingsPane"
     private let defaults: UserDefaults
 
@@ -838,10 +838,11 @@ private struct AboutPane: View {
 }
 
 extension MetricID {
-    /// The label the bar draws, shown after the title in the item list (T-5); nil when it equals the title.
+    /// The label the bar draws, shown after the title in the item list (T-5); nil when it equals the title, or for a speed
+    /// item, whose row shows its glyph instead.
     var barLabel: String? {
         switch self {
-        case .cpu: return nil
+        case .cpu, .codexSpeed, .claudeSpeed: return nil
         case .memory: return "RAM"
         case .disk: return "DISK"
         case .battery: return "BAT"
@@ -865,7 +866,15 @@ private struct MetricRows: View {
                 Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary).accessibilityHidden(true)
                 Toggle(isOn: Binding(get: { !missingBattery && preferences.visible.contains(id) }, set: { preferences.setVisible(id, $0) })) {
                     VStack(alignment: .leading, spacing: 1) {
-                        id.barLabel.map { Text(id.title) + Text(" · \($0)").font(.system(size: 11)).foregroundColor(.secondary) } ?? Text(id.title)
+                        if let source = id.speedSource {
+                            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                                Text(id.title)
+                                (Text(" · ").font(.system(size: 11)) + Text(Image(nsImage: SpeedGlyph.image(source, side: 9))))
+                                    .foregroundColor(.secondary).accessibilityHidden(true)
+                            }
+                        } else {
+                            id.barLabel.map { Text(id.title) + Text(" · \($0)").font(.system(size: 11)).foregroundColor(.secondary) } ?? Text(id.title)
+                        }
                         if missingBattery {
                             Text(loc("이 Mac에는 배터리가 없습니다", "This Mac has no battery")).font(.system(size: 11)).foregroundStyle(.secondary)
                         }

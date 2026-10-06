@@ -97,6 +97,28 @@ public static class ShellChecks
         state = TelemetryRestartState.Resolve(state.Pending, times(), at.AddSeconds(86_401), ran: times((TokenSource.Codex, connected.AddSeconds(600))));
         check(state.Needed.Count == 0 && state.Expired.SetEquals([TokenSource.Codex]) && state.Pending.ContainsKey(TokenSource.Codex),
               "A client used after its config change but silent for 24 h did not switch to the 'never received' message");
+
+        // "창으로 열기" bounds (DESIGN §4.2), physical pixels.
+        System.Drawing.Rectangle laptop = new(0, 0, 1920, 1032), monitor = new(1920, 0, 2560, 1400);
+        check(DashboardBounds.Restore(new(100, 80, 440, 700), [laptop, monitor]) == new System.Drawing.Rectangle(100, 80, 440, 700)
+              && DashboardBounds.Restore(new(1800, 500, 440, 700), [laptop, monitor]) == new System.Drawing.Rectangle(1920, 500, 440, 700)
+              && DashboardBounds.Restore(new(100, 900, 440, 700), [laptop]) == new System.Drawing.Rectangle(100, 332, 440, 700)
+              && DashboardBounds.Restore(new(100, 300, 440, 1500), [laptop]) == new System.Drawing.Rectangle(100, 0, 440, 1032)
+              && DashboardBounds.Restore(new(3000, 200, 440, 700), [laptop]) == null && DashboardBounds.Restore(new(100, 80, 0, 0), [laptop]) == null
+              && DashboardBounds.Restore(new(100, 80, 440, 700), []) == null,
+              "The dashboard window did not come back inside the work area holding most of it, or came back on a monitor that is gone");
+        var folder = Directory.CreateTempSubdirectory("tokencat-shell-checks-");
+        try
+        {
+            var store = new SettingsStore(Path.Combine(folder.FullName, "settings.json"));
+            var before = DashboardBounds.Saved(store, [laptop]);
+            DashboardBounds.Save(store, new(-20, 40, 440, 700));
+            var kept = DashboardBounds.Saved(store, [laptop]);
+            store.Set(DashboardBounds.Key, "garbage");
+            check(before == null && kept == new System.Drawing.Rectangle(0, 40, 440, 700) && DashboardBounds.Saved(store, [laptop]) == null,
+                  "The dashboard window's bounds were not remembered, or an unreadable value was used");
+        }
+        finally { folder.Delete(true); }
         return c.Done();
     }
 }
