@@ -261,9 +261,14 @@ static class AppChecks
 
             var frames = new WidgetView();
             frames.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, items, true, true), StatusBarLayout.Compact);
-            // Both themes once first: their brushes and the per-theme icon caches are built here, not counted as a leak.
-            Snapshot.Render(() => frames, dark: true);
-            Snapshot.Render(() => frames, dark: false);
+            // Every frame the loop below draws, in both themes, once first: lazily built per-frame and per-theme resources
+            // (brushes, sprite and icon caches) count here; only growth across the 300 repeats is a leak.
+            for (var i = 0; i < 8; i++)
+            {
+                frames.UpdateRunner(RunnerCharacter.Cat, RunnerPose.Walk, i % 4, null);
+                Snapshot.Render(() => frames, dark: i % 2 == 0);
+                Snapshot.Render(() => frames, dark: i % 2 != 0);
+            }
             // The 300 RenderTargetBitmaps are the harness's, not the widget's: let them finalize before counting.
             static (uint Gdi, uint User) Settled()
             {
