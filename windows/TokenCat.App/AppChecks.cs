@@ -127,7 +127,7 @@ static class AppChecks
             var busy = new StatusAISummary { Running = 99, Input = 99, Phase = TokenActivityState.Input };
             var items = Enum.GetValues<MetricID>();
             // The speed items' worst realistic rate, "9999 tok/s" on the bar (a sub-millisecond time between tokens).
-            var speeds = new Dictionary<TokenSource, double> { [TokenSource.Codex] = 9999.94, [TokenSource.Claude] = 9999.94 };
+            var speeds = new Dictionary<MetricID, double> { [MetricID.CodexSpeed] = 9999.94, [MetricID.ClaudeSpeed] = 9999.94, [MetricID.AverageSpeed] = 9999.94 };
             List<string> unstable = [], shrunk = [];
             foreach (var layout in Enum.GetValues<StatusBarLayout>())
             {
@@ -150,16 +150,16 @@ static class AppChecks
             check(shrunk.Count == 0, "worst-case widget values fit their cells without shrinking: " + string.Join(", ", shrunk));
             // Narrator reads the items as one named text element; a speed item by its client, rate and unit.
             var spoken = new WidgetView();
-            spoken.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, [MetricID.Cpu, MetricID.CodexSpeed, MetricID.ClaudeSpeed], true, true,
-                new Dictionary<TokenSource, double> { [TokenSource.Codex] = 55.56 }), StatusBarLayout.Compact);
+            spoken.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, [MetricID.Cpu, MetricID.CodexSpeed, MetricID.ClaudeSpeed, MetricID.AverageSpeed],
+                true, true, new Dictionary<MetricID, double> { [MetricID.CodexSpeed] = 55.56, [MetricID.AverageSpeed] = 55.56 }), StatusBarLayout.Compact);
             check(UIElementAutomationPeer.CreatePeerForElement(spoken) is { } widgetPeer && widgetPeer.GetAutomationControlType() == AutomationControlType.Text
-                  && widgetPeer.GetName() == "CPU 100%, Codex 속도 55.6 토큰/초, Claude 속도 측정 없음",
+                  && widgetPeer.GetName() == "CPU 100%, Codex 속도 55.6 토큰/초, Claude 속도 측정 없음, 평균 속도 55.6 토큰/초",
                   "Narrator reads the widget's items, the speed items by client and rate");
             // Speed items on one line without the character (mac "speed glyphs are the clients' coloured app icons"): the glyph
             // (12–22 pt) is the client's app icon in its own colours; "—" in the secondary tone, digits in the label tone. The light
             // label is black, so on the clear backdrop a pixel's alpha is its tone: secondary tops out at 184 (0.72), label at 217 (0.85).
             var toned = StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Inline, [MetricID.CodexSpeed, MetricID.ClaudeSpeed], true, true,
-                new Dictionary<TokenSource, double> { [TokenSource.Codex] = 55.56 });
+                new Dictionary<MetricID, double> { [MetricID.CodexSpeed] = 55.56 });
             (byte alpha, int colour) Scan(StatusBarMetric metric, double from, double to)
             {
                 var toneView = new WidgetView();

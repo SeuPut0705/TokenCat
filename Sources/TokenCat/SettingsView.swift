@@ -838,8 +838,8 @@ private struct AboutPane: View {
 }
 
 extension MetricID {
-    /// The label the bar draws, shown after the title in the item list (T-5); nil when it equals the title, or for a speed
-    /// item, whose row shows its glyph instead.
+    /// The label the bar draws, shown after the title in the item list (T-5); nil when it equals the title, or for a client
+    /// speed item, whose row shows its glyph instead.
     var barLabel: String? {
         switch self {
         case .cpu, .codexSpeed, .claudeSpeed: return nil
@@ -848,6 +848,7 @@ extension MetricID {
         case .battery: return "BAT"
         case .network: return "NET"
         case .ai: return "AI"
+        case .averageSpeed: return "AVG"
         }
     }
 }

@@ -10,7 +10,7 @@ namespace TokenCat;
 public enum StatusBarLayout { Minimal, Compact, Inline }
 
 /// `MetricID`, the menu-bar items in their default order. Stored as the Swift raw values ("cpu", "codexSpeed").
-public enum MetricID { Cpu, Memory, Disk, Battery, Network, Ai, CodexSpeed, ClaudeSpeed }
+public enum MetricID { Cpu, Memory, Disk, Battery, Network, Ai, CodexSpeed, ClaudeSpeed, AverageSpeed }
 
 /// `DisplayPreset`: one-pick widget setups. They set the layout and, except Minimal, the shown items with their order.
 public enum DisplayPreset { Minimal, AiFocus, SystemMonitor, EverythingInline }
@@ -55,11 +55,12 @@ public static class StatusBarLayouts
             MetricID.Network => Loc("네트워크", "Network"),
             MetricID.Ai => Loc("AI 세션", "AI sessions"),
             MetricID.CodexSpeed => Loc("Codex 속도", "Codex speed"),
-            _ => Loc("Claude 속도", "Claude speed"),
+            MetricID.ClaudeSpeed => Loc("Claude 속도", "Claude speed"),
+            _ => Loc("평균 속도", "Average speed"),
         };
 
         /// The label the widget draws, shown after the title in the item list (mac `barLabel`); null when it equals the title, or
-        /// for a speed item, whose row shows its glyph instead.
+        /// for a client speed item, whose row shows its glyph instead.
         public string? BarLabel => id switch
         {
             MetricID.Memory => "RAM",
@@ -67,10 +68,11 @@ public static class StatusBarLayouts
             MetricID.Battery => "BAT",
             MetricID.Network => "NET",
             MetricID.Ai => "AI",
+            MetricID.AverageSpeed => "AVG",
             _ => null,
         };
 
-        /// The client whose "지금 속도" a speed item shows.
+        /// The client whose "지금 속도" a speed item shows; the average item has none.
         public TokenSource? SpeedSource => id switch
         {
             MetricID.CodexSpeed => TokenSource.Codex,
@@ -176,8 +178,8 @@ public static class StatusBarContent
     public static double CellWidth(StatusBarLayout layout, MetricID id, bool showRunner = true) => layout switch
     {
         StatusBarLayout.Minimal => showRunner ? 30 : 41,
-        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.CodexSpeed or MetricID.ClaudeSpeed => 56, _ => 32 },
-        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.CodexSpeed or MetricID.ClaudeSpeed => 69, _ => 52 },
+        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.CodexSpeed or MetricID.ClaudeSpeed or MetricID.AverageSpeed => 56, _ => 32 },
+        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.CodexSpeed or MetricID.ClaudeSpeed or MetricID.AverageSpeed => 69, _ => 52 },
     };
 
     /// Neither items nor the character: the 28 pt "TC" placeholder.
@@ -196,19 +198,21 @@ public static class StatusBarContent
         _ => 0,
     };
 
-    /// Each client's "지금 속도" by the dashboard's rule (`SessionPresentation.CurrentSpeed`); a client without one is absent.
-    public static IReadOnlyDictionary<TokenSource, double> Speeds(SessionListModel list, DateTimeOffset now, IReadOnlySet<TokenSource> restart)
+    /// The speed items' rates: each client's "지금 속도" by the dashboard's rule (`SessionPresentation.CurrentSpeed`) and the mean
+    /// of every fresh per-session rate (`AverageSpeed`); an item without a measurement is absent.
+    public static IReadOnlyDictionary<MetricID, double> Speeds(SessionListModel list, DateTimeOffset now, IReadOnlySet<TokenSource> restart)
     {
-        var speeds = new Dictionary<TokenSource, double>();
-        foreach (var source in Enum.GetValues<TokenSource>())
-            if (SessionPresentation.CurrentSpeed(list, now, restart, source) is { } speed) speeds[source] = speed.Rate;
+        var speeds = new Dictionary<MetricID, double>();
+        foreach (var id in Enum.GetValues<MetricID>())
+            if (id.SpeedSource is { } source && SessionPresentation.CurrentSpeed(list, now, restart, source) is { } speed) speeds[id] = speed.Rate;
+        if (SessionPresentation.AverageSpeed(list, now, restart) is { } average) speeds[MetricID.AverageSpeed] = average;
         return speeds;
     }
 
     /// `StatusBarContent.metrics`: `items` are the shown items in order (the minimal layout draws only AI). An absent battery
-    /// is omitted; values before the first sample are "—", and so is a speed item whose client has no rate in `speeds`.
+    /// is omitted; values before the first sample are "—", and so is a speed item without a rate in `speeds`.
     public static IReadOnlyList<StatusBarMetric> Metrics(SystemSnapshot system, StatusAISummary ai, StatusBarLayout layout,
-        IReadOnlyList<MetricID> items, bool hasSample, bool hasTokenSample, IReadOnlyDictionary<TokenSource, double>? speeds = null)
+        IReadOnlyList<MetricID> items, bool hasSample, bool hasTokenSample, IReadOnlyDictionary<MetricID, double>? speeds = null)
     {
         string Percentage(double? number) => hasSample && number is { } n && double.IsFinite(n) ? Format.Percent(n) : "—";
         var upload = NetworkRate(hasSample ? system.UploadBytesPerSecond : null);
@@ -231,11 +235,11 @@ public static class StatusBarContent
                     var state = !hasTokenSample ? TokenActivityState.Idle : ai.Running > 0 ? ai.Phase : waitingOnly ? TokenActivityState.Stale : TokenActivityState.Idle;
                     metrics.Add(new(id, "AI", value, hasTokenSample && ai.Running > 0, state));
                     break;
-                case MetricID.CodexSpeed or MetricID.ClaudeSpeed:
-                    // A glyph stands in for the label; the unit is split off and drawn smaller like "%".
-                    double? measured = speeds is not null && speeds.TryGetValue(id.SpeedSource!.Value, out var found) ? found : null;
+                case MetricID.CodexSpeed or MetricID.ClaudeSpeed or MetricID.AverageSpeed:
+                    // A client glyph or "AVG" labels the item; the unit is split off and drawn smaller like "%".
+                    double? measured = speeds is not null && speeds.TryGetValue(id, out var found) ? found : null;
                     var rate = measured is { } known ? Format.Tps(known) : null;
-                    metrics.Add(new(id, "", measured is { } shown ? Format.BarTps(shown) + "tok/s" : "—", Detail: id.Title + " "
+                    metrics.Add(new(id, id.BarLabel ?? "", measured is { } shown ? Format.BarTps(shown) + "tok/s" : "—", Detail: id.Title + " "
                         + (rate is null ? Loc("측정 없음", "no measurement") : Loc($"{rate} 토큰/초", $"{rate} tokens per second"))));
                     break;
             }

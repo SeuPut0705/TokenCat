@@ -245,7 +245,7 @@ sealed class WidgetView : FrameworkElement
     /// The label colour at the bar's alphas (NSColor.withAlphaComponent replaces the alpha).
     static Color Tone(double alpha) => Color.FromArgb((byte)Math.Round(255 * alpha), Theme.Label.R, Theme.Label.G, Theme.Label.B);
 
-    static int Group(MetricID id) => id switch { MetricID.Network => 1, MetricID.Ai or MetricID.CodexSpeed or MetricID.ClaudeSpeed => 2, _ => 0 };
+    static int Group(MetricID id) => id switch { MetricID.Network => 1, MetricID.Ai or MetricID.CodexSpeed or MetricID.ClaudeSpeed or MetricID.AverageSpeed => 2, _ => 0 };
 
     /// Speed glyph sides: the two-line label row, and beside the value on one line.
     public const double GlyphCompact = 8, GlyphInline = 10;

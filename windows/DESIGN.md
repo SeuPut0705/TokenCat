@@ -326,7 +326,7 @@ Normal WPF window with the mac's five pages (left nav), "메뉴 막대" named **
   최소 / 두 줄 / 한 줄). **Items**: one row per item in the stored order — drag handle, check box "title · bar label"
   (a speed item: the title, then its glyph, named by the title; disabled when it is the last shown item with the character hidden, or
   the battery on a PC without one: "이 PC에는 배터리가 없습니다"). Reorder by dragging a row (it takes each row's place as it passes, as on
-  the mac), Alt+↑/↓ on a focused row (focus follows, Narrator hears "메모리, 8개 중 1번째"), or the row menu (right-click, Apps key, Shift+F10: 위로 이동 / 아래로 이동). Rows are named check boxes in UI Automation.
+  the mac), Alt+↑/↓ on a focused row (focus follows, Narrator hears "메모리, 9개 중 1번째"), or the row menu (right-click, Apps key, Shift+F10: 위로 이동 / 아래로 이동). Rows are named check boxes in UI Automation.
   WPF's ComboBox and ContextMenu don't follow dark mode, so the pop-ups are the WinForms menus the tray uses.
 * **Character**: picker with live 2× preview, "위젯에 캐릭터 표시" (mac "메뉴 막대에 캐릭터 표시"; disabled with its reason when nothing
   else would be drawn; the tray icon always shows the character), motion source with `caption`/`subtitle` texts.
@@ -357,7 +357,10 @@ The taskbar can't show text the way the mac menu bar does, so the menu-bar item 
   and a strip with nothing left is the 28 pt "TC"; `Preferences` never lets that happen outside the minimal layout. The one-line layout
   shows the short names (CPU, RAM…) where the mac draws SF Symbols. The Codex and Claude speed items (opt-in, after AI without a
   separator) draw the mac's `SpeedGlyph` (the Codex and Claude app icons, `speed-codex.png`/`speed-claude.png`) in the label slot and that client's "지금 속도" (`SessionPresentation.CurrentSpeed`,
-  `Format.BarTps`, whole numbers from 100 up, + a smaller "tok/s") or "—", in 56 pt (two lines) / 69 pt (one line) cells. Narrator reads the strip as one text
+  `Format.BarTps`, whole numbers from 100 up, + a smaller "tok/s") or "—", in 56 pt (two lines) / 69 pt (one line) cells. The Average speed
+  item (opt-in, last, "평균 속도 · AVG" in the list) draws "AVG" as its label and the arithmetic mean of every client's fresh per-session
+  rates (`SessionPresentation.AverageSpeed`, `CurrentSpeed`'s own filter; measured rates only, nothing estimated) in the same cells and
+  format. `StatusBarContent.Speeds` keys all three by `MetricID`. Narrator reads the strip as one text
   element (`StatusBarMetric.Spoken`). Layout, items, order and the character come from Settings › Widget (§4.4); default **two
   lines** (like the mac bar), the six standard items, the character shown, 100 %.
 * **Size**: 100, 125, 150, 175, 200, 250 or 300 % (`widgetScale`, default 100; another stored value becomes the nearest). Device pixels

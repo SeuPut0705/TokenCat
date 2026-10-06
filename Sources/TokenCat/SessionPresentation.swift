@@ -679,17 +679,31 @@ enum SessionPresentation {
         list.blocks.flatMap { block in (block.lead.kind == .live ? [block.lead] : []) + block.children.filter { $0.state.isLive } }
     }
 
-    /// "지금 속도"'s pick (`speedHeadline`); `source` narrows it to one client, as the menu bar's speed items do.
-    static func currentSpeed(_ list: SessionListModel, source: TokenSource? = nil, now: Date, restart: Set<TokenSource>)
-        -> (row: SessionRowItem, measurement: TokenSpeedMeasurement, rate: Double)? {
-        let fresh = speedRows(list).compactMap { row -> (row: SessionRowItem, measurement: TokenSpeedMeasurement, rate: Double)? in
+    /// Measured rates fresh enough to call current: telemetry for the row's own model, from the last 2 minutes, and not
+    /// from a client that must restart to report it. `source` narrows them to one client.
+    private static func freshSpeeds(_ list: SessionListModel, source: TokenSource?, now: Date, restart: Set<TokenSource>)
+        -> [(row: SessionRowItem, measurement: TokenSpeedMeasurement, rate: Double)] {
+        speedRows(list).compactMap { row in
             guard source == nil || row.reading.source == source, !restart.contains(row.reading.source),
                   let measurement = row.reading.speedMeasurement, let rate = measurement.tokensPerSecond,
                   measurement.model == row.reading.model else { return nil }
             let age = now.timeIntervalSince(measurement.at)
             return age >= -5 && age < 120 ? (row, measurement, rate) : nil
         }
-        return fresh.max { a, b in a.measurement.at != b.measurement.at ? a.measurement.at < b.measurement.at : a.row.id > b.row.id }
+    }
+
+    /// "지금 속도"'s pick (`speedHeadline`); `source` narrows it to one client, as the menu bar's speed items do.
+    static func currentSpeed(_ list: SessionListModel, source: TokenSource? = nil, now: Date, restart: Set<TokenSource>)
+        -> (row: SessionRowItem, measurement: TokenSpeedMeasurement, rate: Double)? {
+        freshSpeeds(list, source: source, now: now, restart: restart)
+            .max { a, b in a.measurement.at != b.measurement.at ? a.measurement.at < b.measurement.at : a.row.id > b.row.id }
+    }
+
+    /// The menu bar's opt-in "평균 속도": the arithmetic mean of every client's fresh per-session rates (same rule as
+    /// `currentSpeed`), nil without one. Only measured rates are averaged; nothing is estimated.
+    static func averageSpeed(_ list: SessionListModel, now: Date, restart: Set<TokenSource>) -> Double? {
+        let rates = freshSpeeds(list, source: nil, now: now, restart: restart).map(\.rate)
+        return rates.isEmpty ? nil : rates.reduce(0, +) / Double(rates.count)
     }
 
     static func spokenKind(_ kind: TokenRateKind?) -> String {

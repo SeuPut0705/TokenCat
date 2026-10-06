@@ -3,7 +3,7 @@ import Combine
 import SwiftUI
 
 enum MetricID: String, CaseIterable, Codable, Identifiable {
-    case cpu, memory, disk, battery, network, ai, codexSpeed, claudeSpeed
+    case cpu, memory, disk, battery, network, ai, codexSpeed, claudeSpeed, averageSpeed
     /// Shown by default and by the full presets; the speed items are opt-in.
     static let standard: [MetricID] = [.cpu, .memory, .disk, .battery, .network, .ai]
     var id: String { rawValue }
@@ -17,9 +17,10 @@ enum MetricID: String, CaseIterable, Codable, Identifiable {
         case .ai: return loc("AI 세션", "AI sessions")
         case .codexSpeed: return loc("Codex 속도", "Codex speed")
         case .claudeSpeed: return loc("Claude 속도", "Claude speed")
+        case .averageSpeed: return loc("평균 속도", "Average speed")
         }
     }
-    /// The client whose "지금 속도" a speed item shows.
+    /// The client whose "지금 속도" a speed item shows; the average item has none.
     var speedSource: TokenSource? {
         switch self {
         case .codexSpeed: return .codex

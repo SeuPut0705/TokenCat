@@ -93,16 +93,22 @@ enum StatusBarContent {
         return (String(text[..<index]), String(text[index...]))
     }
 
-    /// Each client's "지금 속도" by the dashboard's rule (`SessionPresentation.currentSpeed`); a client without one is absent.
-    static func speeds(_ list: SessionListModel, now: Date, restart: Set<TokenSource>) -> [TokenSource: Double] {
-        Dictionary(uniqueKeysWithValues: TokenSource.allCases.compactMap { source in
-            SessionPresentation.currentSpeed(list, source: source, now: now, restart: restart).map { (source, $0.rate) }
-        })
+    /// The speed items' rates: each client's "지금 속도" by the dashboard's rule (`SessionPresentation.currentSpeed`) and
+    /// the mean of every fresh per-session rate (`averageSpeed`); an item without a measurement is absent.
+    static func speeds(_ list: SessionListModel, now: Date, restart: Set<TokenSource>) -> [MetricID: Double] {
+        var rates: [MetricID: Double] = [:]
+        for id in MetricID.allCases {
+            if let source = id.speedSource {
+                rates[id] = SessionPresentation.currentSpeed(list, source: source, now: now, restart: restart)?.rate
+            }
+        }
+        rates[.averageSpeed] = SessionPresentation.averageSpeed(list, now: now, restart: restart)
+        return rates
     }
 
     /// `counts`, `ai`, `recorded` and `speeds` come from the popover's per-publish presentation so both show the same numbers.
     static func metrics(system: SystemSnapshot, counts: SessionCounts, ai: StatusAISummary, recorded: Int,
-                        speeds: [TokenSource: Double], preferences: Preferences, layout: StatusBarLayout? = nil,
+                        speeds: [MetricID: Double], preferences: Preferences, layout: StatusBarLayout? = nil,
                         hasSample: Bool, hasTokenSample: Bool) -> [StatusBarMetric] {
         func percentage(_ number: Double?) -> String {
             guard hasSample, let number, number.isFinite else { return "—" }
@@ -150,11 +156,12 @@ enum StatusBarContent {
                     : loc("AI 기록 확인 중", "Reading AI records")
                 return StatusBarMetric(id: id, label: "AI", value: value, symbol: "", detail: detail,
                                        isActive: hasTokenSample && ai.running > 0, activityState: state)
-            case .codexSpeed, .claudeSpeed:
-                // A glyph (`SpeedGlyph`) stands in for the label; the unit is split off and drawn smaller like "%".
-                let measured = id.speedSource.flatMap { speeds[$0] }
+            case .codexSpeed, .claudeSpeed, .averageSpeed:
+                // A client glyph (`SpeedGlyph`) or "AVG" labels the item; the unit is split off and drawn smaller like "%".
+                let measured = speeds[id]
                 let rate = measured.map(Format.tps)
-                return StatusBarMetric(id: id, label: "", value: measured.map { Format.barTps($0) + "tok/s" } ?? "—", symbol: "",
+                return StatusBarMetric(id: id, label: id == .averageSpeed ? "AVG" : "", value: measured.map { Format.barTps($0) + "tok/s" } ?? "—",
+                                       symbol: id == .averageSpeed ? "speedometer" : "",
                                        detail: id.title + " " + (rate.map { loc("\($0) 토큰/초", "\($0) tokens per second") }
                                                                  ?? loc("측정 없음", "no measurement")))
             }
@@ -348,9 +355,9 @@ final class StatusBarContentView: NSView {
         case .minimal: return showRunner ? 30 : 41
         // Speed items fit "9999 tok/s" (`Format.barTps` drops the decimal from 100 up), so a 4-digit rate never shrinks.
         case .compact:
-            switch id { case .network: return 66; case .ai: return 36; case .codexSpeed, .claudeSpeed: return 56; default: return 32 }
+            switch id { case .network: return 66; case .ai: return 36; case .codexSpeed, .claudeSpeed, .averageSpeed: return 56; default: return 32 }
         case .inline:
-            switch id { case .network: return 114; case .ai: return 46; case .codexSpeed, .claudeSpeed: return 69; default: return 52 }
+            switch id { case .network: return 114; case .ai: return 46; case .codexSpeed, .claudeSpeed, .averageSpeed: return 69; default: return 52 }
         }
     }
 
@@ -373,7 +380,7 @@ final class StatusBarContentView: NSView {
     }
 
     private func group(_ id: MetricID) -> Int {
-        switch id { case .network: return 1; case .ai, .codexSpeed, .claudeSpeed: return 2; default: return 0 }
+        switch id { case .network: return 1; case .ai, .codexSpeed, .claudeSpeed, .averageSpeed: return 2; default: return 0 }
     }
 
     private struct Palette {
@@ -510,7 +517,10 @@ final class StatusBarContentView: NSView {
         }
         // Natural aspect at an 11pt height, trailing-aligned in a 16pt slot so each icon hugs its own value.
         // An opaque label-coloured symbol dimmed once by `fraction`, so it reads like the "AI" caption (M-3).
-        let slot = NSRect(x: cell.minX + 2, y: cell.midY - 5.5, width: 16, height: 11)
+        // The average speed item's symbol takes the client glyph's square instead, so "9999 tok/s" fits like theirs.
+        let side = Self.glyphSide.inline
+        let slot = metric.id == .averageSpeed ? NSRect(x: cell.minX + 4, y: cell.midY - side / 2, width: side, height: side)
+            : NSRect(x: cell.minX + 2, y: cell.midY - 5.5, width: 16, height: 11)
         if let icon = symbol(metric.symbol, contrast: palette.contrast), icon.size.width > 0, icon.size.height > 0 {
             let fit = min(slot.height / icon.size.height, slot.width / icon.size.width)
             let size = NSSize(width: icon.size.width * fit, height: icon.size.height * fit)
@@ -834,7 +844,7 @@ func runStatusBarChecks() -> [String] {
         return (counts, StatusAISummary(groups: groups, counts: counts))
     }
     func metrics(_ system: SystemSnapshot, _ tokens: [TokenReading], now: Date = at, layout: StatusBarLayout? = nil,
-                 hasSample: Bool = true, hasTokenSample: Bool = true, speeds: [TokenSource: Double]? = nil) -> [StatusBarMetric] {
+                 hasSample: Bool = true, hasTokenSample: Bool = true, speeds: [MetricID: Double]? = nil) -> [StatusBarMetric] {
         let (counts, ai) = summary(tokens, now: now)
         let speeds = speeds ?? StatusBarContent.speeds(SessionListModel.make(tokens: tokens, now: now, expanded: false), now: now, restart: [])
         return StatusBarContent.metrics(system: system, counts: counts, ai: ai, recorded: FlowSeries.make(tokens, now: now).total, speeds: speeds,
@@ -925,9 +935,10 @@ func runStatusBarChecks() -> [String] {
     let minimal = metrics(system, [tool], layout: .minimal)
     check("minimal layout shows the AI item even when it is hidden from the list",
           minimal.map(\.id) == [.ai] && minimal.first?.value == "1")
-    // Speed items: each client's own "지금 속도" (`Format.tps`, then a smaller "tok/s"), "—" without one, spoken per client.
+    // Speed items: each client's own "지금 속도" (`Format.tps`, then a smaller "tok/s"), "—" without one, spoken per client;
+    // the average item is the mean of every fresh per-session rate.
     preferences.order = MetricID.allCases
-    preferences.visible = [.codexSpeed, .claudeSpeed]
+    preferences.visible = [.codexSpeed, .claudeSpeed, .averageSpeed]
     var timed = TokenReading(source: .codex, id: "timed", sessionID: "t1", model: "g1", active: true, activityState: .working, sampledAt: at)
     var measurement = TokenSpeedMeasurement(TelemetryReading(provider: .codex, at: at.addingTimeInterval(-3)))
     measurement.model = "g1"
@@ -936,14 +947,32 @@ func runStatusBarChecks() -> [String] {
     let untimed = TokenReading(source: .claude, id: "untimed", sessionID: "u1", model: "m1", active: true, activityState: .working, sampledAt: at)
     let speedItems = metrics(system, [timed, untimed])
     check("speed items show each client's own rate with its unit, or a dash: \(speedItems.map(\.value)) / \(speedItems.map(\.detail))",
-          speedItems.map(\.id) == [.codexSpeed, .claudeSpeed] && speedItems.map(\.value) == ["55.6tok/s", "—"]
-          && speedItems.map(\.detail) == ["Codex 속도 55.6 토큰/초", "Claude 속도 측정 없음"]
+          speedItems.map(\.id) == [.codexSpeed, .claudeSpeed, .averageSpeed] && speedItems.map(\.value) == ["55.6tok/s", "—", "55.6tok/s"]
+          && speedItems.map(\.detail) == ["Codex 속도 55.6 토큰/초", "Claude 속도 측정 없음", "평균 속도 55.6 토큰/초"]
+          && speedItems.map(\.label) == ["", "", "AVG"]
           && StatusBarContent.speeds(SessionListModel.make(tokens: [timed, untimed], now: at, expanded: false), now: at, restart: [.codex]).isEmpty
           && metrics(system, [timed], layout: .minimal).map(\.id) == [.ai] && StatusBarContent.splitRate("55.6tok/s") == ("55.6", "tok/s"))
     AppLanguage.with(.en) {
         check("English speed items are spoken per client",
-              metrics(system, [timed, untimed]).map(\.detail) == ["Codex speed 55.6 tokens per second", "Claude speed no measurement"])
+              metrics(system, [timed, untimed]).map(\.detail) == ["Codex speed 55.6 tokens per second", "Claude speed no measurement",
+                                                                  "Average speed 55.6 tokens per second"])
     }
+    // Two fresh sessions at 40 and 60 tok/s average to 50 across clients; a 3-minute-old measurement is not current.
+    func rated(_ source: TokenSource, _ id: String, tokensPerSecond: Double, age: TimeInterval) -> TokenReading {
+        var reading = TokenReading(source: source, id: id, sessionID: id, model: "m", active: true, activityState: .working, sampledAt: at)
+        var measured = TokenSpeedMeasurement(TelemetryReading(provider: source, at: at.addingTimeInterval(-age)))
+        measured.model = "m"
+        measured.serverTokenIntervalMs = 1_000 / tokensPerSecond
+        reading.speedMeasurement = measured
+        return reading
+    }
+    let averaged = StatusBarContent.speeds(SessionListModel.make(tokens: [rated(.codex, "a40", tokensPerSecond: 40, age: 3),
+                                                                          rated(.claude, "a60", tokensPerSecond: 60, age: 10),
+                                                                          rated(.codex, "a-stale", tokensPerSecond: 500, age: 180)],
+                                                                 now: at, expanded: false), now: at, restart: [])
+    check("the average speed is the mean of fresh per-session rates, a stale one excluded: \(averaged)",
+          abs((averaged[.averageSpeed] ?? 0) - 50) < 1e-9 && abs((averaged[.codexSpeed] ?? 0) - 40) < 1e-9
+          && abs((averaged[.claudeSpeed] ?? 0) - 60) < 1e-9)
     check("rate split keeps the unit", StatusBarContent.splitRate("1.5kB/s") == ("1.5", "kB/s")
           && StatusBarContent.splitRate("≥999GB/s") == ("≥999", "GB/s") && StatusBarContent.splitRate("—") == ("—", ""))
     var busy = system
@@ -983,7 +1012,7 @@ func runStatusBarChecks() -> [String] {
             for runner in [true, false] {
                 view.update(metrics: metrics(missing, [], layout: layout, hasSample: false, hasTokenSample: false), layout: layout, showRunner: runner)
                 let width = view.requiredWidth
-                view.update(metrics: metrics(maximum, busyTokens, layout: layout, speeds: [.codex: 999.94, .claude: 99_999]),
+                view.update(metrics: metrics(maximum, busyTokens, layout: layout, speeds: [.codexSpeed: 999.94, .claudeSpeed: 99_999, .averageSpeed: 9_999]),
                             layout: layout, showRunner: runner)
                 stable = stable && width == view.requiredWidth && width > 0
                 widths["\(layout.rawValue)/\(runner)" + (items == MetricID.standard ? "" : "/speed")] = width
@@ -994,7 +1023,7 @@ func runStatusBarChecks() -> [String] {
     // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30 (41 without the cat);
     // each speed item 56 on two lines, 69 on one.
     let expected: [String: CGFloat] = ["compact/true": 272, "inline/true": 410, "minimal/true": 72, "minimal/false": 49,
-                                       "compact/true/speed": 384, "inline/true/speed": 548, "minimal/true/speed": 72]
+                                       "compact/true/speed": 440, "inline/true/speed": 617, "minimal/true/speed": 72]
     check("cell widths match the layout contract", expected.allSatisfy { widths[$0.key] == $0.value })
     check("minimal layout fits beside a notch", (46...72).contains(widths["minimal/true"] ?? 0)
           && (widths["minimal/true"] ?? 0) < (widths["compact/true"] ?? 0))
@@ -1007,7 +1036,7 @@ func runStatusBarChecks() -> [String] {
     }
     let worst = [metric(.cpu, "100%"), metric(.memory, "100%"), metric(.disk, "100%"), metric(.battery, "100%"),
                  metric(.network, "↑999MB/s\n↓125MB/s"), metric(.ai, "99", .input),
-                 metric(.codexSpeed, "9999tok/s"), metric(.claudeSpeed, "9999tok/s")]
+                 metric(.codexSpeed, "9999tok/s"), metric(.claudeSpeed, "9999tok/s"), metric(.averageSpeed, "9999tok/s")]
     var shrunk: [String] = []
     var drifting: [String] = []
     for layout in StatusBarLayout.allCases {

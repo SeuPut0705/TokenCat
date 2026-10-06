@@ -71,7 +71,7 @@ public static class PreferenceChecks
             var widget = open();
             check(widget.ShowWidget && widget.Layout == StatusBarLayout.Compact && widget.Preset == DisplayPreset.SystemMonitor
                   && widget.ShownItems.SequenceEqual(MetricID.Standard) && widget.Order.SequenceEqual(Enum.GetValues<MetricID>())
-                  && Enum.GetValues<MetricID>()[^2..].SequenceEqual([MetricID.CodexSpeed, MetricID.ClaudeSpeed])
+                  && Enum.GetValues<MetricID>()[^3..].SequenceEqual([MetricID.CodexSpeed, MetricID.ClaudeSpeed, MetricID.AverageSpeed])
                   && MetricID.Standard.SequenceEqual([MetricID.Cpu, MetricID.Memory, MetricID.Disk, MetricID.Battery, MetricID.Network, MetricID.Ai])
                   && Enum.GetValues<DisplayPreset>().Select(preset => preset.Items)
                       .SequenceEqual([null, [MetricID.Ai, MetricID.Cpu, MetricID.Memory], MetricID.Standard, MetricID.Standard],
@@ -81,7 +81,7 @@ public static class PreferenceChecks
             var focus = open();
             check(focus.Layout == StatusBarLayout.Compact && focus.ShownItems.SequenceEqual([MetricID.Ai, MetricID.Cpu, MetricID.Memory])
                   && focus.Preset == DisplayPreset.AiFocus && store.Get<string>("statusBarLayout") == "compact"
-                  && store.Get<string[]>("visibleMetrics") is ["ai", "cpu", "memory"] && store.Get<string[]>("metricOrder")?.Length == 8,
+                  && store.Get<string[]>("visibleMetrics") is ["ai", "cpu", "memory"] && store.Get<string[]>("metricOrder")?.Length == 9,
                   "The AI Focus preset did not persist its layout and items in the mac keys");
             focus.Apply(DisplayPreset.Minimal);
             check(open().Preset == DisplayPreset.Minimal && open().ShownItems.SequenceEqual([MetricID.Ai, MetricID.Cpu, MetricID.Memory]),
@@ -101,9 +101,9 @@ public static class PreferenceChecks
                            && upgraded.Preset == DisplayPreset.SystemMonitor;
             upgraded.SetVisible(MetricID.ClaudeSpeed, true);
             var speedOn = (upgraded.Preset, upgraded.ShownItems[^1], open().Visible.Contains(MetricID.ClaudeSpeed));
-            var raw = store.Get<string[]>("metricOrder")?[^2..];
+            var raw = store.Get<string[]>("metricOrder")?[^3..];
             upgraded.Apply(DisplayPreset.SystemMonitor);
-            check(appended && speedOn == (null, MetricID.ClaudeSpeed, true) && raw is ["codexSpeed", "claudeSpeed"]
+            check(appended && speedOn == (null, MetricID.ClaudeSpeed, true) && raw is ["codexSpeed", "claudeSpeed", "averageSpeed"]
                   && upgraded.Preset == DisplayPreset.SystemMonitor && !upgraded.Visible.Contains(MetricID.ClaudeSpeed) && open().Order.SequenceEqual(Enum.GetValues<MetricID>()),
                   "An existing order and item set did not get the speed items appended and hidden, a speed item turned on did not draw last as 사용자 지정 or "
                   + "round-trip as \"claudeSpeed\", or 시스템 모니터 did not hide it again");
@@ -143,16 +143,18 @@ public static class PreferenceChecks
             guard.Move(MetricID.Network, onto: MetricID.Memory);
             guard.Move(MetricID.Ai, onto: MetricID.Ai);
             guard.Move(MetricID.ClaudeSpeed, onto: MetricID.CodexSpeed);
-            check(down.SequenceEqual([MetricID.Memory, MetricID.Disk, MetricID.Battery, MetricID.Cpu, MetricID.Network, MetricID.Ai, MetricID.CodexSpeed, MetricID.ClaudeSpeed])
+            check(down.SequenceEqual([MetricID.Memory, MetricID.Disk, MetricID.Battery, MetricID.Cpu, MetricID.Network, MetricID.Ai, MetricID.CodexSpeed, MetricID.ClaudeSpeed,
+                                      MetricID.AverageSpeed])
                   && new Preferences(items).Order.SequenceEqual([MetricID.Network, MetricID.Memory, MetricID.Disk, MetricID.Battery, MetricID.Cpu, MetricID.Ai,
-                                                                 MetricID.ClaudeSpeed, MetricID.CodexSpeed]),
+                                                                 MetricID.ClaudeSpeed, MetricID.CodexSpeed, MetricID.AverageSpeed]),
                   "Dropping a row onto another did not take its place in either direction, or did not persist");
             guard.Move(MetricID.Network, -1);
-            guard.Move(MetricID.CodexSpeed, 1);
+            guard.Move(MetricID.AverageSpeed, 1);
             guard.Move(MetricID.Cpu, -1);
             guard.Move(MetricID.Memory, 1);
-            check(guard.Order.SequenceEqual([MetricID.Network, MetricID.Disk, MetricID.Memory, MetricID.Cpu, MetricID.Battery, MetricID.Ai, MetricID.ClaudeSpeed, MetricID.CodexSpeed])
-                  && items.Get<string[]>("metricOrder") is ["network", "disk", "memory", "cpu", "battery", "ai", "claudeSpeed", "codexSpeed"],
+            check(guard.Order.SequenceEqual([MetricID.Network, MetricID.Disk, MetricID.Memory, MetricID.Cpu, MetricID.Battery, MetricID.Ai, MetricID.ClaudeSpeed, MetricID.CodexSpeed,
+                                             MetricID.AverageSpeed])
+                  && items.Get<string[]>("metricOrder") is ["network", "disk", "memory", "cpu", "battery", "ai", "claudeSpeed", "codexSpeed", "averageSpeed"],
                   "Moving up or down did not swap with the neighbour, moved past either end, or did not persist");
             // A speed item alone is drawn and, with the character hidden, can't be hidden as the last item.
             guard.SetVisible(MetricID.CodexSpeed, true);

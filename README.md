@@ -47,7 +47,7 @@ English · [한국어](README.ko.md)
 
 Run Codex and Claude Code in a few terminals and it's easy to lose track of which session is working and which one is waiting for you. TokenCat gathers that state into a single menu bar item. A walking cat means work is in progress; a cat sitting and facing you means a session needs input. Click the item to see each session's state, output tokens from the last 5 minutes, the current speed, Codex and Claude usage limits, and your Mac's system metrics on one screen.
 
-The numbers are shown as they are. Token counts are the values actually recorded in local logs, and a tok/s speed appears only when a client has sent a **measurement** to the collector on this Mac. TokenCat never estimates speed from gaps between log timestamps, never sums or averages speeds across sessions, and leaves unknown values as `—`.
+The numbers are shown as they are. Token counts are the values actually recorded in local logs, and a tok/s speed appears only when a client has sent a **measurement** to the collector on this Mac. TokenCat never estimates speed from gaps between log timestamps, never sums speeds across sessions, averages them only in the opt-in **Average speed** item, and leaves unknown values as `—`.
 
 - **Never miss an input request**: a session waiting for an answer or a plan approval shows a yellow `?` and a cat facing you. Notifications are available if you want them.
 - **Sessions and subagents in one list**: each session shows its progress, the kind of tool running, output this turn and context, and subagents are grouped under their parent.
@@ -132,7 +132,7 @@ With **Live usage limits** on (the default, in Settings › Telemetry), TokenCat
 
 Choose **Minimal** (about 72 pt), **Two Lines** (the default, about 272 pt) or **One Line** (about 410 pt), then turn items on or off and drag them to reorder. Each item has a fixed width, so the icons next to it don't shift when values change, and labels follow the bar's light or dark appearance so they stay readable on tinted bars. On a Mac without a battery, the battery item is hidden.
 
-Two more items are off by default: turn on **Codex speed** or **Claude speed** in Settings › Menu Bar to show the Codex or Claude app icon with that client's current speed in tok/s, picked by the same rule as the dashboard's **Speed now**, or `—` without a fresh measurement.
+Three more items are off by default: turn on **Codex speed** or **Claude speed** in Settings › Menu Bar to show the Codex or Claude app icon with that client's current speed in tok/s, picked by the same rule as the dashboard's **Speed now**, or `—` without a fresh measurement. **Average speed** (`AVG`) is an explicit opt-in mean of the per-session measured rates of every client that the same rule accepts; it averages only measured rates, estimates nothing, and shows `—` without one.
 
 <p align="center">
   <picture>
@@ -337,7 +337,7 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 **What's different from macOS**
 
 - **Widget on screen**: the taskbar can't show text, so the menu bar item floats on screen instead: the character, the AI status and session count (Minimal), or the menu bar's Two Lines and One Line layouts. Drag it anywhere (edges snap); it's remembered per monitor setup, never takes the focus and hides while a full-screen app is in front. Click it for the dashboard, right-click for the quick menu. To hide it, right-click › **Hide Widget** or turn off `Show widget on screen` in Settings › Widget.
-- **Settings › Widget** is the Mac's Menu Bar tab: preset, layout, and which items show in what order (drag a row, press Alt+↑/↓ or right-click it), including the Codex speed and Claude speed items, which are off by default. It also sets the widget's size, 100–300 %, which **Widget Size** in the right-click menu and Ctrl + mouse wheel over the widget change too; a resized widget keeps its nearest screen edges in place. `Show character in widget` is on the Character tab.
+- **Settings › Widget** is the Mac's Menu Bar tab: preset, layout, and which items show in what order (drag a row, press Alt+↑/↓ or right-click it), including the Codex speed, Claude speed and Average speed items, which are off by default. It also sets the widget's size, 100–300 %, which **Widget Size** in the right-click menu and Ctrl + mouse wheel over the widget change too; a resized widget keeps its nearest screen edges in place. `Show character in widget` is on the Character tab.
 - **Tray icon**: the character and its state. A yellow corner dot means input is needed, an orange one an API retry. Hover for a short summary, click for the dashboard with all the numbers, and right-click for the quick menu.
 - **Size follows the display scale**: at 100–175 % the icon is the cat head, which bobs while working; at 200 % and above it's the full-body character you picked.
 - **WSL isn't tracked**: only Codex and Claude Code running on Windows itself are collected (`%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.claude\projects`).

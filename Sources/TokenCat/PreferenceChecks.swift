@@ -18,7 +18,7 @@ func runPreferenceChecks() -> [String] {
           "A new install did not default to automatic update checks on and the new-version notification off")
     let fresh = Preferences(defaults: defaults)
     check(fresh.order == MetricID.allCases && fresh.visible == Set(MetricID.standard) && fresh.preset == .systemMonitor
-          && MetricID.allCases.suffix(2) == [.codexSpeed, .claudeSpeed] && MetricID.standard == [.cpu, .memory, .disk, .battery, .network, .ai]
+          && MetricID.allCases.suffix(3) == [.codexSpeed, .claudeSpeed, .averageSpeed] && MetricID.standard == [.cpu, .memory, .disk, .battery, .network, .ai]
           && DisplayPreset.allCases.map(\.items) == [nil, [.ai, .cpu, .memory], MetricID.standard, MetricID.standard],
           "A new install did not start with the six standard items (the speed items off, last), or a preset's item set changed")
     defaults.set(["cpu", "memory", "disk", "battery", "network", "ai"], forKey: "metricOrder")
@@ -38,7 +38,7 @@ func runPreferenceChecks() -> [String] {
     defaults.set(false, forKey: "showRunner")
     defaults.set("tokens", forKey: "animationSource")
     let migrated = Preferences(defaults: defaults)
-    check(migrated.order == [.ai, .disk, .cpu, .memory, .battery, .network, .codexSpeed, .claudeSpeed],
+    check(migrated.order == [.ai, .disk, .cpu, .memory, .battery, .network, .codexSpeed, .claudeSpeed, .averageSpeed],
           "Migration changed custom metric order or duplicated the AI item")
     check(migrated.visible == [.cpu, .ai, .network] && !migrated.showRunner && migrated.animationSource == .activity,
           "Migration lost a visible provider, unrelated preferences, or kept the legacy 'tokens' motion")
@@ -104,8 +104,8 @@ func runPreferenceChecks() -> [String] {
     guarded.move(.network, onto: .memory)
     guarded.move(.ai, onto: .ai)
     guarded.move(.claudeSpeed, onto: .codexSpeed)
-    check(down == [.memory, .disk, .battery, .cpu, .network, .ai, .codexSpeed, .claudeSpeed]
-          && Preferences(defaults: defaults).order == [.network, .memory, .disk, .battery, .cpu, .ai, .claudeSpeed, .codexSpeed],
+    check(down == [.memory, .disk, .battery, .cpu, .network, .ai, .codexSpeed, .claudeSpeed, .averageSpeed]
+          && Preferences(defaults: defaults).order == [.network, .memory, .disk, .battery, .cpu, .ai, .claudeSpeed, .codexSpeed, .averageSpeed],
           "Dropping a row onto another did not take its place in either direction, or did not persist")
     defaults.set(1_234.0, forKey: "unrelatedKey")
     guarded.notifyInput = true
@@ -139,7 +139,7 @@ func runPreferenceChecks() -> [String] {
     undo.undo()
     let undone = guarded.snapshot
     undo.redo()
-    check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .ai, .claudeSpeed, .codexSpeed] && before.notifyInputSound && before.notifyUpdate
+    check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .ai, .claudeSpeed, .codexSpeed, .averageSpeed] && before.notifyInputSound && before.notifyUpdate
           && before.character == .penguin
           && guarded.snapshot == Preferences.defaultSnapshot && undo.undoActionName == "기본값으로 되돌리기",
           "⌘Z after reset did not restore the previous order and all four notification toggles, or ⇧⌘Z did not reapply")

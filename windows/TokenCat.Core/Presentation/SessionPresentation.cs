@@ -823,6 +823,14 @@ public static class SessionPresentation
         Measured(SpeedRows(list), now, restart, current: true, source).OrderByDescending(item => item.Measurement.At)
             .ThenBy(item => item.Row.Id, StringComparer.Ordinal).Select(item => ((SessionRowItem, TokenSpeedMeasurement, double)?)item).FirstOrDefault();
 
+    /// The widget's opt-in "평균 속도": the arithmetic mean of every client's fresh per-session rates (`CurrentSpeed`'s rule),
+    /// null without one. Only measured rates are averaged; nothing is estimated.
+    public static double? AverageSpeed(SessionListModel list, DateTimeOffset now, IReadOnlySet<TokenSource> restart)
+    {
+        var rates = Measured(SpeedRows(list), now, restart, current: true).Select(item => item.Rate).ToList();
+        return rates.Count == 0 ? null : rates.Average();
+    }
+
     public static string SpokenKind(TokenRateKind? kind) => kind switch
     {
         TokenRateKind.ServerGeneration => Loc("생성 속도", "Generation speed"),

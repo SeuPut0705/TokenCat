@@ -336,7 +336,7 @@ enum TokenCatMain {
         ]
         var strips: [(String, [NSImage])] = []
         for (index, (title, tokens)) in (rows + speedRows).enumerated() {
-            if index == rows.count { preferences.visible.formUnion([.codexSpeed, .claudeSpeed]) }
+            if index == rows.count { preferences.visible.formUnion([.codexSpeed, .claudeSpeed, .averageSpeed]) }
             let groups = SessionPresentation.groups(tokens, now: at)
             let counts = SessionCounts(groups)
             let speeds = StatusBarContent.speeds(SessionListModel.make(tokens: tokens, now: at, expanded: false), now: at, restart: [])
