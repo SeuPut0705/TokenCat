@@ -49,7 +49,9 @@ public static class TokenSpeed
                 var main = sessionMatches.Where(index => result[index].AgentID is null && !result[index].IsSubagent).ToList();
                 matches = main.Count == 1 ? main : [];
             }
-            else matches = sessionMatches.Count == 1 && result[sessionMatches[0]].AgentID is null ? sessionMatches : [];
+            // Elsewhere a session identifier names one log: a Codex subagent runs in its own thread, so its log is the only match
+            // even though it carries an agent path that Codex telemetry does not repeat.
+            else matches = sessionMatches.Count == 1 ? sessionMatches : [];
             if (matches is [var match])
             {
                 // A side request on another model (e.g. title generation) must not hide the

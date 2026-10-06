@@ -2,6 +2,12 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.14.1
+
+**macOS and Windows**
+
+- A Codex subagent's measured speed now attaches to its own row and counts toward the Average speed; it used to be dropped and shown as a separate nameless measurement row. · Codex 하위 에이전트의 실측 속도가 이제 그 하위 에이전트 행에 붙고 평균 속도에도 들어갑니다. 전에는 빠지고 이름 없는 실측 행으로 따로 보였습니다.
+
 ## 0.14.0
 
 **macOS and Windows**

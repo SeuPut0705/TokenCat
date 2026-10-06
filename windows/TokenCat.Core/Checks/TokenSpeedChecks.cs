@@ -33,6 +33,11 @@ public static class TokenSpeedChecks
         var child = new TokenReading(TokenSource.Codex, "child") { SessionID = "a", AgentID = "worker", Model = "same-model", IsSubagent = true };
         var ambiguous = TokenSpeed.Apply([a, child], [server]);
         check("missing agent cannot select a parent among shared sessions", ambiguous.Count == 3 && ambiguous[0].SpeedMeasurement == null && ambiguous[1].SpeedMeasurement == null);
+        // Codex subagents log in their own thread (own session ID, agent path set); telemetry names only that thread.
+        var thread = new TokenReading(TokenSource.Codex, "thread") { SessionID = "worker-thread", AgentID = "/root/worker", Model = "same-model", IsSubagent = true };
+        var threaded = TokenSpeed.Apply([a, thread], [server with { SessionID = "worker-thread" }]);
+        check("a Codex subagent's own-thread rate attaches to it without an extra row",
+              threaded.Count == 2 && threaded[0].SpeedMeasurement == null && threaded[1].SpeedMeasurement?.TokensPerSecond == 25);
         var claudeMain = new TokenReading(TokenSource.Claude, "claude-main") { SessionID = "c", Model = "main-model" };
         var claudeChild = new TokenReading(TokenSource.Claude, "claude-child") { SessionID = "c", AgentID = "helper", Model = "main-model", IsSubagent = true };
         var mainRequest = reading with { Provider = TokenSource.Claude, SessionID = "c", Model = "main-model", OutputTokens = 300, RequestDurationMs = 3_000 };

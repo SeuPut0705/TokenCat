@@ -41,6 +41,13 @@ func runTokenSpeedChecks() -> [String] {
     let child = TokenReading(source: .codex, id: "child", sessionID: "a", agentID: "worker", model: "same-model", isSubagent: true)
     let ambiguous = TokenSpeed.apply([a, child], measurements: [server])
     check("missing agent cannot select a parent among shared sessions", ambiguous.count == 3 && ambiguous[0].speedMeasurement == nil && ambiguous[1].speedMeasurement == nil)
+    // Codex subagents log in their own thread (own session ID, agent path set); telemetry names only that thread.
+    let thread = TokenReading(source: .codex, id: "thread", sessionID: "worker-thread", agentID: "/root/worker", model: "same-model", isSubagent: true)
+    var threadServer = server
+    threadServer.sessionID = "worker-thread"
+    let threaded = TokenSpeed.apply([a, thread], measurements: [threadServer])
+    check("a Codex subagent's own-thread rate attaches to it without an extra row",
+          threaded.count == 2 && threaded[0].speedMeasurement == nil && threaded[1].speedMeasurement?.tokensPerSecond == 25)
     let claudeMain = TokenReading(source: .claude, id: "claude-main", sessionID: "c", model: "main-model")
     let claudeChild = TokenReading(source: .claude, id: "claude-child", sessionID: "c", agentID: "helper",
                                    model: "main-model", isSubagent: true)

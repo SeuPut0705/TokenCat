@@ -132,7 +132,9 @@ enum TokenSpeed {
                 let main = sessionMatches.filter { result[$0].agentID == nil && !result[$0].isSubagent }
                 matches = main.count == 1 ? main : []
             }
-            else { matches = sessionMatches.count == 1 && result[sessionMatches[0]].agentID == nil ? sessionMatches : [] }
+            // Elsewhere a session identifier names one log: a Codex subagent runs in its own thread, so its log is the only match
+            // even though it carries an agent path that Codex telemetry does not repeat.
+            else { matches = sessionMatches.count == 1 ? sessionMatches : [] }
             if matches.count == 1, let index = matches.first {
                 // A side request on another model (e.g. title generation) must not hide the
                 // current model's rate; a different model is shown only when nothing else matches.
