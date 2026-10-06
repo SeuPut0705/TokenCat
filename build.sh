@@ -50,8 +50,8 @@ cat > dist/TokenCat.app/Contents/Info.plist <<'PLIST'
 <key>CFBundleDevelopmentRegion</key><string>en</string>
 <key>CFBundleLocalizations</key><array><string>en</string><string>ko</string></array>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.14.1</string>
-<key>CFBundleVersion</key><string>21</string>
+<key>CFBundleShortVersionString</key><string>0.14.2</string>
+<key>CFBundleVersion</key><string>22</string>
 <key>CFBundleIconFile</key><string>TokenCat</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
