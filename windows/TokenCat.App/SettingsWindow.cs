@@ -729,9 +729,12 @@ sealed class SettingsView : Grid
         };
     }
 
-    /// Checked top to bottom: restart needed, a day without a reading, a reading, an undecodable batch, nothing.
-    public static (StatusRow Row, string Text, string? Detail) ClientStatus(bool restartNeeded, bool expired, DateTimeOffset? lastReceived, DateTimeOffset? batch, DateTimeOffset now)
+    /// Checked top to bottom: skipped by the last connection, restart needed, a day without a reading, a reading, an
+    /// undecodable batch, nothing. `skipped`: why a Gemini CLI or Qwen Code connection left the settings alone.
+    public static (StatusRow Row, string Text, string? Detail) ClientStatus(bool restartNeeded, bool expired, DateTimeOffset? lastReceived, DateTimeOffset? batch,
+        DateTimeOffset now, string? skipped = null)
     {
+        if (skipped is not null) return (StatusRow.Info, Loc("연결 안 함 · 기존 실측 설정 유지", "Not connected · existing telemetry settings kept"), skipped);
         if (restartNeeded) return (StatusRow.Info, Loc("새로 실행하면 실측이 표시됩니다", "Restart to show telemetry"), null);
         if (expired) return (StatusRow.Problem, Loc("이 버전에서 실측을 받지 못했습니다", "No telemetry from this version"), null);
         if (lastReceived is { } at) return (StatusRow.Received, Loc("최근 수신 ", "Last received ") + SessionPresentation.HelpAge(at, now, false), null);
@@ -822,11 +825,13 @@ sealed class SettingsView : Grid
         }
         var rows = new List<UIElement?> { Labeled(Label(Loc("수집기", "Collector")), collector) };
         if (dashboard.SetupNote is { } note) rows.Add(Caption(note, Theme.Warning));
-        foreach (var source in TokenSource.TelemetryClients)
+        // Gemini CLI and Qwen Code once their folder is detected, like every list.
+        foreach (var source in TokenSource.TelemetryClients.Where(state.ListedSources.Contains))
         {
+            var skipped = dashboard.ConnectNotes.OfType<TelemetrySetupNote.ClientSkipped>().FirstOrDefault(skip => skip.Source == source)?.Reason;
             var status = ClientStatus(state.TelemetryRestartNeeded.Contains(source), state.TelemetryRestartExpired.Contains(source),
                 state.TelemetryLastReceived.TryGetValue(source, out var received) ? received : null,
-                input.Batches.TryGetValue(source, out var batch) ? batch : null, now);
+                input.Batches.TryGetValue(source, out var batch) ? batch : null, now, skipped);
             rows.Add(Labeled(Label(source.Title), StatusLine(status.Row, status.Text, status.Detail)));
         }
         // Whether the bridge delivers: the newer of the two windows' receipts (no reset time: the desktop app).
@@ -843,6 +848,8 @@ sealed class SettingsView : Grid
             (Loc("백업 폴더 보기", "Show Backup Folder"), Path.Combine(AppPaths.Support, "telemetry-backups")),
             (Loc("Codex 설정 파일 보기", "Show Codex Config"), AppPaths.CodexConfig(AppPaths.Home)),
             (Loc("Claude Code 설정 파일 보기", "Show Claude Code Config"), AppPaths.ClaudeSettings(AppPaths.Home)),
+            (Loc("Gemini CLI 설정 파일 보기", "Show Gemini CLI Config"), Path.Combine(AppPaths.Home, ".gemini", "settings.json")),
+            (Loc("Qwen Code 설정 파일 보기", "Show Qwen Code Config"), Path.Combine(AppPaths.Home, ".qwen", "settings.json")),
         }.Where(file => !snapshot && (File.Exists(file.Path) || Directory.Exists(file.Path))).ToList();
         var buttons = new WrapPanel();
         foreach (var file in files) { var button = Ui.SmallButton(file.Title, () => Shell.Reveal(file.Path), file.Path); button.Margin = new Thickness(0, 0, 6, 6); buttons.Children.Add(button); }

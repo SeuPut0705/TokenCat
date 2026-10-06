@@ -100,7 +100,7 @@ enum StatusBarContent {
     /// (`DashboardModel.listedSources`).
     static func metrics(system: SystemSnapshot, counts: SessionCounts, ai: StatusAISummary, recorded: Int,
                         speed: AverageSpeed?, preferences: Preferences, layout: StatusBarLayout? = nil,
-                        sources: [TokenSource] = TokenSource.telemetryClients,
+                        sources: [TokenSource] = TokenSource.defaultClients,
                         hasSample: Bool, hasTokenSample: Bool) -> [StatusBarMetric] {
         func percentage(_ number: Double?) -> String {
             guard hasSample, let number, number.isFinite else { return "—" }

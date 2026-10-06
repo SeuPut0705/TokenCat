@@ -51,7 +51,7 @@
 
 - **입력 요청을 놓치지 않게**: 질문이나 계획 승인을 기다리는 세션은 노란 `?`와 정면을 보는 고양이로 알립니다. 원하면 알림도 보냅니다.
 - **세션과 하위 에이전트를 한 목록에**: 진행 상태, 실행 중인 도구 종류, 이번 턴 출력, 컨텍스트를 세션마다 보여 주고 하위 에이전트는 부모 아래에 묶습니다.
-- **데이터는 로컬에**: 대화 본문을 저장하지 않고, 실측 수집기는 `127.0.0.1`에서만 열며, 모델을 호출하거나 직접 계정에 로그인하지 않습니다. 인터넷에는 업데이트를 확인하고 내려받을 때 GitHub에, `실시간 한도 확인`이 켜져 있으면(기본) Codex·Claude Code에 이미 저장된 로그인으로 사용 한도를 물을 때 OpenAI·Anthropic에 접속하며, 둘 다 끌 수 있습니다. 실측을 받기 위해 Codex·Claude Code 설정에 이 Mac으로 보내는 전송 설정을 자동으로 추가하고 Claude Code 상태 표시줄 명령을 TokenCat 브리지로 감싸며, 원본은 먼저 백업합니다.
+- **데이터는 로컬에**: 대화 본문을 저장하지 않고, 실측 수집기는 `127.0.0.1`에서만 열며, 모델을 호출하거나 직접 계정에 로그인하지 않습니다. 인터넷에는 업데이트를 확인하고 내려받을 때 GitHub에, `실시간 한도 확인`이 켜져 있으면(기본) Codex·Claude Code에 이미 저장된 로그인으로 사용 한도를 물을 때 OpenAI·Anthropic에 접속하며, 둘 다 끌 수 있습니다. 실측을 받기 위해 Codex·Claude Code 설정(설치돼 있으면 Gemini CLI·Qwen Code 설정도)에 이 Mac으로 보내는 전송 설정을 자동으로 추가하고 Claude Code 상태 표시줄 명령을 TokenCat 브리지로 감싸며, 원본은 먼저 백업합니다.
 - **네이티브 앱**: Swift·AppKit·SwiftUI만 쓰고 외부 패키지가 없습니다. macOS 13 이상이 대상입니다.
 - **Windows 미리보기**: Windows 10·11(x64)용 알림 영역 버전을 같은 릴리스에 함께 올립니다. [Windows (미리보기)](#windows-미리보기)를 보세요.
 
@@ -204,7 +204,7 @@ AI 숫자는 진행 중이거나 입력을 기다리는 최상위 세션 수이�
 
 - **본문은 저장하지 않습니다.** 로컬 로그에서 모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 씁니다. 도구 입력은 읽지 않고, API 재시도 기록의 오류 메시지도 저장하지 않습니다.
 - **수집기는 이 Mac 안에만 엽니다.** `127.0.0.1:16493`에서만 받고, 웹페이지 Origin이 붙었거나 Host가 `127.0.0.1`·`localhost`가 아닌 요청은 거부합니다. 받은 실측은 정해진 개수만 메모리에 두고 파일로 남기지 않습니다. 수집기로 받은 것 가운데 디스크에 남는 것은 Claude 한도의 사용률·초기화 시각·받은 시각뿐이며, 다음 실행에도 보이도록 TokenCat 설정 값(UserDefaults)에 둡니다. Claude 데스크톱 앱의 사용량 기록 파일은 읽기만 하고 마지막 기록의 사용률과 시각만 같은 곳에 둡니다.
-- **본문 전송은 끈 채로 연결합니다.** Codex·Claude Code 설정에 실측 전송을 추가할 때 프롬프트·응답 본문 로깅은 끕니다.
+- **본문 전송은 끈 채로 연결합니다.** Codex·Claude Code·Gemini CLI·Qwen Code 설정에 실측 전송을 추가할 때 프롬프트·응답 본문 로깅은 끕니다(기본으로 프롬프트를 기록하는 Gemini CLI·Qwen Code에는 `logPrompts: false`).
 - **Claude Code 상태 표시줄은 감싸기만 합니다.** Claude Code는 사용 한도를 상태 표시줄 명령에만 넘겨 주므로, `~/.claude/settings.json`의 `statusLine` 명령을 TokenCat 브리지(`~/Library/Application Support/TokenCat/claude-statusline.sh`)로 바꿉니다. 브리지는 Claude Code가 넘긴 상태 JSON(작업 폴더, 세션, 모델, 비용, 사용 한도 등)을 `127.0.0.1`로만 보내고, 같은 입력으로 원래 명령을 실행해 출력과 종료 코드를 그대로 돌려줍니다. TokenCat은 받은 JSON에서 5시간·주간 한도 숫자만 남기고 나머지는 버립니다. 상태 표시줄이 없었다면 아무것도 출력하지 않는 브리지만 추가합니다.
 - **모델 호출이 없고 직접 로그인하지 않습니다.** TokenCat은 어떤 모델도 호출하지 않고 스스로 계정에 로그인하지 않습니다. 실시간 한도 확인은 Codex·Claude Code에 이미 저장된 로그인을 씁니다.
 - **인터넷 접속은 업데이트와 사용 한도 확인뿐입니다.** 업데이트는 GitHub에 최신 릴리스의 버전 번호만 묻습니다. 설정 › 정보의 `새 버전 자동 확인`을 끄면 `지금 확인`을 누를 때만 묻습니다. 새 버전 파일은 `업데이트`를 누를 때만 내려받습니다.
@@ -222,7 +222,7 @@ macOS 13 이상에서 실행되며, 한 앱으로 Apple silicon과 Intel Mac을 
 3. 처음 한 번은 아래 [처음 열 때](#처음-열-때) 순서로 엽니다.
 
 > [!IMPORTANT]
-> 처음 실행하면 실측을 받기 위해 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 이 Mac(`127.0.0.1:16493`)으로 보내는 설정을 **자동으로** 추가하고(파일이 없으면 새로 만듭니다), Claude Code의 상태 표시줄(`statusLine`) 명령을 TokenCat 브리지로 감쌉니다(원래 상태 표시줄 출력은 그대로). 원본은 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다. 되돌리는 방법은 [연결 해제와 제거](#연결-해제와-제거)에 있습니다.
+> 처음 실행하면 실측을 받기 위해 Codex `~/.codex/config.toml`과 Claude Code `~/.claude/settings.json`에 이 Mac(`127.0.0.1:16493`)으로 보내는 설정을 **자동으로** 추가하고(파일이 없으면 새로 만듭니다), Claude Code의 상태 표시줄(`statusLine`) 명령을 TokenCat 브리지로 감쌉니다(원래 상태 표시줄 출력은 그대로). `~/.gemini`나 `~/.qwen`이 있으면 Gemini CLI `~/.gemini/settings.json`, Qwen Code `~/.qwen/settings.json`의 `telemetry` 항목도 설정하며, 이미 다른 곳으로 실측을 보내거나 순수 JSON이 아닌 파일은 건너뛰고 그대로 둡니다. 원본은 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다. 되돌리는 방법은 [연결 해제와 제거](#연결-해제와-제거)에 있습니다.
 
 ### 처음 열 때
 
@@ -332,7 +332,7 @@ Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 4. 처음에는 고양이가 숨겨진 아이콘(**^**) 안에 있을 수 있습니다. 계속 보이게 하려면 **^**에서 작업 표시줄로 끌어 놓거나, **설정 › 개인 설정 › 작업 표시줄 › 기타 시스템 트레이 아이콘**에서 켭니다.
 
 > [!IMPORTANT]
-> 처음 실행하면 Codex `%USERPROFILE%\.codex\config.toml`과 Claude Code `%USERPROFILE%\.claude\settings.json`에 이 PC(`127.0.0.1:16493`)로 보내는 실측 설정을 **자동으로** 추가합니다(파일이 없으면 새로 만듭니다). 원본은 먼저 `%LOCALAPPDATA%\TokenCat\telemetry-backups`에 백업하고 프롬프트·응답 본문 로깅은 끕니다. Claude Code에 `statusLine`이 없으면 TokenCat 브리지(`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1`, PowerShell로 실행)를 추가합니다. 브리지는 상태 JSON을 `127.0.0.1`로만 보내고 아무것도 출력하지 않으며, 이미 있는 `statusLine`은 건드리지 않습니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다.
+> 처음 실행하면 Codex `%USERPROFILE%\.codex\config.toml`과 Claude Code `%USERPROFILE%\.claude\settings.json`에 이 PC(`127.0.0.1:16493`)로 보내는 실측 설정을 **자동으로** 추가하고(파일이 없으면 새로 만듭니다), 폴더가 있으면 Gemini CLI `%USERPROFILE%\.gemini\settings.json`, Qwen Code `%USERPROFILE%\.qwen\settings.json`의 `telemetry` 항목도 설정합니다(이미 다른 곳으로 실측을 보내거나 순수 JSON이 아니면 건너뜁니다). 원본은 먼저 `%LOCALAPPDATA%\TokenCat\telemetry-backups`에 백업하고 프롬프트·응답 본문 로깅은 끕니다. Claude Code에 `statusLine`이 없으면 TokenCat 브리지(`%LOCALAPPDATA%\TokenCat\claude-statusline.ps1`, PowerShell로 실행)를 추가합니다. 브리지는 상태 JSON을 `127.0.0.1`로만 보내고 아무것도 출력하지 않으며, 이미 있는 `statusLine`은 건드리지 않습니다. 실행할 때마다 연결을 다시 확인하며, `--disconnect-telemetry`로 해제하면 `--connect-telemetry`를 실행할 때까지 다시 연결하지 않습니다.
 
 **macOS와 다른 점**
 
@@ -366,7 +366,7 @@ Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 </picture>
 
 - **로그**에서 세션, 모델, 출력 토큰, 진행 상태를 읽습니다. 로그가 기록한 시점에만 반영하므로 Claude Code처럼 메시지가 끝날 때 기록하는 클라이언트는 메시지 완료 후 숫자가 오릅니다. 진행 표시는 마지막 기록 뒤 허용 시간(모델 응답 대기 10분, Claude Code 도구 15분, Codex 도구 120초) 안에서만 유지하고, 지나면 `로그 대기`로 바꿉니다. OS 프로세스가 살아 있는지를 뜻하지는 않습니다.
-- **Gemini CLI·Qwen Code** 대화 로그(`~/.gemini/tmp`, `~/.qwen/projects`)도 폴더가 있으면 하위 에이전트까지 같은 방식으로 읽습니다. 둘 다 생성 시간을 기록하지 않아 속도는 붙지 않습니다.
+- **Gemini CLI·Qwen Code** 대화 로그(`~/.gemini/tmp`, `~/.qwen/projects`)도 폴더가 있으면 하위 에이전트까지 같은 방식으로 읽습니다. 로그에는 생성 시간이 없어, 속도는 TokenCat이 Codex·Claude Code처럼 연결하는 각 클라이언트의 자체 실측에서 옵니다. 메인 대화의 응답마다 출력 토큰을 요청 시간으로 나눈 값(**요청 tok/s**)입니다.
 - **OpenCode** 세션은 폴더가 있으면 데이터베이스(`~/.local/share/opencode/opencode.db`)를 읽기 전용으로 열어 읽습니다. OpenCode는 응답마다 시작 시각과 마지막 토큰이 생성된 시각을 기록하므로, 수집기 없이도 그 기록으로 잰 **요청 tok/s**가 붙습니다.
 - **Copilot CLI·Amp·Factory Droid** 로그(`~/.copilot/session-state`, `~/.local/share/amp/threads`, `~/.factory/sessions`)도 폴더가 있으면 같은 방식으로 읽습니다. Copilot CLI는 권한 확인도 기록하므로 `입력 필요`로 보이고, Droid는 세션 출력 합계만 기록하므로 합계가 늘어난 만큼 출력으로 보입니다. 셋 다 생성 시간을 기록하지 않아 속도는 붙지 않습니다.
 - **Cline·Roo Code·Kilo Code** 작업(VS Code 계열 에디터마다의 `globalStorage/<확장>/tasks`)과 **Cline CLI** 세션(`~/.cline/data/sessions`)도 폴더가 있으면 읽습니다. 질문이나 승인 요청은 `입력 필요`로 보입니다. 생성 시간을 기록하지 않아 속도는 붙지 않습니다.
@@ -420,7 +420,7 @@ TokenCat이 Apple 공증을 받지 않은 앱이라 나오는 안내입니다. [
 
 <br>
 
-실측이 아직 없다는 뜻입니다. TokenCat은 로그 시각으로 속도를 만들지 않습니다. 실측을 받으려면 TokenCat이 실행 중이어야 하고, 연결 뒤 Codex나 Claude Code를 새로 실행해야 합니다. 설정 › 실측 탭에서 클라이언트별 수신 여부를 확인할 수 있습니다. 클라이언트 버전이나 서버 응답에 따라 지표가 오지 않을 수도 있습니다. 출력 카드의 `지금 속도`는 2분 안에 받은 실측만 쓰므로, 그보다 오래됐거나 세션이 지금과 다른 모델로 잰 값이면 행에 속도가 있어도 `—`로 둡니다. 이유는 `—`에 포인터를 올리면 보입니다.
+실측이 아직 없다는 뜻입니다. TokenCat은 로그 시각으로 속도를 만들지 않습니다. 실측을 받으려면 TokenCat이 실행 중이어야 하고, 연결 뒤 Codex·Claude Code·Gemini CLI·Qwen Code를 새로 실행해야 합니다. 설정 › 실측 탭에서 클라이언트별 수신 여부를 확인할 수 있습니다. 클라이언트 버전이나 서버 응답에 따라 지표가 오지 않을 수도 있습니다. 출력 카드의 `지금 속도`는 2분 안에 받은 실측만 쓰므로, 그보다 오래됐거나 세션이 지금과 다른 모델로 잰 값이면 행에 속도가 있어도 `—`로 둡니다. 이유는 `—`에 포인터를 올리면 보입니다.
 
 </details>
 
@@ -494,7 +494,7 @@ Claude Code가 컨텍스트 창 크기를 로그에 남기지 않기 때문입�
 
 <br>
 
-기존 외부 실측 목적지와 충돌하면 덮어쓰지 않습니다. 이때는 상세 화면 아래쪽에 `실측 꺼짐 · 설정 충돌`이 표시되고, 누르면 설정의 실측 탭이 열립니다. 세션 상태와 토큰 수는 로그에서 읽으므로 계속 보입니다.
+기존 외부 실측 목적지와 충돌하면 덮어쓰지 않습니다. 이때는 상세 화면 아래쪽에 `실측 꺼짐 · 설정 충돌`이 표시되고, 누르면 설정의 실측 탭이 열립니다. 세션 상태와 토큰 수는 로그에서 읽으므로 계속 보입니다. Gemini CLI·Qwen Code는 그 클라이언트만 건너뜁니다. 설정 › 실측의 해당 줄에 `연결 안 함 · 기존 실측 설정 유지`와 이유가 보이고, 다른 클라이언트는 그대로 연결합니다.
 
 </details>
 

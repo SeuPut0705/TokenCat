@@ -57,13 +57,17 @@ enum TokenSource: String, Codable, CaseIterable {
         case .qwen, .cline, .omp, .droid: return nil
         }
     }
-    /// The clients telemetry setup, live limits and the status line bridge apply to.
-    static let telemetryClients: [TokenSource] = [.codex, .claude]
-    /// Sources a list names: the telemetry clients always (a Codex and Claude Code user sees no change), any other
+    /// The clients telemetry setup connects to TokenCat's collector: Codex and Claude Code always, Gemini CLI and Qwen Code
+    /// while their folder (~/.gemini, ~/.qwen) exists.
+    static let telemetryClients: [TokenSource] = [.codex, .claude, .gemini, .qwen]
+    /// Codex and Claude Code: always listed, and the only clients whose usage limits TokenCat reads (live and the status
+    /// line bridge).
+    static let defaultClients: [TokenSource] = [.codex, .claude]
+    /// Sources a list names: the default clients always (a Codex and Claude Code user sees no change), any other
     /// once its data folder is detected or a reading carries it.
     static func listed(detected: Set<TokenSource>, readings: [TokenReading]) -> [TokenSource] {
         let seen = Set(readings.map(\.source))
-        return allCases.filter { telemetryClients.contains($0) || detected.contains($0) || seen.contains($0) }
+        return allCases.filter { defaultClients.contains($0) || detected.contains($0) || seen.contains($0) }
     }
 }
 

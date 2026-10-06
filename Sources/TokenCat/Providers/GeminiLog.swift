@@ -3,7 +3,19 @@ import Foundation
 
 // Gemini CLI and Qwen Code (a Gemini CLI fork) chat logs. Only ids, counts, times, statuses, tool and model names are read;
 // message text, tool arguments and results never leave the parsed record. Neither client logs when generation started or
-// ended, so no speed is ever derived from these logs.
+// ended, so no speed is ever derived from these logs; a measured speed comes only from the client's own telemetry
+// (`api_response`, Telemetry.swift) once TelemetrySetup connected it, joined to these rows by session ID.
+
+/// The output count rule both the chat logs and the telemetry `api_response` use.
+enum GeminiTokens {
+    /// Output = candidates, plus thoughts when the total shows they were counted apart (Gemini API). OpenAI-compatible
+    /// providers already include reasoning in the candidates, so it is not added twice.
+    static func output(candidates: Int?, thoughts: Int?, prompt: Int?, total: Int?) -> Int {
+        let base = candidates ?? 0
+        guard let thoughts, thoughts > 0, let total, total >= (prompt ?? 0) + base + thoughts else { return base }
+        return base + thoughts
+    }
+}
 
 extension TokenLogFormat {
     /// `<root>/<project>/chats/session-*.jsonl` (legacy `session-*.json` snapshots until resumed), and subagents in
@@ -292,14 +304,6 @@ private final class ChatTurnState {
         }
     }
 
-    /// Output = candidates, plus thoughts when the total shows they were counted apart (Gemini API). OpenAI-compatible
-    /// providers already include reasoning in the candidates, so it is not added twice.
-    static func outputTokens(candidates: Int?, thoughts: Int?, prompt: Int?, total: Int?) -> Int {
-        let base = candidates ?? 0
-        guard let thoughts, thoughts > 0, let total, total >= (prompt ?? 0) + base + thoughts else { return base }
-        return base + thoughts
-    }
-
     /// Counts are capped at Int32.max as everywhere else (`LogFields.count`, the Windows build), so sums cannot overflow.
     static func integer(_ value: Any?) -> Int? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
@@ -544,7 +548,7 @@ private final class GeminiChatReader: TokenLogReader {
             if let model = record["model"] as? String, !model.isEmpty { state.model = model }
             if let tokens = record["tokens"] as? [String: Any] {
                 let input = ChatTurnState.integer(tokens["input"])
-                state.output(message: id, tokens: ChatTurnState.outputTokens(
+                state.output(message: id, tokens: GeminiTokens.output(
                     candidates: ChatTurnState.integer(tokens["output"]), thoughts: ChatTurnState.integer(tokens["thoughts"]),
                     prompt: input, total: ChatTurnState.integer(tokens["total"])), at: date)
                 state.context(used: input, window: nil, at: date)
@@ -661,7 +665,7 @@ private final class QwenChatReader: TokenLogReader {
             if let model = record["model"] as? String, !model.isEmpty { state.model = model }
             if let usage = record["usageMetadata"] as? [String: Any] {
                 let prompt = ChatTurnState.integer(usage["promptTokenCount"])
-                state.output(message: record["uuid"] as? String ?? UUID().uuidString, tokens: ChatTurnState.outputTokens(
+                state.output(message: record["uuid"] as? String ?? UUID().uuidString, tokens: GeminiTokens.output(
                     candidates: ChatTurnState.integer(usage["candidatesTokenCount"]),
                     thoughts: ChatTurnState.integer(usage["thoughtsTokenCount"]),
                     prompt: prompt, total: ChatTurnState.integer(usage["totalTokenCount"])), at: date)

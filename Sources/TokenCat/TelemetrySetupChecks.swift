@@ -479,6 +479,116 @@ func runTelemetrySetupChecks() -> [String] {
         checks += 1
         failures.append("Telemetry setup fixture failed: \(error.localizedDescription)")
     }
+    // Gemini CLI and Qwen Code: connected only while their folder exists, every other key kept, their own problems skip them.
+    do {
+        let plainCodex = "model = \"existing-model\"\n"
+        let plainClaude = #"{"theme":"dark"}"#
+        let geminiOriginal = #"{"theme":"Dracula","telemetry":{"logPrompts":true,"useCollector":false},"general":{"vimMode":true}}"#
+        func write(_ home: URL, _ relative: String, _ text: String) throws {
+            let url = home.appendingPathComponent(relative)
+            try files.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(text.utf8).write(to: url)
+        }
+        let requested: [String: Any] = ["enabled": true, "target": "local", "otlpEndpoint": "http://127.0.0.1:\(TelemetrySetup.port)",
+                                        "otlpProtocol": "http", "logPrompts": false]
+        func telemetry(_ home: URL, _ relative: String) -> [String: Any]? { object(home, relative)?["telemetry"] as? [String: Any] }
+        func connected(_ values: [String: Any]?) -> Bool {
+            guard let values else { return false }
+            return requested.allSatisfy { (values[$0.key] as? NSObject) == ($0.value as? NSObject) }
+        }
+
+        let home = try fixture("gemini-qwen", codex: plainCodex, claude: plainClaude)
+        try write(home, ".gemini/settings.json", geminiOriginal)
+        try files.createDirectory(at: home.appendingPathComponent(".qwen"), withIntermediateDirectories: true)
+        let result = try TelemetrySetup(home: home).connect()
+        let gemini = object(home, ".gemini/settings.json")
+        check(result.restartRequired == [.codex, .claude, .gemini, .qwen] && result.changedFiles.count == 4 && result.notes.isEmpty
+              && connected(telemetry(home, ".gemini/settings.json")) && telemetry(home, ".gemini/settings.json")?["useCollector"] as? Bool == false
+              && gemini?["theme"] as? String == "Dracula" && (gemini?["general"] as? [String: Any])?["vimMode"] as? Bool == true
+              && connected(telemetry(home, ".qwen/settings.json")) && object(home, ".qwen/settings.json")?.count == 1
+              && mode(home, ".qwen/settings.json") == 0o600,
+              "Gemini CLI or Qwen Code settings were not connected with every other key kept, or the new Qwen file was not private")
+        let connectedGemini = data(home, ".gemini/settings.json")
+        let repeated = try TelemetrySetup(home: home).connect()
+        check(repeated.changedFiles.isEmpty && data(home, ".gemini/settings.json") == connectedGemini, "A repeated connection rewrote Gemini CLI settings")
+        let removed = try TelemetrySetup(home: home).disconnect()
+        check(removed.restartRequired.contains(.gemini) && data(home, ".gemini/settings.json") == Data(geminiOriginal.utf8)
+              && data(home, ".qwen/settings.json") == nil && data(home, ".codex/config.toml") == Data(plainCodex.utf8),
+              "Disconnecting did not restore Gemini CLI's exact bytes or remove the Qwen Code file TokenCat created")
+
+        // Edited after the connection: only TokenCat's members go (logPrompts gets its value back), the person's key stays.
+        let editedHome = try fixture("gemini-edited", codex: plainCodex, claude: plainClaude)
+        try write(editedHome, ".gemini/settings.json", geminiOriginal)
+        _ = try TelemetrySetup(home: editedHome).connect()
+        var edited = object(editedHome, ".gemini/settings.json") ?? [:]
+        edited["model"] = ["name": "gemini-2.5-pro"]
+        try JSONSerialization.data(withJSONObject: edited).write(to: editedHome.appendingPathComponent(".gemini/settings.json"))
+        _ = try TelemetrySetup(home: editedHome).disconnect()
+        let reverted = object(editedHome, ".gemini/settings.json")
+        check((reverted?["model"] as? [String: Any])?["name"] as? String == "gemini-2.5-pro" && reverted?["theme"] as? String == "Dracula"
+              && (reverted?["telemetry"] as? NSDictionary)?.isEqual(to: ["logPrompts": true, "useCollector": false]) == true,
+              "Disconnecting an edited Gemini CLI file lost the person's change or kept TokenCat's telemetry members")
+
+        // No folder: nothing is created. An existing destination or invalid JSON skips the client, never Codex or Claude Code.
+        let absentHome = try fixture("gemini-absent", codex: plainCodex, claude: plainClaude)
+        let absent = try TelemetrySetup(home: absentHome).connect()
+        check(absent.restartRequired == [.codex, .claude] && !files.fileExists(atPath: absentHome.appendingPathComponent(".gemini").path)
+              && !files.fileExists(atPath: absentHome.appendingPathComponent(".qwen").path), "Telemetry setup created a missing Gemini CLI or Qwen Code folder")
+        let foreign = #"{"telemetry":{"enabled":true,"otlpEndpoint":"http://collector.example:4317"}}"#
+        let skippedHome = try fixture("gemini-skipped", codex: plainCodex, claude: plainClaude)
+        try write(skippedHome, ".gemini/settings.json", foreign)
+        try write(skippedHome, ".qwen/settings.json", "{ bad")
+        let skipped = try TelemetrySetup(home: skippedHome).connect()
+        let skippedSources = skipped.notes.compactMap { note -> TokenSource? in if case .clientSkipped(let source, _) = note { return source } else { return nil } }
+        check(skipped.restartRequired == [.codex, .claude] && skippedSources == [.gemini, .qwen]
+              && data(skippedHome, ".gemini/settings.json") == Data(foreign.utf8) && data(skippedHome, ".qwen/settings.json") == Data("{ bad".utf8)
+              && skipped.message.contains("Gemini CLI 설정은 건너뛰었습니다: 기존 실측 전송 설정이 있어 덮어쓰지 않았습니다.")
+              && skipped.message.contains("Qwen Code 설정은 건너뛰었습니다: settings.json 형식이 올바르지 않습니다."),
+              "A Gemini CLI destination or invalid Qwen Code JSON was overwritten or blocked Codex and Claude Code")
+        for (index, text) in [#"{"telemetry":{"enabled":true}}"#, #"{"telemetry":{"target":"gcp"}}"#, #"{"telemetry":{"outfile":"/tmp/t.log"}}"#,
+                              #"{"telemetry":{"otlpLogsEndpoint":"http://other:4318/v1/logs"}}"#, #"{"telemetry":true}"#,
+                              #"{"telemetry":{},"telemetry":{"enabled":false}}"#].enumerated() {
+            let refusedHome = try fixture("gemini-refused-\(index)", codex: plainCodex, claude: plainClaude)
+            try write(refusedHome, ".gemini/settings.json", text)
+            let refused = try TelemetrySetup(home: refusedHome).connect()
+            check(data(refusedHome, ".gemini/settings.json") == Data(text.utf8) && !refused.restartRequired.contains(.gemini),
+                  "Gemini CLI settings that already export elsewhere or can't be kept were overwritten: \(text)")
+        }
+
+        // Connected before Gemini CLI was installed: a later connection adds it under the same backups.
+        let laterHome = try fixture("gemini-later", codex: plainCodex, claude: plainClaude)
+        _ = try TelemetrySetup(home: laterHome).connect()
+        let manifestBefore = object(laterHome, support + "/telemetry-connection.json")
+        try write(laterHome, ".gemini/settings.json", geminiOriginal)
+        let added = try TelemetrySetup(home: laterHome).connect()
+        let manifestAfter = object(laterHome, support + "/telemetry-connection.json")
+        let entries = (manifestAfter?["entries"] as? [[String: Any]])?.compactMap { $0["source"] as? String }
+        check(added.restartRequired == [.gemini] && connected(telemetry(laterHome, ".gemini/settings.json"))
+              && manifestAfter?["backupDirectory"] as? String == manifestBefore?["backupDirectory"] as? String
+              && entries == ["codex", "claude", "gemini"], "Gemini CLI found after the connection was not added to it")
+        var drifted = object(laterHome, ".gemini/settings.json") ?? [:]
+        drifted["telemetry"] = ["enabled": false]
+        let driftedBytes = try JSONSerialization.data(withJSONObject: drifted)
+        try driftedBytes.write(to: laterHome.appendingPathComponent(".gemini/settings.json"))
+        let again = try TelemetrySetup(home: laterHome).connect()
+        check(data(laterHome, ".gemini/settings.json") == driftedBytes
+              && again.notes.contains { if case .clientSkipped(.gemini, _) = $0 { return true } else { return false } },
+              "Gemini CLI settings changed after the connection were overwritten again")
+        try JSONSerialization.data(withJSONObject: object(laterHome, ".gemini/settings.json").map { settings in
+            var restored = settings
+            restored["telemetry"] = (try? JSONSerialization.jsonObject(with: connectedGemini ?? Data()) as? [String: Any])?["telemetry"]
+            return restored
+        } ?? [:]).write(to: laterHome.appendingPathComponent(".gemini/settings.json"))
+        _ = try TelemetrySetup(home: laterHome).disconnect()
+        let originalObject = try JSONSerialization.jsonObject(with: Data(geminiOriginal.utf8)) as? [String: Any] ?? [:]
+        check(data(laterHome, ".codex/config.toml") == Data(plainCodex.utf8) && data(laterHome, ".claude/settings.json") == Data(plainClaude.utf8)
+              && (object(laterHome, ".gemini/settings.json") as NSDictionary?)?.isEqual(to: originalObject) == true
+              && data(laterHome, support + "/telemetry-connection.json") == nil,
+              "Disconnecting a connection that added Gemini CLI later did not restore all three clients")
+    } catch {
+        checks += 1
+        failures.append("Gemini/Qwen telemetry setup fixture failed: \(error.localizedDescription)")
+    }
     print("Telemetry setup checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

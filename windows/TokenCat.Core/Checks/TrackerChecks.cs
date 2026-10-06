@@ -942,7 +942,8 @@ public static class TrackerChecks
                   && detectTracker.IsLog(Path.Combine(detectHome, ".claude", "projects", "p", "x.jsonl")),
                   "Provider registry: watched roots or changed-log matching are wrong");
             check(TokenProvider.All.Select(provider => provider.Source).SequenceEqual(Enum.GetValues<TokenSource>())
-                  && TokenSource.TelemetryClients.SequenceEqual([TokenSource.Codex, TokenSource.Claude])
+                  && TokenSource.TelemetryClients.SequenceEqual([TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.Qwen])
+                  && TokenSource.DefaultClients.SequenceEqual([TokenSource.Codex, TokenSource.Claude])
                   && TokenSource.Listed(new HashSet<TokenSource>(), []).SequenceEqual([TokenSource.Codex, TokenSource.Claude])
                   && TokenSource.Listed(detectedSources, [new TokenReading(TokenSource.Qwen)])
                       .SequenceEqual([TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.Qwen, TokenSource.Amp, TokenSource.Droid])

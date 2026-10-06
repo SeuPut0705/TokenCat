@@ -126,9 +126,10 @@ enum TokenSpeed {
             let matches: [Int]
             if (measurement.serverTokenIntervalSampleCount ?? 1) > 1 { matches = [] }
             else if let agent = measurement.agentID { matches = sessionMatches.filter { result[$0].agentID == agent } }
-            else if measurement.provider == .claude {
+            else if [.claude, .gemini, .qwen].contains(measurement.provider) {
                 // Claude Code tags every subagent request with agent_id; an untagged request
-                // belongs to the session's single main-thread log.
+                // belongs to the session's single main-thread log. Gemini CLI and Qwen Code subagent logs carry their
+                // parent's session ID, and only main-conversation requests are decoded for them.
                 let main = sessionMatches.filter { result[$0].agentID == nil && !result[$0].isSubagent }
                 matches = main.count == 1 ? main : []
             }

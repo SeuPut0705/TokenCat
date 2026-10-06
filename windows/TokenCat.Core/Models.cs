@@ -84,19 +84,24 @@ public static class ModelText
 
     extension(TokenSource)
     {
-        /// The clients telemetry setup, live limits and the status line bridge apply to.
+        /// The clients telemetry setup connects to TokenCat's collector: Codex and Claude Code always, Gemini CLI and Qwen Code
+        /// while their folder (%USERPROFILE%\.gemini, \.qwen) exists.
         public static IReadOnlyList<TokenSource> TelemetryClients => telemetryClients;
 
-        /// Sources a list names: the telemetry clients always (a Codex and Claude Code user sees no change), any other
+        /// The clients always listed; live usage limits poll only these.
+        public static IReadOnlyList<TokenSource> DefaultClients => defaultClients;
+
+        /// Sources a list names: the default clients always (a Codex and Claude Code user sees no change), any other
         /// once its data folder is detected or a reading carries it.
         public static IReadOnlyList<TokenSource> Listed(IReadOnlySet<TokenSource> detected, IEnumerable<TokenReading> readings)
         {
             var seen = readings.Select(reading => reading.Source).ToHashSet();
-            return [.. Enum.GetValues<TokenSource>().Where(source => telemetryClients.Contains(source) || detected.Contains(source) || seen.Contains(source))];
+            return [.. Enum.GetValues<TokenSource>().Where(source => defaultClients.Contains(source) || detected.Contains(source) || seen.Contains(source))];
         }
     }
 
-    static readonly TokenSource[] telemetryClients = [TokenSource.Codex, TokenSource.Claude];
+    static readonly TokenSource[] telemetryClients = [TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.Qwen];
+    static readonly TokenSource[] defaultClients = [TokenSource.Codex, TokenSource.Claude];
 
     extension(TokenRateKind kind)
     {

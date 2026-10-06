@@ -456,6 +456,97 @@ public static class TelemetrySetupChecks
             Put(driftedHome, claudeFile, driftedBytes);
             check(Rejected(() => Setup(driftedHome).Connect()) && Same(Data(driftedHome, claudeFile), driftedBytes) && Data(driftedHome, script) is null,
                   "A connection changed in another way was migrated or overwritten");
+
+            // Gemini CLI and Qwen Code: connected while their folder exists, every other key kept, skipped (never aborting) on a refusal.
+            const string geminiFile = ".gemini/settings.json", qwenFile = ".qwen/settings.json";
+            const string geminiOriginal = """{"theme":"Dracula","telemetry":{"logPrompts":true,"useCollector":false}}""";
+            string ClientHome(string name, string? gemini, bool qwenFolder = true)
+            {
+                var clientHome = Fixture(name);
+                if (gemini is not null)
+                {
+                    Directory.CreateDirectory(Path.Combine(clientHome, ".gemini"));
+                    Put(clientHome, geminiFile, Bytes(gemini));
+                }
+                if (qwenFolder) Directory.CreateDirectory(Path.Combine(clientHome, ".qwen"));
+                return clientHome;
+            }
+            static bool Connected(JsonObject? settings) => settings?["telemetry"] is JsonObject telemetry
+                && telemetry["enabled"]?.GetValue<bool>() == true && Text(telemetry["target"]) == "local" && Text(telemetry["otlpEndpoint"]) == "http://127.0.0.1:16493"
+                && Text(telemetry["otlpProtocol"]) == "http" && telemetry["logPrompts"]?.GetValue<bool>() == false;
+            static bool Skipped(TelemetrySetupResult result, TokenSource source) =>
+                result.Notes.OfType<TelemetrySetupNote.ClientSkipped>().Any(note => note.Source == source);
+            var clientsHome = ClientHome("gemini-qwen", geminiOriginal);
+            var clientsSetup = Setup(clientsHome);
+            var clientsResult = clientsSetup.Connect();
+            var geminiAfter = Object(clientsHome, geminiFile);
+            var qwenAfter = Object(clientsHome, qwenFile);
+            check(Connected(geminiAfter) && Text(geminiAfter?["theme"]) == "Dracula" && geminiAfter?["telemetry"]?["useCollector"]?.GetValue<bool>() == false
+                  && Connected(qwenAfter) && qwenAfter?.Count == 1 && clientsResult.Notes.Count == 0
+                  && clientsResult.RestartRequired.Contains(TokenSource.Gemini) && clientsResult.RestartRequired.Contains(TokenSource.Qwen),
+                  "Gemini CLI / Qwen Code settings were not connected with their other keys kept, or did not ask for a restart");
+            // The mac creates the Qwen Code file with mode 0600; Windows inherits the folder's ACL.
+            c.Skip();
+            check(clientsSetup.Connect().ChangedFiles.Count == 0, "A repeated connection changed Gemini CLI or Qwen Code settings again");
+            clientsSetup.Disconnect();
+            check(Same(Data(clientsHome, geminiFile), Bytes(geminiOriginal)) && Data(clientsHome, qwenFile) is null,
+                  "Disconnecting did not restore the exact Gemini CLI settings or remove the created Qwen Code file");
+
+            var editedClientHome = ClientHome("gemini-edited", geminiOriginal, qwenFolder: false);
+            Setup(editedClientHome).Connect();
+            var editedGemini = Object(editedClientHome, geminiFile)!;
+            editedGemini["model"] = new JsonObject { ["name"] = "x" };
+            Put(editedClientHome, geminiFile, Json.Write(editedGemini));
+            Setup(editedClientHome).Disconnect();
+            var revertedGemini = Object(editedClientHome, geminiFile);
+            check(Text(revertedGemini?["model"]?["name"]) == "x" && Text(revertedGemini?["theme"]) == "Dracula"
+                  && revertedGemini?["telemetry"] is JsonObject revertedTelemetry && revertedTelemetry.Count == 2
+                  && revertedTelemetry["logPrompts"]?.GetValue<bool>() == true && revertedTelemetry["useCollector"]?.GetValue<bool>() == false,
+                  "Disconnecting edited Gemini CLI settings lost the edit or kept TokenCat's telemetry keys");
+
+            var absentHome = ClientHome("gemini-absent", null, qwenFolder: false);
+            check(!Setup(absentHome).Connect().RestartRequired.Contains(TokenSource.Gemini) && !Directory.Exists(Path.Combine(absentHome, ".gemini"))
+                  && !Directory.Exists(Path.Combine(absentHome, ".qwen")),
+                  "Gemini CLI or Qwen Code settings were created without their folder");
+
+            const string collectorGemini = """{"telemetry":{"enabled":true,"otlpEndpoint":"http://collector.example:4317"}}""";
+            var collectorHome = ClientHome("gemini-collector", collectorGemini, qwenFolder: false);
+            var collectorResult = Setup(collectorHome).Connect();
+            check(Data(collectorHome, codexFile) is not null && Data(collectorHome, claudeFile) is not null
+                  && Same(Data(collectorHome, geminiFile), Bytes(collectorGemini)) && Skipped(collectorResult, TokenSource.Gemini)
+                  && !collectorResult.RestartRequired.Contains(TokenSource.Gemini) && collectorResult.Message.Contains("Gemini CLI 설정은 건너뛰었습니다: "),
+                  "A Gemini CLI collector of its own was overwritten, or it stopped Codex and Claude Code from connecting");
+            check(Lang.With(AppLanguage.En, () => new TelemetrySetupNote.ClientSkipped(TokenSource.Qwen, "Reason.").Text) == "Skipped Qwen Code: Reason.",
+                  "English skipped-client note changed");
+            var badGeminiHome = ClientHome("gemini-invalid", "{ bad", qwenFolder: false);
+            check(Skipped(Setup(badGeminiHome).Connect(), TokenSource.Gemini) && Same(Data(badGeminiHome, geminiFile), Bytes("{ bad")),
+                  "Unparseable Gemini CLI settings were changed or not reported as skipped");
+
+            // Connected while ~/.gemini was absent; a later connection adds it to the same manifest, and disconnecting restores all three.
+            var lateHome = ClientHome("gemini-late", null, qwenFolder: false);
+            Setup(lateHome).Connect();
+            Directory.CreateDirectory(Path.Combine(lateHome, ".gemini"));
+            Put(lateHome, geminiFile, Bytes(geminiOriginal));
+            var lateResult = Setup(lateHome).Connect();
+            check(lateResult.RestartRequired.SequenceEqual([TokenSource.Gemini]) && lateResult.ChangedFiles.Count == 1 && Connected(Object(lateHome, geminiFile))
+                  && Object(lateHome, manifestFile)?["entries"] is JsonArray lateEntries && lateEntries.Count == 3
+                  && lateEntries.Any(entry => Text(entry?["source"]) == "gemini"),
+                  "A Gemini CLI folder created after the connection was not added to it");
+            Setup(lateHome).Disconnect();
+            check(Same(Data(lateHome, geminiFile), Bytes(geminiOriginal)) && Data(lateHome, codexFile) is null && Data(lateHome, claudeFile) is null
+                  && Data(lateHome, manifestFile) is null,
+                  "Disconnecting did not restore the added Gemini CLI settings with Codex and Claude Code");
+
+            // Edited after the connection in a way that needs writing again: skipped, never overwritten, never blocking the rest.
+            var driftHome = ClientHome("gemini-drift", geminiOriginal, qwenFolder: false);
+            Setup(driftHome).Connect();
+            var driftGemini = Object(driftHome, geminiFile)!;
+            driftGemini["telemetry"]!["logPrompts"] = true;
+            var driftBytes = Json.Write(driftGemini);
+            Put(driftHome, geminiFile, driftBytes);
+            var driftResult = Setup(driftHome).Connect();
+            check(Skipped(driftResult, TokenSource.Gemini) && Same(Data(driftHome, geminiFile), driftBytes) && driftResult.ChangedFiles.Count == 0,
+                  "Gemini CLI settings edited after the connection were overwritten or blocked the connection");
         }
         catch (Exception error) { check(false, $"Telemetry setup fixture failed: {error.Message}"); }
         finally { root.Delete(true); }

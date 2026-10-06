@@ -61,6 +61,16 @@ public static class TokenSpeedChecks
         var logless = TokenSpeed.Apply([], [sideRequest, mainRequest]);
         check("a session without a log keeps one telemetry row per model", logless.Count == 2
               && logless.Select(r => r.SpeedMeasurement?.Model).OfType<string>().ToHashSet().SetEquals(["main-model", "side-model"]));
+        // Gemini CLI and Qwen Code subagent logs carry the parent's session ID; main-conversation requests attach to the main log only.
+        foreach (var source in new[] { TokenSource.Gemini, TokenSource.Qwen })
+        {
+            var main = new TokenReading(source, $"{source.Id}-main") { SessionID = "g", Model = "main-model" };
+            var subagent = new TokenReading(source, $"{source.Id}-subagent") { SessionID = "g", Model = "main-model", IsSubagent = true };
+            var response = reading with { Provider = source, SessionID = "g", Model = "main-model", OutputTokens = 150, RequestDurationMs = 2_000 };
+            var applied = TokenSpeed.Apply([main, subagent], [response]);
+            check($"an untagged {source.Title} request attaches to the main log, not its subagent or a new row",
+                  applied.Count == 2 && applied[0].SpeedMeasurement?.TokensPerSecond == 75 && applied[1].SpeedMeasurement == null);
+        }
         var agent = server with { AgentID = "worker" };
         var identified = TokenSpeed.Apply([a, child], [agent]);
         check("known agent attaches only to exact identity", identified.Count == 2 && identified[0].SpeedMeasurement == null && identified[1].SpeedMeasurement?.TokensPerSecond == 25);

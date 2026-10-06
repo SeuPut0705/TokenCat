@@ -109,13 +109,17 @@ cat's (brand)", Runner.swift).
   Windows v1 does the same (`home = %USERPROFILE%`). WSL logs are out of scope.
 * Other agents (OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline/Roo/Kilo, omp, Droid) are detected automatically by their data
   folders through the provider registry (`TokenProvider.All`, `Core/Tracking/TokenProviders.cs`, mirroring `TokenProviders.swift`). Each
-  has a parser (`TokenLogFormat`), listed below; telemetry, live limits and the status line bridge stay with `TokenSource.TelemetryClients` (Codex, Claude Code).
+  has a parser (`TokenLogFormat`), listed below. Telemetry setup covers `TokenSource.TelemetryClients` (Codex, Claude Code, and Gemini
+  CLI / Qwen Code while their folder exists); live limits and the status line bridge stay with `TokenSource.DefaultClients` (Codex,
+  Claude Code), which `TokenSource.Listed` always names.
   * Gemini CLI (`Core/Tracking/GeminiLog.cs`, `TokenLogFormat.Gemini`): `%USERPROFILE%\.gemini\tmp\<project>\chats\session-*.jsonl`
     (`GEMINI_CLI_HOME` moves it), legacy `session-*.json` snapshots unless migrated, subagents in `chats\<parent session>\`; project
-    from `.project_root`. Messages are appended again when tokens or tool calls arrive, so output counts per message id. No speed.
+    from `.project_root`. Messages are appended again when tokens or tool calls arrive, so output counts per message id. The log has
+    no timings; a measured speed comes only from its telemetry once connected (`gemini_cli.api_response`, §3.1 decoder).
   * Qwen Code (same file, `TokenLogFormat.Qwen`): `<QWEN_RUNTIME_DIR | QWEN_HOME | %USERPROFILE%\.qwen>\projects\<project>\chats\*.jsonl`
     and `subagents\<session>\agent-*.jsonl` (+ `.meta.json` role). Tool calls/results, `ask_user_question`/`exit_plan_mode` input
-    waits and the context window come from the log. No speed.
+    waits and the context window come from the log. Speed only from its telemetry once connected (`qwen-code.api_response`).
+  * Both use `GeminiTokens.Output` (candidates, plus thoughts when the total shows they were counted apart), shared with the decoder.
   * OpenCode (`Core/Tracking/OpenCodeLog.cs`, `TokenLogFormat.OpenCode`): `%USERPROFILE%\.local\share\opencode\opencode.db`
     (`XDG_DATA_HOME`, a channel build's `opencode-<channel>.db`, or the `OPENCODE_DB` file), SQLite in WAL mode opened read-only through
     the OS `winsqlite3.dll` (P/Invoke; the checks on a mac host load the system libsqlite3). Re-queried when the database or WAL
@@ -269,11 +273,28 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
   unfinished), turns, output tokens, context, subagent trees (Claude `subagents/agent-*`, Codex forked threads), Codex rate limits,
   5-minute output flow. Same JSONL gives the same `TokenReading` (§6.3 parity test).
 * Loopback OTLP/HTTP-JSON collector on `127.0.0.1:16493`: `/v1/logs|metrics|traces`, `/v1/claude/status`, `/health`, `/v1/readings`,
-  `/v1/diagnostics`, the same caps, retry delays [5,30,120] and busy-port detection via `/health`. Measured tok/s via `TokenSpeed.apply`.
+  `/v1/diagnostics`, the same caps, retry delays [5,30,120] and busy-port detection via `/health`. `TelemetryHttp.Parse` takes a
+  `Content-Length` or a `Transfer-Encoding: chunked` body (Gemini CLI and Qwen Code's Node exporters send no length): both, another
+  coding, a repeated header, bad hex (1–8 digits), a missing CRLF or bytes after the final CRLF → 400; decoded body over 2 MB (64 KB
+  for the status route) or framing over 2 × 2 MB → 413; GET routes still refuse any body. Measured tok/s via `TokenSpeed.apply`.
   Never derived from log timings, never aggregated across sessions.
+* Decoder (`TelemetryDecode.cs`): Claude Code `api_request` logs and `llm_request` spans, Codex TBT metrics, and Gemini CLI
+  (`gemini-cli`, `gemini_cli.api_response`) / Qwen Code (`qwen-code`, `qwen-code.api_response`) logs. Their allowlist adds only
+  `input/output/thoughts/total_token_count`, `role`, `subagent_name` (presence only) and `response_id` (request ID). Only main-
+  conversation requests decode: Gemini's `role` absent or `main` (utility and subagent calls carry the parent session ID), Qwen's
+  without `subagent_name`; output = `GeminiTokens.Output`, duration = `duration_ms`, TTFT = `ttft_ms`. `TokenSpeed.Apply` attaches an
+  untagged Claude/Gemini/Qwen measurement to the session's single main log only.
 * Auto-connect telemetry (opt-out persisted): Codex `config.toml` `[otel]` exporters and Claude `settings.json` env, with manifest, SHA-256
   checks, backups, rollback and refusal on conflict. `--connect-telemetry` / `--disconnect-telemetry`. Prompt/response logging switches
-  forced to `0`.
+  forced to `0`. Gemini CLI `%USERPROFILE%\.gemini\settings.json` and Qwen Code `%USERPROFILE%\.qwen\settings.json` (only while the
+  folder exists; created when missing; backups `gemini-settings.json`/`qwen-settings.json`) get `telemetry.enabled/target/otlpEndpoint/
+  otlpProtocol/logPrompts` = true/"local"/collector/"http"/false, every other key kept. An unparseable file, duplicate keys, a non-object
+  `telemetry`, or an existing destination (other `otlpEndpoint`, per-signal endpoints, `outfile`, `target` ≠ local, `enabled` without
+  an endpoint) skips only that client with `TelemetrySetupNote.ClientSkipped(source, reason)`; Codex/Claude errors still abort. On an
+  existing connection, a Gemini/Qwen file without a manifest entry joins it (`AddClients`: backups into the same folder, both
+  manifests written before the settings, both restored on failure) before the status-line-bridge step; one with an entry that would
+  need writing again is skipped ("changed after the connection"). Disconnecting an edited Gemini/Qwen file reverts only the members
+  still holding TokenCat's values (`RevertGeminiStyle`), removing `telemetry` when it ends empty and the backup had none.
 * Claude usage limits: statusLine bridge (§7.4) plus Claude Desktop history file. Codex limits come from logs.
 * Dashboard (flyout): header sentence + head, onboarding card, flow card + limits, sessions header/list with children, system area, footer
   (telemetry notice, update notice). "Open in Explorer" replaces "Finder에서 보기". "Task Manager" replaces "Activity Monitor". "Open as
@@ -379,8 +400,10 @@ Normal WPF window with the mac's five pages (left nav), "메뉴 막대" named **
   WPF's ComboBox and ContextMenu don't follow dark mode, so the pop-ups are the WinForms menus the tray uses.
 * **Character**: picker with live 2× preview, "위젯에 캐릭터 표시" (mac "메뉴 막대에 캐릭터 표시"; disabled with its reason when nothing
   else would be drawn; the tray icon always shows the character), motion source with `caption`/`subtitle` texts.
-* **Telemetry**: collector state with Retry Now, per-client status, Claude limits status, the `--disconnect-telemetry` command as text, and
-  buttons that show the backups folder and both config files in File Explorer. Connecting and disconnecting stay in the CLI.
+* **Telemetry**: collector state with Retry Now, per-client status (`TelemetryClients` filtered to listed sources; a `ClientSkipped`
+  note shows "연결 안 함 · 기존 실측 설정 유지" with its reason first), Claude limits status, the `--disconnect-telemetry` command as
+  text, and buttons that show the backups folder and the Codex, Claude Code, Gemini CLI and Qwen Code config files that exist in File
+  Explorer. Connecting and disconnecting stay in the CLI.
 * **About**: version, privacy note, licence, Show Welcome Again, and Updates (automatic check, check/install update, new-version notice).
 
 Texts come from `SettingsView.swift`, minus the cut items.
@@ -390,7 +413,8 @@ Two `ResourceDictionary` token sets (Light/Dark) copied from `DesignTokens.swift
 `AppsUseLightTheme` change. High contrast uses `SystemColors`.
 
 ### 4.6 First run
-1. The flyout opens once with the onboarding card (mac `OnboardingCard` outcome texts).
+1. The flyout opens once with the onboarding card (mac `OnboardingCard` outcome texts). Its telemetry line names
+   `OnboardingCard.Clients(listed, notes)`: the telemetry clients that are listed and not skipped (Codex·Claude Code by default).
 2. One balloon: "TokenCat is in the notification area. If you don't see it, open ^ and drag the cat onto the taskbar" / "TokenCat이
    알림 영역에 있습니다. 보이지 않으면 ^를 열고 고양이를 작업 표시줄로 끌어 놓으세요."
 3. Telemetry auto-connect runs as on mac (unless opted out).
@@ -747,7 +771,7 @@ gives PASS (Localization suite ported).
 Shared contracts (WP0, `Models.cs`):
 ```csharp
 public enum TokenSource { Codex, Claude, OpenCode, Gemini, Qwen, Copilot, Amp, Cline, Omp, Droid } // ids/JSON = Swift raw values ("codex", "opencode"…);
-// Title/ShortTitle/ResumeCommand per source; static TokenSource.TelemetryClients = [Codex, Claude]; TokenSource.Listed(detected, readings)
+// Title/ShortTitle/ResumeCommand per source; static TokenSource.TelemetryClients = [Codex, Claude, Gemini, Qwen], DefaultClients = [Codex, Claude]; TokenSource.Listed(detected, readings)
 public enum TokenActivityState { Idle, Working, Tool, Output, Complete, Interrupted, Stale, Unfinished, Input }
 public enum ToolCategory { Command, File, Web, Agent, Mcp, Question, Other }
 public sealed record TokenRetryState(int Attempt, int? MaxAttempts, DateTimeOffset? RetryAt, bool NetworkDown, DateTimeOffset At);
@@ -1018,8 +1042,9 @@ add members freely.
 
 **Differences from §11's sketches**
 * `TokenReading.RequestIDs` is `ImmutableHashSet<string>` (System.Text.Json can't create an `IReadOnlySet`).
-* `TelemetrySetupNote` adds `StatusLineKept`; `TelemetrySetupFailure` is a record hierarchy (`WriteFailed(bool Restored)`);
-  `TelemetrySetupError` is an exception carrying it. `TelemetrySetup.Port`/`OptOutKey` are constants.
+* `TelemetrySetupNote` is a record hierarchy: the status line notes (Swift's three plus `StatusLineKept`) are value-equal singletons,
+  and `ClientSkipped(Source, Reason)` mirrors Swift's `.clientSkipped`; `TelemetrySetupFailure` is a record hierarchy
+  (`WriteFailed(bool Restored)`); `TelemetrySetupError` is an exception carrying it. `TelemetrySetup.Port`/`OptOutKey` are constants.
 * `SessionDisplayState`, `SessionMember` and `SessionGroup` (`Members`, `State`, `LastActivity`) are already real: WP4's
   `RunnerActivity` merges before WP3. `SessionPresentation.Groups` is a stub.
 * `Core/Telemetry/TelemetryHttp.cs` holds the spike's working `Parse` (no checks yet); `Encode` is a stub.

@@ -184,6 +184,36 @@ public static class TelemetryChecks
               && !privacy.Ingest(Bytes("""{"resourceSpans":[]}"""), "/v1/logs"),
               "Malformed JSON/schema was accepted");
 
+        // Gemini CLI and Qwen Code `api_response` logs: main-conversation requests only, thoughts counted when the total shows them.
+        static string Record(Dictionary<string, object> values) => $$"""{"timeUnixNano":"1750000000000000000","attributes":{{Attrs(values)}}}""";
+        static byte[] ClientLogs(Dictionary<string, object> resource, params Dictionary<string, object>[] records) => Bytes(
+            $$"""{"resourceLogs":[{"resource":{"attributes":{{Attrs(resource)}}},"scopeLogs":[{"logRecords":[{{string.Join(",", records.Select(Record))}}]}]}]}""");
+        Dictionary<string, object> GeminiResponse(string role) => new()
+        {
+            ["event.name"] = "gemini_cli.api_response", ["role"] = role, ["model"] = "gemini-2.5-pro", ["input_token_count"] = 1000,
+            ["output_token_count"] = 120, ["thoughts_token_count"] = 30, ["total_token_count"] = 1150, ["duration_ms"] = 2000,
+            ["prompt"] = "PRIVATE_PROMPT", ["response_text"] = "PRIVATE_RESPONSE", ["event.timestamp"] = "2025-06-15T15:06:40Z",
+        };
+        var gemini = new TelemetryCollector();
+        check(gemini.Ingest(ClientLogs(new() { ["service.name"] = "gemini-cli", ["session.id"] = "gemini-session" },
+                  GeminiResponse("main"), GeminiResponse("utility_router"), GeminiResponse("subagent")), "/v1/logs")
+              && gemini.Snapshot() is [{ Provider: TokenSource.Gemini, SessionID: "gemini-session", Model: "gemini-2.5-pro", OutputTokens: 150, RequestDurationMs: 2000 }]
+              && gemini.Diagnostics().Entries.Any(entry => entry is { Signal: "logs", ResourceServiceName: "gemini-cli", Recognized: true }),
+              "A Gemini CLI main api_response did not decode once, or a utility/subagent request did");
+        Dictionary<string, object> QwenResponse(string id) => new()
+        {
+            ["session.id"] = "qwen-session", ["event.name"] = "qwen-code.api_response", ["response_id"] = id, ["model"] = "qwen3-coder",
+            ["input_token_count"] = 500, ["output_token_count"] = 80, ["thoughts_token_count"] = 0, ["total_token_count"] = 580,
+            ["duration_ms"] = 1600, ["ttft_ms"] = 300, ["response_text"] = "PRIVATE_RESPONSE",
+        };
+        var qwen = new TelemetryCollector();
+        check(qwen.Ingest(ClientLogs(new() { ["service.name"] = "qwen-code" }, QwenResponse("resp-main"),
+                  new(QwenResponse("resp-agent")) { ["subagent_name"] = "PRIVATE_AGENT" }), "/v1/logs")
+              && qwen.Snapshot() is [{ Provider: TokenSource.Qwen, SessionID: "qwen-session", RequestID: "resp-main", OutputTokens: 80, RequestDurationMs: 1600, TtftMs: 300 }],
+              "A Qwen Code api_response did not decode with its response ID and TTFT, or a subagent request did");
+        var clientJSON = string.Join("\n", gemini.Snapshot().Concat(qwen.Snapshot())) + Json(gemini.Diagnostics()) + Json(qwen.Diagnostics());
+        check(!clientJSON.Contains("PRIVATE"), "Gemini CLI or Qwen Code prompt, response or subagent text survived the metadata whitelist");
+
         // Unrecognized services keep span/event names and attribute keys only, never values.
         var unknownApp = new TelemetryCollector();
         static byte[] Spans(string[] names, Dictionary<string, object> values, string service = "codex-app-server") => Bytes(
@@ -274,8 +304,26 @@ public static class TelemetryChecks
               "Oversized content length was not rejected before body allocation");
         check(Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}")) == 400,
               "Duplicate content lengths permitted request smuggling");
-        check(Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n")) == 400,
-              "Unsupported transfer encoding was accepted");
+        // Gemini CLI and Qwen Code (Node OTLP/HTTP exporters) send chunked bodies without a Content-Length.
+        const string chunkedHead = "POST /v1/logs HTTP/1.1\r\nHost: 127.0.0.1:16493\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n";
+        var chunked = Bytes(chunkedHead + "6;name=value\r\n{\"reso\r\nb\r\nurceLogs\":[\r\n2\r\n]}\r\n0\r\nX-Trailer: 1\r\n\r\n");
+        check(TelemetryHttp.Parse(chunked) is HttpDecision.Request { Path: "/v1/logs", Body: var chunkedBody }
+              && chunkedBody.SequenceEqual("{\"resourceLogs\":[]}"u8.ToArray())
+              && TelemetryHttp.Parse(chunked.AsSpan(0, chunked.Length - 3)) is HttpDecision.Waiting
+              && TelemetryHttp.Parse(chunked.AsSpan(0, chunkedHead.Length + 9)) is HttpDecision.Waiting,
+              "A chunked body with an extension and a trailer did not decode, or a prefix did not wait");
+        check(Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n2\r\n{}\r\n0\r\n\r\n")) == 400
+              && Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: gzip, chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n")) == 400
+              && Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")) == 400
+              && Code(Parse(chunkedHead + "zz\r\n{}\r\n0\r\n\r\n")) == 400
+              && Code(Parse(chunkedHead + "2\r\n{}xx0\r\n\r\n")) == 400
+              && Code(Parse(chunkedHead + "2\r\n{}\r\n0\r\n\r\nGET")) == 400
+              && Code(Parse("GET /health HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n")) == 400,
+              "Chunked framing errors (with Content-Length, other codings, repeated, bad hex, missing CRLF, trailing bytes, on GET) were accepted");
+        var hugeChunks = Bytes(chunkedHead + "200000\r\n" + new string('a', 0x200000) + "\r\n1\r\n");
+        check(Code(TelemetryHttp.Parse(hugeChunks)) == 413
+              && Code(Parse("POST /v1/claude/status HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n10001\r\n")) == 413,
+              "A chunked body over the decoded limit was not rejected");
         check(Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/x-protobuf\r\nContent-Length: 2\r\n\r\n{}")) == 400,
               "Protobuf payload was incorrectly treated as JSON");
         check(Code(TelemetryHttp.Parse([.. valid, .. "another-request"u8])) == 400, "Pipelined bytes were allowed to contaminate a single-request connection");

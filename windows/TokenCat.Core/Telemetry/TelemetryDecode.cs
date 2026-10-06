@@ -77,8 +77,12 @@ static class TelemetryDecoder
 {
     const string InvalidMetadata = "__invalid_metadata__";
     static readonly HashSet<string> AllowedKeys = ["service.name", "session.id", "session_id", "conversation.id", "conversation_id",
-        "agent.id", "agent_id", "model", "gen_ai.request.model", "request_id", "request.id", "gen_ai.response.id", "event.name",
-        "event_name", "event.timestamp", "duration_ms", "ttft_ms", "output_tokens", "success"];
+        "agent.id", "agent_id", "model", "gen_ai.request.model", "request_id", "request.id", "gen_ai.response.id", "response_id", "event.name",
+        "event_name", "event.timestamp", "duration_ms", "ttft_ms", "output_tokens", "success",
+        // Gemini CLI and Qwen Code `api_response`: token counts, the request's role, and whether a subagent sent it.
+        "input_token_count", "output_token_count", "thoughts_token_count", "total_token_count", "role", "subagent_name"];
+    /// Gemini CLI and Qwen Code log one `api_response` per successful model request.
+    static readonly Dictionary<string, TokenSource> ResponseEvents = new() { ["gemini_cli.api_response"] = Gemini, ["qwen-code.api_response"] = Qwen };
     static readonly Dictionary<string, int> MetricKinds = new()
     {
         ["codex.responses_api_engine_service_tbt.duration_ms"] = 1,
@@ -117,6 +121,11 @@ static class TelemetryDecoder
                         if (attrs.GetValueOrDefault("success") is false) continue;
                         var body = log.Field("body")?.Field("stringValue")?.Text;
                         var name = attrs.GetValueOrDefault("event.name") as string ?? attrs.GetValueOrDefault("event_name") as string ?? body;
+                        if (name is not null && ResponseEvents.TryGetValue(name, out var client))
+                        {
+                            if (Response(attrs, client, resourceAttributes, name, Timestamp(log.Field("timeUnixNano"), attrs)) is { } record) result.Add(record);
+                            continue;
+                        }
                         if (name is not ("api_request" or "claude_code.api_request") || Source(resourceAttributes, name) != Claude
                             || Integer(attrs.GetValueOrDefault("output_tokens")) is not { } tokens
                             || Number(attrs.GetValueOrDefault("duration_ms")) is not { } duration || duration <= 0) continue;
@@ -204,11 +213,37 @@ static class TelemetryDecoder
                 // service-name classification; unknown/custom services stay rejected.
                 "codex" or "codex-cli" or "codex_cli_rs" or "codex_exec" or "codex-app-server" or "codex_desktop" or "codex-tui"
                     or "codex_vscode" or "codex_mcp_server" or "codex_sdk_ts" or "codex-app-server-sdk" or "Codex Desktop" => Codex,
+                // The services Gemini CLI and Qwen Code name themselves (`SERVICE_NAME` in their telemetry constants).
+                "gemini-cli" => Gemini,
+                "qwen-code" => Qwen,
                 _ => null,
             };
         if (fallback?.StartsWith("claude_code.", StringComparison.Ordinal) == true) return Claude;
         if (fallback?.StartsWith("codex.", StringComparison.Ordinal) == true) return Codex;
+        if (fallback?.StartsWith("gemini_cli.", StringComparison.Ordinal) == true) return Gemini;
+        if (fallback?.StartsWith("qwen-code.", StringComparison.Ordinal) == true) return Qwen;
         return null;
+    }
+
+    /// One Gemini CLI or Qwen Code `api_response`: the main conversation's requests only. Gemini tags each request with a
+    /// `role` (subagent and utility calls such as routing or loop detection carry the parent session ID, so they cannot
+    /// name their own log); Qwen names a subagent in `subagent_name`. Thoughts are counted apart from the candidates when
+    /// the total shows it, as in the chat log parser (`GeminiTokens.Output`). Duration runs from the request to the end of
+    /// its stream.
+    static TelemetryRecord? Response(Dictionary<string, object> attrs, TokenSource client, Dictionary<string, object> resource, string name, DateTimeOffset at)
+    {
+        if (Source(resource, name) != client || attrs.ContainsKey("subagent_name")
+            || attrs.TryGetValue("role", out var role) && role is string text && text != "main"
+            || Integer(attrs.GetValueOrDefault("output_token_count")) is not { } output
+            || Number(attrs.GetValueOrDefault("duration_ms")) is not { } duration || duration <= 0) return null;
+        var reading = Metadata(attrs, client, at) with
+        {
+            OutputTokens = GeminiTokens.Output(output, Integer(attrs.GetValueOrDefault("thoughts_token_count")),
+                Integer(attrs.GetValueOrDefault("input_token_count")), Integer(attrs.GetValueOrDefault("total_token_count"))),
+            RequestDurationMs = duration,
+            TtftMs = Number(attrs.GetValueOrDefault("ttft_ms")),
+        };
+        return new(reading, DurationPriority: 2);
     }
 
     /// Same-slot entries combine their attribute keys; the newest slot moves to the end.
@@ -245,7 +280,9 @@ static class TelemetryDecoder
             var service = Bounded(resourceAttributes.GetValueOrDefault("service.name"));
             if (signal != "metrics")
             {
-                var recognized = Source(resourceAttributes, null) == Claude;
+                // Logs: Claude Code, Gemini CLI and Qwen Code records decode; spans only Claude Code's.
+                var client = Source(resourceAttributes, null);
+                var recognized = client == Claude || signal == "logs" && client is Gemini or Qwen;
                 var described = false;
                 List<JsonElement> scopes = recognized ? [] : Objects(resource.Field(scopeKey)) ?? [];
                 foreach (var scope in scopes)
@@ -310,6 +347,11 @@ static class TelemetryDecoder
                 continue;
             }
             if (entry.Field("value") is not { ValueKind: JsonValueKind.Object } wrapped) continue;
+            if (key == "subagent_name")
+            {
+                result[key] = true; // Presence only: the name is never kept.
+                continue;
+            }
             if (key == "success" && wrapped.Field("boolValue")?.Bool is { } flag) result[key] = flag;
             else if (wrapped.Field("stringValue")?.Text is { } text)
             {
@@ -332,7 +374,7 @@ static class TelemetryDecoder
         {
             Provider = source, At = at,
             SessionID = Text("session.id", "session_id", "conversation.id", "conversation_id"), AgentID = Text("agent_id", "agent.id"),
-            Model = Text("model", "gen_ai.request.model"), RequestID = Text("request_id", "request.id", "gen_ai.response.id"),
+            Model = Text("model", "gen_ai.request.model"), RequestID = Text("request_id", "request.id", "gen_ai.response.id", "response_id"),
         };
     }
 

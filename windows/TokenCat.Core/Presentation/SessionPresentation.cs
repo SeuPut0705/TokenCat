@@ -1034,10 +1034,12 @@ public static class SessionPresentation
         return new FooterStatus(FooterStatusKind.Live, Loc("실시간", "Live"));
     }
 
-    /// "실측 수신: Codex 기록 없음 · Claude Code 2분 전", minute-granular for a stable tooltip.
+    /// "실측 수신: Codex 기록 없음 · Claude Code 2분 전", minute-granular for a stable tooltip. Gemini CLI and Qwen Code join
+    /// once they have sent something.
     public static string TelemetryReceipt(IReadOnlyDictionary<TokenSource, DateTimeOffset> lastReceived, DateTimeOffset now) =>
         Loc("실측 수신: ", "Telemetry received: ")
-        + string.Join(" · ", TokenSource.TelemetryClients.Select(source => $"{source.Title} {HelpAge(lastReceived.TryGetValue(source, out var at) ? at : null, now)}"));
+        + string.Join(" · ", TokenSource.TelemetryClients.Where(source => TokenSource.DefaultClients.Contains(source) || lastReceived.ContainsKey(source))
+            .Select(source => $"{source.Title} {HelpAge(lastReceived.TryGetValue(source, out var at) ? at : null, now)}"));
 
     /// Expanded-list date captions from the model clock.
     public static string DaySection(DateTimeOffset date, DateTimeOffset now, DayCalendar calendar)

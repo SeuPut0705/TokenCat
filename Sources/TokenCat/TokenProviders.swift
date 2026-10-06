@@ -5,7 +5,8 @@ import Foundation
 /// - `roots`: the client's data folders, environment overrides first. A client counts as detected when one exists; only
 ///   existing roots are listed, and `TokenTracker.watchedDirectories` names the roots of clients that have a format.
 /// - `format` nil: detected, never read — no rows, counts or speeds. Allowed only while that client's parser is pending.
-/// Telemetry, live limits and the status line bridge stay with `TokenSource.telemetryClients` (Codex and Claude Code).
+/// Telemetry setup covers `TokenSource.telemetryClients`; live limits and the status line bridge stay with
+/// `TokenSource.defaultClients` (Codex and Claude Code).
 /// Windows mirrors this as `TokenProvider.All` (TokenProviders.cs).
 struct TokenProvider {
     let source: TokenSource

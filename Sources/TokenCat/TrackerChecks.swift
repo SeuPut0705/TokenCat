@@ -1235,6 +1235,32 @@ func runTrackerChecks() -> [String] {
               && tracker.isLog(agentLog.path) && tracker.isLog(qwenLog.path)
               && !tracker.isLog(qwen.appendingPathComponent("subagents/qs-1/agent-explore1.meta.json").path),
               "Qwen: subagent identity, sidecar role, output or log matching")
+        // Their own telemetry (`api_response`, decoded by the collector) joins the parsed main session by session ID; the
+        // subagent logs, which carry the parent's session ID, and an orphan row get nothing.
+        func responseBatch(_ service: String, _ event: String, session: String, model: String, output: Int, thoughts: Int, duration: Int) -> Data {
+            func attribute(_ key: String, _ value: Any) -> [String: Any] {
+                ["key": key, "value": value is String ? ["stringValue": value] : ["intValue": value]]
+            }
+            let attributes = [attribute("session.id", session), attribute("event.name", event), attribute("model", model),
+                              attribute("duration_ms", duration), attribute("input_token_count", 1_000), attribute("output_token_count", output),
+                              attribute("thoughts_token_count", thoughts), attribute("total_token_count", 1_000 + output + thoughts)]
+            return (try? JSONSerialization.data(withJSONObject: ["resourceLogs": [["resource": ["attributes": [attribute("service.name", service)]],
+                "scopeLogs": [["logRecords": [["timeUnixNano": "1791000000000000000", "attributes": attributes]]]]]]])) ?? Data()
+        }
+        let collector = LocalTelemetryCollector()
+        _ = collector.ingest(responseBatch("gemini-cli", "gemini_cli.api_response", session: "gem-1", model: "gemini-fixture",
+                                           output: 120, thoughts: 30, duration: 2_000), path: "/v1/logs")
+        _ = collector.ingest(responseBatch("qwen-code", "qwen-code.api_response", session: "qs-1", model: "qwen-fixture",
+                                           output: 80, thoughts: 0, duration: 1_600), path: "/v1/logs")
+        let parsed = tracker.sample().filter { $0.source == .gemini || $0.source == .qwen }
+        let joined = TokenSpeed.apply(parsed, measurements: collector.snapshot())
+        let geminiMain = joined.first { $0.source == .gemini && $0.sessionID == "gem-1" && !$0.isSubagent }
+        let qwenMain = joined.first { $0.source == .qwen && $0.sessionID == "qs-1" && !$0.isSubagent }
+        check(joined.count == parsed.count && geminiMain?.speedMeasurement?.tokensPerSecond == 75
+              && qwenMain?.speedMeasurement?.tokensPerSecond == 50 && qwenMain?.speedMeasurement?.kind == .requestProcessing
+              && joined.filter { $0.isSubagent }.allSatisfy { $0.speedMeasurement == nil }
+              && joined.filter { $0.speedMeasurement != nil }.count == 2,
+              "Gemini/Qwen telemetry did not attach to the parsed main session only")
     } catch {
         checks += 1
         failures.append("Gemini/Qwen fixture error: \(error.localizedDescription)")

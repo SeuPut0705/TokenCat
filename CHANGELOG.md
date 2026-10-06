@@ -2,6 +2,15 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.15.0
+
+**macOS and Windows**
+
+- Gemini CLI and Qwen Code now get a measured speed (**request tok/s**). When `~/.gemini` or `~/.qwen` exists, TokenCat connects their built-in telemetry to its local collector like Codex and Claude Code: it sets `telemetry` in their `settings.json` (`enabled`, `target: "local"`, `otlpEndpoint: "http://127.0.0.1:16493"`, `otlpProtocol: "http"`, `logPrompts: false`), keeps every other key, backs up the original first, and `--disconnect-telemetry` reverts it. Each main-conversation `api_response` gives output tokens (plus thinking tokens counted apart) over its request time, attached to that session's row; subagent and utility requests are skipped. · Gemini CLI와 Qwen Code에도 실측 속도(**요청 tok/s**)가 붙습니다. `~/.gemini`나 `~/.qwen`이 있으면 Codex·Claude Code처럼 내장 실측을 로컬 수집기에 연결합니다. `settings.json`의 `telemetry`(`enabled`, `target: "local"`, `otlpEndpoint: "http://127.0.0.1:16493"`, `otlpProtocol: "http"`, `logPrompts: false`)를 설정하고 다른 키는 그대로 두며, 원본을 먼저 백업하고 `--disconnect-telemetry`로 되돌립니다. 메인 대화의 `api_response`마다 출력 토큰(따로 센 생각 토큰 포함)을 요청 시간으로 나눠 그 세션 행에 붙이고, 하위 에이전트·보조 요청은 건너뜁니다.
+- A Gemini CLI or Qwen Code `settings.json` that already sends telemetry elsewhere, or isn't plain JSON, is left as it is and only that client is skipped; Settings › Telemetry shows `Not connected · existing telemetry settings kept` with the reason, and Codex and Claude Code still connect. A client installed after the connection joins it on the next launch under the same backups. · 이미 다른 곳으로 실측을 보내거나 순수 JSON이 아닌 Gemini CLI·Qwen Code `settings.json`은 그대로 두고 그 클라이언트만 건너뜁니다. 설정 › 실측에 `연결 안 함 · 기존 실측 설정 유지`와 이유가 보이며 Codex·Claude Code는 그대로 연결합니다. 연결 뒤 설치한 클라이언트는 다음 실행 때 같은 백업 아래 연결에 더해집니다.
+- The collector now accepts chunked request bodies (`Transfer-Encoding: chunked`), which the Node OTLP/HTTP exporters in Gemini CLI and Qwen Code send without a length; a request with both a length and chunking, another coding or broken framing is still refused. · 수집기가 길이 없이 청크로 나눠 보내는 요청 본문(`Transfer-Encoding: chunked`)을 받습니다. Gemini CLI·Qwen Code의 Node OTLP/HTTP 전송기가 이렇게 보냅니다. 길이와 청크를 함께 쓰거나 다른 인코딩, 깨진 청크는 계속 거부합니다.
+- Settings › Telemetry lists Gemini CLI and Qwen Code once detected, with buttons to show their settings files; the first-launch card names every client it connected. · 설정 › 실측에 감지된 Gemini CLI·Qwen Code 줄과 설정 파일 보기 버튼이 생기고, 처음 실행 카드는 연결한 클라이언트를 모두 적습니다.
+
 ## 0.14.2
 
 **macOS and Windows**

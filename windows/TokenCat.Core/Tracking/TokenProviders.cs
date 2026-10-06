@@ -7,7 +7,8 @@ namespace TokenCat;
 /// - `Roots`: the client's data folders, environment overrides first. A client counts as detected when one exists; only
 ///   existing roots are listed, and `TokenTracker.WatchedDirectories` names the roots of clients that have a format.
 /// - `Format` null: detected, never read — no rows, counts or speeds. Allowed only while that client's parser is pending.
-/// Telemetry, live limits and the status line bridge stay with `TokenSource.TelemetryClients` (Codex and Claude Code).
+/// Telemetry setup covers `TokenSource.TelemetryClients`; live limits and the status line bridge stay with
+/// `TokenSource.DefaultClients` (Codex and Claude Code).
 /// Mirrors the mac's `TokenProvider.all` (TokenProviders.swift). `Roots` takes the home folder and an environment lookup.
 public sealed record TokenProvider(TokenSource Source, Func<string, Func<string, string?>, IReadOnlyList<string>> Roots, TokenLogFormat? Format)
 {

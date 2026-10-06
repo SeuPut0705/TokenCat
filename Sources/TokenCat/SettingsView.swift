@@ -660,9 +660,11 @@ enum TelemetryStatusRow: Equatable {
         }
     }
 
-    /// Checked top to bottom: restart needed, a day without a reading, a reading, an undecodable batch, nothing.
-    static func client(restartNeeded: Bool, expired: Bool, lastReceived: Date?, batch: Date?, now: Date)
+    /// Checked top to bottom: skipped by the last connection, restart needed, a day without a reading, a reading, an
+    /// undecodable batch, nothing. `skipped`: why a Gemini CLI or Qwen Code connection left the settings alone.
+    static func client(skipped: String? = nil, restartNeeded: Bool, expired: Bool, lastReceived: Date?, batch: Date?, now: Date)
         -> (row: TelemetryStatusRow, text: String, detail: String?) {
+        if let skipped { return (.info, loc("연결 안 함 · 기존 실측 설정 유지", "Not connected · existing telemetry settings kept"), skipped) }
         if restartNeeded { return (.info, loc("새로 실행하면 실측이 표시됩니다", "Restart to show telemetry"), nil) }
         if expired { return (.problem, loc("이 버전에서 실측을 받지 못했습니다", "No telemetry from this version"), nil) }
         if let at = lastReceived { return (.received, loc("최근 수신 ", "Last received ") + SessionPresentation.helpAge(at, now: now), nil) }
@@ -702,8 +704,13 @@ private struct TelemetryPane: View {
             Section {
                 collector
                 if let note = model.telemetrySetupNote { settingsCaption(note, color: TCColor.warning) }
-                ForEach(TokenSource.telemetryClients, id: \.self) { source in
-                    let status = TelemetryStatusRow.client(restartNeeded: model.telemetryRestartNeeded.contains(source),
+                // Gemini CLI and Qwen Code once their folder is detected, like every list.
+                ForEach(TokenSource.telemetryClients.filter(model.listedSources.contains), id: \.self) { source in
+                    let skipped = model.telemetryConnectNotes.lazy.compactMap { note -> String? in
+                        if case .clientSkipped(source, let reason) = note { return reason }
+                        return nil
+                    }.first
+                    let status = TelemetryStatusRow.client(skipped: skipped, restartNeeded: model.telemetryRestartNeeded.contains(source),
                                                            expired: model.telemetryRestartExpired.contains(source),
                                                            lastReceived: model.telemetryLastReceived[source],
                                                            batch: model.telemetryBatches[source], now: model.now)
@@ -789,7 +796,9 @@ private struct TelemetryPane: View {
     static func existingFiles(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> [(title: String, url: URL)] {
         [(loc("백업 폴더 보기", "Show Backup Folder"), home.appendingPathComponent("Library/Application Support/TokenCat/telemetry-backups", isDirectory: true)),
          (loc("Codex 설정 파일 보기", "Show Codex Config"), home.appendingPathComponent(".codex/config.toml")),
-         (loc("Claude Code 설정 파일 보기", "Show Claude Code Config"), home.appendingPathComponent(".claude/settings.json"))]
+         (loc("Claude Code 설정 파일 보기", "Show Claude Code Config"), home.appendingPathComponent(".claude/settings.json")),
+         (loc("Gemini CLI 설정 파일 보기", "Show Gemini CLI Config"), home.appendingPathComponent(".gemini/settings.json")),
+         (loc("Qwen Code 설정 파일 보기", "Show Qwen Code Config"), home.appendingPathComponent(".qwen/settings.json"))]
             .filter { FileManager.default.fileExists(atPath: $0.1.path) }
     }
 

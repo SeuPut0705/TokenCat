@@ -248,6 +248,7 @@ struct DashboardView: View {
                                                                bridged: model.claudeBridged == true
                                                                    && !model.telemetryConnectNotes.contains(.originalUnknown),
                                                                optedOut: telemetryOptedOut),
+                               clients: OnboardingCard.clients(listed: model.listedSources, notes: model.telemetryConnectNotes),
                                settings: actions.openTelemetrySettings, dismiss: { onboardingSeen = true })
                     .padding(.top, DashboardLayout.block)
             }
@@ -401,6 +402,8 @@ struct DashboardHeader: View {
 struct OnboardingCard: View {
     enum Outcome: Equatable { case added(bridged: Bool), skipped(String), failed(String), collectorDown(String), preparing }
     var outcome: Outcome
+    /// The clients the telemetry line names: Codex and Claude Code, plus Gemini CLI and Qwen Code once detected and not skipped.
+    var clients: [TokenSource] = TokenSource.defaultClients
     var settings: () -> Void
     var dismiss: () -> Void
     static let backupPath = "~/Library/Application Support/TokenCat/telemetry-backups"
@@ -408,6 +411,13 @@ struct OnboardingCard: View {
     /// `bridged`: Claude Code settings run the usage-limit bridge with a known original command.
     /// Starts the connect failure note (App.swift), which the card strips to show only the reason.
     static var notePrefix: String { loc("실측 연결: ", "Telemetry: ") }
+
+    static func clients(listed: [TokenSource], notes: [TelemetrySetupNote]) -> [TokenSource] {
+        TokenSource.telemetryClients.filter { source in
+            listed.contains(source) && !notes.contains { if case .clientSkipped(source, _) = $0 { return true } else { return false } }
+        }
+    }
+    private var names: String { clients.map(\.title).joined(separator: loc("·", " and ")) }
 
     static func outcome(notice: TelemetryNotice?, note: String?, failure: TelemetrySetupFailure?, state: TelemetryCollectorState,
                         bridged: Bool = false, optedOut: Bool = false) -> Outcome {
@@ -424,8 +434,8 @@ struct OnboardingCard: View {
     private var telemetry: (title: String, detail: String, tail: String?) {
         switch outcome {
         case .added(let bridged):
-            return (loc("실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했습니다",
-                        "Added local telemetry to Codex and Claude Code settings"),
+            return (loc("실측을 위해 \(names) 설정에 로컬 전송을 추가했습니다",
+                        "Added local telemetry to \(names) settings"),
                     bridged ? loc("Claude Code 상태 표시줄도 한도만 읽도록 감쌌습니다(출력 그대로)",
                                   "Also wrapped the Claude Code status line to read limits (output unchanged)")
                         : loc("새로 실행할 때부터 적용됩니다", "Applies from the next launch"),
@@ -434,8 +444,8 @@ struct OnboardingCard: View {
         case .failed(let reason): return (loc("실측 연결을 완료하지 못했습니다", "Couldn't finish connecting telemetry"), reason, nil)
         case .collectorDown(let text): return (loc("실측 연결을 하지 않았습니다", "Didn't connect telemetry"), text, nil)
         case .preparing: return (loc("실측 수집기를 준비하고 있습니다", "Preparing the telemetry collector"),
-                                 loc("준비되면 Codex·Claude Code 설정에 로컬 전송을 추가합니다",
-                                     "Adds local telemetry to Codex and Claude Code settings when it's ready"), nil)
+                                 loc("준비되면 \(names) 설정에 로컬 전송을 추가합니다",
+                                     "Adds local telemetry to \(names) settings when it's ready"), nil)
         }
     }
 

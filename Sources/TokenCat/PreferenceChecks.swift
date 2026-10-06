@@ -581,6 +581,10 @@ func runShellChecks() -> [String] {
           && client(false, false, nil, at).text == "기록 수신 중 · 속도 형식 없음" && client(false, false, nil, at).detail != nil
           && client(false, false, nil, nil).text == "이번 실행에서 받은 실측 없음",
           "Client telemetry rows are not checked restart → 24 h → received → batch only → none")
+    let skippedRow = TelemetryStatusRow.client(skipped: "기존 실측 전송 설정이 있어 덮어쓰지 않았습니다.", restartNeeded: true, expired: false,
+                                               lastReceived: at, batch: nil, now: at)
+    check(skippedRow == (.info, "연결 안 함 · 기존 실측 설정 유지", "기존 실측 전송 설정이 있어 덮어쓰지 않았습니다."),
+          "A Gemini CLI or Qwen Code connection the setup skipped did not say so first, with its reason")
     let limits = { (notes: [TelemetrySetupNote], bridged: Bool?, received: Date?) in
         TelemetryStatusRow.claudeLimits(notes: notes, bridged: bridged, received: received, now: at)
     }

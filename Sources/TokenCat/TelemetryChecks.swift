@@ -291,6 +291,53 @@ func runTelemetryChecks() -> [String] {
     check(undecoded.snapshot().isEmpty && undecoded.lastBatchAt[.codex] != nil && undecoded.lastBatchAt[.claude] == nil,
           "A client batch without decodable readings was not recorded as received from that client")
 
+    // Gemini CLI `api_response` as its OTLP/HTTP JSON exporter sends it (resource and log both carry session.id). Utility and
+    // subagent requests share the main session ID, so only role "main" (or no role, older versions) decodes.
+    func geminiLog(role: String?, output: Int, thoughts: Int, input: Int, total: Int, duration: Int, time: String) -> String {
+        let roleAttribute = role.map { #",{"key":"role","value":{"stringValue":"\#($0)"}}"# } ?? ""
+        return #"{"timeUnixNano":"\#(time)","body":{"stringValue":"API response from gemini-2.5-pro. Status: 200. Duration: \#(duration)ms."},"attributes":[{"key":"session.id","value":{"stringValue":"gemini-session"}},{"key":"installation.id","value":{"stringValue":"install-1"}},{"key":"user.email","value":{"stringValue":"person@example.com"}},{"key":"interactive","value":{"boolValue":true}},{"key":"event.name","value":{"stringValue":"gemini_cli.api_response"}},{"key":"event.timestamp","value":{"stringValue":"2026-10-07T01:02:03.456Z"}},{"key":"model","value":{"stringValue":"gemini-2.5-pro"}},{"key":"duration_ms","value":{"intValue":\#(duration)}},{"key":"input_token_count","value":{"intValue":\#(input)}},{"key":"output_token_count","value":{"intValue":\#(output)}},{"key":"cached_content_token_count","value":{"intValue":0}},{"key":"thoughts_token_count","value":{"intValue":\#(thoughts)}},{"key":"tool_token_count","value":{"intValue":0}},{"key":"total_token_count","value":{"intValue":\#(total)}},{"key":"prompt_id","value":{"stringValue":"private-prompt-id"}},{"key":"auth_type","value":{"stringValue":"oauth-personal"}},{"key":"status_code","value":{"intValue":200}},{"key":"finish_reasons","value":{"arrayValue":{"values":[{"stringValue":"STOP"}]}}}\#(roleAttribute)]}"#
+    }
+    let geminiBatch = #"{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"gemini-cli"}},{"key":"service.version","value":{"stringValue":"v24.0.0"}},{"key":"session.id","value":{"stringValue":"gemini-session"}}]},"scopeLogs":[{"scope":{"name":"gemini-cli"},"logRecords":["#
+        + [geminiLog(role: "main", output: 120, thoughts: 30, input: 1_000, total: 1_150, duration: 2_000, time: "1791000000000000000"),
+           geminiLog(role: "utility_router", output: 5, thoughts: 0, input: 300, total: 305, duration: 400, time: "1791000001000000000"),
+           geminiLog(role: "subagent", output: 500, thoughts: 0, input: 900, total: 1_400, duration: 1_000, time: "1791000002000000000")].joined(separator: ",")
+        + "]}]}]}"
+    let gemini = LocalTelemetryCollector()
+    let geminiReading = gemini.ingest(Data(geminiBatch.utf8), path: "/v1/logs") ? gemini.snapshot() : []
+    check(geminiReading.count == 1 && geminiReading.first?.provider == .gemini && geminiReading.first?.sessionID == "gemini-session"
+          && geminiReading.first?.model == "gemini-2.5-pro" && geminiReading.first?.outputTokens == 150
+          && geminiReading.first?.requestDurationMs == 2_000 && geminiReading.first?.agentID == nil
+          && gemini.lastBatchAt[.gemini] != nil && gemini.diagnostics().entries.allSatisfy(\.recognized),
+          "A Gemini CLI api_response did not decode to one main-session reading with thoughts counted")
+    let geminiKept = String(decoding: (try? JSONEncoder().encode(geminiReading)) ?? Data(), as: UTF8.self)
+    check(!["person@example.com", "install-1", "private-prompt-id", "oauth-personal"].contains(where: geminiKept.contains),
+          "A Gemini CLI reading kept an identity or prompt attribute")
+    let geminiOld = LocalTelemetryCollector()
+    _ = geminiOld.ingest(Data((#"{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"gemini-cli"}}]},"scopeLogs":[{"logRecords":["#
+        + geminiLog(role: nil, output: 90, thoughts: 0, input: 100, total: 190, duration: 1_500, time: "1791000003000000000") + "]}]}]}").utf8), path: "/v1/logs")
+    check(geminiOld.snapshot().first?.outputTokens == 90 && geminiOld.snapshot().first?.sessionID == "gemini-session",
+          "A Gemini CLI api_response without a role (older versions) was not decoded")
+
+    // Qwen Code: session.id only on the log, response_id names the request, ttft_ms is measured; subagent requests carry subagent_name.
+    func qwenLog(subagent: String?, response: String, output: Int, duration: Int) -> String {
+        let subagentAttribute = subagent.map { #",{"key":"subagent_name","value":{"stringValue":"\#($0)"}}"# } ?? ""
+        return #"{"timeUnixNano":"1791000005000000000","body":{"stringValue":"API response from qwen3-coder-plus. Status: 200. Duration: \#(duration)ms."},"attributes":[{"key":"session.id","value":{"stringValue":"qwen-session"}},{"key":"event.name","value":{"stringValue":"qwen-code.api_response"}},{"key":"event.timestamp","value":{"stringValue":"2026-10-07T01:02:05.000Z"}},{"key":"response_id","value":{"stringValue":"\#(response)"}},{"key":"model","value":{"stringValue":"qwen3-coder-plus"}},{"key":"status_code","value":{"intValue":200}},{"key":"duration_ms","value":{"intValue":\#(duration)}},{"key":"input_token_count","value":{"intValue":2000}},{"key":"output_token_count","value":{"intValue":\#(output)}},{"key":"cached_content_token_count","value":{"intValue":0}},{"key":"thoughts_token_count","value":{"intValue":0}},{"key":"total_token_count","value":{"intValue":\#(2_000 + output)}},{"key":"prompt_id","value":{"stringValue":"qwen-prompt"}},{"key":"auth_type","value":{"stringValue":"qwen-oauth"}},{"key":"ttft_ms","value":{"intValue":300}}\#(subagentAttribute)]}"#
+    }
+    let qwenBatch = #"{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"qwen-code"}},{"key":"service.version","value":{"stringValue":"0.20.0"}}]},"scopeLogs":[{"scope":{"name":"qwen-code"},"logRecords":["#
+        + [qwenLog(subagent: nil, response: "chatcmpl-main-1", output: 80, duration: 1_600),
+           qwenLog(subagent: "Code Reviewer", response: "chatcmpl-sub-1", output: 400, duration: 800)].joined(separator: ",") + "]}]}]}"
+    let qwen = LocalTelemetryCollector()
+    let qwenReading = qwen.ingest(Data(qwenBatch.utf8), path: "/v1/logs") ? qwen.snapshot() : []
+    check(qwenReading.count == 1 && qwenReading.first?.provider == .qwen && qwenReading.first?.sessionID == "qwen-session"
+          && qwenReading.first?.requestID == "chatcmpl-main-1" && qwenReading.first?.outputTokens == 80
+          && qwenReading.first?.requestDurationMs == 1_600 && qwenReading.first?.ttftMs == 300 && qwen.lastBatchAt[.qwen] != nil,
+          "A Qwen Code api_response did not decode to one main-session reading, or a subagent request was kept")
+    check(!String(decoding: (try? JSONEncoder().encode(qwenReading)) ?? Data(), as: UTF8.self).contains("Code Reviewer"),
+          "A Qwen Code subagent name was kept")
+    let impostor = LocalTelemetryCollector()
+    _ = impostor.ingest(Data(qwenBatch.replacingOccurrences(of: #""stringValue":"qwen-code"}}"#, with: #""stringValue":"gemini-cli"}}"#).utf8), path: "/v1/logs")
+    check(impostor.snapshot().isEmpty, "A Qwen Code event under another client's service was decoded")
+
     let bounded = LocalTelemetryCollector()
     for index in 0..<270 {
         _ = bounded.ingest(logs(["session.id": "bounded-session", "request_id": "request-\(index)",
@@ -322,8 +369,41 @@ func runTelemetryChecks() -> [String] {
           "Oversized content length was not rejected before body allocation")
     check(responseCode(TelemetryHTTP.parse(wire("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n{}"))) == 400,
           "Duplicate content lengths permitted request smuggling")
-    check(responseCode(TelemetryHTTP.parse(wire("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n"))) == 400,
-          "Unsupported transfer encoding was accepted")
+    // Node's OTLP/HTTP exporters (Gemini CLI, Qwen Code) send chunked bodies without a length.
+    let chunked = wire("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nHost: 127.0.0.1:16493\r\n\r\n"
+                       + "5;ext=1\r\n{\"a\":\r\n3\r\n12}\r\n0\r\nX-Trailer: dropped\r\n\r\n")
+    if case .request(let path, let body) = TelemetryHTTP.parse(chunked) {
+        check(path == "/v1/logs" && body == wire("{\"a\":12}"), "A chunked body was not joined into its JSON")
+    } else { check(false, "A chunked OTLP export was rejected") }
+    var chunkedWaits = true
+    for cut in [chunked.count - 1, chunked.count - 3, chunked.count - 30, chunked.count - 40] {
+        if case .waiting = TelemetryHTTP.parse(Data(chunked.prefix(cut))) { continue }
+        chunkedWaits = false
+    }
+    check(chunkedWaits, "A partial chunked body did not wait for the rest")
+    func chunkedCode(_ headers: String, _ body: String) -> Int? {
+        responseCode(TelemetryHTTP.parse(wire("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\n\(headers)\r\n" + body)))
+    }
+    check(chunkedCode("Transfer-Encoding: chunked\r\nContent-Length: 7\r\n", "2\r\n{}\r\n0\r\n\r\n") == 400
+          && chunkedCode("Transfer-Encoding: gzip, chunked\r\n", "2\r\n{}\r\n0\r\n\r\n") == 400
+          && chunkedCode("Transfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n", "2\r\n{}\r\n0\r\n\r\n") == 400
+          && chunkedCode("Transfer-Encoding: chunked\r\n", "zz\r\n{}\r\n0\r\n\r\n") == 400
+          && chunkedCode("Transfer-Encoding: chunked\r\n", "2\r\n{}xx0\r\n\r\n") == 400
+          && chunkedCode("Transfer-Encoding: chunked\r\n", "2\r\n{}\r\n0\r\n\r\nextra") == 400
+          && chunkedCode("Transfer-Encoding: chunked\r\n", "200001\r\n") == 413
+          && responseCode(TelemetryHTTP.parse(wire("GET /health HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n"))) == 400,
+          "A chunked body with a length, another coding, bad framing, trailing bytes or an oversized chunk was accepted")
+    // Bytes captured from @opentelemetry/exporter-logs-otlp-http 0.218.0 (the exporter Gemini CLI and Qwen Code ship) sending
+    // a Gemini CLI api_response: chunked, no Content-Length, keep-alive.
+    let nodeHead = "POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nUser-Agent: OTel-OTLP-Exporter-JavaScript/0.218.0\r\nHost: 127.0.0.1:62143\r\nConnection: keep-alive\r\nTransfer-Encoding: chunked\r\n\r\n"
+    let nodePayload = #"{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"gemini-cli"}},{"key":"service.version","value":{"stringValue":"v24.0.0"}},{"key":"session.id","value":{"stringValue":"wire-session"}}],"droppedAttributesCount":0},"scopeLogs":[{"scope":{"name":"gemini-cli"},"logRecords":[{"timeUnixNano":"1791301155852000000","observedTimeUnixNano":"1791301155852000000","body":{"stringValue":"API response from gemini-2.5-pro. Status: 200. Duration: 2000ms."},"attributes":[{"key":"session.id","value":{"stringValue":"wire-session"}},{"key":"interactive","value":{"boolValue":true}},{"key":"event.name","value":{"stringValue":"gemini_cli.api_response"}},{"key":"event.timestamp","value":{"stringValue":"2026-10-07T01:02:03.456Z"}},{"key":"model","value":{"stringValue":"gemini-2.5-pro"}},{"key":"duration_ms","value":{"intValue":2000}},{"key":"input_token_count","value":{"intValue":1000}},{"key":"output_token_count","value":{"intValue":120}},{"key":"cached_content_token_count","value":{"intValue":0}},{"key":"thoughts_token_count","value":{"intValue":30}},{"key":"tool_token_count","value":{"intValue":0}},{"key":"total_token_count","value":{"intValue":1150}},{"key":"prompt_id","value":{"stringValue":"p1"}},{"key":"status_code","value":{"intValue":200}},{"key":"finish_reasons","value":{"arrayValue":{"values":[{"stringValue":"STOP"}]}}},{"key":"role","value":{"stringValue":"main"}}],"droppedAttributesCount":0}]}]}]}"#
+    let nodeWire = wire(nodeHead + String(nodePayload.utf8.count, radix: 16) + "\r\n" + nodePayload + "\r\n0\r\n\r\n")
+    if case .request(let path, let body) = TelemetryHTTP.parse(nodeWire) {
+        let node = LocalTelemetryCollector()
+        check(node.ingest(body, path: path) && node.snapshot().first?.provider == .gemini && node.snapshot().first?.sessionID == "wire-session"
+              && node.snapshot().first.map { TokenSpeedMeasurement($0).tokensPerSecond } == 75,
+              "The Node OTLP exporter's Gemini CLI request did not decode to 150 tokens in 2 s")
+    } else { check(false, "The Node OTLP exporter's chunked request was rejected") }
     check(responseCode(TelemetryHTTP.parse(wire("POST /v1/logs HTTP/1.1\r\nContent-Type: application/x-protobuf\r\nContent-Length: 2\r\n\r\n{}"))) == 400,
           "Protobuf payload was incorrectly treated as JSON")
     check(responseCode(TelemetryHTTP.parse(valid + wire("another-request"))) == 400,
@@ -450,6 +530,25 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
     check(postStatus(limited, origin: "null") == 403 && collector.claudeLimits.isEmpty
           && postStatus(limited) == 200 && until { collector.claudeLimits.fiveHour?.usedPercent == 12 },
           "The status line route did not keep limits over loopback or accepted a browser Origin")
+    // A streamed body goes out chunked, as Gemini CLI's and Qwen Code's Node exporters send it.
+    func postChunked(_ path: String, _ body: Data) -> Int? {
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)\(path)")!, timeoutInterval: 2)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBodyStream = InputStream(data: body)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.connectionProxyDictionary = [:]
+        let session = URLSession(configuration: configuration)
+        defer { session.invalidateAndCancel() }
+        let reply = Reply(), done = DispatchSemaphore(value: 0)
+        session.dataTask(with: request) { _, response, _ in reply.code = (response as? HTTPURLResponse)?.statusCode; done.signal() }.resume()
+        _ = done.wait(timeout: .now() + 3)
+        return reply.code
+    }
+    let qwenBatch = #"{"resourceLogs":[{"resource":{"attributes":[{"key":"service.name","value":{"stringValue":"qwen-code"}}]},"scopeLogs":[{"logRecords":[{"timeUnixNano":"1791000005000000000","attributes":[{"key":"session.id","value":{"stringValue":"qwen-wire"}},{"key":"event.name","value":{"stringValue":"qwen-code.api_response"}},{"key":"model","value":{"stringValue":"qwen3-coder-plus"}},{"key":"duration_ms","value":{"intValue":1600}},{"key":"output_token_count","value":{"intValue":80}}]}]}]}]}"#
+    check(postChunked("/v1/logs", Data(qwenBatch.utf8)) == 200
+          && until { collector.snapshot().contains { $0.provider == .qwen && $0.sessionID == "qwen-wire" && $0.outputTokens == 80 } },
+          "A chunked Qwen Code export over loopback was not received")
     collector.start { callbacks.didDuplicate() }
     Thread.sleep(forTimeInterval: 0.05)
     check(callbacks.snapshot.readyCount == 1 && callbacks.snapshot.duplicateCount == 0,

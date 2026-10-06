@@ -40,6 +40,7 @@ sealed class Dashboard : UserControl
     readonly SystemArea system;
     readonly Footer footer;
     OnboardingOutcome? onboardingShown;
+    IReadOnlyList<TokenSource> onboardingClients = TokenSource.DefaultClients;
     bool flowOpened;
     public DashboardInput? Input { get; private set; }
 
@@ -116,10 +117,12 @@ sealed class Dashboard : UserControl
         // The status line bridge note only while the original status line command is known.
         OnboardingOutcome? outcome = snapshot || input.OnboardingSeen ? null : OnboardingOutcome.Make(notice, input.SetupNote, input.SetupFailure,
             state.TelemetryState, input.ClaudeBridged == true && !input.ConnectNotes.Contains(TelemetrySetupNote.OriginalUnknown), input.OptedOut);
-        if (!Equals(outcome, onboardingShown))
+        var clients = OnboardingCard.Clients(state.ListedSources, input.ConnectNotes);
+        if (!Equals(outcome, onboardingShown) || !clients.SequenceEqual(onboardingClients))
         {
             onboardingShown = outcome;
-            onboardingSlot.Child = outcome is null ? null : OnboardingCard.Build(outcome, actions);
+            onboardingClients = clients;
+            onboardingSlot.Child = outcome is null ? null : OnboardingCard.Build(outcome, actions, clients);
             onboardingSlot.Visibility = outcome is null ? Visibility.Collapsed : Visibility.Visible;
         }
 
@@ -302,20 +305,30 @@ static class OnboardingCard
 {
     public static string BackupPath => @"%LOCALAPPDATA%\TokenCat\telemetry-backups";
 
-    static (string Title, string Detail, string? Tail) Telemetry(OnboardingOutcome outcome) => outcome switch
-    {
-        OnboardingOutcome.Added(var bridged) => (Loc("실측을 위해 Codex·Claude Code 설정에 로컬 전송을 추가했습니다", "Added local telemetry to Codex and Claude Code settings"),
-            bridged ? Loc("Claude Code 상태 표시줄에 한도만 읽는 브리지를 추가했습니다(출력 없음)", "Also added a status line bridge that only reads limits (prints nothing)")
-                : Loc("새로 실행할 때부터 적용됩니다", "Applies from the next launch"),
-            bridged ? Loc("새로 실행할 때부터 적용", "Applies from the next launch") : null),
-        OnboardingOutcome.Skipped(var reason) => (Loc("실측 연결을 건너뛰었습니다", "Skipped connecting telemetry"), reason, null),
-        OnboardingOutcome.Failed(var reason) => (Loc("실측 연결을 완료하지 못했습니다", "Couldn't finish connecting telemetry"), reason, null),
-        OnboardingOutcome.CollectorDown(var text) => (Loc("실측 연결을 하지 않았습니다", "Didn't connect telemetry"), text, null),
-        _ => (Loc("실측 수집기를 준비하고 있습니다", "Preparing the telemetry collector"),
-            Loc("준비되면 Codex·Claude Code 설정에 로컬 전송을 추가합니다", "Adds local telemetry to Codex and Claude Code settings when it's ready"), null),
-    };
+    /// The clients the telemetry line names: Codex and Claude Code, plus Gemini CLI and Qwen Code once detected and not skipped.
+    public static IReadOnlyList<TokenSource> Clients(IReadOnlyList<TokenSource> listed, IReadOnlyList<TelemetrySetupNote> notes) =>
+        [.. TokenSource.TelemetryClients.Where(source => listed.Contains(source)
+            && !notes.Any(note => note is TelemetrySetupNote.ClientSkipped skipped && skipped.Source == source))];
 
-    public static FrameworkElement Build(OnboardingOutcome outcome, DashboardActions actions)
+    static (string Title, string Detail, string? Tail) Telemetry(OnboardingOutcome outcome, IReadOnlyList<TokenSource> clients)
+    {
+        var names = string.Join(Loc("·", " and "), clients.Select(source => source.Title));
+        return outcome switch
+        {
+            OnboardingOutcome.Added(var bridged) => (Loc($"실측을 위해 {names} 설정에 로컬 전송을 추가했습니다", $"Added local telemetry to {names} settings"),
+                bridged ? Loc("Claude Code 상태 표시줄에 한도만 읽는 브리지를 추가했습니다(출력 없음)", "Also added a status line bridge that only reads limits (prints nothing)")
+                    : Loc("새로 실행할 때부터 적용됩니다", "Applies from the next launch"),
+                bridged ? Loc("새로 실행할 때부터 적용", "Applies from the next launch") : null),
+            OnboardingOutcome.Skipped(var reason) => (Loc("실측 연결을 건너뛰었습니다", "Skipped connecting telemetry"), reason, null),
+            OnboardingOutcome.Failed(var reason) => (Loc("실측 연결을 완료하지 못했습니다", "Couldn't finish connecting telemetry"), reason, null),
+            OnboardingOutcome.CollectorDown(var text) => (Loc("실측 연결을 하지 않았습니다", "Didn't connect telemetry"), text, null),
+            _ => (Loc("실측 수집기를 준비하고 있습니다", "Preparing the telemetry collector"),
+                Loc($"준비되면 {names} 설정에 로컬 전송을 추가합니다", $"Adds local telemetry to {names} settings when it's ready"), null),
+        };
+    }
+
+    /// `clients`: the names the telemetry line gives (`Clients`); Codex and Claude Code by default.
+    public static FrameworkElement Build(OnboardingOutcome outcome, DashboardActions actions, IReadOnlyList<TokenSource>? clients = null)
     {
         var added = outcome is OnboardingOutcome.Added;
         var needsSettings = outcome is OnboardingOutcome.Skipped or OnboardingOutcome.Failed or OnboardingOutcome.CollectorDown;
@@ -327,7 +340,7 @@ static class OnboardingCard
         stack.Children.Add(Dashboard.Spread(title, close));
         stack.Children.Add(Line(Ui.Shield, Loc("대화 본문은 저장하지 않습니다", "Doesn't store conversation text"),
             Loc("모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 읽습니다", "Reads only metadata such as models, token counts, tool types and project folders")));
-        var telemetry = Telemetry(outcome);
+        var telemetry = Telemetry(outcome, clients ?? TokenSource.DefaultClients);
         // A factory: each layout candidate needs its own link elements (a WPF element has one parent).
         UIElement[] Links()
         {

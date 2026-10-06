@@ -5,7 +5,21 @@ namespace TokenCat;
 
 // Gemini CLI and Qwen Code (a Gemini CLI fork) chat logs; mirrors the mac's Providers/GeminiLog.swift. Only ids, counts,
 // times, statuses, tool and model names are read; message text, tool arguments and results never leave the parsed record.
-// Neither client logs when generation started or ended, so no speed is ever derived from these logs.
+// Neither client logs when generation started or ended, so no speed is ever derived from these logs; a measured speed comes
+// only from the client's own telemetry (`api_response`, TelemetryDecode.cs) once TelemetrySetup connected it, joined to
+// these rows by session ID.
+
+/// The output count rule both the chat logs and the telemetry `api_response` use.
+public static class GeminiTokens
+{
+    /// Output = candidates, plus thoughts when the total shows they were counted apart (Gemini API). OpenAI-compatible
+    /// providers already include reasoning in the candidates, so it is not added twice.
+    public static int Output(int? candidates, int? thoughts, int? prompt, int? total)
+    {
+        var count = candidates ?? 0;
+        return thoughts is > 0 && total is { } sum && (long)sum >= (long)(prompt ?? 0) + count + thoughts.Value ? LogFields.Add(count, thoughts.Value) : count;
+    }
+}
 
 public sealed partial record TokenLogFormat
 {
@@ -297,14 +311,6 @@ file sealed class ChatTurnState(TokenSource source)
         _ => TokenLogParser.Category(name),
     };
 
-    /// Output = candidates, plus thoughts when the total shows they were counted apart (Gemini API). OpenAI-compatible
-    /// providers already include reasoning in the candidates, so it is not added twice.
-    public static int OutputTokens(int? candidates, int? thoughts, int? prompt, int? total)
-    {
-        var count = candidates ?? 0;
-        return thoughts is > 0 && total is { } sum && (long)sum >= (long)(prompt ?? 0) + count + thoughts.Value ? LogFields.Add(count, thoughts.Value) : count;
-    }
-
     public static int? Integer(JsonElement? value) =>
         value?.Number is { } number && number >= 0 && number <= int.MaxValue && Math.Truncate(number) == number ? (int)number : null;
 
@@ -592,7 +598,7 @@ file sealed class GeminiChatReader : ITokenLogReader
                 if (record.Field("tokens") is { ValueKind: JsonValueKind.Object } tokens)
                 {
                     var input = ChatTurnState.Integer(tokens.Field("input"));
-                    state.Output(id, ChatTurnState.OutputTokens(ChatTurnState.Integer(tokens.Field("output")),
+                    state.Output(id, GeminiTokens.Output(ChatTurnState.Integer(tokens.Field("output")),
                         ChatTurnState.Integer(tokens.Field("thoughts")), input, ChatTurnState.Integer(tokens.Field("total"))), date);
                     state.Context(input, null, date);
                 }
@@ -723,7 +729,7 @@ file sealed class QwenChatReader : ITokenLogReader
                 if (record.Field("usageMetadata") is { ValueKind: JsonValueKind.Object } usage)
                 {
                     var prompt = ChatTurnState.Integer(usage.Field("promptTokenCount"));
-                    state.Output(record.Field("uuid")?.Text ?? Guid.NewGuid().ToString(), ChatTurnState.OutputTokens(
+                    state.Output(record.Field("uuid")?.Text ?? Guid.NewGuid().ToString(), GeminiTokens.Output(
                         ChatTurnState.Integer(usage.Field("candidatesTokenCount")), ChatTurnState.Integer(usage.Field("thoughtsTokenCount")),
                         prompt, ChatTurnState.Integer(usage.Field("totalTokenCount"))), date);
                     state.Context(prompt, ChatTurnState.Integer(record.Field("contextWindowSize")), date);

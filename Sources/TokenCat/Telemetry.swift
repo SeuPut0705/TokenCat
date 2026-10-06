@@ -507,8 +507,12 @@ private struct TelemetryRecord {
 private enum TelemetryDecoder {
     private static let allowedKeys: Set<String> = ["service.name", "session.id", "session_id",
         "conversation.id", "conversation_id", "agent.id", "agent_id", "model", "gen_ai.request.model",
-        "request_id", "request.id", "gen_ai.response.id", "event.name", "event_name", "event.timestamp",
-        "duration_ms", "ttft_ms", "output_tokens", "success"]
+        "request_id", "request.id", "gen_ai.response.id", "response_id", "event.name", "event_name", "event.timestamp",
+        "duration_ms", "ttft_ms", "output_tokens", "success",
+        // Gemini CLI and Qwen Code `api_response`: token counts, the request's role, and whether a subagent sent it.
+        "input_token_count", "output_token_count", "thoughts_token_count", "total_token_count", "role", "subagent_name"]
+    /// Gemini CLI and Qwen Code log one `api_response` per successful model request.
+    private static let responseEvents: [String: TokenSource] = ["gemini_cli.api_response": .gemini, "qwen-code.api_response": .qwen]
     private static let metricKinds: [String: Int] = [
         "codex.responses_api_engine_service_tbt.duration_ms": 1,
         "codex.responses_api_engine_iapi_tbt.duration_ms": 2,
@@ -538,6 +542,12 @@ private enum TelemetryDecoder {
                         if attrs["success"] as? Bool == false { continue }
                         let body = (log["body"] as? [String: Any])?["stringValue"] as? String
                         let name = attrs["event.name"] as? String ?? attrs["event_name"] as? String ?? body
+                        if let client = name.flatMap({ responseEvents[$0] }) {
+                            if let record = response(attrs, source: client, base: base, name: name, at: timestamp(log["timeUnixNano"], attrs: attrs)) {
+                                result.append(record)
+                            }
+                            continue
+                        }
                         guard name == "api_request" || name == "claude_code.api_request",
                               source(base, fallback: name) == .claude,
                               let tokens = integer(attrs["output_tokens"]),
@@ -628,12 +638,35 @@ private enum TelemetryDecoder {
             case "codex", "codex-cli", "codex_cli_rs", "codex_exec", "codex-app-server",
                  "codex_desktop", "codex-tui", "codex_vscode", "codex_mcp_server",
                  "codex_sdk_ts", "codex-app-server-sdk", "Codex Desktop": return .codex
+            // The services Gemini CLI and Qwen Code name themselves (`SERVICE_NAME` in their telemetry constants).
+            case "gemini-cli": return .gemini
+            case "qwen-code": return .qwen
             default: return nil
             }
         }
         if fallback?.hasPrefix("claude_code.") == true { return .claude }
         if fallback?.hasPrefix("codex.") == true { return .codex }
+        if fallback?.hasPrefix("gemini_cli.") == true { return .gemini }
+        if fallback?.hasPrefix("qwen-code.") == true { return .qwen }
         return nil
+    }
+
+    /// One Gemini CLI or Qwen Code `api_response`: the main conversation's requests only. Gemini tags each request with a
+    /// `role` (subagent and utility calls such as routing or loop detection carry the parent session ID, so they cannot
+    /// name their own log); Qwen names a subagent in `subagent_name`. Thoughts are counted apart from the candidates when
+    /// the total shows it, as in the chat log parser (`GeminiTokens.output`). Duration runs from the request to the end of
+    /// its stream.
+    private static func response(_ attrs: [String: Any], source client: TokenSource, base: [String: Any], name: String?, at: Date) -> TelemetryRecord? {
+        guard source(base, fallback: name) == client, attrs["subagent_name"] == nil,
+              (attrs["role"] as? String).map({ $0 == "main" }) ?? true,
+              let output = integer(attrs["output_token_count"]),
+              let duration = number(attrs["duration_ms"]), duration > 0 else { return nil }
+        var reading = metadata(attrs, source: client, at: at)
+        reading.outputTokens = GeminiTokens.output(candidates: output, thoughts: integer(attrs["thoughts_token_count"]),
+                                                   prompt: integer(attrs["input_token_count"]), total: integer(attrs["total_token_count"]))
+        reading.requestDurationMs = duration
+        reading.ttftMs = number(attrs["ttft_ms"])
+        return TelemetryRecord(reading: reading, durationPriority: 2)
     }
 
     /// Same-slot entries combine their attribute keys; the newest slot moves to the end.
@@ -672,7 +705,9 @@ private enum TelemetryDecoder {
             let base = attributes((resource["resource"] as? [String: Any])?["attributes"])
             let service = bounded(base["service.name"])
             if signal != "metrics" {
-                let recognized = source(base, fallback: nil) == .claude
+                // Logs: Claude Code, Gemini CLI and Qwen Code records decode; spans only Claude Code's.
+                let client = source(base, fallback: nil)
+                let recognized = client == .claude || (signal == "logs" && (client == .gemini || client == .qwen))
                 var described = false
                 for scope in recognized ? [] : resource[scopeKey] as? [[String: Any]] ?? [] {
                     for item in scope[signal == "logs" ? "logRecords" : "spans"] as? [[String: Any]] ?? [] {
@@ -720,6 +755,7 @@ private enum TelemetryDecoder {
                 continue
             }
             guard let wrapped = entry["value"] as? [String: Any] else { continue }
+            if key == "subagent_name" { result[key] = true; continue }  // Presence only: the name is never kept.
             if key == "success", let value = wrapped["boolValue"] as? Bool { result[key] = value }
             else if let string = wrapped["stringValue"] as? String {
                 if key == "event.timestamp" { result[key] = string.count <= 64 ? string : nil }
@@ -734,7 +770,7 @@ private enum TelemetryDecoder {
         return TelemetryReading(provider: source,
             sessionID: string(["session.id", "session_id", "conversation.id", "conversation_id"]),
             agentID: string(["agent_id", "agent.id"]), model: string(["model", "gen_ai.request.model"]),
-            requestID: string(["request_id", "request.id", "gen_ai.response.id"]), at: at)
+            requestID: string(["request_id", "request.id", "gen_ai.response.id", "response_id"]), at: at)
     }
 
     private static func identifier(_ value: String) -> String? {
@@ -797,6 +833,7 @@ enum TelemetryHTTP {
         let start = (lines.first ?? "").split(separator: " ", omittingEmptySubsequences: false)
         guard start.count == 3, ["HTTP/1.1", "HTTP/1.0"].contains(String(start[2])) else { return response(400) }
         var length: Int?
+        var chunked = false
         var contentType: String?
         for line in lines.dropFirst() {
             guard let colon = line.firstIndex(of: ":") else { return response(400) }
@@ -806,7 +843,11 @@ enum TelemetryHTTP {
             if key == "origin" { return response(403) }
             // A DNS-rebound page sends its own host name with no Origin; every client uses 127.0.0.1.
             if key == "host", !["127.0.0.1", "localhost"].contains(value.split(separator: ":").first.map { $0.lowercased() } ?? "") { return response(403) }
-            if key == "transfer-encoding" { return response(400) }
+            // Node's OTLP/HTTP exporters (Gemini CLI, Qwen Code) stream the body chunked, without a length.
+            if key == "transfer-encoding" {
+                guard !chunked, value.lowercased() == "chunked" else { return response(400) }
+                chunked = true
+            }
             if key == "content-length" {
                 guard length == nil, !value.isEmpty, value.utf8.allSatisfy({ (48...57).contains($0) }),
                       let count = Int(value) else { return response(400) }
@@ -821,17 +862,66 @@ enum TelemetryHTTP {
         let method = String(start[0]), path = String(start[1])
         if ["/health", "/v1/readings", "/v1/diagnostics"].contains(path) {
             guard method == "GET" else { return response(405) }
-            guard (length ?? 0) == 0, data.count == range.upperBound else { return response(400) }
+            guard !chunked, (length ?? 0) == 0, data.count == range.upperBound else { return response(400) }
             return .request(path: path, body: Data())
         }
         guard ["/v1/logs", "/v1/metrics", "/v1/traces", LocalTelemetryCollector.claudeStatusPath].contains(path) else { return response(404) }
         guard method == "POST" else { return response(405) }
-        guard contentType == "application/json", let length else { return response(400) }
-        if path == LocalTelemetryCollector.claudeStatusPath, length > LocalTelemetryCollector.maximumStatusBodyBytes { return response(413) }
+        let limit = path == LocalTelemetryCollector.claudeStatusPath ? LocalTelemetryCollector.maximumStatusBodyBytes : LocalTelemetryCollector.maximumBodyBytes
+        guard contentType == "application/json", (length != nil) != chunked else { return response(400) }
+        if chunked { return dechunk(data, from: range.upperBound, limit: limit, path: path) }
+        guard let length else { return response(400) }
+        if length > limit { return response(413) }
         let end = range.upperBound + length
         if data.count < end { return .waiting }
         guard data.count == end else { return response(400) }
         return .request(path: path, body: Data(data[range.upperBound..<end]))
+    }
+
+    /// A chunked body: hex sizes (extensions after ';' ignored), CRLF after each chunk, a 0 chunk, then trailer lines
+    /// (dropped) up to the empty line. Nothing may follow it. The decoded body keeps the Content-Length limits, and the
+    /// framing may at most double it, so tiny chunks cannot hold a connection open on an unbounded buffer. The framing is
+    /// checked in place on every receive; the body is copied once, when it is complete.
+    private static func dechunk(_ data: Data, from start: Int, limit: Int, path: String) -> TelemetryHTTPDecision {
+        if data.endIndex - start > 2 * LocalTelemetryCollector.maximumBodyBytes { return response(413) }
+        var chunks: [Range<Int>] = []
+        var decoded = 0
+        var index = start
+        /// The next CRLF-terminated line as a range without the CRLF; nil while it is incomplete.
+        func line() -> Range<Int>? {
+            var cursor = index
+            while cursor + 1 < data.endIndex {
+                if data[cursor] == 13 && data[cursor + 1] == 10 {
+                    defer { index = cursor + 2 }
+                    return index..<cursor
+                }
+                cursor += 1
+            }
+            return nil
+        }
+        while true {
+            guard let sizeLine = line() else { return data.endIndex - index > 1_024 ? response(400) : .waiting }
+            let digits = data[sizeLine].prefix { $0 != UInt8(ascii: ";") }
+            guard (1...8).contains(digits.count), digits.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }),
+                  let size = Int(String(decoding: digits, as: UTF8.self), radix: 16) else { return response(400) }
+            if size == 0 { break }
+            decoded += size
+            if decoded > limit { return response(413) }
+            guard index + size + 2 <= data.endIndex else { return .waiting }
+            guard data[index + size] == 13, data[index + size + 1] == 10 else { return response(400) }
+            chunks.append(index..<index + size)
+            index += size + 2
+        }
+        while true {
+            guard let trailer = line() else {
+                return data.endIndex - index > LocalTelemetryCollector.maximumHeaderBytes ? response(431) : .waiting
+            }
+            if trailer.isEmpty { break }
+        }
+        guard index == data.endIndex else { return response(400) }
+        var body = Data(capacity: decoded)
+        for chunk in chunks { body.append(data[chunk]) }
+        return .request(path: path, body: body)
     }
 
     static func encode(code: Int, body: Data) -> Data {

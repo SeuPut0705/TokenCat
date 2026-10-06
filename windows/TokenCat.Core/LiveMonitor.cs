@@ -87,7 +87,7 @@ public sealed class LiveMonitor : IDisposable
     // Live usage limits: the setting, a dashboard on screen, one that just opened, each provider's poll, Codex's last answer
     // (Claude's merges into `claudeLimits`).
     bool limitsEnabled, limitsWatched, limitsOpened;
-    readonly Dictionary<TokenSource, LiveLimits.Poll> polls = TokenSource.TelemetryClients.ToDictionary(source => source, _ => new LiveLimits.Poll());
+    readonly Dictionary<TokenSource, LiveLimits.Poll> polls = TokenSource.DefaultClients.ToDictionary(source => source, _ => new LiveLimits.Poll());
     IReadOnlyList<TokenRateLimit> codexLive = [];
     MonitorState current;
     CancellationTokenSource? running;

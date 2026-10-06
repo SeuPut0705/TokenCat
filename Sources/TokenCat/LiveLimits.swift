@@ -270,7 +270,7 @@ enum LiveLimits {
     /// `--live-limits`: one read per provider, printed as numbers only; a token is never printed. Exit 1 when neither reads.
     static func commandLineCheck() -> Int32 {
         var read = 0
-        for source in TokenSource.telemetryClients {
+        for source in TokenSource.defaultClients {
             let started = Date()
             let outcome = Self.read(source, rejected: nil, keychain: true)
             let windows: [(Double, Int?, Date?)] = outcome.codex?.map { ($0.usedPercent, $0.windowMinutes, $0.resetsAt) }
@@ -305,7 +305,7 @@ final class LiveLimitPoller {
     func tick(now: Date, open: Bool, live: (TokenSource) -> Bool, deliver: @escaping (LiveLimits.Outcome) -> Void) {
         let opened = open && !wasOpen
         wasOpen = open
-        for source in TokenSource.telemetryClients {
+        for source in TokenSource.defaultClients {
             var slot = slots[source] ?? Slot()
             guard !slot.inFlight, LiveLimits.due(last: slot.last, retryAt: slot.retryAt, now: now, live: live(source), open: open, opened: opened)
             else { continue }

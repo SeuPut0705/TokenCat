@@ -12,7 +12,7 @@ struct TelemetrySetupResult {
     var bridged = false
 }
 
-/// A status line outcome beside a successful connection; `text` is the sentence the CLI message carries.
+/// A status line or client outcome beside a successful connection; `text` is the sentence the CLI message carries.
 enum TelemetrySetupNote: Equatable {
     /// `statusLine` is not a command: the usage-limit bridge was not added.
     case statusLineSkipped
@@ -20,6 +20,8 @@ enum TelemetrySetupNote: Equatable {
     case originalUnknown
     /// The bridge's missing original command was written again from the connection record.
     case originalRecreated
+    /// Gemini CLI or Qwen Code settings were left as they are, for `reason`; the other clients still connected.
+    case clientSkipped(TokenSource, reason: String)
 
     var text: String {
         switch self {
@@ -29,6 +31,7 @@ enum TelemetrySetupNote: Equatable {
                                           "The Claude Code status line runs the TokenCat bridge, but its original command can't be found, so the status line shows nothing. Edit statusLine in settings.json to fix it.")
         case .originalRecreated: return loc("Claude Code 상태 표시줄의 원래 명령을 백업 기록에서 다시 만들었습니다.",
                                             "Recreated the Claude Code status line's original command from the backup record.")
+        case .clientSkipped(let source, let reason): return loc("\(source.title) 설정은 건너뛰었습니다: \(reason)", "Skipped \(source.title): \(reason)")
         }
     }
 }
@@ -65,7 +68,7 @@ extension TelemetrySetupError {
     }
 }
 
-/// Owns only the opt-in, loopback telemetry settings. It does not restart either client.
+/// Owns only the opt-in, loopback telemetry settings. It does not restart any client.
 final class TelemetrySetup {
     static let port = Int(LocalTelemetryCollector.port)
     /// Set by `--disconnect-telemetry` (even when it refuses) and cleared by `--connect-telemetry`; the app does not
@@ -88,6 +91,13 @@ final class TelemetrySetup {
                                                                           ("trace_exporter", "traces")].map {
         ($0.0, "{ otlp-http = { endpoint = \"http://127.0.0.1:\(port)/v1/\($0.1)\", protocol = \"json\" } }")
     }
+    /// The `telemetry` members TokenCat sets in Gemini CLI and Qwen Code settings.json (Qwen Code is a Gemini CLI fork and
+    /// reads the same object). Their OTLP/HTTP exporters send JSON to `<otlpEndpoint>/v1/<signal>`; both clients log prompt
+    /// text unless `logPrompts` is false. Disconnecting an edited file reverts only members that still hold these values.
+    private static let geminiTelemetry: [String: Any] = ["enabled": true, "target": "local", "otlpEndpoint": "http://127.0.0.1:\(port)",
+                                                         "otlpProtocol": "http", "logPrompts": false]
+    /// Clients configured only while their folder exists; a problem in their settings skips them, never the others.
+    private static let optionalClients: [TokenSource] = [.gemini, .qwen]
     private static let mutationLock = NSLock()
     private let home: URL
     private let files = FileManager.default
@@ -168,7 +178,7 @@ final class TelemetrySetup {
     func connect() throws -> TelemetrySetupResult {
         Self.mutationLock.lock()
         defer { Self.mutationLock.unlock() }
-        // Validate both clients before touching either configuration.
+        // Validate Codex and Claude Code before touching any configuration.
         let codexURL = configURL(.codex)
         let claudeURL = configURL(.claude)
         let codex = try read(codexURL)
@@ -177,14 +187,32 @@ final class TelemetrySetup {
         let manifest = connected ? (try? read(activeManifest)).flatMap(validated) : nil
         let codexAfter = try codexConfiguration(codex)
         let plan = try claudeConfiguration(claude, bridgedBefore: manifest?.statusLine != nil)
-        let candidates = [Change(source: .codex, url: codexURL, original: codex,
+        var candidates = [Change(source: .codex, url: codexURL, original: codex,
                                  replacement: codexAfter, permissions: try permissions(codexURL)),
                           Change(source: .claude, url: claudeURL, original: claude,
                                  replacement: plan.data, permissions: try permissions(claudeURL))]
+        var skipped: [TelemetrySetupNote] = []
+        for source in Self.optionalClients where isDirectory(configURL(source).deletingLastPathComponent()) {
+            let url = configURL(source)
+            do {
+                let original = try read(url)
+                let change = Change(source: source, url: url, original: original, replacement: try geminiConfiguration(original),
+                                    permissions: try permissions(url))
+                // An entry of the active connection that needs writing again was edited since; it stays as it is.
+                if connected, change.original != change.replacement, manifest?.entries.contains(where: { $0.source == source }) == true {
+                    skipped.append(.clientSkipped(source, reason: loc("연결 이후 설정이 바뀌어 다시 덮어쓰지 않았습니다.",
+                                                                      "Its settings changed after the connection, so they weren't overwritten again.")))
+                    continue
+                }
+                candidates.append(change)
+            } catch {
+                skipped.append(.clientSkipped(source, reason: (error as? TelemetrySetupError)?.errorDescription ?? error.localizedDescription))
+            }
+        }
         let changes = candidates.filter { $0.original != $0.replacement }
         // Settings that already run the bridge (not wrapped now) need its original command beside it.
         let bridgeNote = plan.bridged && !plan.wraps ? bridgeOriginalNote(manifest) : nil
-        let notes = [plan.note, bridgeNote].compactMap { $0 }
+        let notes = [plan.note, bridgeNote].compactMap { $0 } + skipped
         let note = notes.map { " " + $0.text }.joined()
         guard !changes.isEmpty else {
             // A bridge in use is kept current; a failed refresh leaves the working one.
@@ -194,12 +222,30 @@ final class TelemetrySetup {
                                         notes: notes, bridged: plan.bridged)
         }
         if connected {
-            // A connection made before the status line bridge existed gets only the bridge, under the same backups.
-            guard let manifest, let claude, plan.wraps, codexAfter == codex, plan.envOnly == claude else {
+            // Gemini CLI or Qwen Code found after the connection join it under the same backups. A connection made before
+            // the status line bridge existed gets only the bridge. Anything else changed since the connection.
+            let added = changes.filter { Self.optionalClients.contains($0.source) }
+            let rest = changes.filter { !Self.optionalClients.contains($0.source) }
+            guard var manifest, rest.isEmpty || (claude != nil && plan.wraps && codexAfter == codex && plan.envOnly == claude) else {
                 throw TelemetrySetupError.conflict(loc("연결 이후 실측 설정이 변경됐습니다. 기존 백업을 보존하기 위해 다시 덮어쓰지 않았습니다.",
                                                        "The telemetry settings changed after they were connected. TokenCat didn't overwrite them, to keep the existing backup."))
             }
-            return try addStatusLineBridge(to: manifest, claude: claude, plan: plan)
+            if !added.isEmpty { manifest = try addClients(added, to: manifest) }
+            guard let claude, !rest.isEmpty else {
+                return TelemetrySetupResult(changedFiles: added.map { $0.url.path }, restartRequired: added.map(\.source),
+                    message: loc("로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다.",
+                                 "Connected local telemetry. Restart running clients to apply it.") + note, notes: notes, bridged: plan.bridged)
+            }
+            var result = try addStatusLineBridge(to: manifest, claude: claude, plan: plan)
+            result.changedFiles = added.map { $0.url.path } + result.changedFiles
+            result.restartRequired = added.map(\.source)
+            if !added.isEmpty {
+                result.message = loc("로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다.",
+                                     "Connected local telemetry. Restart running clients to apply it.") + " " + result.message
+            }
+            result.notes += skipped
+            result.message += skipped.map { " " + $0.text }.joined()
+            return result
         }
 
         let backupName = "\(Int(Date().timeIntervalSince1970 * 1_000))-\(UUID().uuidString)"
@@ -319,8 +365,13 @@ final class TelemetrySetup {
             }
             if entry.source == .claude { statusLine = restoreStatusLine(manifest, directory: directory) }
             guard let current = try read(url) else { continue }
-            guard let reverted = entry.source == .claude ? revertClaude(current, backup: backup, bridged: manifest.statusLine != nil)
-                                                         : revertCodex(current, backup: backup) else {
+            let reverted: Data?
+            switch entry.source {
+            case .claude: reverted = revertClaude(current, backup: backup, bridged: manifest.statusLine != nil)
+            case .gemini, .qwen: reverted = revertGemini(current, backup: backup)
+            default: reverted = revertCodex(current, backup: backup)
+            }
+            guard let reverted else {
                 refused.append(entry.source)
                 continue
             }
@@ -391,6 +442,23 @@ final class TelemetrySetup {
             if let original = before?[key] { env[key] = original }
         }
         settings["env"] = env.isEmpty && before == nil ? nil : env
+        return try? settingsData(settings, original: current)
+    }
+
+    /// Edited Gemini CLI or Qwen Code settings: a `telemetry` member still holding TokenCat's value gets the backup's value
+    /// back (or goes when the backup had none); `telemetry` goes when nothing is left and the backup had none. Every other
+    /// key stays. Nil when a key repeats, `telemetry` is not an object, or a member TokenCat set now holds a value that is
+    /// neither TokenCat's nor the backup's.
+    private func revertGemini(_ current: Data, backup: Data?) -> Data? {
+        guard var settings = (try? JSONSerialization.jsonObject(with: current)) as? [String: Any], !Self.hasDuplicateKeys(current, settings) else { return nil }
+        guard settings["telemetry"] != nil else { return current }
+        guard var telemetry = settings["telemetry"] as? [String: Any] else { return nil }
+        let before = backup.flatMap { (try? JSONSerialization.jsonObject(with: $0)) as? [String: Any] }?["telemetry"] as? [String: Any]
+        for (key, value) in Self.geminiTelemetry where telemetry[key] != nil {
+            if (telemetry[key] as? NSObject) == (value as? NSObject) { telemetry[key] = before?[key] }
+            else if (telemetry[key] as? NSObject) != (before?[key] as? NSObject) { return nil }
+        }
+        settings["telemetry"] = telemetry.isEmpty && before == nil ? nil : telemetry
         return try? settingsData(settings, original: current)
     }
 
@@ -562,11 +630,100 @@ final class TelemetrySetup {
     }
 
     private func configURL(_ source: TokenSource) -> URL {
-        home.appendingPathComponent(source == .codex ? ".codex/config.toml" : ".claude/settings.json")
+        switch source {
+        case .codex: return home.appendingPathComponent(".codex/config.toml")
+        case .gemini: return home.appendingPathComponent(".gemini/settings.json")
+        case .qwen: return home.appendingPathComponent(".qwen/settings.json")
+        default: return home.appendingPathComponent(".claude/settings.json")
+        }
     }
 
     private func backupURL(_ source: TokenSource, directory: URL) -> URL {
-        directory.appendingPathComponent(source == .codex ? "codex-config.toml" : "claude-settings.json")
+        switch source {
+        case .codex: return directory.appendingPathComponent("codex-config.toml")
+        case .gemini: return directory.appendingPathComponent("gemini-settings.json")
+        case .qwen: return directory.appendingPathComponent("qwen-settings.json")
+        default: return directory.appendingPathComponent("claude-settings.json")
+        }
+    }
+
+    private func isDirectory(_ url: URL) -> Bool {
+        var directory: ObjCBool = false
+        return files.fileExists(atPath: url.path, isDirectory: &directory) && directory.boolValue
+    }
+
+    /// Gemini CLI or Qwen Code found after an existing connection: backed up into its backup folder and added to its record.
+    /// The record lists them before their settings change, so an interrupted write leaves nothing unrecorded (a disconnect
+    /// then finds no TokenCat member to revert). Returns the updated record.
+    private func addClients(_ added: [Change], to manifest: Manifest) throws -> Manifest {
+        let directory = support.appendingPathComponent("telemetry-backups/\(manifest.backupDirectory)", isDirectory: true)
+        for change in added {
+            if let original = change.original {
+                try atomicWrite(original, to: backupURL(change.source, directory: directory), permissions: 0o600)
+            }
+        }
+        var updated = manifest
+        updated.entries += added.map {
+            Manifest.Entry(source: $0.source, existed: $0.original != nil, permissions: $0.permissions,
+                           originalSHA256: $0.original.map(hash), connectedSHA256: hash($0.replacement))
+        }
+        let data = try JSONEncoder().encode(updated)
+        let record = directory.appendingPathComponent("manifest.json")
+        let previousRecord = try read(record)
+        let previousActive = try read(activeManifest)
+        var written: [Change] = []
+        do {
+            try atomicWrite(data, to: record, permissions: 0o600)
+            try atomicWrite(data, to: activeManifest, permissions: 0o600)
+            for change in added {
+                guard try read(change.url) == change.original else {
+                    throw TelemetrySetupError.conflict(loc("설정이 다른 프로그램에서 변경돼 연결을 중단했습니다.",
+                                                           "Another program changed the settings, so TokenCat stopped connecting."))
+                }
+                try atomicWrite(change.replacement, to: change.url, permissions: change.permissions)
+                written.append(change)
+            }
+        } catch {
+            let restored = rollback(written)
+            if let previousRecord { try? atomicWrite(previousRecord, to: record, permissions: 0o600) }
+            if let previousActive { try? atomicWrite(previousActive, to: activeManifest, permissions: 0o600) }
+            if restored, let setupError = error as? TelemetrySetupError, case .conflict = setupError { throw setupError }
+            throw TelemetrySetupError.writeFailed(restored: restored)
+        }
+        return updated
+    }
+
+    /// Gemini CLI or Qwen Code settings.json with TokenCat's `telemetry` members; every other key stays. Refused (and the
+    /// client skipped) when the file is not a JSON object (both clients also accept comments, which TokenCat cannot keep),
+    /// a key repeats, or the client already exports somewhere: its own endpoint, per-signal endpoints, an outfile, the gcp
+    /// target, or telemetry enabled without an endpoint (their default collector on localhost:4317).
+    private func geminiConfiguration(_ original: Data?) throws -> Data {
+        var object: [String: Any] = [:]
+        if let original {
+            guard let decoded = try? JSONSerialization.jsonObject(with: original), let dictionary = decoded as? [String: Any],
+                  !Self.hasDuplicateKeys(original, decoded) else {
+                throw TelemetrySetupError.invalid(loc("settings.json 형식이 올바르지 않습니다.", "settings.json isn't in a valid format."))
+            }
+            object = dictionary
+        }
+        guard object["telemetry"] == nil || object["telemetry"] is [String: Any] else {
+            throw TelemetrySetupError.invalid(loc("telemetry 설정이 객체가 아닙니다.", "The telemetry setting isn't an object."))
+        }
+        var telemetry = object["telemetry"] as? [String: Any] ?? [:]
+        func set(_ key: String) -> Bool {
+            guard let value = telemetry[key], !(value is NSNull) else { return false }
+            return (value as? String).map { !$0.isEmpty } ?? true
+        }
+        let endpoint = Self.geminiTelemetry["otlpEndpoint"] as? String
+        if (set("otlpEndpoint") && telemetry["otlpEndpoint"] as? String != endpoint)
+            || ["otlpTracesEndpoint", "otlpLogsEndpoint", "otlpMetricsEndpoint", "outfile"].contains(where: set)
+            || (set("target") && telemetry["target"] as? String != "local")
+            || (telemetry["enabled"] as? Bool == true && !set("otlpEndpoint")) {
+            throw TelemetrySetupError.conflict(loc("기존 실측 전송 설정이 있어 덮어쓰지 않았습니다.", "It already has a telemetry destination, so it wasn't overwritten."))
+        }
+        for (key, value) in Self.geminiTelemetry { telemetry[key] = value }
+        object["telemetry"] = telemetry
+        return try settingsData(object, original: original)
     }
 
     private func read(_ url: URL) throws -> Data? {

@@ -10,36 +10,43 @@ namespace TokenCat;
 
 // TelemetrySetup.swift (DESIGN §7.4). Windows v1 differences: backups and the bridge live in `supportDirectory`; the bridge is
 // a PowerShell script added only when settings have no `statusLine` (an existing one is kept, note `StatusLineKept`), so
-// there is never an original command to run or record; POSIX modes are not applied (the manifest keeps the field).
+// there is never an original command to run or record; POSIX modes are not applied (the manifest keeps the field, and a
+// created Gemini CLI / Qwen Code settings file inherits the folder's ACL).
 
 public sealed record TelemetrySetupResult(IReadOnlyList<string> ChangedFiles, IReadOnlyList<TokenSource> RestartRequired, string Message)
 {
-    /// What the CLI message says about the Claude Code status line, for the app to show without reading the message.
+    /// What the CLI message says about the Claude Code status line and skipped clients, for the app to show without reading the message.
     public IReadOnlyList<TelemetrySetupNote> Notes { get; init; } = [];
     /// Claude Code settings run the status line bridge after this call.
     public bool Bridged { get; init; }
 }
 
-/// Swift's three notes plus `StatusLineKept` (Windows v1 keeps an existing statusLine untouched, §7.4).
-public enum TelemetrySetupNote { StatusLineSkipped, OriginalUnknown, OriginalRecreated, StatusLineKept }
-
-public static class TelemetrySetupNoteText
+/// Swift's notes plus `StatusLineKept` (Windows v1 keeps an existing statusLine untouched, §7.4). The status line notes are
+/// singletons compared by value; `ClientSkipped` names a Gemini CLI / Qwen Code settings file left as it was.
+public abstract record TelemetrySetupNote
 {
-    extension(TelemetrySetupNote note)
+    public enum StatusLineKind { Skipped, OriginalUnknown, OriginalRecreated, Kept }
+    public sealed record StatusLine(StatusLineKind Kind) : TelemetrySetupNote;
+    public sealed record ClientSkipped(TokenSource Source, string Reason) : TelemetrySetupNote;
+
+    public static TelemetrySetupNote StatusLineSkipped { get; } = new StatusLine(StatusLineKind.Skipped);
+    public static TelemetrySetupNote OriginalUnknown { get; } = new StatusLine(StatusLineKind.OriginalUnknown);
+    public static TelemetrySetupNote OriginalRecreated { get; } = new StatusLine(StatusLineKind.OriginalRecreated);
+    public static TelemetrySetupNote StatusLineKept { get; } = new StatusLine(StatusLineKind.Kept);
+
+    /// The sentence the CLI message carries.
+    public string Text => this switch
     {
-        /// The sentence the CLI message carries.
-        public string Text => note switch
-        {
-            TelemetrySetupNote.StatusLineSkipped => Loc("Claude Code statusLine 형식이 예상과 달라 사용량 한도 연결은 건너뛰었습니다.",
-                "Claude Code's statusLine isn't in the expected format, so the usage limit connection was skipped."),
-            TelemetrySetupNote.OriginalUnknown => Loc("Claude Code 상태 표시줄이 TokenCat 브리지를 가리키지만 원래 명령을 찾을 수 없어 상태 표시줄이 비어 보입니다. settings.json의 statusLine을 직접 고쳐 주세요.",
-                "The Claude Code status line runs the TokenCat bridge, but its original command can't be found, so the status line shows nothing. Edit statusLine in settings.json to fix it."),
-            TelemetrySetupNote.OriginalRecreated => Loc("Claude Code 상태 표시줄의 원래 명령을 백업 기록에서 다시 만들었습니다.",
-                "Recreated the Claude Code status line's original command from the backup record."),
-            _ => Loc("Claude Code 상태 표시줄을 그대로 두었습니다. 사용 한도는 Claude 데스크톱 앱 기록에서 읽습니다.",
-                "Kept your Claude Code status line; usage limits come from the Claude desktop app's history."),
-        };
-    }
+        ClientSkipped(var source, var reason) => Loc($"{source.Title} 설정은 건너뛰었습니다: {reason}", $"Skipped {source.Title}: {reason}"),
+        StatusLine { Kind: StatusLineKind.Skipped } => Loc("Claude Code statusLine 형식이 예상과 달라 사용량 한도 연결은 건너뛰었습니다.",
+            "Claude Code's statusLine isn't in the expected format, so the usage limit connection was skipped."),
+        StatusLine { Kind: StatusLineKind.OriginalUnknown } => Loc("Claude Code 상태 표시줄이 TokenCat 브리지를 가리키지만 원래 명령을 찾을 수 없어 상태 표시줄이 비어 보입니다. settings.json의 statusLine을 직접 고쳐 주세요.",
+            "The Claude Code status line runs the TokenCat bridge, but its original command can't be found, so the status line shows nothing. Edit statusLine in settings.json to fix it."),
+        StatusLine { Kind: StatusLineKind.OriginalRecreated } => Loc("Claude Code 상태 표시줄의 원래 명령을 백업 기록에서 다시 만들었습니다.",
+            "Recreated the Claude Code status line's original command from the backup record."),
+        _ => Loc("Claude Code 상태 표시줄을 그대로 두었습니다. 사용 한도는 Claude 데스크톱 앱 기록에서 읽습니다.",
+            "Kept your Claude Code status line; usage limits come from the Claude desktop app's history."),
+    };
 }
 
 /// What the UI says about a failed automatic connection, without reading message text.
@@ -84,6 +91,13 @@ public sealed class TelemetrySetup
     /// The Codex `[otel]` exporters TokenCat writes, in the order it appends them.
     static readonly (string Key, string Value)[] CodexExporters = [.. new[] { ("exporter", "logs"), ("metrics_exporter", "metrics"), ("trace_exporter", "traces") }
         .Select(pair => (pair.Item1, $"{{ otlp-http = {{ endpoint = \"{Endpoint}/v1/{pair.Item2}\", protocol = \"json\" }} }}"))];
+    /// The Gemini CLI / Qwen Code `telemetry` members TokenCat sets; every other key stays. Disconnecting an edited file
+    /// reverts only members that still hold these values.
+    static readonly (string Key, JsonNode Value)[] GeminiTelemetry =
+        [("enabled", JsonValue.Create(true)), ("target", JsonValue.Create("local")!), ("otlpEndpoint", JsonValue.Create(Endpoint)!),
+         ("otlpProtocol", JsonValue.Create("http")!), ("logPrompts", JsonValue.Create(false))];
+    /// The clients connected when their folder exists; a refusal skips only that client.
+    static readonly TokenSource[] GeminiStyleClients = [Gemini, Qwen];
     /// POSIX mode recorded in the manifest (format parity with the mac); not applied on Windows, where %LOCALAPPDATA% is private.
     const int Permissions = 384;
     static readonly Lock MutationLock = new();
@@ -127,18 +141,22 @@ public sealed class TelemetrySetup
 
     string ActiveManifest => Path.Combine(support, "telemetry-connection.json");
     string BridgeScript => Path.Combine(support, StatusLineScriptName);
-    // Telemetry setup covers `TokenSource.TelemetryClients` (Codex, Claude Code) only.
+    // Telemetry setup covers `TokenSource.TelemetryClients`: Codex, Claude Code, and Gemini CLI / Qwen Code when their folder exists.
     string ConfigPath(TokenSource source) => source switch
     {
         Codex => AppPaths.CodexConfig(home),
         Claude => AppPaths.ClaudeSettings(home),
+        Gemini or Qwen => Path.Combine(ClientFolder(source), "settings.json"),
         _ => throw new ArgumentOutOfRangeException(nameof(source)),
     };
+    string ClientFolder(TokenSource source) => Path.Combine(home, source == Gemini ? ".gemini" : ".qwen");
     string BackupDirectory(Manifest manifest) => Path.Combine(support, "telemetry-backups", manifest.BackupDirectory);
     static string BackupPath(TokenSource source, string directory) => Path.Combine(directory, source switch
     {
         Codex => "codex-config.toml",
         Claude => "claude-settings.json",
+        Gemini => "gemini-settings.json",
+        Qwen => "qwen-settings.json",
         _ => throw new ArgumentOutOfRangeException(nameof(source)),
     });
 
@@ -161,7 +179,7 @@ public sealed class TelemetrySetup
     {
         lock (MutationLock)
         {
-            // Validate both clients before touching either configuration.
+            // Validate Codex and Claude Code before touching any configuration; a Gemini CLI / Qwen Code refusal skips only that client.
             string codexPath = ConfigPath(Codex), claudePath = ConfigPath(Claude);
             var codex = Read(codexPath);
             var claude = Read(claudePath);
@@ -169,9 +187,26 @@ public sealed class TelemetrySetup
             var manifest = connected ? Validated(TryRead(ActiveManifest)) : null;
             var codexAfter = CodexConfiguration(codex);
             var plan = ClaudeConfiguration(claude, bridgedBefore: manifest?.StatusLine is not null);
-            Change[] changes = [.. new Change[] { new(Codex, codexPath, codex, codexAfter), new(Claude, claudePath, claude, plan.Data) }
-                .Where(change => !Same(change.Original, change.Replacement))];
-            TelemetrySetupNote[] notes = plan.Note is { } planNote ? [planNote] : [];
+            var candidates = new List<Change> { new(Codex, codexPath, codex, codexAfter), new(Claude, claudePath, claude, plan.Data) };
+            var notes = new List<TelemetrySetupNote>();
+            if (plan.Note is { } planNote) notes.Add(planNote);
+            foreach (var source in GeminiStyleClients)
+            {
+                if (!Directory.Exists(ClientFolder(source))) continue;
+                var path = ConfigPath(source);
+                try
+                {
+                    var original = Read(path);
+                    candidates.Add(new(source, path, original, GeminiConfiguration(original)));
+                }
+                catch (TelemetrySetupError error) { notes.Add(new TelemetrySetupNote.ClientSkipped(source, error.Message)); }
+            }
+            Change[] changes = [.. candidates.Where(change => !Same(change.Original, change.Replacement))];
+            // On a connection, a Gemini CLI / Qwen Code file already in the manifest that needs writing again was edited since: it stays.
+            var edited = changes.Where(change => change.Source is Gemini or Qwen && manifest?.Entries.Any(entry => entry.Source == change.Source) == true).ToArray();
+            notes.AddRange(edited.Select(change => new TelemetrySetupNote.ClientSkipped(change.Source,
+                Loc("연결 이후 설정이 바뀌어 다시 덮어쓰지 않았습니다.", "Its settings changed after the connection, so they weren't overwritten again."))));
+            changes = [.. changes.Except(edited)];
             var note = string.Concat(notes.Select(item => " " + item.Text));
             if (changes.Length == 0)
             {
@@ -182,11 +217,22 @@ public sealed class TelemetrySetup
             }
             if (connected)
             {
-                // A connection without the bridge (its status line was kept, then removed) gets only the bridge, under the same backups.
-                if (manifest is null || claude is null || !plan.Wraps || !Same(codexAfter, codex) || !Same(plan.EnvOnly, claude))
+                // A Gemini CLI / Qwen Code folder that appeared after the connection joins it under the same backups ("added
+                // clients"), before the status line step so that one sees the updated manifest. A connection without the bridge
+                // (its status line was kept, then removed) gets only the bridge.
+                var entries = manifest?.Entries ?? [];
+                Change[] added = [.. changes.Where(change => change.Source is Gemini or Qwen && entries.All(entry => entry.Source != change.Source))];
+                var others = changes.Except(added).ToArray();
+                if (manifest is null || others.Length > 0 && (claude is null || !plan.Wraps || !Same(codexAfter, codex) || !Same(plan.EnvOnly, claude)))
                     throw Conflict(Loc("연결 이후 실측 설정이 변경됐습니다. 기존 백업을 보존하기 위해 다시 덮어쓰지 않았습니다.",
                         "The telemetry settings changed after they were connected. TokenCat didn't overwrite them, to keep the existing backup."));
-                return AddStatusLineBridge(manifest, claude, plan);
+                if (added.Length > 0) manifest = AddClients(manifest, added);
+                var bridge = others.Length > 0 ? AddStatusLineBridge(manifest, claude!, plan) : null;
+                if (bridge is null && plan.Bridged) TryWriteBridgeScript();
+                if (bridge is not null && added.Length == 0) return bridge with { Message = bridge.Message + note, Notes = notes };
+                return new([.. added.Select(change => change.Path), .. bridge?.ChangedFiles ?? []], [.. added.Select(change => change.Source)],
+                    Loc("로컬 실측을 연결했습니다. 실행 중인 클라이언트는 재시작 후 적용됩니다.", "Connected local telemetry. Restart running clients to apply it.")
+                    + (bridge is null ? "" : " " + bridge.Message) + note) { Notes = notes, Bridged = bridge?.Bridged ?? plan.Bridged };
             }
 
             var backupName = $"{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}-{Guid.NewGuid()}";
@@ -230,6 +276,92 @@ public sealed class TelemetrySetup
     }
 
     static string ChangedByOther => Loc("설정이 다른 프로그램에서 변경돼 연결을 중단했습니다.", "Another program changed the settings, so TokenCat stopped connecting.");
+
+    /// Connects Gemini CLI / Qwen Code settings that had no manifest entry yet: backed up into the existing backup folder and
+    /// appended to the manifest (both copies, written before the settings so a crash never leaves an unrecorded change), so
+    /// disconnecting restores them with the rest. A failure puts both previous manifests back. Returns the updated manifest.
+    Manifest AddClients(Manifest manifest, IReadOnlyList<Change> added)
+    {
+        var directory = BackupDirectory(manifest);
+        foreach (var change in added)
+            if (change.Original is { } original) Write(BackupPath(change.Source, directory), original);
+        var updated = manifest with
+        {
+            Entries = [.. manifest.Entries, .. added.Select(change => new ManifestEntry(change.Source, change.Original is not null, Permissions,
+                Hash(change.Replacement), change.Original is null ? null : Hash(change.Original)))],
+        };
+        var manifestData = Json.Serialize(updated);
+        var record = Path.Combine(directory, "manifest.json");
+        var previousRecord = Read(record);
+        var previousActive = Read(ActiveManifest);
+        var written = new List<Change>();
+        try
+        {
+            Write(record, manifestData);
+            Write(ActiveManifest, manifestData);
+            foreach (var change in added)
+            {
+                if (!Same(Read(change.Path), change.Original)) throw Conflict(ChangedByOther);
+                Write(change.Path, change.Replacement);
+                written.Add(change);
+            }
+        }
+        catch (Exception error)
+        {
+            var restored = Rollback(written);
+            if (previousRecord is not null) TryWrite(record, previousRecord);
+            if (previousActive is not null) TryWrite(ActiveManifest, previousActive);
+            if (restored && error is TelemetrySetupError { Failure: TelemetrySetupFailure.Conflict }) throw;
+            throw WriteFailed(restored);
+        }
+        return updated;
+    }
+
+    /// Gemini CLI / Qwen Code settings with TokenCat's `telemetry` members (OTLP/HTTP JSON to the collector, prompts not
+    /// logged); every other key stays. Throws (Invalid/Conflict) to skip the client when the file isn't a JSON object
+    /// TokenCat can rewrite or the client already exports telemetry somewhere else.
+    static byte[] GeminiConfiguration(byte[]? original)
+    {
+        var settings = new JsonObject();
+        if (original is not null)
+            settings = Json.ParseNode(original) as JsonObject ?? throw Invalid(Loc("settings.json 형식이 올바르지 않습니다.", "settings.json isn't in a valid format."));
+        if (settings.ContainsKey("telemetry") && settings["telemetry"] is not JsonObject)
+            throw Invalid(Loc("telemetry 설정이 객체가 아닙니다.", "The telemetry setting isn't an object."));
+        var telemetry = settings["telemetry"] as JsonObject ?? [];
+        if (telemetry.ContainsKey("otlpEndpoint") && Text(telemetry["otlpEndpoint"]) != Endpoint
+            || new[] { "otlpTracesEndpoint", "otlpLogsEndpoint", "otlpMetricsEndpoint" }.Any(key => Text(telemetry[key]) is { Length: > 0 })
+            || telemetry.ContainsKey("outfile") && telemetry["outfile"] is not null && Text(telemetry["outfile"]) != ""
+            || telemetry.ContainsKey("target") && Text(telemetry["target"]) != "local"
+            // Enabled without an endpoint: already exporting to the client's default collector.
+            || telemetry["enabled"] is JsonValue enabled && enabled.TryGetValue(out bool on) && on && !telemetry.ContainsKey("otlpEndpoint"))
+            throw Conflict(Loc("기존 실측 전송 설정이 있어 덮어쓰지 않았습니다.", "It already has a telemetry destination, so it wasn't overwritten."));
+        foreach (var (key, value) in GeminiTelemetry) telemetry[key] = value.DeepClone();
+        if (!settings.ContainsKey("telemetry")) settings["telemetry"] = telemetry;
+        return SettingsData(settings, original);
+    }
+
+    /// Edited Gemini CLI / Qwen Code settings: a `telemetry` member still holding TokenCat's value gets the backup's value back
+    /// (or goes when the backup had none); a `telemetry` left empty goes when the backup had none. Every other key stays.
+    /// Null when one of TokenCat's members now holds a value that is neither TokenCat's nor the backup's.
+    static byte[]? RevertGeminiStyle(byte[] current, byte[]? backup)
+    {
+        if (Json.ParseNode(current) is not JsonObject settings) return null;
+        if (!settings.ContainsKey("telemetry")) return current;
+        if (settings["telemetry"] is not JsonObject telemetry) return null;
+        var before = (backup is null ? null : Json.ParseNode(backup) as JsonObject)?["telemetry"] as JsonObject;
+        foreach (var (key, value) in GeminiTelemetry)
+        {
+            if (!telemetry.ContainsKey(key)) continue;
+            if (JsonNode.DeepEquals(telemetry[key], value))
+            {
+                if (before?.ContainsKey(key) == true) telemetry[key] = before[key]?.DeepClone();
+                else telemetry.Remove(key);
+            }
+            else if (before?.ContainsKey(key) != true || !JsonNode.DeepEquals(telemetry[key], before[key])) return null;
+        }
+        if (telemetry.Count == 0 && before is null) settings.Remove("telemetry");
+        return SettingsData(settings, current);
+    }
 
     /// Adds the bridge to an existing connection (env connected, status line absent, no bridge record). The current file is
     /// backed up first (`PreBridgeBackupName`) and recorded in the manifest. The whole-file restore keeps covering it: an
@@ -309,6 +441,7 @@ public sealed class TelemetrySetup
                     {
                         Claude => RevertClaude(current, backup, bridged: manifest.StatusLine is not null),
                         Codex => RevertCodex(current, backup),
+                        Gemini or Qwen => RevertGeminiStyle(current, backup),
                         _ => null,
                     }) is not { } reverted)
                 {

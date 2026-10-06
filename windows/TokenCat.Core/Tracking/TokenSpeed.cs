@@ -42,10 +42,11 @@ public static class TokenSpeed
             List<int> matches;
             if ((measurement.ServerTokenIntervalSampleCount ?? 1) > 1) matches = [];
             else if (measurement.AgentID is { } agent) matches = [.. sessionMatches.Where(index => result[index].AgentID == agent)];
-            else if (measurement.Provider == TokenSource.Claude)
+            else if (measurement.Provider is TokenSource.Claude or TokenSource.Gemini or TokenSource.Qwen)
             {
                 // Claude Code tags every subagent request with agent_id; an untagged request
-                // belongs to the session's single main-thread log.
+                // belongs to the session's single main-thread log. Gemini CLI and Qwen Code subagent logs carry their
+                // parent's session ID, and only main-conversation requests are decoded for them.
                 var main = sessionMatches.Where(index => result[index].AgentID is null && !result[index].IsSubagent).ToList();
                 matches = main.Count == 1 ? main : [];
             }

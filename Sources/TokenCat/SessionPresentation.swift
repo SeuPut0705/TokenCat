@@ -918,9 +918,12 @@ enum SessionPresentation {
         return FooterStatus(kind: .live, text: loc("실시간", "Live"))
     }
 
-    /// "실측 수신: Codex 기록 없음 · Claude Code 2분 전", minute-granular for a stable tooltip.
+    /// "실측 수신: Codex 기록 없음 · Claude Code 2분 전", minute-granular for a stable tooltip. Gemini CLI and Qwen Code join
+    /// once they have sent something.
     static func telemetryReceipt(_ lastReceived: [TokenSource: Date], now: Date) -> String {
-        loc("실측 수신: ", "Telemetry received: ") + TokenSource.telemetryClients.map { "\($0.title) \(helpAge(lastReceived[$0], now: now))" }.joined(separator: " · ")
+        loc("실측 수신: ", "Telemetry received: ") + TokenSource.telemetryClients
+            .filter { TokenSource.defaultClients.contains($0) || lastReceived[$0] != nil }
+            .map { "\($0.title) \(helpAge(lastReceived[$0], now: now))" }.joined(separator: " · ")
     }
 
     /// Newest measurement per client from the readings, for a model that does not track receipts itself.

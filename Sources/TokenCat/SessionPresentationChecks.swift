@@ -619,6 +619,9 @@ func runSessionPresentationChecks() -> [String] {
             == "실측 수신: Codex 2분 전 · Claude Code 기록 없음"
           && SessionPresentation.telemetryReceipt([.claude: at(-30)], now: now) == "실측 수신: Codex 기록 없음 · Claude Code 1분 이내",
           "telemetry receipt per provider")
+    check(SessionPresentation.telemetryReceipt([.gemini: at(-30)], now: now) == "실측 수신: Codex 기록 없음 · Claude Code 기록 없음 · Gemini CLI 1분 이내"
+          && !SessionPresentation.telemetryReceipt([:], now: now).contains("Qwen"),
+          "Gemini CLI or Qwen Code receipts were missing once received, or listed before any")
 
     // Row actions copy or reveal; the log path comes from the reading id.
     var located = claudeParent

@@ -629,6 +629,10 @@ static class AppChecks
             && Client(false, false, null, at).Text == "기록 수신 중 · 속도 형식 없음" && Client(false, false, null, at).Detail is not null
             && Client(false, false, null, null).Text == "이번 실행에서 받은 실측 없음",
             "Client telemetry rows are not checked restart → 24 h → received → batch only → none");
+        check(SettingsView.ClientStatus(true, true, at, at, at, "이유") == (SettingsView.StatusRow.Info, "연결 안 함 · 기존 실측 설정 유지", "이유")
+            && OnboardingCard.Clients([TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.Qwen, TokenSource.Amp],
+                [new TelemetrySetupNote.ClientSkipped(TokenSource.Gemini, "이유")]).SequenceEqual([TokenSource.Codex, TokenSource.Claude, TokenSource.Qwen]),
+            "A skipped Gemini CLI / Qwen Code row is not checked first, or the welcome card names a skipped or undetected client");
         (SettingsView.StatusRow Row, string Text, string? Detail) Limits(TelemetrySetupNote[] notes, bool? bridged, DateTimeOffset? received) =>
             SettingsView.ClaudeLimitsStatus(notes, bridged, received, false, at);
         check(Limits([TelemetrySetupNote.OriginalUnknown], true, at) == (SettingsView.StatusRow.Problem, "상태 표시줄이 비어 보일 수 있음", "settings.json의 statusLine을 직접 고쳐 주세요")
