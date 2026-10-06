@@ -126,8 +126,8 @@ static class AppChecks
             };
             var busy = new StatusAISummary { Running = 99, Input = 99, Phase = TokenActivityState.Input };
             var items = Enum.GetValues<MetricID>();
-            // The speed items' worst realistic rate, "9999 tok/s" on the bar (a sub-millisecond time between tokens).
-            var speeds = new Dictionary<MetricID, double> { [MetricID.CodexSpeed] = 9999.4, [MetricID.ClaudeSpeed] = 9999.4, [MetricID.AverageSpeed] = 9999.4 };
+            // The speed item's worst realistic rate, "9999 tok/s" on the bar (a sub-millisecond time between tokens), beside three glyphs.
+            var speed = new AverageSpeed(9999.4, [TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.OpenCode]);
             List<string> unstable = [], shrunk = [];
             foreach (var layout in Enum.GetValues<StatusBarLayout>())
             {
@@ -139,7 +139,7 @@ static class AppChecks
                     return view.DesiredSize.Width;
                 }
                 var unknown = Width(StatusBarContent.Metrics(new SystemSnapshot { BatteryPresent = true }, new StatusAISummary(), layout, items, false, false));
-                var full = StatusBarContent.Metrics(maximum, busy, layout, items, true, true, speeds);
+                var full = StatusBarContent.Metrics(maximum, busy, layout, items, true, true, speed);
                 var width = Width(full);
                 var contract = (StatusBarContent.RequiredWidth(layout, full.Select(metric => metric.Id)) + 2 * WidgetView.Inset) * view.Scale;
                 if (unknown != width || Math.Abs(width - contract) > 0.01) unstable.Add($"{layout} {unknown}/{width}/{contract}");
@@ -148,41 +148,52 @@ static class AppChecks
             }
             check(unstable.Count == 0, "the widget's width follows its layout, not its values: " + string.Join(", ", unstable));
             check(shrunk.Count == 0, "worst-case widget values fit their cells without shrinking: " + string.Join(", ", shrunk));
-            // Narrator reads the items as one named text element; a speed item by its client, rate and unit.
+            // Narrator reads the items as one named text element; the speed item by its rate, unit and clients.
             var spoken = new WidgetView();
-            spoken.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, [MetricID.Cpu, MetricID.CodexSpeed, MetricID.ClaudeSpeed, MetricID.AverageSpeed],
-                true, true, new Dictionary<MetricID, double> { [MetricID.CodexSpeed] = 55.56, [MetricID.AverageSpeed] = 55.56 }), StatusBarLayout.Compact);
+            spoken.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, [MetricID.Cpu, MetricID.AverageSpeed],
+                true, true, new AverageSpeed(55.56, [TokenSource.Codex, TokenSource.Claude])), StatusBarLayout.Compact);
             check(UIElementAutomationPeer.CreatePeerForElement(spoken) is { } widgetPeer && widgetPeer.GetAutomationControlType() == AutomationControlType.Text
-                  && widgetPeer.GetName() == "CPU 100%, Codex 속도 55.6 토큰/초, Claude 속도 측정 없음, 평균 속도 55.6 토큰/초",
-                  "Narrator reads the widget's items, the speed items by client and rate");
-            // Speed items on one line without the character (mac "speed glyphs are the clients' coloured app icons"): the glyph
+                  && widgetPeer.GetName() == "CPU 100%, 평균 속도 55.6 토큰/초 · Codex, Claude Code",
+                  "Narrator reads the widget's items, the speed item by rate and clients");
+            // The speed item on one line without the character (mac "speed glyphs are the clients' coloured app icons"): a glyph
             // (12–22 pt) is the client's app icon in its own colours; "—" in the secondary tone, digits in the label tone. The light
             // label is black, so on the clear backdrop a pixel's alpha is its tone: secondary tops out at 184 (0.72), label at 217 (0.85).
-            var toned = StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Inline, [MetricID.CodexSpeed, MetricID.ClaudeSpeed], true, true,
-                new Dictionary<MetricID, double> { [MetricID.CodexSpeed] = 55.56 });
-            (byte alpha, int colour) Scan(StatusBarMetric metric, double from, double to)
+            StatusBarMetric speedItem(params TokenSource[] sources) => StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Inline, [MetricID.AverageSpeed],
+                true, true, sources.Length == 0 ? null : new AverageSpeed(55.56, sources))[0];
+            byte[] Render(StatusBarMetric metric, out int width, out double scale)
             {
                 var toneView = new WidgetView();
                 toneView.Update([metric], StatusBarLayout.Inline, nextRunner: false);
                 var image = Snapshot.Render(() => toneView, dark: false);
                 var pixels = new byte[image.PixelWidth * image.PixelHeight * 4];
                 image.CopyPixels(pixels, image.PixelWidth * 4, 0);
-                int first = (int)(from * toneView.Scale * 2), last = Math.Min(image.PixelWidth, (int)Math.Ceiling(to * toneView.Scale * 2));
-                byte darkest = 0;
-                var colour = 0;
-                for (var y = 0; y < image.PixelHeight; y++)
-                    for (var x = first; x < last; x++)
-                    {
-                        var i = (y * image.PixelWidth + x) * 4;
-                        darkest = Math.Max(darkest, pixels[i + 3]);
-                        colour = Math.Max(colour, Math.Max(pixels[i], Math.Max(pixels[i + 1], pixels[i + 2])) - Math.Min(pixels[i], Math.Min(pixels[i + 1], pixels[i + 2])));
-                    }
-                return (darkest, colour);
+                (width, scale) = (image.PixelWidth, toneView.Scale * 2);
+                return pixels;
             }
-            int[] glyphColour = [Scan(toned[0], 12, 22).colour, Scan(toned[1], 12, 22).colour];
-            byte[] tones = [Scan(toned[1], 25, 45).alpha, Scan(toned[0], 25, 45).alpha];
-            check(glyphColour.All(colour => colour > 100) && tones[0] is > 60 and <= 187 && tones[1] > 190,
+            // The BGRA pixels between `from` and `to` points.
+            List<(byte B, byte G, byte R, byte A)> Columns(StatusBarMetric metric, double from, double to)
+            {
+                var pixels = Render(metric, out var width, out var scale);
+                int first = (int)(from * scale), last = Math.Min(width, (int)Math.Ceiling(to * scale));
+                List<(byte, byte, byte, byte)> found = [];
+                for (var i = 0; i < pixels.Length; i += 4)
+                    if ((i / 4) % width is var x && x >= first && x < last) found.Add((pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]));
+                return found;
+            }
+            (byte alpha, int colour) Scan(StatusBarMetric metric, double from, double to)
+            {
+                var found = Columns(metric, from, to);
+                return (found.Max(pixel => pixel.A), found.Max(pixel => Math.Max(pixel.R, Math.Max(pixel.G, pixel.B)) - Math.Min(pixel.R, Math.Min(pixel.G, pixel.B))));
+            }
+            int[] glyphColour = [Scan(speedItem(TokenSource.Codex), 12, 22).colour, Scan(speedItem(TokenSource.Claude), 12, 22).colour];
+            byte[] tones = [Scan(speedItem(), 25, 45).alpha, Scan(speedItem(TokenSource.Codex), 25, 45).alpha];
+            check(Enum.GetValues<TokenSource>().All(SpeedGlyph.Has) && glyphColour.All(colour => colour > 100) && tones[0] is > 60 and <= 187 && tones[1] > 190,
                   $"speed glyphs are the clients' coloured app icons, dashes secondary, digits label-toned (colour {string.Join(", ", glyphColour)}, alpha {string.Join(", ", tones)})");
+            // Two clients: Codex's blue glyph in front at 12–22 pt, Claude's orange one showing past it and its 1 pt ring at 23–28 pt.
+            var pair = speedItem(TokenSource.Codex, TokenSource.Claude);
+            bool blue = Columns(pair, 12, 18).Any(pixel => pixel.B - pixel.R > 80), orange = Columns(pair, 23.5, 27.5).Any(pixel => pixel.R - pixel.B > 80);
+            check(blue && orange && SpeedGlyph.StackWidth(5, WidgetView.GlyphInline) == 22,
+                  $"two contributing clients draw two overlapping glyphs (blue {blue}, orange {orange})");
 
             // Sizes: the width is the contract × the size, with and without the character; whole pixels per point keep the runner
             // nearest-neighbour at exactly that size, a fractional size scales the next whole size up down smoothly.
@@ -321,17 +332,13 @@ static class AppChecks
             List<CheckBox> rows() => [.. Descendants(settings).OfType<CheckBox>()];
             var shown = rows();
             var named = shown.Select(row => Peer(row)?.GetName()).SequenceEqual(["CPU", "메모리 · RAM", "저장 공간 · DISK", "배터리 · BAT", "네트워크 · NET", "AI 세션 · AI",
-                "Codex 속도", "Claude 속도", "평균 속도 · AVG"]);
+                "평균 속도 · AVG"]);
             var states = shown.Select(row => (Toggled(row), row.IsEnabled)).SequenceEqual(
                 [(ToggleState.Off, true), (ToggleState.On, false), (ToggleState.Off, true), (ToggleState.Off, false), (ToggleState.Off, true), (ToggleState.Off, true),
-                 (ToggleState.Off, true), (ToggleState.Off, true), (ToggleState.Off, true)]);
+                 (ToggleState.Off, true)]);
             var note = Descendants(settings).OfType<TextBlock>().Any(text => text.Text.Replace("⁠", "") == "이 PC에는 배터리가 없습니다");
-            // The speed rows show their glyph where the others show their label.
-            var glyphs = Descendants(settings).OfType<TextBlock>().SelectMany(text => text.Inlines.OfType<System.Windows.Documents.InlineUIContainer>())
-                .Select(container => container.Child).OfType<SpeedGlyph>().Count();
-            check(named && states && note && glyphs == 2,
-                "the widget's item rows are check boxes named title · bar label (a speed item by its title, its glyph beside it) in the stored order, "
-                + "locked and no-battery rows disabled with the note");
+            check(named && states && note,
+                "the widget's item rows are check boxes named title · bar label in the stored order, locked and no-battery rows disabled with the note");
 
             // UI Automation's Toggle (Narrator scan mode, voice access) raises no Click: it must still show and hide the item.
             var cpu = (IToggleProvider)Peer(shown[0])!.GetPattern(PatternInterface.Toggle)!;

@@ -3,8 +3,8 @@ import Combine
 import SwiftUI
 
 enum MetricID: String, CaseIterable, Codable, Identifiable {
-    case cpu, memory, disk, battery, network, ai, codexSpeed, claudeSpeed, averageSpeed
-    /// Shown by default and by the full presets; the speed items are opt-in.
+    case cpu, memory, disk, battery, network, ai, averageSpeed
+    /// Shown by default and by the full presets; the speed item is opt-in.
     static let standard: [MetricID] = [.cpu, .memory, .disk, .battery, .network, .ai]
     var id: String { rawValue }
     var title: String {
@@ -15,17 +15,7 @@ enum MetricID: String, CaseIterable, Codable, Identifiable {
         case .battery: return loc("배터리", "Battery")
         case .network: return loc("네트워크", "Network")
         case .ai: return loc("AI 세션", "AI sessions")
-        case .codexSpeed: return loc("Codex 속도", "Codex speed")
-        case .claudeSpeed: return loc("Claude 속도", "Claude speed")
         case .averageSpeed: return loc("평균 속도", "Average speed")
-        }
-    }
-    /// The client whose "지금 속도" a speed item shows; the average item has none.
-    var speedSource: TokenSource? {
-        switch self {
-        case .codexSpeed: return .codex
-        case .claudeSpeed: return .claude
-        default: return nil
         }
     }
 }
@@ -57,17 +47,22 @@ final class Preferences: ObservableObject {
     @Published var hasBattery = true { didSet { if hasBattery != oldValue { keepSomethingVisible() } } }
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
-        // Preserve custom order and visibility when the two provider fields become one.
-        func migrated(_ name: String) -> MetricID? {
-            if name == "codex" || name == "claude" { return .ai }
-            return MetricID(rawValue: name)
+        // Preserve custom order and visibility when the two provider fields become one, and when the per-client speed
+        // items ("codexSpeed", "claudeSpeed", until 0.13) become the one average item: either shown shows it, and their
+        // slots leave the order.
+        func migrated(_ name: String, visible: Bool) -> MetricID? {
+            switch name {
+            case "codex", "claude": return .ai
+            case "codexSpeed", "claudeSpeed": return visible ? .averageSpeed : nil
+            default: return MetricID(rawValue: name)
+            }
         }
-        let saved = (defaults.stringArray(forKey: "metricOrder") ?? []).compactMap(migrated)
+        let saved = (defaults.stringArray(forKey: "metricOrder") ?? []).compactMap { migrated($0, visible: false) }
         var ordered: [MetricID] = []
         for id in saved + MetricID.allCases where !ordered.contains(id) { ordered.append(id) }
         order = ordered
-        // Items added later (the speed items) append to a stored order and stay hidden until turned on.
-        visible = Set((defaults.stringArray(forKey: "visibleMetrics") ?? MetricID.standard.map(\.rawValue)).compactMap(migrated))
+        // Items added later (the speed item) append to a stored order and stay hidden until turned on.
+        visible = Set((defaults.stringArray(forKey: "visibleMetrics") ?? MetricID.standard.map(\.rawValue)).compactMap { migrated($0, visible: true) })
         // New installs, the legacy "tokens" value and an unconfirmed older "cpu" start on AI activity.
         animationSource = RunnerMotion.stored(defaults.string(forKey: "animationSource"),
                                               confirmed: defaults.bool(forKey: RunnerMotion.confirmedKey))
@@ -892,7 +887,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard let button = statusItem?.button, let statusView else { return }
         let preferences = model.preferences
         let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, ai: ai, recorded: model.flow.total,
-            speeds: StatusBarContent.speeds(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
+            speed: SessionPresentation.averageSpeed(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
             preferences: preferences, sources: model.listedSources, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         statusView.update(metrics: metrics, layout: preferences.statusBarLayout, showRunner: preferences.showRunner)
         if statusItem.length != statusView.requiredWidth { statusItem.length = statusView.requiredWidth }
@@ -1343,7 +1338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
     private func writeStatusReadback(path: String) {
         guard let button = statusItem.button, let statusView else { return }
         let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, ai: ai, recorded: model.flow.total,
-            speeds: StatusBarContent.speeds(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
+            speed: SessionPresentation.averageSpeed(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
             preferences: model.preferences, sources: model.listedSources, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         let report: [String: Any] = [
             "version": AppInfo.version,

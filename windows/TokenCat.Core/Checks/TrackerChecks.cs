@@ -897,11 +897,15 @@ public static class TrackerChecks
             Directory.CreateDirectory(Path.Combine(dataHome, "amp", "threads"));
             Directory.CreateDirectory(Path.Combine(detectHome, ".claude", "projects"));
             var environment = new Dictionary<string, string> { ["XDG_DATA_HOME"] = dataHome, ["OPENCODE_DB"] = "" };
-            var detectTracker = new TokenTracker(detectHome, () => now, environment: key => environment.GetValueOrDefault(key));
+            // Every shipped client has a parser; a registry entry without one (here Gemini, stripped) is still detected but never read.
+            var unread = TokenProvider.All.Select(provider => provider.Source == TokenSource.Gemini ? provider with { Format = null } : provider).ToList();
+            var detectTracker = new TokenTracker(detectHome, () => now, environment: key => environment.GetValueOrDefault(key), providers: unread);
             var detectedSources = detectTracker.DetectedSources();
             check(detectedSources.SetEquals([TokenSource.Claude, TokenSource.Gemini, TokenSource.Amp, TokenSource.Droid]) && detectTracker.Sample().Count == 0,
                   "Provider registry: detection by data folder (with environment overrides) is wrong, or an unread format produced rows");
-            check(detectTracker.WatchedDirectories.SequenceEqual([AppPaths.CodexSessions(Path.GetFullPath(detectHome)), AppPaths.ClaudeProjects(Path.GetFullPath(detectHome))])
+            check(detectTracker.WatchedDirectories.Contains(AppPaths.CodexSessions(Path.GetFullPath(detectHome)))
+                  && detectTracker.WatchedDirectories.Contains(AppPaths.ClaudeProjects(Path.GetFullPath(detectHome)))
+                  && !detectTracker.WatchedDirectories.Any(directory => directory.Contains(".gemini"))
                   && !detectTracker.IsLog(Path.Combine(detectHome, ".claude", "projects", "p", "notes.txt"))
                   && !detectTracker.IsLog(Path.Combine(detectHome, ".gemini", "tmp", "p", "logs.jsonl"))
                   && detectTracker.IsLog(Path.Combine(detectHome, ".claude", "projects", "p", "x.jsonl")),
@@ -954,6 +958,113 @@ public static class TrackerChecks
                 check(opened?.CurrentTurnOutputTokens == 0 && appended?.CurrentTurnOutputTokens == 30 && appended?.LastOutputDelta == 30,
                       "Windows: a line flushed by a writer that keeps the log open was not read on the next sample");
             }
+
+            // Gemini CLI and Qwen Code chat logs: turn state, output totals, model, project and subagents from fixture files.
+            var gqHome = Path.Combine(root, "gemini-qwen");
+            var gqStart = At("2026-10-04T05:00:00Z");
+            string T(double seconds) => gqStart.AddSeconds(seconds).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+            void Add(string file, params JsonNode[] records)
+            {
+                using var stream = new FileStream(file, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete);
+                stream.Write(Lines(records));
+            }
+            var gqNow = gqStart;
+            var gqTracker = new TokenTracker(gqHome, () => gqNow, discoveryIntervalSeconds: 0, environment: _ => null);
+            var gemini = Path.Combine(gqHome, ".gemini", "tmp", "proj");
+            Directory.CreateDirectory(Path.Combine(gemini, "chats", "gem-1"));
+            File.WriteAllText(Path.Combine(gemini, ".project_root"), "/tmp/GeminiProject\n");
+            var geminiLog = Path.Combine(gemini, "chats", "session-2026-10-04T05-00-gem1.jsonl");
+            var geminiReply = $$"""{"id":"g1","timestamp":"{{T(2)}}","type":"gemini","content":"","model":"gemini-fixture","tokens":{"input":1000,"output":40,"cached":0,"thoughts":10,"tool":0,"total":1050}""";
+            Add(geminiLog, N($$"""{"sessionId":"gem-1","projectHash":"h","startTime":"{{T(0)}}","lastUpdated":"{{T(0)}}","kind":"main"}"""),
+                N($$"""{"id":"u1","timestamp":"{{T(0)}}","type":"user","content":[{"text":"fixture"}]}"""), N(geminiReply + "}"));
+            gqNow = gqStart.AddSeconds(3);
+            var geminiRow = gqTracker.Sample().FirstOrDefault(r => r.Source == TokenSource.Gemini);
+            check(geminiRow is { Active: true, ActivityState: TokenActivityState.Tool, CurrentTurnOutputTokens: 50, Model: "gemini-fixture",
+                      Project: "GeminiProject", ProjectPath: "/tmp/GeminiProject", SessionID: "gem-1", SpeedMeasurement: null },
+                  "Gemini: a reply asking for tools was not a running tool turn with thoughts counted, model and .project_root project");
+            Add(geminiLog, N(geminiReply + $$""","toolCalls":[{"id":"c1","name":"run_shell_command","status":"success","timestamp":"{{T(5)}}"}]}"""),
+                N($$$"""{"id":"u2","timestamp":"{{{T(6)}}}","type":"user","content":[{"functionResponse":{"id":"c1","name":"run_shell_command"}}]}"""));
+            gqNow = gqStart.AddSeconds(7);
+            geminiRow = gqTracker.Sample().FirstOrDefault(r => r.Source == TokenSource.Gemini);
+            check(geminiRow is { Active: true, ActivityState: TokenActivityState.Working, CurrentTurnOutputTokens: 50 } && geminiRow.CurrentTurnStartedAt == gqStart,
+                  "Gemini: the reply appended again with its tool calls counted twice or the tool result did not resume the turn");
+            Add(geminiLog, N($$$"""{"id":"g2","timestamp":"{{{T(10)}}}","type":"gemini","content":"fixture","model":"gemini-fixture","tokens":{"input":1100,"output":30,"cached":0,"thoughts":0,"total":1130}}"""),
+                N($$$"""{"$set":{"lastUpdated":"{{{T(10)}}}"}}"""));
+            gqNow = gqStart.AddSeconds(11);
+            geminiRow = gqTracker.Sample().FirstOrDefault(r => r.Source == TokenSource.Gemini);
+            check(geminiRow is { Active: false, ActivityState: TokenActivityState.Complete, LastOutputTokens: 80, CurrentTurnOutputTokens: null,
+                      Context.UsedTokens: 1_100, LastTurnDurationSeconds: null } && geminiRow.RecentOutputs.Sum(e => e.Tokens) == 80,
+                  "Gemini: a text reply did not finish the turn and wait for input, or its totals were wrong");
+            Add(geminiLog, N($$"""{"id":"u3","timestamp":"{{T(20)}}","type":"user","content":[{"text":"fixture"}]}"""));
+            gqNow = gqStart.AddSeconds(720);
+            var geminiStale = gqTracker.Sample().FirstOrDefault(r => r.Source == TokenSource.Gemini)?.ActivityState;
+            gqNow = gqStart.AddSeconds(2_100);
+            check(geminiStale == TokenActivityState.Stale
+                  && gqTracker.Sample().FirstOrDefault(r => r.Source == TokenSource.Gemini)?.ActivityState == TokenActivityState.Unfinished,
+                  "Gemini: a silent open turn did not go stale after 600 s and unfinished after 30 min");
+            var geminiSubLog = Path.Combine(gemini, "chats", "gem-1", "sub-1.jsonl");
+            Add(geminiSubLog,
+                N($$"""{"sessionId":"sub-1","projectHash":"h","startTime":"{{T(2_090)}}","kind":"subagent","directories":["/tmp/GeminiProject"]}"""),
+                N($$"""{"id":"s1","timestamp":"{{T(2_090)}}","type":"user","content":[{"text":"fixture"}]}"""),
+                N($$$"""{"id":"s2","timestamp":"{{{T(2_095)}}}","type":"gemini","content":"fixture","model":"gemini-flash-fixture","tokens":{"input":10,"output":7,"cached":0,"total":17}}"""));
+            // A legacy snapshot is read whole; one already migrated to .jsonl is left out.
+            File.WriteAllText(Path.Combine(gemini, "chats", "session-old.json"),
+                $$$"""{"sessionId":"gem-old","projectHash":"h","messages":[{"id":"o1","timestamp":"{{{T(2_000)}}}","type":"user","content":"fixture"},{"id":"o2","timestamp":"{{{T(2_001)}}}","type":"gemini","content":"fixture","tokens":{"input":5,"output":9,"total":14}}]}""");
+            File.WriteAllText(Path.Combine(gemini, "chats", "session-migrated.json"), "{}");
+            Add(Path.Combine(gemini, "chats", "session-migrated.jsonl"), N("""{"sessionId":"gem-mig","projectHash":"h"}"""),
+                N($$"""{"id":"m1","timestamp":"{{T(2_000)}}","type":"user","content":"fixture"}"""));
+            var geminiRows = gqTracker.Sample().Where(r => r.Source == TokenSource.Gemini).ToList();
+            check(geminiRows.FirstOrDefault(r => r.IsSubagent) is { ParentSessionID: "gem-1", AgentID: "sub-1", LastOutputTokens: 7,
+                      Model: "gemini-flash-fixture", Project: "GeminiProject" }
+                  && geminiRows.FirstOrDefault(r => r.Id.EndsWith("session-old.json", StringComparison.Ordinal))?.LastOutputTokens == 9
+                  && geminiRows.Count == 4 && !geminiRows.Any(r => r.Id.EndsWith("session-migrated.json", StringComparison.Ordinal)),
+                  "Gemini: subagent identity, legacy JSON snapshot or migrated-snapshot de-duplication");
+            check(gqTracker.IsLog(geminiLog) && gqTracker.IsLog(geminiSubLog) && !gqTracker.IsLog(Path.Combine(gemini, ".project_root"))
+                  && !gqTracker.IsLog(Path.Combine(gemini, "chats", "notes.jsonl")),
+                  "Gemini: a chat log was not recognised, or a side file was");
+
+            var qwen = Path.Combine(gqHome, ".qwen", "projects", "-tmp-QwenProject");
+            Directory.CreateDirectory(Path.Combine(qwen, "chats"));
+            Directory.CreateDirectory(Path.Combine(qwen, "subagents", "qs-1"));
+            var qwenLog = Path.Combine(qwen, "chats", "qs-1.jsonl");
+            JsonNode Q(string uuid, string type, double seconds, string extra) =>
+                Merged(J($$"""{"uuid":"{{uuid}}","sessionId":"qs-1","timestamp":"{{T(seconds)}}","type":"{{type}}","cwd":"/tmp/QwenProject","version":"1"}"""), extra);
+            // OpenAI-compatible usage: the reasoning is part of the candidates (total = prompt + candidates).
+            Add(qwenLog, Q("q1", "user", 3_000, """{"message":{"role":"user","parts":[{"text":"fixture"}]}}"""),
+                Q("q2", "assistant", 3_002, """{"model":"qwen-fixture","contextWindowSize":131072,"message":{"role":"model","parts":[{"functionCall":{"id":"call-1","name":"run_shell_command"}}]},"usageMetadata":{"promptTokenCount":2000,"candidatesTokenCount":60,"thoughtsTokenCount":20,"totalTokenCount":2060}}"""));
+            gqNow = gqStart.AddSeconds(3_003);
+            var qwenRow = gqTracker.Sample().FirstOrDefault(r => r.Source == TokenSource.Qwen && !r.IsSubagent);
+            check(qwenRow is { Active: true, ActivityState: TokenActivityState.Tool, ToolName: "run_shell_command", ToolCategory: ToolCategory.Command,
+                      CurrentTurnOutputTokens: 60, Model: "qwen-fixture", Project: "QwenProject", SessionID: "qs-1", Context.WindowTokens: 131_072 },
+                  "Qwen: a tool call was not a running tool turn, or reasoning inside the candidates was counted twice");
+            Add(qwenLog, Q("q3", "tool_result", 3_005, """{"toolCallResult":{"callId":"call-1"},"message":{"role":"user","parts":[{"functionResponse":{"id":"call-1"}}]}}"""),
+                Q("q4", "assistant", 3_008, """{"model":"qwen-fixture","message":{"role":"model","parts":[{"text":"fixture"}]},"usageMetadata":{"promptTokenCount":2100,"candidatesTokenCount":40,"totalTokenCount":2140}}"""));
+            gqNow = gqStart.AddSeconds(3_009);
+            qwenRow = gqTracker.Sample().FirstOrDefault(r => r.Source == TokenSource.Qwen && !r.IsSubagent);
+            check(qwenRow is { Active: false, ActivityState: TokenActivityState.Complete, LastOutputTokens: 100, CurrentTurnOutputTokens: null }
+                  && qwenRow.RecentOutputs.Sum(e => e.Tokens) == 100,
+                  "Qwen: a text reply after the tool result did not finish the turn with the whole turn's output");
+            Add(qwenLog, Q("q5", "user", 3_020, """{"message":{"role":"user","parts":[{"text":"fixture"}]}}"""),
+                Q("q6", "assistant", 3_021, """{"message":{"role":"model","parts":[{"functionCall":{"id":"call-2","name":"ask_user_question"}}]}}"""));
+            gqNow = gqStart.AddSeconds(4_200);
+            qwenRow = gqTracker.Sample().FirstOrDefault(r => r.Source == TokenSource.Qwen && !r.IsSubagent);
+            check(qwenRow is { Active: true, ActivityState: TokenActivityState.Input, ToolCategory: ToolCategory.Question },
+                  "Qwen: a pending question did not wait for the person");
+            var agentLog = Path.Combine(qwen, "subagents", "qs-1", "agent-explore1.jsonl");
+            File.WriteAllText(Path.Combine(qwen, "subagents", "qs-1", "agent-explore1.meta.json"),
+                """{"agentId":"explore1","agentType":"Explore","parentSessionId":"qs-1"}""");
+            Add(agentLog, Q("a1", "user", 4_190, """{"isSidechain":true,"message":{"role":"user","parts":[{"text":"fixture"}]}}"""),
+                Q("a2", "assistant", 4_195, """{"isSidechain":true,"message":{"role":"model","parts":[{"text":"fixture"}]},"usageMetadata":{"promptTokenCount":50,"candidatesTokenCount":12,"totalTokenCount":62}}"""));
+            check(gqTracker.Sample().FirstOrDefault(r => r.Source == TokenSource.Qwen && r.IsSubagent) is { ParentSessionID: "qs-1", AgentID: "explore1",
+                      AgentRole: "Explore", LastOutputTokens: 12, ActivityState: TokenActivityState.Complete }
+                  && gqTracker.IsLog(agentLog) && gqTracker.IsLog(qwenLog)
+                  && !gqTracker.IsLog(Path.Combine(qwen, "subagents", "qs-1", "agent-explore1.meta.json")),
+                  "Qwen: subagent identity, sidecar role, output or log matching");
+
+            // OpenCode: a fixture database (OpenCodeLogChecks.cs).
+            OpenCodeLogChecks.Run(root, check);
+            // Cline, Roo Code, Cline CLI, omp and Pi: fixture files (ClineOmpChecks.cs).
+            ClineOmpChecks.Run(root, check);
         }
         catch (Exception error)
         {
@@ -964,6 +1075,7 @@ public static class TrackerChecks
             try { Directory.Delete(root, true); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
+        CopilotAmpDroidChecks.Run(check);
         return c.Done();
     }
 }

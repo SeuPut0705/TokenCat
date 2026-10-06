@@ -22,7 +22,7 @@ public sealed class Preferences : INotifyPropertyChanged
         public override int GetHashCode() => HashCode.Combine(AnimationSource, Character, Layout, ShowRunner, WidgetScale, Order.Count, Visible.Count);
     }
 
-    /// Like the mac bar, the widget starts on two lines with the standard items shown (the speed items off, last), the character
+    /// Like the mac bar, the widget starts on two lines with the standard items shown (the speed item off, last), the character
     /// in it, at 100 %.
     public static Snapshot DefaultSnapshot { get; } = new(RunnerMotion.Activity, RunnerCharacter.Cat, false, false, false,
         StatusBarLayout.Compact, Enum.GetValues<MetricID>(), MetricID.Standard.ToHashSet(), true, 100);
@@ -54,12 +54,15 @@ public sealed class Preferences : INotifyPropertyChanged
         liveUsageLimits = store.Get<bool?>("liveUsageLimits") ?? true;
         dismissedUpdateVersion = store.Get<string>("dismissedUpdateVersion");
         // The widget starts on, on two lines like the mac bar; unknown item names are dropped. Items added later (the speed
-        // items) append to a stored order and stay hidden until turned on.
+        // item) append to a stored order and stay hidden until turned on. The per-client speed items ("codexSpeed",
+        // "claudeSpeed", until 0.13) became the one average item: either shown shows it, and their slots leave the order.
         showWidget = store.Get<bool?>("showWidget") ?? true;
         layout = RunnerCharacterText.Parse<StatusBarLayout>(store.Get<string>("statusBarLayout")) ?? StatusBarLayout.Compact;
-        static IEnumerable<MetricID> Items(string[]? names) => (names ?? []).Select(RunnerCharacterText.Parse<MetricID>).OfType<MetricID>();
-        order = [.. Items(store.Get<string[]>("metricOrder")).Concat(Enum.GetValues<MetricID>()).Distinct()];
-        visible = (store.Get<string[]>("visibleMetrics") is { } shown ? Items(shown) : MetricID.Standard).ToHashSet();
+        static IEnumerable<MetricID> Items(string[]? names, bool shown) => (names ?? [])
+            .Select(name => name is "codexSpeed" or "claudeSpeed" ? shown ? MetricID.AverageSpeed : (MetricID?)null : RunnerCharacterText.Parse<MetricID>(name))
+            .OfType<MetricID>();
+        order = [.. Items(store.Get<string[]>("metricOrder"), shown: false).Concat(Enum.GetValues<MetricID>()).Distinct()];
+        visible = (store.Get<string[]>("visibleMetrics") is { } stored ? Items(stored, shown: true) : MetricID.Standard).ToHashSet();
         showRunner = store.Get<bool?>("showRunner") ?? true;
         widgetScale = NearestScale(store.Get<double?>("widgetScale"));
         // A stored widget with neither items nor the character comes back with the character (not written until a change).
@@ -189,7 +192,7 @@ public sealed class Preferences : INotifyPropertyChanged
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
-    /// The Swift raw value ("activity", "penguin", "codexSpeed"), as stored.
+    /// The Swift raw value ("activity", "penguin", "averageSpeed"), as stored.
     static string Raw<T>(T value) where T : struct, Enum => RunnerCharacterText.Raw(value);
 
     public RunnerMotion AnimationSource

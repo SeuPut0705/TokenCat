@@ -475,12 +475,6 @@ sealed class SettingsView : Grid
         };
         var text = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         var line = id.BarLabel is { } bar ? Ui.Line(Ui.Run(id.Title, Font.Body), Ui.Run($" · {bar}", Font.Meta, Theme.Secondary)) : Ui.Line(Ui.Run(id.Title, Font.Body));
-        // A speed item shows its 9 DIP glyph where the others show their label; the check box's name is the title alone.
-        if (id.SpeedSource is { } source)
-        {
-            line.Inlines.Add(Ui.Run(" · ", Font.Meta, Theme.Secondary));
-            line.Inlines.Add(new System.Windows.Documents.InlineUIContainer(new SpeedGlyph(source, 9)) { BaselineAlignment = BaselineAlignment.Center });
-        }
         text.Children.Add(line);
         var noBattery = Loc("이 PC에는 배터리가 없습니다", "This PC has no battery");
         if (missing) text.Children.Add(Caption(noBattery));

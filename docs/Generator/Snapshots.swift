@@ -94,10 +94,12 @@ struct FixtureSheet {
     }
 }
 
-/// `--snapshot-menubar --fixtures` matrix: 9 state rows (the last two with the speed items) × 4 columns (light, dark, light·open, dark·open) on grey.
+/// `--snapshot-menubar --fixtures` matrix: 11 state rows (the last four with the average speed item: one, two and four clients, then
+/// none) × 4 columns (light, dark, light·open, dark·open) on grey.
 /// `stateNames` are the Korean row titles, used only as keys; drawn labels go through `loc`.
 struct MenuMatrix {
-    static let stateNames = ["활동 없음", "진행", "도구 실행", "방금 기록", "로그 대기", "입력 필요", "세션 12개", "속도", "속도 측정 없음"]
+    static let stateNames = ["활동 없음", "진행", "도구 실행", "방금 기록", "로그 대기", "입력 필요", "세션 12개",
+                             "속도 · 1개", "속도 · 2개", "속도 · 4개", "속도 측정 없음"]
     enum Column: Int { case light = 0, dark, lightOpen, darkOpen }
 
     let image: CGImage

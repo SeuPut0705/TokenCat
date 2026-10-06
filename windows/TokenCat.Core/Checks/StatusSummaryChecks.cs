@@ -150,44 +150,42 @@ public static class StatusSummaryChecks
               minimal.Select(metric => metric.Id).SequenceEqual([MetricID.Ai]) && minimal[0].Value == "1" && minimal[0].ActivityState == A.Tool);
         check("waiting-only AI shows the log-wait count with the half disc, not active",
               metrics(idleCpu, [stale]).First(metric => metric.Id == MetricID.Ai) is { Value: "1", IsActive: false, ActivityState: A.Stale });
-        // Speed items: each client's own "지금 속도" (`Format.Tps`, then a smaller "tok/s"), "—" without one, spoken per client;
-        // the average item is the mean of every fresh per-session rate; the minimal layout still draws only AI.
+        // The speed item: the mean of every fresh per-session rate (`Format.Tps`, then a smaller "tok/s") labelled by its
+        // contributing clients, fastest first, who are spoken after it; "—" and "AVG" without one; the minimal layout still draws only AI.
         var timed = new TokenReading(TokenSource.Codex, "timed")
         {
             SessionID = "t1", Model = "g1", Active = true, ActivityState = A.Working, SampledAt = at,
             SpeedMeasurement = new TokenSpeedMeasurement(new TelemetryReading { Provider = TokenSource.Codex, At = at.AddSeconds(-3) }) { Model = "g1", ServerTokenIntervalMs = 18 },
         };
         var untimed = new TokenReading(TokenSource.Claude, "untimed") { SessionID = "u1", Model = "m1", Active = true, ActivityState = A.Working, SampledAt = at };
-        IReadOnlyDictionary<MetricID, double> speeds(IReadOnlyList<TokenReading> readings, params TokenSource[] restart) =>
-            StatusBarContent.Speeds(SessionListModel.Make(readings, at, false), at, restart.ToHashSet());
-        IReadOnlyList<StatusBarMetric> speedItems(StatusBarLayout layout = StatusBarLayout.Compact) =>
-            StatusBarContent.Metrics(idleCpu, summary([timed, untimed]).AI, layout, [MetricID.CodexSpeed, MetricID.ClaudeSpeed, MetricID.AverageSpeed], true, true,
-                speeds([timed, untimed]));
-        check($"speed items show each client's own rate with its unit, or a dash: {string.Join(" / ", speedItems().Select(item => $"{item.Value} {item.Spoken}"))}",
-              speedItems().Select(item => (item.Id, item.Label, item.Value, item.Spoken)).SequenceEqual(
-                  [(MetricID.CodexSpeed, "", "55.6tok/s", "Codex 속도 55.6 토큰/초"), (MetricID.ClaudeSpeed, "", "—", "Claude 속도 측정 없음"),
-                   (MetricID.AverageSpeed, "AVG", "55.6tok/s", "평균 속도 55.6 토큰/초")])
-              && speeds([timed, untimed], TokenSource.Codex).Count == 0 && speedItems(StatusBarLayout.Minimal).Select(item => item.Id).SequenceEqual([MetricID.Ai])
+        AverageSpeed? average(IReadOnlyList<TokenReading> readings, params TokenSource[] restart) =>
+            SessionPresentation.Average(SessionListModel.Make(readings, at, false), at, restart.ToHashSet());
+        StatusBarMetric speedItem(IReadOnlyList<TokenReading> readings, StatusBarLayout layout = StatusBarLayout.Compact) =>
+            StatusBarContent.Metrics(idleCpu, summary(readings).AI, layout, [MetricID.AverageSpeed], true, true, average(readings))[0];
+        check($"the speed item shows the mean rate with its unit and its clients, or a dash and AVG: {speedItem([timed, untimed]).Spoken} / {speedItem([untimed]).Spoken}",
+              speedItem([timed, untimed]) is { Id: MetricID.AverageSpeed, Label: "AVG", Value: "55.6tok/s", Spoken: "평균 속도 55.6 토큰/초 · Codex" } measured
+              && measured.Contributors.SequenceEqual([TokenSource.Codex])
+              && speedItem([untimed]) is { Label: "AVG", Value: "—", Spoken: "평균 속도 측정 없음" } unmeasured && unmeasured.Contributors.Count == 0
+              && average([timed, untimed], TokenSource.Codex) is null && speedItem([timed], StatusBarLayout.Minimal).Id == MetricID.Ai
               && StatusBarContent.SplitRate("55.6tok/s") == ("55.6", "tok/s") && zero.First(metric => metric.Id == MetricID.Cpu).Spoken == "CPU 0%"
               && StatusBarContent.Metrics(idleCpu, new StatusAISummary(), StatusBarLayout.Compact, [MetricID.Network], true, true)[0].Spoken == "NET ↑— ↓—"
-              && MetricID.CodexSpeed.SpeedSource == TokenSource.Codex && MetricID.ClaudeSpeed.SpeedSource == TokenSource.Claude && MetricID.Ai.SpeedSource == null
-              && MetricID.AverageSpeed.SpeedSource == null && MetricID.CodexSpeed.BarLabel == null && MetricID.AverageSpeed.BarLabel == "AVG"
-              && MetricID.ClaudeSpeed.Title == "Claude 속도" && MetricID.AverageSpeed.Title == "평균 속도");
-        // Two fresh sessions at 40 and 60 tok/s average to 50 across clients; a 3-minute-old measurement is not current.
+              && MetricID.AverageSpeed.BarLabel == "AVG" && MetricID.AverageSpeed.Title == "평균 속도");
+        // Two fresh sessions at 40 and 60 tok/s average to 50 across clients, Claude Code first; a 3-minute-old measurement is not current.
         TokenReading rated(TokenSource source, string id, double tokensPerSecond, double age) => new(source, id)
         {
             SessionID = id, Model = "m", Active = true, ActivityState = A.Working, SampledAt = at,
             SpeedMeasurement = new TokenSpeedMeasurement(new TelemetryReading { Provider = source, At = at.AddSeconds(-age) })
                 { Model = "m", ServerTokenIntervalMs = 1_000 / tokensPerSecond },
         };
-        var averaged = speeds([rated(TokenSource.Codex, "a40", 40, 3), rated(TokenSource.Claude, "a60", 60, 10), rated(TokenSource.Codex, "a-stale", 500, 180)]);
-        check($"the average speed is the mean of fresh per-session rates, a stale one excluded: {string.Join(", ", averaged)}",
-              Math.Abs(averaged.GetValueOrDefault(MetricID.AverageSpeed) - 50) < 1e-9 && Math.Abs(averaged.GetValueOrDefault(MetricID.CodexSpeed) - 40) < 1e-9
-              && Math.Abs(averaged.GetValueOrDefault(MetricID.ClaudeSpeed) - 60) < 1e-9);
-        With(AppLanguage.En, () => check("English speed items are spoken per client",
-            speedItems().Select(item => item.Spoken).SequenceEqual(["Codex speed 55.6 tokens per second", "Claude speed no measurement",
-                "Average speed 55.6 tokens per second"])
-            && MetricID.CodexSpeed.Title == "Codex speed"));
+        List<TokenReading> pair = [rated(TokenSource.Codex, "a40", 40, 3), rated(TokenSource.Claude, "a60", 60, 10), rated(TokenSource.Codex, "a-stale", 500, 180)];
+        var averaged = average(pair);
+        check($"the average speed is the mean of fresh per-session rates, a stale one excluded, its clients fastest first: {averaged?.Rate} {string.Join(", ", averaged?.Sources ?? [])}",
+              averaged is not null && Math.Abs(averaged.Rate - 50) < 1e-9 && averaged.Sources.SequenceEqual([TokenSource.Claude, TokenSource.Codex])
+              && speedItem(pair).Contributors.SequenceEqual([TokenSource.Claude, TokenSource.Codex])
+              && speedItem(pair).Spoken == "평균 속도 50.0 토큰/초 · Claude Code, Codex");
+        With(AppLanguage.En, () => check("English speed item names its rate and clients",
+            speedItem(pair).Spoken == "Average speed 50.0 tokens per second · Claude Code, Codex" && speedItem([untimed]).Spoken == "Average speed no measurement"
+            && MetricID.AverageSpeed.Title == "Average speed"));
         check("marks are 7 pt glyphs, the input disc 8 pt, in the unchanged 11 pt slot",
               StatusBarContent.MarkWidth(A.Tool) == 7 && StatusBarContent.MarkWidth(A.Working) == 7 && StatusBarContent.MarkWidth(A.Stale) == 7
               && StatusBarContent.MarkWidth(A.Input) == 8 && StatusBarContent.MarkWidth(A.Output) == 0 && StatusBarContent.MarkSlot == 11);
@@ -209,16 +207,16 @@ public static class StatusSummaryChecks
                 var unknown = StatusBarContent.RequiredWidth(layout, metrics(new SystemSnapshot { BatteryPresent = true }, [], layout, items, hasSample: false, hasTokenSample: false)
                     .Select(metric => metric.Id));
                 var full = StatusBarContent.Metrics(maximum, summary(busyReadings).AI, layout, items, true, true,
-                    new Dictionary<MetricID, double> { [MetricID.CodexSpeed] = 999.94, [MetricID.ClaudeSpeed] = 99_999, [MetricID.AverageSpeed] = 9_999 });
+                    new AverageSpeed(9_999, [TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.OpenCode]));
                 var key = $"{layout}{(items == everything ? "/speed" : "")}";
                 widths[key] = StatusBarContent.RequiredWidth(layout, full.Select(metric => metric.Id));
                 stable = stable && unknown == widths[key];
             }
         check("layout width is stable from unknown to maximum values", stable);
-        // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30; each speed item 56 on two
-        // lines, 69 on one.
+        // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30; the speed item 56 on two
+        // lines, 81 on one.
         check($"cell widths match the layout contract: {string.Join(", ", widths)}", widths["Compact"] == 272 && widths["Inline"] == 410 && widths["Minimal"] == 72
-              && widths["Compact/speed"] == 440 && widths["Inline/speed"] == 617 && widths["Minimal/speed"] == 72);
+              && widths["Compact/speed"] == 328 && widths["Inline/speed"] == 491 && widths["Minimal/speed"] == 72);
         // Without the character (mac StatusBarContentView): no runner slot, the minimal AI cell 41, nothing at all the 28 pt "TC".
         check("without the character the runner slot goes, the minimal cell widens and an empty strip is 28 pt",
               StatusBarContent.RequiredWidth(StatusBarLayout.Minimal, [MetricID.Ai], showRunner: false) == 49

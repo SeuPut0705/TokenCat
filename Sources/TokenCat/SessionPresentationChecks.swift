@@ -790,16 +790,19 @@ func runSessionPresentationChecks() -> [String] {
     let child = headline([speedAlpha, helper])
     check(child?.value == "44.1" && child?.help.hasPrefix("Alpha · 하위 Explore · Claude Code m1") == true,
           "a visible live subagent's own measurement counts and is named")
-    // The menu bar's speed items: the same pick narrowed to one client.
-    func rate(_ tokens: [TokenReading], _ source: TokenSource, restart: Set<TokenSource> = []) -> Double? {
-        SessionPresentation.currentSpeed(make(tokens), source: source, now: now, restart: restart)?.rate
+    // The menu bar's "평균 속도": every fresh rate on its session's current model, and its clients, fastest first.
+    func average(_ tokens: [TokenReading], restart: Set<TokenSource> = []) -> String? {
+        SessionPresentation.averageSpeed(make(tokens), now: now, restart: restart)
+            .map { String(format: "%.3f ", $0.rate) + $0.sources.map(\.rawValue).joined(separator: ",") }
     }
     let gamma = timed("codex:gamma", .codex, project: "Gamma", model: "g1", ago: -40, interval: 10)
-    check(rate([speedAlpha, speedBeta, gamma], .codex) == 50 && rate([speedAlpha, speedBeta, gamma], .claude) == 44.1
-          && rate([gamma], .codex) == 100 && rate([speedAlpha, switched], .codex) == nil && rate([staleAlpha, speedBeta], .claude) == nil
-          && rate([speedAlpha, speedBeta], .codex, restart: [.codex]) == nil && rate([speedBeta], .claude) == nil
-          && rate([quiet, unmatched], .claude) == nil && rate([helper], .claude) == 44.1,
-          "a client's speed is its own newest fresh measurement on the current model, never another client's or one waiting for a restart")
+    check(average([speedAlpha, speedBeta, gamma]) == "64.700 codex,claude" && average([gamma]) == "100.000 codex"
+          && average([speedAlpha, switched]) == "44.100 claude" && average([staleAlpha, speedBeta]) == "50.000 codex"
+          && average([speedAlpha, speedBeta], restart: [.codex]) == "44.100 claude" && average([speedBeta]) == "50.000 codex"
+          && average([quiet, unmatched]) == nil && average([helper]) == "44.100 claude" && average([staleAlpha]) == nil,
+          "the average speed is every fresh rate on the session's current model, its clients fastest first, never one waiting for a restart: "
+          + [[speedAlpha, speedBeta, gamma], [gamma], [speedAlpha, switched], [staleAlpha, speedBeta], [speedBeta], [helper]].map { average($0) ?? "nil" }
+            .joined(separator: " / ") + " / restart " + (average([speedAlpha, speedBeta], restart: [.codex]) ?? "nil"))
 
     // English: plurals, word order, spoken text and composed titles.
     AppLanguage.with(.en) {

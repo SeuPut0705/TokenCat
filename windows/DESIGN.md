@@ -108,9 +108,54 @@ cat's (brand)", Runner.swift).
 * Parity: the mac app reads `<home>/.codex/sessions` and `<home>/.claude/projects` and ignores `CODEX_HOME`/`CLAUDE_CONFIG_DIR`.
   Windows v1 does the same (`home = %USERPROFILE%`). WSL logs are out of scope.
 * Other agents (OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline/Roo/Kilo, omp, Droid) are detected automatically by their data
-  folders through the provider registry (`TokenProvider.All`, `Core/Tracking/TokenProviders.cs`, mirroring `TokenProviders.swift`). A
-  provider is read once its parser (`TokenLogFormat`) lands; parsers are listed there as they do. For now only Codex and Claude Code are
-  read; telemetry, live limits and the status line bridge stay with `TokenSource.TelemetryClients` (Codex, Claude Code).
+  folders through the provider registry (`TokenProvider.All`, `Core/Tracking/TokenProviders.cs`, mirroring `TokenProviders.swift`). Each
+  has a parser (`TokenLogFormat`), listed below; telemetry, live limits and the status line bridge stay with `TokenSource.TelemetryClients` (Codex, Claude Code).
+  * Gemini CLI (`Core/Tracking/GeminiLog.cs`, `TokenLogFormat.Gemini`): `%USERPROFILE%\.gemini\tmp\<project>\chats\session-*.jsonl`
+    (`GEMINI_CLI_HOME` moves it), legacy `session-*.json` snapshots unless migrated, subagents in `chats\<parent session>\`; project
+    from `.project_root`. Messages are appended again when tokens or tool calls arrive, so output counts per message id. No speed.
+  * Qwen Code (same file, `TokenLogFormat.Qwen`): `<QWEN_RUNTIME_DIR | QWEN_HOME | %USERPROFILE%\.qwen>\projects\<project>\chats\*.jsonl`
+    and `subagents\<session>\agent-*.jsonl` (+ `.meta.json` role). Tool calls/results, `ask_user_question`/`exit_plan_mode` input
+    waits and the context window come from the log. No speed.
+  * OpenCode (`Core/Tracking/OpenCodeLog.cs`, `TokenLogFormat.OpenCode`): `%USERPROFILE%\.local\share\opencode\opencode.db`
+    (`XDG_DATA_HOME`, a channel build's `opencode-<channel>.db`, or the `OPENCODE_DB` file), SQLite in WAL mode opened read-only through
+    the OS `winsqlite3.dll` (P/Invoke; the checks on a mac host load the system libsqlite3). Re-queried when the database or WAL
+    changes and at least every 2 s while a session is in a turn or updated within the hour (NTFS may report stale times for a file
+    held open). 64 newest sessions (32 + updated within the hour), 200 newest messages each; a message body over 64 KB (a prompt
+    with summary diffs) is never loaded. Turn state from `time.completed`/`finish`/`error` and running tool parts (`question` =
+    input). Speed: a completed reply's output + reasoning over `time.created` → its last generated part (request tok/s).
+  * Copilot CLI (`Core/Tracking/CopilotLog.cs`, `TokenLogFormat.Copilot`): `<COPILOT_HOME | %USERPROFILE%\.copilot>\session-state\<session>\
+    events.jsonl` (legacy `session-state\<session>.jsonl`), bounded tail via `LogLineTail`; project from `session.start`/`session.resume`
+    `context.cwd`, `session.context_changed`, else `workspace.yaml` `cwd:`. Turn: `user.message` → `session.task_complete` or an
+    `assistant.turn_end` whose last `assistant.message` had no `toolRequests`; `abort`/`session.error`/`session.shutdown`/`session.resume`
+    interrupt. `permission.requested` and `ask_user` = input. Output = `assistant.message.outputTokens` (subagent events, marked by
+    `agentId`, add output only). While a turn is open, `inuse.<PID>.lock` files whose PIDs all exited (`Process.GetProcessById`) end it
+    as `Unfinished`. `assistant.usage` (with its duration) is ephemeral and never written, so no speed.
+  * Amp (`Core/Tracking/AmpLog.cs`, `TokenLogFormat.Amp`): `<AMP_DATA_DIR | XDG_DATA_HOME\amp | %USERPROFILE%\.local\share\amp>\threads\
+    T-*.json` (and one folder deeper), a whole-file snapshot re-parsed when size/time/creation time change (64 MB cap). Turn from the
+    last assistant `state` (`streaming`, `complete` + `stopReason`, `cancelled`, `error`) and tool `run.status` (`blocked-on-user` =
+    input); output from `messages[].usage.outputTokens` at `usage.timestamp`, else `usageLedger.events[]`; project from
+    `env.initial.trees[0].uri`. The file's write time is the liveness record. No speed.
+  * Droid (`Core/Tracking/DroidLog.cs`, `TokenLogFormat.Droid`): `%USERPROFILE%\.factory\sessions\<project-slug>\<session>.jsonl`
+    (and directly in `sessions\`) for project and turn state (`llm_only` context messages never open a turn; a text reply without
+    `tool_use` completes it), plus `<session>.settings.json` for model (`custom:` and `-[Provider]-N` stripped), effort and the
+    `tokenUsage.outputTokens` session total. Growth of that total is output at the settings file's write time; the first read is a
+    baseline, so a turn's output counts only when the total was known before it began. No speed.
+  * Cline / Roo Code / Kilo Code (`Core/Tracking/ClineLog.cs`, `TokenLogFormat.Cline`): `<APPDATA | %USERPROFILE%\AppData\Roaming>\<Code |
+    Code - Insiders | VSCodium | Cursor | Windsurf>\User\globalStorage\<extension>\tasks\<task>\ui_messages.json` and the Cline CLI's
+    `%USERPROFILE%\.cline\data\sessions\<id>\<id>.messages.json` (+ `<id>.json` manifest). JSON snapshots re-parsed when write time or
+    size change (64 MB cap). Tasks: output = `api_req_started` `tokensOut` at the request's last message; a turn opens on the task,
+    `user_feedback` or a new request and ends at `completion_result`/`resume_completed_task`/`plan_mode_respond` (complete),
+    `resume_task` or a `cancelReason` (interrupted); interactive asks and retryable failures = input, commands = tool. Model from
+    `modelInfo.modelId`, else `task_metadata.json` `model_usage`, else the last `<model>` in a 128 KB tail of
+    `api_conversation_history.json`; cwd from "Current Working/Workspace Directory (…) Files" in its 256 KB head. CLI: output =
+    assistant `metrics.outputTokens` at `ts`, model `modelInfo.id`, cwd and turn state from the manifest `status`. No speed.
+  * omp / Pi (`Core/Tracking/OmpLog.cs`, `TokenLogFormat.Omp`): `%USERPROFILE%\.omp\agent\sessions\<project>\<timestamp>_<id>.jsonl`
+    and `.pi\agent\sessions`, subagents nested in `<timestamp>_<id>\` up to three folders deep (parent = the root id in that folder
+    name, agent id `<root>/<file name>`, role from `session_init.agent`), bounded tail via `LogLineTail` with the header lines
+    re-read when the tail skipped them. Turn: user message → assistant `stopReason` `stop`/`length` (complete) or `aborted`/`error`
+    (interrupted); pending `toolCall`s until their `toolResult` (`ask` = input; `task`/`wait` keep a 1 h horizon); a subagent's
+    `session_exit` ends it. Output and context from `message.usage`, effort from `thinking_level_change`. Speed: a reply's own
+    `duration` (request start → completion, `ttft` kept for the details) with its output = request tok/s.
 * Codex `cwd` and Claude `cwd` in Windows logs look like `C:\Users\me\proj`. The project name must come from splitting on **both** `\`
   and `/`. .NET's `Path.GetFileName` splits on both only on Windows; on macOS it returns the whole `C:\…` string, so the checks running on
   the Mac would disagree.
@@ -327,10 +372,10 @@ Normal WPF window with the mac's five pages (left nav), "메뉴 막대" named **
 * **Widget** (mac `MenuBarPane`): show on screen; a live preview (`WidgetView` at the chosen size on the current theme, frame 0 of the
   current pose, cut with a 28 DIP fade when wider than the row) with its size in px; **Size** (a themed pop-up of the seven sizes; the
   caption names Ctrl + wheel and the right-click menu); **Preset** (shows 사용자 지정 / Custom when none matches); **Layout** (segmented
-  최소 / 두 줄 / 한 줄). **Items**: one row per item in the stored order — drag handle, check box "title · bar label"
-  (a speed item: the title, then its glyph, named by the title; disabled when it is the last shown item with the character hidden, or
+  최소 / 두 줄 / 한 줄). **Items**: one row per item in the stored order — drag handle, check box "title · bar label" (the speed
+  item "평균 속도 · AVG"; disabled when it is the last shown item with the character hidden, or
   the battery on a PC without one: "이 PC에는 배터리가 없습니다"). Reorder by dragging a row (it takes each row's place as it passes, as on
-  the mac), Alt+↑/↓ on a focused row (focus follows, Narrator hears "메모리, 9개 중 1번째"), or the row menu (right-click, Apps key, Shift+F10: 위로 이동 / 아래로 이동). Rows are named check boxes in UI Automation.
+  the mac), Alt+↑/↓ on a focused row (focus follows, Narrator hears "메모리, 7개 중 1번째"), or the row menu (right-click, Apps key, Shift+F10: 위로 이동 / 아래로 이동). Rows are named check boxes in UI Automation.
   WPF's ComboBox and ContextMenu don't follow dark mode, so the pop-ups are the WinForms menus the tray uses.
 * **Character**: picker with live 2× preview, "위젯에 캐릭터 표시" (mac "메뉴 막대에 캐릭터 표시"; disabled with its reason when nothing
   else would be drawn; the tray icon always shows the character), motion source with `caption`/`subtitle` texts.
@@ -359,13 +404,16 @@ The taskbar can't show text the way the mac menu bar does, so the menu-bar item 
   Core), 32 × 20 runner slot, fixed cells (minimal 30; two lines 32 / NET 66 / AI 36; one line 52 / 114 / 46), marks and label tones
   (labels and units at label 0.72, idle "0" at 0.45). Without the character (mac rules) the runner slot goes, the minimal AI cell is 41
   and a strip with nothing left is the 28 pt "TC"; `Preferences` never lets that happen outside the minimal layout. The one-line layout
-  shows the short names (CPU, RAM…) where the mac draws SF Symbols. The Codex and Claude speed items (opt-in, after AI without a
-  separator) draw the mac's `SpeedGlyph` (the Codex and Claude app icons, `speed-codex.png`/`speed-claude.png`) in the label slot and that client's "지금 속도" (`SessionPresentation.CurrentSpeed`,
-  `Format.BarTps`, whole numbers from 100 up, + a smaller "tok/s") or "—", in 56 pt (two lines) / 69 pt (one line) cells. The Average speed
-  item (opt-in, last, "평균 속도 · AVG" in the list) draws "AVG" as its label and the arithmetic mean of every client's fresh per-session
-  rates (`SessionPresentation.AverageSpeed`, `CurrentSpeed`'s own filter; measured rates only, nothing estimated) in the same cells and
-  format. `StatusBarContent.Speeds` keys all three by `MetricID`. Narrator reads the strip as one text
-  element (`StatusBarMetric.Spoken`). Layout, items, order and the character come from Settings › Widget (§4.4); default **two
+  shows the short names (CPU, RAM…) where the mac draws SF Symbols. The Average speed item (opt-in, last, after AI without a separator,
+  "평균 속도 · AVG" in the list; until 0.13 the per-client "codexSpeed"/"claudeSpeed" items, which `Preferences` folds into it: either
+  shown shows it) draws the arithmetic mean of every client's fresh per-session rates (`SessionPresentation.Average`, `CurrentSpeed`'s
+  own filter; measured rates only, nothing estimated; `Format.BarTps`, whole numbers from 100 up, + a smaller "tok/s") in 56 pt (two
+  lines) / 81 pt (one line) cells. Its label slot shows the contributing clients (`AverageSpeed.Sources`, fastest first by each
+  client's own mean) as the mac's `SpeedGlyph` icons, `speed-<source>.png`: one icon, or up to three overlapping by 40 % (8 pt centred
+  on two lines, 10 pt from 4 pt in on one, the value 3 pt after them), each front icon's silhouette grown by 1 pt cleared out of the
+  ones behind (composited once per set at 64 px, `SpeedGlyph.DrawStack`). Without a measurement it draws "AVG" and "—". Narrator reads
+  the strip as one text element (`StatusBarMetric.Spoken`, the speed item "평균 속도 55.6 토큰/초 · Codex, Claude Code"). Layout,
+  items, order and the character come from Settings › Widget (§4.4); default **two
   lines** (like the mac bar), the six standard items, the character shown, 100 %.
 * **Size**: 100, 125, 150, 175, 200, 250 or 300 % (`widgetScale`, default 100; another stored value becomes the nearest). Device pixels
   per point `p = max(1, round(display scale)) × size`, so 100 % is exactly 0.12.0 (100–125 % → 1, 150–200 % → 2); `WidgetView.Scale`
@@ -414,7 +462,7 @@ windows/
   Directory.Build.props            # Nullable, ImplicitUsings, TreatWarningsAsErrors, InvariantGlobalization=false,
                                    # Version = regex(CFBundleShortVersionString, ../build.sh) + <Error> target when empty,
                                    # IncludeSourceRevisionInInformationalVersion=false, DebugType=none for Release
-  TokenCat.Core/                   # net10.0. No packages, no P/Invoke. Everything with a rule or a check.
+  TokenCat.Core/                   # net10.0. No packages; one P/Invoke: the OS SQLite (OpenCodeLog.cs). Everything with a rule or a check.
     Models.cs Lang.cs AppPaths.cs SettingsStore.cs Json.cs WidgetPlacement.cs   # Json.cs: BOM-tolerant parse + the one writer config (rule 3)
     Tracking/  Telemetry/  Presentation/  Runner/  Update/  LiveMonitor.cs
     Checks/    Check.cs Suites.cs <Suite>Checks.cs          # suites compiled into Core, like the mac target
@@ -427,9 +475,9 @@ windows/
     Program.cs Shell.cs TrayIcon.cs Widget.cs Native.cs Sprites.cs Theme.cs Flyout.xaml(.cs) Dashboard.cs SessionList.cs SettingsWindow.cs
     WindowsSystemSampler.cs LoginItem.cs Fixtures.cs Snapshot.cs AppChecks.cs   # UI built in code; Flyout.xaml is the only XAML
 ```
-Assets are **not copied into the repo**. `TokenCat.App.csproj` embeds `../../Assets/runner-*@{1x,2x}.png`, `app-head-*`, `runner-v2-fx*`
-and `runner-v2.json` as `EmbeddedResource` with `LogicalName=%(Filename)%(Extension)`, excluding `runner-sheet-v1.png`. This is the same
-list as `build.sh`. The spike shows the wildcard picks exactly these 21 files. `TokenCat.ico` is the one derived binary, generated once
+Assets are **not copied into the repo**. `TokenCat.App.csproj` embeds `../../Assets/runner-*@{1x,2x}.png`, `app-head-*`, `runner-v2-fx*`,
+`speed-*.png` (one client icon per `TokenSource`) and `runner-v2.json` as `EmbeddedResource` with `LogicalName=%(Filename)%(Extension)`,
+excluding `runner-sheet-v1.png`. This is the same list as `build.sh`: 31 files. `TokenCat.ico` is the one derived binary, generated once
 on a Mac and committed: three PNG frames, `Assets/app-icon-v2-16.png`, `-32.png` and the 256 px frame from
 `sips -s format ico -z 256 256 Assets/app-icon-v2-1024.png`, so the title bar, taskbar and Explorer get the pixel tiles at 16/32 instead of a
 downsampled 256. 24/48 px still downsample; add tiles for them if they look soft.

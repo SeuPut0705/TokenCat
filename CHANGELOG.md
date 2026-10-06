@@ -2,6 +2,13 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.14.0
+
+**macOS and Windows**
+
+- Other coding agents are now recognised automatically from their own data folders, with no setup: OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline · Roo Code · Kilo Code, omp · Pi and Factory Droid show their sessions, turn state, model, project and output tokens next to Codex and Claude Code. OpenCode and omp record real generation times, so they also feed the Average speed. · 다른 코딩 에이전트도 각자의 데이터 폴더로 자동 인식합니다. 설정은 필요 없습니다. OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline·Roo Code·Kilo Code, omp·Pi, Factory Droid의 세션·턴 상태·모델·프로젝트·출력 토큰을 Codex·Claude Code와 함께 보여 줍니다. OpenCode와 omp는 실제 생성 시간을 기록하므로 평균 속도에도 들어갑니다.
+- The separate Codex speed and Claude speed items are gone; the **Average speed** item now shows which clients are contributing a fresh measured rate in place of `AVG`: one client's icon, or up to three icons overlapping like an avatar group (fastest first), named in its help (`Average speed 55.6 tokens per second · Codex, Claude Code`). Every client has its icon, and a Codex or Claude speed item you had turned on becomes the Average speed item. On one line the item is 81 pt wide (was 69) so `9999 tok/s` still fits beside three icons. · 따로 있던 Codex 속도·Claude 속도 항목을 없애고, **평균 속도** 항목이 `AVG` 자리에 지금 실측을 보태는 클라이언트를 보여 줍니다. 하나면 그 아이콘, 여럿이면 최대 세 개를 프로필 사진 묶음처럼 겹쳐(빠른 순) 그리고, 도움말에 이름을 붙입니다(`평균 속도 55.6 토큰/초 · Codex, Claude Code`). 모든 클라이언트에 아이콘이 있으며, 켜 두었던 Codex·Claude 속도 항목은 평균 속도 항목으로 바뀝니다. 한 줄에서는 폭이 81pt(이전 69pt)라 아이콘 세 개 옆에서도 `9999 tok/s`가 들어갑니다.
+
 ## 0.13.2
 
 **macOS and Windows**

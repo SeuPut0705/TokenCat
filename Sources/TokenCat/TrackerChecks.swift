@@ -575,11 +575,13 @@ func runTrackerChecks() -> [String] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         try line(["type": "gemini", "timestamp": "2026-10-04T04:00:00Z"]).write(to: detectedHome.appendingPathComponent(".gemini/tmp/repo/chats/session-1.jsonl"))
-        let detecting = TokenTracker(homeDirectory: detectedHome, environment: [:], now: { now })
+        // Every shipped client has a parser; a registry entry without one (here Gemini, stripped) is still detected but never read.
+        let unread = TokenProvider.all.map { $0.source == .gemini ? TokenProvider(source: $0.source, roots: $0.roots, format: nil) : $0 }
+        let detecting = TokenTracker(homeDirectory: detectedHome, environment: [:], providers: unread, now: { now })
         let overridden = TokenTracker(homeDirectory: root.appendingPathComponent("empty"), environment: ["GEMINI_CLI_HOME": geminiHome.path], now: { now })
         check(detecting.detectedSources() == [.gemini, .droid] && detecting.sample().isEmpty
               && !detecting.watchedDirectories.contains { $0.path.contains(".gemini") } && overridden.detectedSources() == [.gemini]
-              && TokenProvider.all.map(\.source) == TokenSource.allCases && TokenProvider.readSources == TokenSource.telemetryClients
+              && TokenProvider.all.map(\.source) == TokenSource.allCases && TokenProvider.readSources == TokenSource.allCases
               && TokenSource.listed(detected: [.droid], readings: [TokenReading(source: .amp)]) == [.codex, .claude, .amp, .droid],
               "A client without a parser was not detected by its folder, produced rows, was watched, or the registry is out of order")
 
@@ -1040,6 +1042,144 @@ func runTrackerChecks() -> [String] {
         checks += 1
         failures.append("Incremental file fixture error: \(error.localizedDescription)")
     }
+    // Gemini CLI and Qwen Code chat logs: turn state, output totals, model, project and subagents from fixture files.
+    do {
+        let home = root.appendingPathComponent("gemini-qwen")
+        let start = ISO8601DateFormatter().date(from: "2026-10-04T05:00:00Z")!
+        func at(_ seconds: TimeInterval) -> String { ISO8601DateFormatter().string(from: start.addingTimeInterval(seconds)) }
+        func append(_ url: URL, _ records: [[String: Any]]) throws {
+            let data = records.reduce(into: Data()) { $0.append(line($1)) }
+            guard let handle = try? FileHandle(forWritingTo: url) else { return try data.write(to: url) }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+            try handle.close()
+        }
+        var now = start
+        let tracker = TokenTracker(homeDirectory: home, environment: [:], now: { now }, discoveryInterval: 0)
+
+        let gemini = home.appendingPathComponent(".gemini/tmp/proj")
+        try FileManager.default.createDirectory(at: gemini.appendingPathComponent("chats/gem-1"), withIntermediateDirectories: true)
+        try Data("/tmp/GeminiProject\n".utf8).write(to: gemini.appendingPathComponent(".project_root"))
+        let geminiLog = gemini.appendingPathComponent("chats/session-2026-10-04T05-00-gem1.jsonl")
+        let reply: [String: Any] = ["id": "g1", "timestamp": at(2), "type": "gemini", "content": "", "model": "gemini-fixture",
+                                    "tokens": ["input": 1_000, "output": 40, "cached": 0, "thoughts": 10, "tool": 0, "total": 1_050]]
+        try append(geminiLog, [["sessionId": "gem-1", "projectHash": "h", "startTime": at(0), "lastUpdated": at(0), "kind": "main"],
+                               ["id": "u1", "timestamp": at(0), "type": "user", "content": [["text": "fixture"]]], reply])
+        now = start.addingTimeInterval(3)
+        var geminiRow = tracker.sample().first { $0.source == .gemini }
+        check(geminiRow?.active == true && geminiRow?.activityState == .tool && geminiRow?.currentTurnOutputTokens == 50
+              && geminiRow?.model == "gemini-fixture" && geminiRow?.project == "GeminiProject"
+              && geminiRow?.projectPath == "/tmp/GeminiProject" && geminiRow?.sessionID == "gem-1" && geminiRow?.speedMeasurement == nil,
+              "Gemini: a reply asking for tools was not a running tool turn with thoughts counted, model and .project_root project")
+        var finishedTools = reply
+        finishedTools["toolCalls"] = [["id": "c1", "name": "run_shell_command", "status": "success", "timestamp": at(5)]]
+        try append(geminiLog, [finishedTools,
+                               ["id": "u2", "timestamp": at(6), "type": "user",
+                                "content": [["functionResponse": ["id": "c1", "name": "run_shell_command"]]]]])
+        now = start.addingTimeInterval(7)
+        geminiRow = tracker.sample().first { $0.source == .gemini }
+        check(geminiRow?.active == true && geminiRow?.activityState == .working && geminiRow?.currentTurnOutputTokens == 50
+              && geminiRow?.currentTurnStartedAt == start,
+              "Gemini: the reply appended again with its tool calls counted twice or the tool result did not resume the turn")
+        try append(geminiLog, [["id": "g2", "timestamp": at(10), "type": "gemini", "content": "fixture", "model": "gemini-fixture",
+                                "tokens": ["input": 1_100, "output": 30, "cached": 0, "thoughts": 0, "total": 1_130]],
+                               ["$set": ["lastUpdated": at(10)]]])
+        now = start.addingTimeInterval(11)
+        geminiRow = tracker.sample().first { $0.source == .gemini }
+        check(geminiRow?.active == false && geminiRow?.activityState == .complete && geminiRow?.lastOutputTokens == 80
+              && geminiRow?.currentTurnOutputTokens == nil && geminiRow?.recentOutputs.map(\.tokens).reduce(0, +) == 80
+              && geminiRow?.context?.usedTokens == 1_100 && geminiRow?.lastTurnDurationSeconds == nil,
+              "Gemini: a text reply did not finish the turn and wait for input, or its totals were wrong")
+        try append(geminiLog, [["id": "u3", "timestamp": at(20), "type": "user", "content": [["text": "fixture"]]]])
+        now = start.addingTimeInterval(720)
+        let staleState = tracker.sample().first { $0.source == .gemini }?.activityState
+        now = start.addingTimeInterval(2_100)
+        check(staleState == .stale && tracker.sample().first { $0.source == .gemini }?.activityState == .unfinished,
+              "Gemini: a silent open turn did not go stale after 600 s and unfinished after 30 min")
+        try append(gemini.appendingPathComponent("chats/gem-1/sub-1.jsonl"), [
+            ["sessionId": "sub-1", "projectHash": "h", "startTime": at(2_090), "kind": "subagent", "directories": ["/tmp/GeminiProject"]],
+            ["id": "s1", "timestamp": at(2_090), "type": "user", "content": [["text": "fixture"]]],
+            ["id": "s2", "timestamp": at(2_095), "type": "gemini", "content": "fixture", "model": "gemini-flash-fixture",
+             "tokens": ["input": 10, "output": 7, "cached": 0, "total": 17]]])
+        // A legacy snapshot is read whole; one already migrated to .jsonl is left out.
+        try JSONSerialization.data(withJSONObject: ["sessionId": "gem-old", "projectHash": "h", "messages": [
+            ["id": "o1", "timestamp": at(2_000), "type": "user", "content": "fixture"],
+            ["id": "o2", "timestamp": at(2_001), "type": "gemini", "content": "fixture", "tokens": ["input": 5, "output": 9, "total": 14]]]])
+            .write(to: gemini.appendingPathComponent("chats/session-old.json"))
+        try Data("{}".utf8).write(to: gemini.appendingPathComponent("chats/session-migrated.json"))
+        try append(gemini.appendingPathComponent("chats/session-migrated.jsonl"), [["sessionId": "gem-mig", "projectHash": "h"],
+            ["id": "m1", "timestamp": at(2_000), "type": "user", "content": "fixture"]])
+        let geminiRows = tracker.sample().filter { $0.source == .gemini }
+        let geminiSub = geminiRows.first { $0.isSubagent }
+        check(geminiSub?.parentSessionID == "gem-1" && geminiSub?.agentID == "sub-1" && geminiSub?.lastOutputTokens == 7
+              && geminiSub?.model == "gemini-flash-fixture" && geminiSub?.project == "GeminiProject"
+              && geminiRows.first { $0.id.hasSuffix("session-old.json") }?.lastOutputTokens == 9
+              && geminiRows.count == 4 && !geminiRows.contains { $0.id.hasSuffix("session-migrated.json") },
+              "Gemini: subagent identity, legacy JSON snapshot or migrated-snapshot de-duplication")
+        check(tracker.isLog(geminiLog.path) && tracker.isLog(gemini.appendingPathComponent("chats/gem-1/sub-1.jsonl").path)
+              && !tracker.isLog(gemini.appendingPathComponent(".project_root").path)
+              && !tracker.isLog(gemini.appendingPathComponent("chats/notes.jsonl").path),
+              "Gemini: a chat log was not recognised, or a side file was")
+
+        let qwen = home.appendingPathComponent(".qwen/projects/-tmp-QwenProject")
+        try FileManager.default.createDirectory(at: qwen.appendingPathComponent("chats"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: qwen.appendingPathComponent("subagents/qs-1"), withIntermediateDirectories: true)
+        let qwenLog = qwen.appendingPathComponent("chats/qs-1.jsonl")
+        func qwenRecord(_ uuid: String, _ type: String, _ seconds: TimeInterval, _ extra: [String: Any]) -> [String: Any] {
+            ["uuid": uuid, "sessionId": "qs-1", "timestamp": at(seconds), "type": type, "cwd": "/tmp/QwenProject", "version": "1"]
+                .merging(extra) { $1 }
+        }
+        try append(qwenLog, [
+            qwenRecord("q1", "user", 3_000, ["message": ["role": "user", "parts": [["text": "fixture"]]]]),
+            qwenRecord("q2", "assistant", 3_002, ["model": "qwen-fixture", "contextWindowSize": 131_072,
+                "message": ["role": "model", "parts": [["functionCall": ["id": "call-1", "name": "run_shell_command"]]]],
+                // OpenAI-compatible usage: the reasoning is part of the candidates (total = prompt + candidates).
+                "usageMetadata": ["promptTokenCount": 2_000, "candidatesTokenCount": 60, "thoughtsTokenCount": 20, "totalTokenCount": 2_060]])])
+        now = start.addingTimeInterval(3_003)
+        var qwenRow = tracker.sample().first { $0.source == .qwen && !$0.isSubagent }
+        check(qwenRow?.active == true && qwenRow?.activityState == .tool && qwenRow?.toolName == "run_shell_command"
+              && qwenRow?.toolCategory == .command && qwenRow?.currentTurnOutputTokens == 60 && qwenRow?.model == "qwen-fixture"
+              && qwenRow?.project == "QwenProject" && qwenRow?.sessionID == "qs-1" && qwenRow?.context?.windowTokens == 131_072,
+              "Qwen: a tool call was not a running tool turn, or reasoning inside the candidates was counted twice")
+        try append(qwenLog, [
+            qwenRecord("q3", "tool_result", 3_005, ["toolCallResult": ["callId": "call-1"],
+                "message": ["role": "user", "parts": [["functionResponse": ["id": "call-1"]]]]]),
+            qwenRecord("q4", "assistant", 3_008, ["model": "qwen-fixture", "message": ["role": "model", "parts": [["text": "fixture"]]],
+                "usageMetadata": ["promptTokenCount": 2_100, "candidatesTokenCount": 40, "totalTokenCount": 2_140]])])
+        now = start.addingTimeInterval(3_009)
+        qwenRow = tracker.sample().first { $0.source == .qwen && !$0.isSubagent }
+        check(qwenRow?.active == false && qwenRow?.activityState == .complete && qwenRow?.lastOutputTokens == 100
+              && qwenRow?.currentTurnOutputTokens == nil && qwenRow?.recentOutputs.map(\.tokens).reduce(0, +) == 100,
+              "Qwen: a text reply after the tool result did not finish the turn with the whole turn's output")
+        try append(qwenLog, [
+            qwenRecord("q5", "user", 3_020, ["message": ["role": "user", "parts": [["text": "fixture"]]]]),
+            qwenRecord("q6", "assistant", 3_021, ["message": ["role": "model",
+                "parts": [["functionCall": ["id": "call-2", "name": "ask_user_question"]]]]])])
+        now = start.addingTimeInterval(4_200)
+        qwenRow = tracker.sample().first { $0.source == .qwen && !$0.isSubagent }
+        check(qwenRow?.active == true && qwenRow?.activityState == .input && qwenRow?.toolCategory == .question,
+              "Qwen: a pending question did not wait for the person")
+        let agentLog = qwen.appendingPathComponent("subagents/qs-1/agent-explore1.jsonl")
+        try JSONSerialization.data(withJSONObject: ["agentId": "explore1", "agentType": "Explore", "parentSessionId": "qs-1"])
+            .write(to: qwen.appendingPathComponent("subagents/qs-1/agent-explore1.meta.json"))
+        try append(agentLog, [
+            qwenRecord("a1", "user", 4_190, ["isSidechain": true, "message": ["role": "user", "parts": [["text": "fixture"]]]]),
+            qwenRecord("a2", "assistant", 4_195, ["isSidechain": true, "message": ["role": "model", "parts": [["text": "fixture"]]],
+                "usageMetadata": ["promptTokenCount": 50, "candidatesTokenCount": 12, "totalTokenCount": 62]])])
+        let qwenSub = tracker.sample().first { $0.source == .qwen && $0.isSubagent }
+        check(qwenSub?.parentSessionID == "qs-1" && qwenSub?.agentID == "explore1" && qwenSub?.agentRole == "Explore"
+              && qwenSub?.lastOutputTokens == 12 && qwenSub?.activityState == .complete
+              && tracker.isLog(agentLog.path) && tracker.isLog(qwenLog.path)
+              && !tracker.isLog(qwen.appendingPathComponent("subagents/qs-1/agent-explore1.meta.json").path),
+              "Qwen: subagent identity, sidecar role, output or log matching")
+    } catch {
+        checks += 1
+        failures.append("Gemini/Qwen fixture error: \(error.localizedDescription)")
+    }
+    // OpenCode: a fixture database (Providers/OpenCodeLogChecks.swift).
+    runOpenCodeLogChecks(root: root, check: { check($0, $1) })
+    // Cline, Roo Code, Cline CLI, omp and Pi: fixture files (Providers/ClineOmpChecks.swift).
+    runClineOmpChecks(root: root, check: { check($0, $1) })
     // Fast timestamp path: bit for bit what the two ISO8601DateFormatters give, and their result for every other shape.
     let fractionalFormatter = ISO8601DateFormatter()
     fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1062,6 +1202,7 @@ func runTrackerChecks() -> [String] {
             != (fractionalFormatter.date(from: stamp) ?? plainFormatter.date(from: stamp))?.timeIntervalSinceReferenceDate
     }
     check(mismatched.isEmpty, "Timestamp fast path differs from ISO8601DateFormatter: \(mismatched.prefix(3))")
+    copilotAmpDroidChecks { check($0, $1) }
     print("Tracker checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }

@@ -9,8 +9,8 @@ namespace TokenCat;
 /// `StatusBarLayout`; raw values as stored ("minimal", "compact", "inline").
 public enum StatusBarLayout { Minimal, Compact, Inline }
 
-/// `MetricID`, the menu-bar items in their default order. Stored as the Swift raw values ("cpu", "codexSpeed").
-public enum MetricID { Cpu, Memory, Disk, Battery, Network, Ai, CodexSpeed, ClaudeSpeed, AverageSpeed }
+/// `MetricID`, the menu-bar items in their default order. Stored as the Swift raw values ("cpu", "averageSpeed").
+public enum MetricID { Cpu, Memory, Disk, Battery, Network, Ai, AverageSpeed }
 
 /// `DisplayPreset`: one-pick widget setups. They set the layout and, except Minimal, the shown items with their order.
 public enum DisplayPreset { Minimal, AiFocus, SystemMonitor, EverythingInline }
@@ -39,7 +39,7 @@ public static class StatusBarLayouts
 
     extension(MetricID)
     {
-        /// Shown by default and by the full presets; the speed items are opt-in.
+        /// Shown by default and by the full presets; the speed item is opt-in.
         public static IReadOnlyList<MetricID> Standard => standard;
     }
 
@@ -54,13 +54,10 @@ public static class StatusBarLayouts
             MetricID.Battery => Loc("배터리", "Battery"),
             MetricID.Network => Loc("네트워크", "Network"),
             MetricID.Ai => Loc("AI 세션", "AI sessions"),
-            MetricID.CodexSpeed => Loc("Codex 속도", "Codex speed"),
-            MetricID.ClaudeSpeed => Loc("Claude 속도", "Claude speed"),
             _ => Loc("평균 속도", "Average speed"),
         };
 
-        /// The label the widget draws, shown after the title in the item list (mac `barLabel`); null when it equals the title, or
-        /// for a client speed item, whose row shows its glyph instead.
+        /// The label the widget draws, shown after the title in the item list (mac `barLabel`); null when it equals the title.
         public string? BarLabel => id switch
         {
             MetricID.Memory => "RAM",
@@ -69,14 +66,6 @@ public static class StatusBarLayouts
             MetricID.Network => "NET",
             MetricID.Ai => "AI",
             MetricID.AverageSpeed => "AVG",
-            _ => null,
-        };
-
-        /// The client whose "지금 속도" a speed item shows; the average item has none.
-        public TokenSource? SpeedSource => id switch
-        {
-            MetricID.CodexSpeed => TokenSource.Codex,
-            MetricID.ClaudeSpeed => TokenSource.Claude,
             _ => null,
         };
     }
@@ -109,13 +98,22 @@ public static class StatusBarLayouts
     }
 }
 
-/// One menu-bar item as drawn. The mac's SF Symbol name is left out, and its VoiceOver `Detail` is kept only for the speed items,
-/// whose glyph has no words; the widget's help is the tray tooltip.
+/// One menu-bar item as drawn. The mac's SF Symbol name is left out, and its VoiceOver `Detail` is kept only for the speed item,
+/// whose glyphs have no words; the widget's help is the tray tooltip. `Sources` are the speed item's contributing clients,
+/// fastest first (`AverageSpeed.Sources`); their glyphs replace "AVG".
 public sealed record StatusBarMetric(MetricID Id, string Label, string Value, bool IsActive = false,
-    TokenActivityState ActivityState = TokenActivityState.Idle, string? Detail = null)
+    TokenActivityState ActivityState = TokenActivityState.Idle, string? Detail = null, IReadOnlyList<TokenSource>? Sources = null)
 {
     /// What Narrator reads for the item: its detail, else the words drawn.
     public string Spoken => Detail ?? $"{Label} {Value.Replace('\n', ' ')}";
+
+    public IReadOnlyList<TokenSource> Contributors => Sources ?? [];
+
+    /// By value, the contributors included, so an unchanged strip is not redrawn.
+    public bool Equals(StatusBarMetric? other) => other is not null && Id == other.Id && Label == other.Label && Value == other.Value
+        && IsActive == other.IsActive && ActivityState == other.ActivityState && Detail == other.Detail && Contributors.SequenceEqual(other.Contributors);
+
+    public override int GetHashCode() => HashCode.Combine(Id, Label, Value, IsActive, ActivityState, Detail, Contributors.Count);
 }
 
 /// AI summary, derived once per publish from the shared session groups.
@@ -173,13 +171,14 @@ public static class StatusBarContent
     /// is shown and fixed cells, so the width never follows the values.
     public const double Edge = 4, RunnerWidth = 32, Height = 24, MarkSlot = 8 + 3;
 
-    /// Without the character the minimal AI cell widens to 41 pt. Speed items fit "9999 tok/s" (`Format.BarTps` drops the decimal
-    /// from 100 up; an 11 pt value, a thin space and an 8.5 pt unit), so a 4-digit rate never shrinks.
+    /// Without the character the minimal AI cell widens to 41 pt. The speed item fits "9999 tok/s" (`Format.BarTps` drops the decimal
+    /// from 100 up; an 11 pt value, a thin space and an 8.5 pt unit) beside three stacked glyphs, so a 4-digit rate never shrinks:
+    /// on one line the stack's 12 pt beyond one glyph widen the cell from 69 to 81.
     public static double CellWidth(StatusBarLayout layout, MetricID id, bool showRunner = true) => layout switch
     {
         StatusBarLayout.Minimal => showRunner ? 30 : 41,
-        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.CodexSpeed or MetricID.ClaudeSpeed or MetricID.AverageSpeed => 56, _ => 32 },
-        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.CodexSpeed or MetricID.ClaudeSpeed or MetricID.AverageSpeed => 69, _ => 52 },
+        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.AverageSpeed => 56, _ => 32 },
+        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.AverageSpeed => 81, _ => 52 },
     };
 
     /// Neither items nor the character: the 28 pt "TC" placeholder.
@@ -198,21 +197,11 @@ public static class StatusBarContent
         _ => 0,
     };
 
-    /// The speed items' rates: each client's "지금 속도" by the dashboard's rule (`SessionPresentation.CurrentSpeed`) and the mean
-    /// of every fresh per-session rate (`AverageSpeed`); an item without a measurement is absent.
-    public static IReadOnlyDictionary<MetricID, double> Speeds(SessionListModel list, DateTimeOffset now, IReadOnlySet<TokenSource> restart)
-    {
-        var speeds = new Dictionary<MetricID, double>();
-        foreach (var id in Enum.GetValues<MetricID>())
-            if (id.SpeedSource is { } source && SessionPresentation.CurrentSpeed(list, now, restart, source) is { } speed) speeds[id] = speed.Rate;
-        if (SessionPresentation.AverageSpeed(list, now, restart) is { } average) speeds[MetricID.AverageSpeed] = average;
-        return speeds;
-    }
-
     /// `StatusBarContent.metrics`: `items` are the shown items in order (the minimal layout draws only AI). An absent battery
-    /// is omitted; values before the first sample are "—", and so is a speed item without a rate in `speeds`.
+    /// is omitted; values before the first sample are "—", and so is the speed item without a `speed`
+    /// (`SessionPresentation.Average`).
     public static IReadOnlyList<StatusBarMetric> Metrics(SystemSnapshot system, StatusAISummary ai, StatusBarLayout layout,
-        IReadOnlyList<MetricID> items, bool hasSample, bool hasTokenSample, IReadOnlyDictionary<MetricID, double>? speeds = null)
+        IReadOnlyList<MetricID> items, bool hasSample, bool hasTokenSample, AverageSpeed? speed = null)
     {
         string Percentage(double? number) => hasSample && number is { } n && double.IsFinite(n) ? Format.Percent(n) : "—";
         var upload = NetworkRate(hasSample ? system.UploadBytesPerSecond : null);
@@ -235,12 +224,14 @@ public static class StatusBarContent
                     var state = !hasTokenSample ? TokenActivityState.Idle : ai.Running > 0 ? ai.Phase : waitingOnly ? TokenActivityState.Stale : TokenActivityState.Idle;
                     metrics.Add(new(id, "AI", value, hasTokenSample && ai.Running > 0, state));
                     break;
-                case MetricID.CodexSpeed or MetricID.ClaudeSpeed or MetricID.AverageSpeed:
-                    // A client glyph or "AVG" labels the item; the unit is split off and drawn smaller like "%".
-                    double? measured = speeds is not null && speeds.TryGetValue(id, out var found) ? found : null;
-                    var rate = measured is { } known ? Format.Tps(known) : null;
-                    metrics.Add(new(id, id.BarLabel ?? "", measured is { } shown ? Format.BarTps(shown) + "tok/s" : "—", Detail: id.Title + " "
-                        + (rate is null ? Loc("측정 없음", "no measurement") : Loc($"{rate} 토큰/초", $"{rate} tokens per second"))));
+                case MetricID.AverageSpeed:
+                    // The contributing clients' glyphs, or "AVG" without a measurement, label the item; the unit is split off and
+                    // drawn smaller like "%".
+                    var rate = speed is null ? null : Format.Tps(speed.Rate);
+                    var names = speed is null ? "" : " · " + string.Join(", ", speed.Sources.Select(source => source.Title));
+                    metrics.Add(new(id, "AVG", speed is null ? "—" : Format.BarTps(speed.Rate) + "tok/s", Detail: id.Title + " "
+                        + (rate is null ? Loc("측정 없음", "no measurement") : Loc($"{rate} 토큰/초", $"{rate} tokens per second") + names),
+                        Sources: speed?.Sources));
                     break;
             }
         }
@@ -249,7 +240,7 @@ public static class StatusBarContent
 
     public static IReadOnlyList<StatusBarMetric> Metrics(MonitorState state, StatusBarLayout layout, IReadOnlyList<MetricID> items) =>
         Metrics(state.System, new StatusAISummary(state.Groups, state.Sessions.Counts), layout, items, state.HasSample, state.TokensSampledAt is not null,
-            Speeds(state.Sessions, state.Now, state.TelemetryRestartNeeded));
+            SessionPresentation.Average(state.Sessions, state.Now, state.TelemetryRestartNeeded));
 
     /// "1.5kB/s" → ("1.5", "kB/s"); units are drawn smaller but never dropped.
     public static (string Number, string Unit) SplitRate(string text)

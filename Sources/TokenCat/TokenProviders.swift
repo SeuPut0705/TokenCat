@@ -17,25 +17,32 @@ struct TokenProvider {
         TokenProvider(source: .claude, roots: { home, _ in [home.appendingPathComponent(".claude/projects")] }, format: .claude),
         TokenProvider(source: .opencode, roots: { home, env in
             [env.path("OPENCODE_DB")?.deletingLastPathComponent(), dataHome(home, env).appendingPathComponent("opencode")].compactMap { $0 }
-        }, format: nil),
+        }, format: .opencode),
         TokenProvider(source: .gemini, roots: { home, env in
             [(env.path("GEMINI_CLI_HOME") ?? home).appendingPathComponent(".gemini/tmp")]
-        }, format: nil),
-        TokenProvider(source: .qwen, roots: { home, _ in [home.appendingPathComponent(".qwen/projects")] }, format: nil),
+        }, format: .gemini),
+        // Qwen keeps sessions under its runtime dir: $QWEN_RUNTIME_DIR, else $QWEN_HOME, else ~/.qwen.
+        TokenProvider(source: .qwen, roots: { home, env in
+            [env.path("QWEN_RUNTIME_DIR"), env.path("QWEN_HOME"), home.appendingPathComponent(".qwen")]
+                .compactMap { $0?.appendingPathComponent("projects") }
+        }, format: .qwen),
         TokenProvider(source: .copilot, roots: { home, env in
             [(env.path("COPILOT_HOME") ?? home.appendingPathComponent(".copilot")).appendingPathComponent("session-state")]
-        }, format: nil),
-        TokenProvider(source: .amp, roots: { home, env in [dataHome(home, env).appendingPathComponent("amp/threads")] }, format: nil),
+        }, format: .copilot),
+        // AMP_DATA_DIR (a parser convention, not an Amp setting) names the folder that holds threads/.
+        TokenProvider(source: .amp, roots: { home, env in
+            [env.path("AMP_DATA_DIR"), dataHome(home, env).appendingPathComponent("amp")].compactMap { $0?.appendingPathComponent("threads") }
+        }, format: .amp),
         TokenProvider(source: .cline, roots: { home, _ in
             let support = home.appendingPathComponent("Library/Application Support")
             return editors.flatMap { editor in
                 vscodeExtensions.map { support.appendingPathComponent("\(editor)/User/globalStorage/\($0)/tasks") }
             } + [home.appendingPathComponent(".cline/data/sessions")]
-        }, format: nil),
+        }, format: .cline),
         TokenProvider(source: .omp, roots: { home, _ in
             [home.appendingPathComponent(".omp/agent/sessions"), home.appendingPathComponent(".pi/agent/sessions")]
-        }, format: nil),
-        TokenProvider(source: .droid, roots: { home, _ in [home.appendingPathComponent(".factory/sessions")] }, format: nil),
+        }, format: .omp),
+        TokenProvider(source: .droid, roots: { home, _ in [home.appendingPathComponent(".factory/sessions")] }, format: .droid),
     ]
 
     /// VS Code family editors whose globalStorage may hold Cline, Roo Code or Kilo Code tasks.

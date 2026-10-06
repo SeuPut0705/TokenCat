@@ -21,21 +21,28 @@ public sealed record TokenProvider(TokenSource Source, Func<string, Func<string,
         new(TokenSource.Claude, (home, _) => [AppPaths.ClaudeProjects(home)], TokenLogFormat.Claude),
         new(TokenSource.OpenCode, (home, env) =>
             [.. EnvPath(home, env, "OPENCODE_DB") is { } db && Path.GetDirectoryName(db) is { } folder ? [folder] : Array.Empty<string>(),
-             Path.Combine(DataHome(home, env), "opencode")], null),
-        new(TokenSource.Gemini, (home, env) => [Path.Combine(EnvPath(home, env, "GEMINI_CLI_HOME") ?? home, ".gemini", "tmp")], null),
-        new(TokenSource.Qwen, (home, _) => [Path.Combine(home, ".qwen", "projects")], null),
+             Path.Combine(DataHome(home, env), "opencode")], TokenLogFormat.OpenCode),
+        new(TokenSource.Gemini, (home, env) => [Path.Combine(EnvPath(home, env, "GEMINI_CLI_HOME") ?? home, ".gemini", "tmp")], TokenLogFormat.Gemini),
+        // Qwen keeps sessions under its runtime dir: QWEN_RUNTIME_DIR, else QWEN_HOME, else ~\.qwen.
+        new(TokenSource.Qwen, (home, env) =>
+            [.. new[] { EnvPath(home, env, "QWEN_RUNTIME_DIR"), EnvPath(home, env, "QWEN_HOME"), Path.Combine(home, ".qwen") }
+                .OfType<string>().Select(folder => Path.Combine(folder, "projects"))], TokenLogFormat.Qwen),
         new(TokenSource.Copilot, (home, env) =>
-            [Path.Combine(EnvPath(home, env, "COPILOT_HOME") ?? Path.Combine(home, ".copilot"), "session-state")], null),
-        new(TokenSource.Amp, (home, env) => [Path.Combine(DataHome(home, env), "amp", "threads")], null),
+            [Path.Combine(EnvPath(home, env, "COPILOT_HOME") ?? Path.Combine(home, ".copilot"), "session-state")], TokenLogFormat.Copilot),
+        // AMP_DATA_DIR (a parser convention, not an Amp setting) names the folder that holds threads\.
+        new(TokenSource.Amp, (home, env) =>
+            [.. new[] { EnvPath(home, env, "AMP_DATA_DIR"), Path.Combine(DataHome(home, env), "amp") }
+                .OfType<string>().Select(folder => Path.Combine(folder, "threads"))], TokenLogFormat.Amp),
         new(TokenSource.Cline, (home, env) =>
         {
             var appData = EnvPath(home, env, "APPDATA") ?? Path.Combine(home, "AppData", "Roaming");
             return [.. Editors.SelectMany(editor => VSCodeExtensions.Select(extension =>
                         Path.Combine(appData, editor, "User", "globalStorage", extension, "tasks"))),
                     Path.Combine(home, ".cline", "data", "sessions")];
-        }, null),
-        new(TokenSource.Omp, (home, _) => [Path.Combine(home, ".omp", "agent", "sessions"), Path.Combine(home, ".pi", "agent", "sessions")], null),
-        new(TokenSource.Droid, (home, _) => [Path.Combine(home, ".factory", "sessions")], null),
+        }, TokenLogFormat.Cline),
+        new(TokenSource.Omp, (home, _) => [Path.Combine(home, ".omp", "agent", "sessions"), Path.Combine(home, ".pi", "agent", "sessions")],
+            TokenLogFormat.Omp),
+        new(TokenSource.Droid, (home, _) => [Path.Combine(home, ".factory", "sessions")], TokenLogFormat.Droid),
     ];
 
     /// `XDG_DATA_HOME`, else ~\.local\share (OpenCode and Amp use it on Windows too).

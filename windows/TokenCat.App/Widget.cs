@@ -245,7 +245,7 @@ sealed class WidgetView : FrameworkElement
     /// The label colour at the bar's alphas (NSColor.withAlphaComponent replaces the alpha).
     static Color Tone(double alpha) => Color.FromArgb((byte)Math.Round(255 * alpha), Theme.Label.R, Theme.Label.G, Theme.Label.B);
 
-    static int Group(MetricID id) => id switch { MetricID.Network => 1, MetricID.Ai or MetricID.CodexSpeed or MetricID.ClaudeSpeed or MetricID.AverageSpeed => 2, _ => 0 };
+    static int Group(MetricID id) => id switch { MetricID.Network => 1, MetricID.Ai or MetricID.AverageSpeed => 2, _ => 0 };
 
     /// Speed glyph sides: the two-line label row, and beside the value on one line.
     public const double GlyphCompact = 8, GlyphInline = 10;
@@ -312,7 +312,8 @@ sealed class WidgetView : FrameworkElement
         var top = cell.Top + Math.Max(0, (cell.Height - 22) / 2);
         if (metric.Id == MetricID.Network) { DrawNetworkRows(context, metric, new Rect(cell.X, top, cell.Width, 22)); return; }
         var inner = new Rect(cell.X + 1, cell.Y, cell.Width - 2, cell.Height);
-        if (metric.Id.SpeedSource is { } source) DrawGlyph(context, source, GlyphCompact, new Point(inner.X + inner.Width / 2, top + 4.5));
+        if (metric.Contributors.Count > 0)
+            DrawStack(context, metric.Contributors, GlyphCompact, inner.X + (inner.Width - SpeedGlyph.StackWidth(metric.Contributors.Count, GlyphCompact)) / 2, top + 4.5);
         else Draw(context, [new(metric.Label, 8.5, FontWeights.SemiBold, secondary)], top + 4.5, inner);
         if (metric.Id == MetricID.Ai) DrawAI(context, metric, top + 15.5, inner, 11, centered: true);
         else Draw(context, ValueRuns(metric.Value), top + 15.5, inner);
@@ -329,18 +330,17 @@ sealed class WidgetView : FrameworkElement
                 [new("AI", 9, FontWeights.SemiBold, secondary)]);
             return;
         }
-        if (metric.Id.SpeedSource is { } source)
+        if (metric.Contributors.Count > 0)
         {
-            // Like the "AI" caption: 4 pt clear of the cell's leading edge, then the value 3 pt after the glyph.
-            DrawGlyph(context, source, GlyphInline, new Point(cell.X + 4 + GlyphInline / 2, middle));
-            var x = cell.X + 4 + GlyphInline + 3;
+            // Like the "AI" caption: 4 pt clear of the cell's leading edge, then the value 3 pt after the glyphs.
+            DrawStack(context, metric.Contributors, GlyphInline, cell.X + 4, middle);
+            var x = cell.X + 4 + SpeedGlyph.StackWidth(metric.Contributors.Count, GlyphInline) + 3;
             Draw(context, ValueRuns(metric.Value), middle, new Rect(x, cell.Y, cell.Right - x, cell.Height), TextAlignment.Left);
             return;
         }
         if (metric.Id == MetricID.AverageSpeed)
         {
-            // "AVG" sized to itself (about 17 pt at 8.5 pt) from 1 pt in, the value 2 pt after it: wider than the 19 pt label slot
-            // leaves, so "9999 tok/s" fits the 69 pt cell.
+            // Without a measurement, "AVG" sized to itself (about 17 pt at 8.5 pt) from 1 pt in, the "—" 2 pt after it.
             TextRun[] caption = [new(metric.Label, 8.5, FontWeights.SemiBold, secondary)];
             var width = Format(caption, 1).WidthIncludingTrailingWhitespace;
             Draw(context, caption, middle, new Rect(cell.X + 1, cell.Y, width, cell.Height), TextAlignment.Left);
@@ -362,9 +362,9 @@ sealed class WidgetView : FrameworkElement
             : [new(number, 11, FontWeights.Medium, label), new((unit == "%" ? "" : "\u2009") + unit, 8.5, FontWeights.Medium, secondary)];
     }
 
-    /// A speed item's glyph, centred on `center` in the labels' secondary tone.
-    void DrawGlyph(DrawingContext context, TokenSource source, double side, Point center) =>
-        SpeedGlyph.Draw(context, source, new Rect(Snap(center.X - side / 2), Snap(center.Y - side / 2), side, side));
+    /// The speed item's contributing clients' glyphs from `minX` (`SpeedGlyph.DrawStack`), each front one ringed by 1 pt.
+    void DrawStack(DrawingContext context, IReadOnlyList<TokenSource> sources, double side, double minX, double centerY) =>
+        SpeedGlyph.DrawStack(context, sources, new Rect(Snap(minX), Snap(centerY - side / 2), SpeedGlyph.StackWidth(sources.Count, side), side), ring: 1);
 
     /// Mark slot (shape = state) then the count: label while running, secondary for log wait or before the first sample,
     /// tertiary "0" with an empty slot (M-2). The slot is always reserved, so the count never moves.
@@ -469,45 +469,90 @@ sealed class WidgetView : FrameworkElement
     }
 }
 
-/// The speed items' glyphs (mac `SpeedGlyph`): each client's app icon in its own colours, the embedded 64 px
-/// `speed-codex.png` and `speed-claude.png`, drawn smoothly scaled into `box`.
-/// As an element, the Settings item rows' glyph.
-sealed class SpeedGlyph : FrameworkElement
+/// The speed item's client glyphs (mac `SpeedGlyph`, whose comment names each icon's origin): each client's own icon in its
+/// colours, the embedded 64 px `speed-<TokenSource.Id>.png`, one per source.
+static class SpeedGlyph
 {
-    readonly TokenSource source;
+    const int Side = 64;
+    /// At most three glyphs, each 60 % of a side after the one before (a 40 % overlap).
+    public const int Limit = 3;
+    public const double Step = 0.6;
 
-    public SpeedGlyph(TokenSource source, double side)
+    public static double StackWidth(int count, double side) => count <= 0 ? 0 : side + (Math.Min(count, Limit) - 1) * side * Step;
+
+    static readonly Dictionary<TokenSource, byte[]> pixels = Enum.GetValues<TokenSource>()
+        .Select(source => (source, image: Load($"speed-{source.Id}.png"))).Where(item => item.image is not null)
+        .ToDictionary(item => item.source, item => item.image!);
+    static readonly Dictionary<string, BitmapSource> stacks = [];
+
+    /// Whether `source`'s icon is embedded.
+    public static bool Has(TokenSource source) => pixels.ContainsKey(source);
+
+    /// The first `Limit` of `sources` into `box` (`StackWidth` × side), smoothly scaled even inside the widget, which draws its
+    /// pixel art nearest-neighbour. The first (fastest) is leftmost and frontmost, and each front glyph's silhouette, grown by
+    /// `ring` points, is cleared out of the glyphs behind it so the backdrop shows between them, as in an avatar group.
+    /// Composited once per sources and ring at 64 px a side.
+    public static void DrawStack(DrawingContext context, IReadOnlyList<TokenSource> sources, Rect box, double ring)
     {
-        this.source = source;
-        Width = Height = side;
-    }
-
-    protected override void OnRender(DrawingContext context) => Draw(context, source, new Rect(RenderSize));
-
-    /// Smooth scaling even inside the widget, which draws its pixel art nearest-neighbour. Only the telemetry clients have a
-    /// glyph; any other source draws nothing.
-    public static void Draw(DrawingContext context, TokenSource source, Rect box)
-    {
-        BitmapSource? image = source switch
-        {
-            TokenSource.Codex => Codex,
-            TokenSource.Claude => Claude,
-            _ => null,
-        };
-        if (image is null) return;
+        var shown = sources.Take(Limit).ToList();
+        if (shown.Count == 0 || box.Height <= 0) return;
+        var radius = (int)Math.Round(Side * ring / box.Height);
+        var key = string.Join(",", shown) + "/" + radius;
+        if (!stacks.TryGetValue(key, out var image)) stacks[key] = image = Composite(shown, radius);
         var group = new DrawingGroup();
         RenderOptions.SetBitmapScalingMode(group, BitmapScalingMode.HighQuality);
         group.Children.Add(new ImageDrawing(image, box));
         context.DrawDrawing(group);
     }
 
-    static readonly BitmapSource Codex = Load("speed-codex.png"), Claude = Load("speed-claude.png");
-
-    static BitmapSource Load(string name)
+    /// Back to front on premultiplied BGRA: each front glyph first erases itself at eight offsets `radius` px around its place
+    /// (the mac's destination-out ring), then draws over.
+    static BitmapSource Composite(List<TokenSource> shown, int radius)
     {
-        var decoder = BitmapDecoder.Create(new System.IO.MemoryStream(Sprites.Resource(name)), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
-        var frame = decoder.Frames[0];
-        frame.Freeze();
-        return frame;
+        var step = (int)Math.Round(Side * Step);
+        var width = Side + step * (shown.Count - 1);
+        var canvas = new byte[width * Side * 4];
+        var diagonal = (int)Math.Round(radius / Math.Sqrt(2));
+        (int X, int Y)[] offsets = [(radius, 0), (diagonal, diagonal), (0, radius), (-diagonal, diagonal), (-radius, 0), (-diagonal, -diagonal),
+                                    (0, -radius), (diagonal, -diagonal)];
+        for (var index = shown.Count - 1; index >= 0; index--)
+        {
+            if (!pixels.TryGetValue(shown[index], out var glyph)) continue;
+            var left = index * step;
+            if (index < shown.Count - 1)
+                foreach (var (dx, dy) in offsets)
+                    for (var y = 0; y < Side; y++)
+                        for (var x = 0; x < width; x++)
+                        {
+                            int gx = x - left - dx, gy = y - dy;
+                            if (gx < 0 || gx >= Side || gy < 0 || gy >= Side) continue;
+                            var keep = 255 - glyph[(gy * Side + gx) * 4 + 3];
+                            var at = (y * width + x) * 4;
+                            for (var channel = 0; channel < 4; channel++) canvas[at + channel] = (byte)(canvas[at + channel] * keep / 255);
+                        }
+            for (var y = 0; y < Side; y++)
+                for (var x = 0; x < Side; x++)
+                {
+                    int from = (y * Side + x) * 4, at = (y * width + left + x) * 4, behind = 255 - glyph[from + 3];
+                    for (var channel = 0; channel < 4; channel++) canvas[at + channel] = (byte)(glyph[from + channel] + canvas[at + channel] * behind / 255);
+                }
+        }
+        var bitmap = BitmapSource.Create(width, Side, 96, 96, PixelFormats.Pbgra32, null, canvas, width * 4);
+        bitmap.Freeze();
+        return bitmap;
+    }
+
+    /// Premultiplied BGRA at 64 × 64, or null when the embedded file is missing or another size.
+    static byte[]? Load(string name)
+    {
+        System.IO.Stream stream;
+        try { stream = new System.IO.MemoryStream(Sprites.Resource(name)); }
+        catch (System.IO.FileNotFoundException) { return null; }
+        var frame = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad).Frames[0];
+        if (frame.PixelWidth != Side || frame.PixelHeight != Side) return null;
+        var converted = new FormatConvertedBitmap(frame, PixelFormats.Pbgra32, null, 0);
+        var bytes = new byte[Side * Side * 4];
+        converted.CopyPixels(bytes, Side * 4, 0);
+        return bytes;
     }
 }

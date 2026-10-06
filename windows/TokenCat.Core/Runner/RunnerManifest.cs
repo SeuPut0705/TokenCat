@@ -38,7 +38,7 @@ public static class RunnerCharacterText
         public string Sheet => character == RunnerCharacter.Cat ? "runner-v2" : $"runner-{character.Id}";
     }
 
-    /// The Swift raw value of a case: its name with a lowercase first letter ("sit", "codexSpeed").
+    /// The Swift raw value of a case: its name with a lowercase first letter ("sit", "averageSpeed").
     public static string Raw<T>(T value) where T : struct, Enum
     {
         var name = value.ToString();

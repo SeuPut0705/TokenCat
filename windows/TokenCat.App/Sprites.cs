@@ -6,7 +6,7 @@ using System.Windows.Media.Imaging;
 
 namespace TokenCat;
 
-/// The 23 artwork files embedded from ../../Assets (Runner.swift's loading half): decoded once into BGRA sheets for TrayFrame
+/// The 31 artwork files embedded from ../../Assets (Runner.swift's loading half): decoded once into BGRA sheets for TrayFrame
 /// and cut into frozen bitmaps for WPF. Pixel art is only ever drawn at whole multiples with nearest-neighbour scaling.
 static class Sprites
 {

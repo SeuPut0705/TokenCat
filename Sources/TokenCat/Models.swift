@@ -57,7 +57,7 @@ enum TokenSource: String, Codable, CaseIterable {
         case .qwen, .cline, .omp, .droid: return nil
         }
     }
-    /// The clients telemetry setup, live limits, the status line bridge and the per-client speed items apply to.
+    /// The clients telemetry setup, live limits and the status line bridge apply to.
     static let telemetryClients: [TokenSource] = [.codex, .claude]
     /// Sources a list names: the telemetry clients always (a Codex and Claude Code user sees no change), any other
     /// once its data folder is detected or a reading carries it.

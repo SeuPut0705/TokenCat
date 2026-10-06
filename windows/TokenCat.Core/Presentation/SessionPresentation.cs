@@ -205,6 +205,10 @@ public sealed record SpeedSlot(string? Prefix, string Value, string? Kind, bool 
     public bool Known => Kind is not null;
 }
 
+/// The widget's "평균 속도" (mac `AverageSpeed`): the mean of every fresh per-session rate and the clients that contributed one,
+/// fastest first (each client's own mean, descending; ties in `TokenSource` order), so the leading glyph is the fastest client.
+public sealed record AverageSpeed(double Rate, IReadOnlyList<TokenSource> Sources);
+
 /// The flow card's "지금 속도": one measured rate from one visible live session, never a sum or an average.
 public sealed record SpeedHeadline(string Value, string? Kind, string? Project, string Help, string Spoken)
 {
@@ -809,27 +813,29 @@ public static class SessionPresentation
 
     /// Measured rows from clients not waiting for a restart, under 2 minutes old; `current` keeps those on the row's model.
     static IEnumerable<(SessionRowItem Row, TokenSpeedMeasurement Measurement, double Rate)> Measured(IEnumerable<SessionRowItem> rows,
-        DateTimeOffset now, IReadOnlySet<TokenSource> restart, bool current, TokenSource? source = null)
+        DateTimeOffset now, IReadOnlySet<TokenSource> restart, bool current)
     {
         foreach (var row in rows)
-            if ((source is null || row.Reading.Source == source) && !restart.Contains(row.Reading.Source) && row.Reading.SpeedMeasurement is { } measurement
+            if (!restart.Contains(row.Reading.Source) && row.Reading.SpeedMeasurement is { } measurement
                 && measurement.TokensPerSecond is { } rate && (measurement.Model == row.Reading.Model) == current
                 && Seconds(now, measurement.At) is >= -5 and < 120) yield return (row, measurement, rate);
     }
 
-    /// "지금 속도"'s pick (`Headline`): the newest fresh measurement; `source` narrows it to one client, as the widget's speed
-    /// items do.
+    /// "지금 속도"'s pick (`Headline`): the newest fresh measurement.
     public static (SessionRowItem Row, TokenSpeedMeasurement Measurement, double Rate)? CurrentSpeed(SessionListModel list, DateTimeOffset now,
-        IReadOnlySet<TokenSource> restart, TokenSource? source = null) =>
-        Measured(SpeedRows(list), now, restart, current: true, source).OrderByDescending(item => item.Measurement.At)
+        IReadOnlySet<TokenSource> restart) =>
+        Measured(SpeedRows(list), now, restart, current: true).OrderByDescending(item => item.Measurement.At)
             .ThenBy(item => item.Row.Id, StringComparer.Ordinal).Select(item => ((SessionRowItem, TokenSpeedMeasurement, double)?)item).FirstOrDefault();
 
-    /// The widget's opt-in "평균 속도": the arithmetic mean of every client's fresh per-session rates (`CurrentSpeed`'s rule),
-    /// null without one. Only measured rates are averaged; nothing is estimated.
-    public static double? AverageSpeed(SessionListModel list, DateTimeOffset now, IReadOnlySet<TokenSource> restart)
+    /// The widget's opt-in "평균 속도": the arithmetic mean of every client's fresh per-session rates (`CurrentSpeed`'s rule) and
+    /// the clients they came from, null without one. Only measured rates are averaged; nothing is estimated.
+    public static AverageSpeed? Average(SessionListModel list, DateTimeOffset now, IReadOnlySet<TokenSource> restart)
     {
-        var rates = Measured(SpeedRows(list), now, restart, current: true).Select(item => item.Rate).ToList();
-        return rates.Count == 0 ? null : rates.Average();
+        var fresh = Measured(SpeedRows(list), now, restart, current: true).ToList();
+        if (fresh.Count == 0) return null;
+        var sources = fresh.GroupBy(item => item.Row.Reading.Source).Select(group => (Source: group.Key, Rate: group.Average(item => item.Rate)))
+            .OrderByDescending(item => item.Rate).ThenBy(item => item.Source).Select(item => item.Source).ToList();
+        return new AverageSpeed(fresh.Average(item => item.Rate), sources);
     }
 
     public static string SpokenKind(TokenRateKind? kind) => kind switch

@@ -621,16 +621,19 @@ public static class SessionPresentationChecks
         var child = headline([speedAlpha, helper]);
         check(child?.Value == "44.1" && child?.Help.StartsWith("Alpha · 하위 Explore · Claude Code m1", StringComparison.Ordinal) == true,
               "a visible live subagent's own measurement counts and is named");
-        // The widget's speed items: the same pick narrowed to one client.
-        double? rate(IReadOnlyList<TokenReading> readings, TokenSource source, IReadOnlySet<TokenSource>? waitingRestart = null) =>
-            CurrentSpeed(make(readings), now, waitingRestart ?? none, source)?.Rate;
+        // The widget's "평균 속도": every fresh rate on its session's current model, and its clients, fastest first.
+        string? average(IReadOnlyList<TokenReading> readings, IReadOnlySet<TokenSource>? waitingRestart = null) =>
+            Average(make(readings), now, waitingRestart ?? none) is { } speed
+                ? speed.Rate.ToString("F3", System.Globalization.CultureInfo.InvariantCulture) + " " + string.Join(",", speed.Sources.Select(source => source.Id))
+                : null;
         var gamma = timed("codex:gamma", TokenSource.Codex, "Gamma", "g1", ago: -40, interval: 10);
-        check(rate([speedAlpha, speedBeta, gamma], TokenSource.Codex) == 50 && rate([speedAlpha, speedBeta, gamma], TokenSource.Claude) == 44.1
-              && rate([gamma], TokenSource.Codex) == 100 && rate([speedAlpha, switched], TokenSource.Codex) == null
-              && rate([staleAlpha, speedBeta], TokenSource.Claude) == null && rate([speedAlpha, speedBeta], TokenSource.Codex, only(TokenSource.Codex)) == null
-              && rate([speedBeta], TokenSource.Claude) == null && rate([quiet, unmatched], TokenSource.Claude) == null && rate([helper], TokenSource.Claude) == 44.1
+        List<IReadOnlyList<TokenReading>> cases = [[speedAlpha, speedBeta, gamma], [gamma], [speedAlpha, switched], [staleAlpha, speedBeta], [speedBeta], [helper]];
+        check(cases.Select(readings => average(readings)).SequenceEqual(["64.700 codex,claude", "100.000 codex", "44.100 claude", "50.000 codex", "50.000 codex",
+                                                                         "44.100 claude"])
+              && average([speedAlpha, speedBeta], only(TokenSource.Codex)) == "44.100 claude" && average([quiet, unmatched]) == null && average([staleAlpha]) == null
               && CurrentSpeed(make([speedAlpha, speedBeta, gamma]), now, none)?.Rate == 50,
-              "a client's speed is its own newest fresh measurement on the current model, never another client's or one waiting for a restart");
+              "the average speed is every fresh rate on the session's current model, its clients fastest first, never one waiting for a restart: "
+              + string.Join(" / ", cases.Select(readings => average(readings) ?? "null")));
 
         // English: plurals, word order, spoken text and composed titles.
         With(AppLanguage.En, () =>

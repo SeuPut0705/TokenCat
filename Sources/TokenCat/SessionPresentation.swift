@@ -162,6 +162,13 @@ struct SpeedSlot: Equatable {
     var known: Bool { kind != nil }
 }
 
+/// The menu bar's "평균 속도": the mean of every fresh per-session rate and the clients that contributed one, fastest
+/// first (each client's own mean, descending; ties in `TokenSource` order), so the leading glyph is the fastest client.
+struct AverageSpeed: Equatable {
+    var rate: Double
+    var sources: [TokenSource]
+}
+
 /// The flow card's "지금 속도": one measured rate from one visible live session, never a sum or an average.
 struct SpeedHeadline: Equatable {
     var value: String
@@ -680,11 +687,11 @@ enum SessionPresentation {
     }
 
     /// Measured rates fresh enough to call current: telemetry for the row's own model, from the last 2 minutes, and not
-    /// from a client that must restart to report it. `source` narrows them to one client.
-    private static func freshSpeeds(_ list: SessionListModel, source: TokenSource?, now: Date, restart: Set<TokenSource>)
+    /// from a client that must restart to report it.
+    private static func freshSpeeds(_ list: SessionListModel, now: Date, restart: Set<TokenSource>)
         -> [(row: SessionRowItem, measurement: TokenSpeedMeasurement, rate: Double)] {
         speedRows(list).compactMap { row in
-            guard source == nil || row.reading.source == source, !restart.contains(row.reading.source),
+            guard !restart.contains(row.reading.source),
                   let measurement = row.reading.speedMeasurement, let rate = measurement.tokensPerSecond,
                   measurement.model == row.reading.model else { return nil }
             let age = now.timeIntervalSince(measurement.at)
@@ -692,18 +699,26 @@ enum SessionPresentation {
         }
     }
 
-    /// "지금 속도"'s pick (`speedHeadline`); `source` narrows it to one client, as the menu bar's speed items do.
-    static func currentSpeed(_ list: SessionListModel, source: TokenSource? = nil, now: Date, restart: Set<TokenSource>)
+    /// "지금 속도"'s pick (`speedHeadline`).
+    static func currentSpeed(_ list: SessionListModel, now: Date, restart: Set<TokenSource>)
         -> (row: SessionRowItem, measurement: TokenSpeedMeasurement, rate: Double)? {
-        freshSpeeds(list, source: source, now: now, restart: restart)
+        freshSpeeds(list, now: now, restart: restart)
             .max { a, b in a.measurement.at != b.measurement.at ? a.measurement.at < b.measurement.at : a.row.id > b.row.id }
     }
 
     /// The menu bar's opt-in "평균 속도": the arithmetic mean of every client's fresh per-session rates (same rule as
-    /// `currentSpeed`), nil without one. Only measured rates are averaged; nothing is estimated.
-    static func averageSpeed(_ list: SessionListModel, now: Date, restart: Set<TokenSource>) -> Double? {
-        let rates = freshSpeeds(list, source: nil, now: now, restart: restart).map(\.rate)
-        return rates.isEmpty ? nil : rates.reduce(0, +) / Double(rates.count)
+    /// `currentSpeed`) and the clients they came from, nil without one. Only measured rates are averaged; nothing is estimated.
+    static func averageSpeed(_ list: SessionListModel, now: Date, restart: Set<TokenSource>) -> AverageSpeed? {
+        let fresh = freshSpeeds(list, now: now, restart: restart)
+        guard !fresh.isEmpty else { return nil }
+        let bySource = Dictionary(grouping: fresh, by: { $0.row.reading.source }).mapValues { rows in
+            rows.map(\.rate).reduce(0, +) / Double(rows.count)
+        }
+        let order = TokenSource.allCases
+        let sources = bySource.sorted { a, b in
+            a.value != b.value ? a.value > b.value : order.firstIndex(of: a.key)! < order.firstIndex(of: b.key)!
+        }.map(\.key)
+        return AverageSpeed(rate: fresh.map(\.rate).reduce(0, +) / Double(fresh.count), sources: sources)
     }
 
     static func spokenKind(_ kind: TokenRateKind?) -> String {

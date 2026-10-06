@@ -269,7 +269,7 @@ enum TokenCatMain {
             let counts = model.sessions.counts
             view.update(metrics: StatusBarContent.metrics(system: model.system, counts: counts,
                 ai: StatusAISummary(groups: model.groups, counts: counts), recorded: model.flow.total,
-                speeds: StatusBarContent.speeds(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
+                speed: SessionPresentation.averageSpeed(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
                 preferences: model.preferences, layout: layout, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil),
                 layout: layout, showRunner: model.preferences.showRunner && !arguments.contains("--no-runner"))
             view.frame.size.width = view.requiredWidth
@@ -321,27 +321,32 @@ enum TokenCatMain {
             (loc("입력 필요", "Input needed"), [reading(4, .input), reading(6, .input), reading(5, .working)]),
             (loc("세션 12개", plural(12, "session")), (0..<12).map { reading($0, .tool) })
         ]
-        // The speed items, turned on for the last rows: measured 3 s ago on the session's model (Codex 55.6, Claude 312.5 tok/s), then none.
-        func measured(_ index: Int, interval: Double) -> TokenReading {
+        // The average speed item, turned on for the last rows: measured 3 s ago on the session's model by one, two and four
+        // clients (Codex 55.6, Claude 312.5, Gemini 100, OpenCode 25 tok/s; at most three glyphs show), then none.
+        func measured(_ index: Int, _ source: TokenSource, interval: Double) -> TokenReading {
             var value = reading(index, .working)
-            var measurement = TokenSpeedMeasurement(TelemetryReading(provider: value.source, at: at.addingTimeInterval(-3)))
+            value.source = source
+            var measurement = TokenSpeedMeasurement(TelemetryReading(provider: source, at: at.addingTimeInterval(-3)))
             measurement.model = value.model
             measurement.serverTokenIntervalMs = interval
             value.speedMeasurement = measurement
             return value
         }
         let speedRows: [(String, [TokenReading])] = [
-            (loc("속도", "Speed"), [measured(1, interval: 18), measured(0, interval: 3.2)]),
+            (loc("속도 · 1개", "Speed · 1"), [measured(1, .codex, interval: 18)]),
+            (loc("속도 · 2개", "Speed · 2"), [measured(1, .codex, interval: 18), measured(0, .claude, interval: 3.2)]),
+            (loc("속도 · 4개", "Speed · 4"), [measured(1, .codex, interval: 18), measured(0, .claude, interval: 3.2),
+                                             measured(2, .gemini, interval: 10), measured(3, .opencode, interval: 40)]),
             (loc("속도 측정 없음", "No speed measured"), [reading(1, .working), reading(0, .working)])
         ]
         var strips: [(String, [NSImage])] = []
         for (index, (title, tokens)) in (rows + speedRows).enumerated() {
-            if index == rows.count { preferences.visible.formUnion([.codexSpeed, .claudeSpeed, .averageSpeed]) }
+            if index == rows.count { preferences.visible.insert(.averageSpeed) }
             let groups = SessionPresentation.groups(tokens, now: at)
             let counts = SessionCounts(groups)
-            let speeds = StatusBarContent.speeds(SessionListModel.make(tokens: tokens, now: at, expanded: false), now: at, restart: [])
+            let speed = SessionPresentation.averageSpeed(SessionListModel.make(tokens: tokens, now: at, expanded: false), now: at, restart: [])
             let metrics = StatusBarContent.metrics(system: system, counts: counts, ai: StatusAISummary(groups: groups, counts: counts),
-                                                   recorded: 0, speeds: speeds, preferences: preferences, hasSample: true, hasTokenSample: true)
+                                                   recorded: 0, speed: speed, preferences: preferences, hasSample: true, hasTokenSample: true)
             var director = RunnerDirector()
             let activity = RunnerActivity(groups: groups, cpu: system.cpuPercent, now: at)
             director.observe(activity, now: at)

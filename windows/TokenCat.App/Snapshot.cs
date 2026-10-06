@@ -77,8 +77,8 @@ static class Snapshot
 
     /// The widget on a wallpaper-like blue: minimal, two-line and one-line with tools running, the same with input needed,
     /// minimal before the first sample (sleeping, with its z), minimal and two lines without the character, two lines at
-    /// 150 % (the runner resampled smoothly) and 200 %, then with the speed items on: Codex's measured rate beside Claude's
-    /// "—" on two lines, Codex's "—" beside Claude's rate on one line.
+    /// 150 % (the runner resampled smoothly) and 200 %, then with the speed item on: the measured sessions' average with their
+    /// clients' icons on two lines and on one line.
     static FrameworkElement Widgets()
     {
         var stack = new System.Windows.Controls.StackPanel { Background = new SolidColorBrush(Color.FromRgb(0x3A, 0x6E, 0xA5)) };

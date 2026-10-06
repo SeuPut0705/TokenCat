@@ -18,27 +18,27 @@ func runPreferenceChecks() -> [String] {
           "A new install did not default to automatic update checks on and the new-version notification off")
     let fresh = Preferences(defaults: defaults)
     check(fresh.order == MetricID.allCases && fresh.visible == Set(MetricID.standard) && fresh.preset == .systemMonitor
-          && MetricID.allCases.suffix(3) == [.codexSpeed, .claudeSpeed, .averageSpeed] && MetricID.standard == [.cpu, .memory, .disk, .battery, .network, .ai]
+          && MetricID.allCases.last == .averageSpeed && MetricID.standard == [.cpu, .memory, .disk, .battery, .network, .ai]
           && DisplayPreset.allCases.map(\.items) == [nil, [.ai, .cpu, .memory], MetricID.standard, MetricID.standard],
-          "A new install did not start with the six standard items (the speed items off, last), or a preset's item set changed")
+          "A new install did not start with the six standard items (the speed item off, last), or a preset's item set changed")
     defaults.set(["cpu", "memory", "disk", "battery", "network", "ai"], forKey: "metricOrder")
     defaults.set(["cpu", "memory", "disk", "battery", "network", "ai"], forKey: "visibleMetrics")
     let upgraded = Preferences(defaults: defaults)
     check(upgraded.order == MetricID.allCases && upgraded.visible == Set(MetricID.standard) && upgraded.preset == .systemMonitor,
-          "An existing order and item set did not get the speed items appended and hidden, or left 시스템 모니터")
-    upgraded.setVisible(.claudeSpeed, true)
+          "An existing order and item set did not get the speed item appended and hidden, or left 시스템 모니터")
+    upgraded.setVisible(.averageSpeed, true)
     let speedOn = (upgraded.preset, upgraded.shownItems.last)
     upgraded.apply(.systemMonitor)
-    check(speedOn == (nil, .claudeSpeed) && upgraded.preset == .systemMonitor && !upgraded.visible.contains(.claudeSpeed)
+    check(speedOn == (nil, .averageSpeed) && upgraded.preset == .systemMonitor && !upgraded.visible.contains(.averageSpeed)
           && Preferences(defaults: defaults).order == MetricID.allCases,
-          "A speed item turned on did not draw last as 사용자 지정, or 시스템 모니터 did not hide it again")
+          "The speed item turned on did not draw last as 사용자 지정, or 시스템 모니터 did not hide it again")
     defaults.removePersistentDomain(forName: suite)
     defaults.set(["claude", "disk", "codex", "cpu", "memory", "battery", "network"], forKey: "metricOrder")
     defaults.set(["cpu", "claude", "network"], forKey: "visibleMetrics")
     defaults.set(false, forKey: "showRunner")
     defaults.set("tokens", forKey: "animationSource")
     let migrated = Preferences(defaults: defaults)
-    check(migrated.order == [.ai, .disk, .cpu, .memory, .battery, .network, .codexSpeed, .claudeSpeed, .averageSpeed],
+    check(migrated.order == [.ai, .disk, .cpu, .memory, .battery, .network, .averageSpeed],
           "Migration changed custom metric order or duplicated the AI item")
     check(migrated.visible == [.cpu, .ai, .network] && !migrated.showRunner && migrated.animationSource == .activity,
           "Migration lost a visible provider, unrelated preferences, or kept the legacy 'tokens' motion")
@@ -52,6 +52,16 @@ func runPreferenceChecks() -> [String] {
     defaults.set(["cpu", "memory"], forKey: "visibleMetrics")
     check(!Preferences(defaults: defaults).visible.contains(.ai),
           "Migration exposed AI when both old provider fields were hidden")
+    // The per-client speed items (until 0.13) became the average item: either shown shows it, and their slots leave the order.
+    defaults.set(["cpu", "codexSpeed", "memory", "claudeSpeed", "averageSpeed", "ai"], forKey: "metricOrder")
+    defaults.set(["cpu", "claudeSpeed", "codexSpeed"], forKey: "visibleMetrics")
+    let speedShown = Preferences(defaults: defaults)
+    defaults.set(["cpu", "codexSpeed", "claudeSpeed", "memory", "disk", "battery", "network", "ai"], forKey: "metricOrder")
+    defaults.set(["cpu", "memory"], forKey: "visibleMetrics")
+    let speedHidden = Preferences(defaults: defaults)
+    check(speedShown.order == [.cpu, .memory, .averageSpeed, .ai, .disk, .battery, .network] && speedShown.visible == [.cpu, .averageSpeed]
+          && speedHidden.order == [.cpu, .memory, .disk, .battery, .network, .ai, .averageSpeed] && speedHidden.visible == [.cpu, .memory],
+          "The old Codex/Claude speed items did not migrate to the average item (shown when either was), or kept their slots")
     check(reopened.statusBarLayout == .compact,
           "Existing preferences did not default to the compact menu layout")
     reopened.statusBarLayout = .minimal
@@ -81,8 +91,8 @@ func runPreferenceChecks() -> [String] {
     guarded.setVisible(.cpu, false)
     check(guarded.visible == [.cpu] && guarded.canHideRunner && !guarded.canHide(.cpu),
           "The last visible item could be hidden while the cat was hidden")
-    guarded.visible = [.codexSpeed]
-    check(guarded.shownItems == [.codexSpeed] && !guarded.canHide(.codexSpeed), "A speed item was not drawn, or could be hidden as the last item")
+    guarded.visible = [.averageSpeed]
+    check(guarded.shownItems == [.averageSpeed] && !guarded.canHide(.averageSpeed), "The speed item was not drawn, or could be hidden as the last item")
     guarded.visible = [.cpu]
     guarded.setShowRunner(true)
     guarded.setVisible(.cpu, false)
@@ -103,9 +113,9 @@ func runPreferenceChecks() -> [String] {
     let down = guarded.order
     guarded.move(.network, onto: .memory)
     guarded.move(.ai, onto: .ai)
-    guarded.move(.claudeSpeed, onto: .codexSpeed)
-    check(down == [.memory, .disk, .battery, .cpu, .network, .ai, .codexSpeed, .claudeSpeed, .averageSpeed]
-          && Preferences(defaults: defaults).order == [.network, .memory, .disk, .battery, .cpu, .ai, .claudeSpeed, .codexSpeed, .averageSpeed],
+    guarded.move(.averageSpeed, onto: .ai)
+    check(down == [.memory, .disk, .battery, .cpu, .network, .ai, .averageSpeed]
+          && Preferences(defaults: defaults).order == [.network, .memory, .disk, .battery, .cpu, .averageSpeed, .ai],
           "Dropping a row onto another did not take its place in either direction, or did not persist")
     defaults.set(1_234.0, forKey: "unrelatedKey")
     guarded.notifyInput = true
@@ -139,7 +149,7 @@ func runPreferenceChecks() -> [String] {
     undo.undo()
     let undone = guarded.snapshot
     undo.redo()
-    check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .ai, .claudeSpeed, .codexSpeed, .averageSpeed] && before.notifyInputSound && before.notifyUpdate
+    check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .averageSpeed, .ai] && before.notifyInputSound && before.notifyUpdate
           && before.character == .penguin
           && guarded.snapshot == Preferences.defaultSnapshot && undo.undoActionName == "기본값으로 되돌리기",
           "⌘Z after reset did not restore the previous order and all four notification toggles, or ⇧⌘Z did not reapply")

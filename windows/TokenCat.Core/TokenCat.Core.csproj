@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Every rule and every check (DESIGN §5): no Windows APIs, no packages, no P/Invoke. -->
+  <!-- Every rule and every check (DESIGN §5): no Windows APIs, no packages. The one P/Invoke is the OS SQLite for OpenCode's
+       database (winsqlite3.dll; the system libsqlite3 when the checks run on a mac or Linux host). -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
