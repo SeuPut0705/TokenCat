@@ -83,6 +83,8 @@ file sealed class ChatTurnState(TokenSource source)
     DateTimeOffset? compactedAt;
     bool open;
     DateTimeOffset? startedAt;
+    /// The message that began the open turn: a rollback that removes it cancelled the turn.
+    public string? TurnMessageID { get; private set; }
     /// The person's input of the current turn was read, so its output count is complete.
     bool startSeen;
     int output;
@@ -101,6 +103,12 @@ file sealed class ChatTurnState(TokenSource source)
     static readonly HashSet<string> InputTools = new(["ask_user_question", "ask_user", "exit_plan_mode"], StringComparer.Ordinal);
 
     public bool HasTools => tools.Count > 0;
+    public bool IsOpen => open;
+
+    /// Whether a record at `date` still belongs to the open turn: it came within the turn's liveness horizon. Read before
+    /// the record is noted.
+    public bool Continues(DateTimeOffset? date) =>
+        open && (date is not { } at || LiveAt is not { } live || (at - live).TotalSeconds <= LiveHorizon);
 
     public void SetProject(string? path)
     {
@@ -130,10 +138,11 @@ file sealed class ChatTurnState(TokenSource source)
     }
 
     /// The person's input starts a turn.
-    public void Begin(DateTimeOffset? date)
+    public void Begin(DateTimeOffset? date, string? message = null)
     {
         open = true;
         startedAt = date;
+        TurnMessageID = message;
         startSeen = date is not null;
         output = 0;
         turnHasOutput = false;
@@ -208,7 +217,7 @@ file sealed class ChatTurnState(TokenSource source)
         var delta = tokens - prior;
         if (startSeen)
         {
-            output += delta;
+            output = LogFields.Add(output, delta);
             turnHasOutput = true;
         }
         lastOutputDelta = delta;
@@ -293,7 +302,7 @@ file sealed class ChatTurnState(TokenSource source)
     public static int OutputTokens(int? candidates, int? thoughts, int? prompt, int? total)
     {
         var count = candidates ?? 0;
-        return thoughts is > 0 && total is { } sum && (long)sum >= (long)(prompt ?? 0) + count + thoughts.Value ? count + thoughts.Value : count;
+        return thoughts is > 0 && total is { } sum && (long)sum >= (long)(prompt ?? 0) + count + thoughts.Value ? LogFields.Add(count, thoughts.Value) : count;
     }
 
     public static int? Integer(JsonElement? value) =>
@@ -389,7 +398,9 @@ file sealed class ChatLineTail(string path)
             }
             if (found < 0) break;
             if (!dropping && pending.Length > 0) line(pending.GetBuffer().AsSpan(0, (int)pending.Length));
-            pending.SetLength(0);
+            // One long line must not pin up to 1 MB per reader for good.
+            if (pending.Length > 65_536) pending = new();
+            else pending.SetLength(0);
             dropping = false;
             start = end + 1;
         }
@@ -455,9 +466,13 @@ file sealed class GeminiChatReader : ITokenLogReader
         else state.Project = folderProject;
     }
 
-    public bool IsRecent(DateTimeOffset now) => state.IsRecent(now);
+    /// A resumed legacy snapshot was migrated whole into `<name>.jsonl`, whose reader now counts it; the retained snapshot
+    /// reader would list the same session twice.
+    bool Migrated => legacy && File.Exists(path + "l");
 
-    public IEnumerable<TokenReading> Readings(string id, DateTimeOffset now) => state.Readings(id, now);
+    public bool IsRecent(DateTimeOffset now) => !Migrated && state.IsRecent(now);
+
+    public IEnumerable<TokenReading> Readings(string id, DateTimeOffset now) => Migrated ? [] : state.Readings(id, now);
 
     public void Read(int tailLimit, DateTimeOffset now)
     {
@@ -502,9 +517,16 @@ file sealed class GeminiChatReader : ITokenLogReader
             if (update.Field("messages") is { ValueKind: JsonValueKind.Array } messages)
                 foreach (var message in messages.EnumerateArray()) Message(message);
         }
-        // The person rewound the conversation; it waits for new input.
-        else if (record.Field("$rewindTo")?.Text is not null) state.Close(TokenActivityState.Idle, null);
-        else if (record.Field("$patch") is not null) return;
+        // A cancelled or failed request rolls the open turn back; otherwise the person rewound and waits to type.
+        else if (record.Field("$rewindTo")?.Text is not null) state.Close(state.IsOpen ? TokenActivityState.Interrupted : TokenActivityState.Idle, null);
+        else if (record.Field("$patch") is { ValueKind: JsonValueKind.Object } patch)
+        {
+            // A rollback that is no pure tail removes the turn's own prompt. Compression also removes messages, but
+            // reorders the history (`orderIds`) around its summary, and the turn goes on.
+            if (state.IsOpen && patch.Field("orderIds") is null && state.TurnMessageID is { } start
+                && patch.Field("removeIds") is { ValueKind: JsonValueKind.Array } removed && removed.EnumerateArray().Any(item => item.Text == start))
+                state.Close(TokenActivityState.Interrupted, null);
+        }
         else if (record.Field("id")?.Text is not null && record.Field("type")?.Text is not null) Message(record);
         else if (record.Field("sessionId")?.Text is not null) Metadata(record);
     }
@@ -526,6 +548,10 @@ file sealed class GeminiChatReader : ITokenLogReader
             && directories.GetArrayLength() > 0 && directories[0].Text is { } directory) state.SetProject(directory);
     }
 
+    /// `deriveStableId(["environment-context"])`: the session-context turn every start, `/clear` and new chat records.
+    static readonly string EnvironmentContextID =
+        Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData("environment-context"u8))[..32];
+
     void Message(JsonElement record)
     {
         if (record.Field("id")?.Text is not { } id || record.Field("type")?.Text is not { } type) return;
@@ -538,24 +564,30 @@ file sealed class GeminiChatReader : ITokenLogReader
             lastMessageID = id;
         }
         var isLatest = id == lastMessageID;
+        var continuing = state.Continues(date);
         state.Note(date);
         switch (type)
         {
             case "user":
-                if (!isNew) return;
+                if (!isNew || id == EnvironmentContextID) return;
                 // Newer builds record tool results as user messages made only of functionResponse parts.
                 var responses = record.Field("content") is { ValueKind: JsonValueKind.Array } parts
                     ? parts.EnumerateArray().Select(part => part.Field("functionResponse")).Where(response => response?.ValueKind == JsonValueKind.Object).ToList()
                     : [];
-                if (responses.Count == 0) state.Begin(date);
-                else
+                if (responses.Count > 0)
                 {
                     foreach (var response in responses)
                         if (response?.Field("id")?.Text is { } call) state.RemoveTool(call);
                     state.Resume(date);
                 }
+                // Input inside a live turn is the client's own: "Please continue." or a compression summary.
+                else if (continuing) state.Resume(date);
+                else state.Begin(date, id);
                 break;
             case "gemini":
+                // Replies are recorded with text content; a part list is a turn the client synced from its own history
+                // (a compression acknowledgement, a placeholder for an interrupted reply) and carries no turn change.
+                if (record.Field("content") is { ValueKind: JsonValueKind.Array }) return;
                 if (record.Field("model")?.Text is { Length: > 0 } model) state.Model = model;
                 if (record.Field("tokens") is { ValueKind: JsonValueKind.Object } tokens)
                 {

@@ -387,8 +387,8 @@ static class OnboardingCard
 /// The output-token card (F-1–F-6): log records, never a speed, plus the measured "지금 속도".
 sealed class FlowCard : Border
 {
-    static string HelpText => Loc("막대 하나는 5초 동안 로그에 기록된 출력 토큰 수입니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다. 속도로 환산하지 않습니다.",
-        "Each bar is the number of output tokens recorded in the log over 5 seconds. Codex records them when a response ends and Claude Code when a message ends, so tokens still being generated aren't included yet. They're never converted into a speed.");
+    static string HelpText => Loc("막대 하나는 5초 동안 로그에 기록된 출력 토큰 수입니다. 코딩 에이전트는 응답이나 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다. 속도로 환산하지 않습니다.",
+        "Each bar is the number of output tokens recorded in the log over 5 seconds. Coding agents record them when a response or message ends, so tokens still being generated aren't included yet. They're never converted into a speed.");
 
     readonly Grid collapsed = new() { Height = 20 };
     readonly TextBlock collapsedLast = Ui.Text("", Font.MetaMono, Theme.Secondary);
@@ -502,16 +502,23 @@ sealed class FlowCard : Border
         // does not move each time the speed comes and goes.
         var shows = !loading && (sum > 0 || speed is not null);
         lowerSlot.Visibility = shows ? Visibility.Visible : Visibility.Collapsed;
-        var parts = Enum.GetValues<TokenSource>().Select(source => (source, value: flow.ByProvider.GetValueOrDefault(source))).Where(p => p.value > 0).ToList();
-        var providers = parts.Count > 1 ? string.Join(" · ", parts.Select(p => $"{p.source.Title} {Format.CompactTokens(p.value)}")) : parts.FirstOrDefault().source.Title;
-        if (parts.Count == 0) providers = "";
-        var lower = (providers, speed);
+        // `SessionPresentation.ProviderSplits`: the first candidate that fits beside the speed's shortest form.
+        var texts = SessionPresentation.ProviderSplits(flow.ByProvider);
+        var lower = (string.Join("|", texts), speed);
         if (shows && !Equals(lower, lowerKey))
         {
             lowerKey = lower;
-            var left = Ui.Text(providers, Font.MetaMono, Theme.Secondary);
+            var width = Dashboard.PanelWidth - 2 * Dashboard.Gutter - 2 * Dashboard.Inset;
+            var speedMin = 0.0;
+            if (speed is not null)
+            {
+                var shortest = SpeedHeadlineView(speed, 0);
+                shortest.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                speedMin = shortest.DesiredSize.Width + 8;
+            }
+            var left = Dashboard.Fit(width - speedMin, texts.Select(text => (Func<FrameworkElement>)(() => Ui.Text(text, Font.MetaMono, Theme.Secondary))).ToArray());
             left.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - 2 * Dashboard.Inset - left.DesiredSize.Width - 8;
+            var room = width - left.DesiredSize.Width - 8;
             lowerSlot.Child = Dashboard.Spread(left, speed is null ? null : SpeedHeadlineView(speed, room));
         }
         chart.Set(flow.Hero, flow.Fresh, loading);

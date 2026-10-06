@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json;
 
 namespace TokenCat;
@@ -39,6 +40,8 @@ sealed class OmpLogReader(string path) : ITokenLogReader
     readonly LogLineTail tail = new(path);
     OmpLogState state = new(path);
     bool headerRead;
+    /// Pi's own sessions (`~\.pi\agent\sessions`); null for omp.
+    readonly string? clientName = path.Replace('\\', '/').Contains("/.pi/agent/", StringComparison.OrdinalIgnoreCase) ? "Pi" : null;
 
     public void Read(int tailLimit, DateTimeOffset now)
     {
@@ -49,10 +52,11 @@ sealed class OmpLogReader(string path) : ITokenLogReader
         }, line => state.Consume(line, tail.SkippedHead));
         // The header (a title line, then the session line) is lost when the first read starts mid-file.
         if (!tail.SkippedHead || headerRead) return;
-        headerRead = true;
         try
         {
             using var handle = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 0);
+            // Set once the file opened, as in Swift: a failed open is tried again on the next read.
+            headerRead = true;
             var head = new byte[(int)Math.Min(65_536, handle.Length)];
             var read = handle.ReadAtLeast(head, head.Length, throwOnEndOfStream: false);
             var start = 0;
@@ -72,6 +76,7 @@ sealed class OmpLogReader(string path) : ITokenLogReader
         var tool = s.RunningTool;
         return [new TokenReading(TokenSource.Omp, id)
         {
+            ClientName = clientName,
             SessionID = s.SessionID,
             ParentSessionID = s.ParentSessionID,
             AgentID = s.AgentID,
@@ -112,9 +117,9 @@ sealed class OmpLogReader(string path) : ITokenLogReader
 sealed class OmpLogState
 {
     public string? SessionID { get; private set; }
-    public string? ParentSessionID { get; private set; }
-    public string? AgentID { get; private set; }
-    public bool IsSubagent { get; private set; }
+    public string? ParentSessionID { get; }
+    public string? AgentID { get; }
+    public bool IsSubagent { get; }
     public string? AgentRole { get; private set; }
     public string? Cwd { get; private set; }
     public string? Model { get; private set; }
@@ -158,6 +163,7 @@ sealed class OmpLogState
 
     public void Consume(byte[] line, bool headSkipped)
     {
+        if (OmpRecordHead.Scan(line) is { } head && ConsumeHead(head, headSkipped)) return;
         if (Parse(line) is not { } document) return;
         using (document)
         {
@@ -190,6 +196,33 @@ sealed class OmpLogState
         }
     }
 
+    /// Records whose kept fields all sit in the head, so the body (tool output, file contents, notices) is never decoded:
+    /// tool results, other message roles, and record types that only stamp `LastLogAt`. False leaves the line to the full parse.
+    bool ConsumeHead(OmpRecordHead head, bool headSkipped)
+    {
+        switch (head.Fields.GetValueOrDefault("type"))
+        {
+            case null or "session" or "session_init" or "model_change" or "thinking_level_change":
+                return false;
+            case "custom" when (head.Fields.GetValueOrDefault("customType") ?? "session_exit") == "session_exit":
+                return false;
+            case "message":
+                if (head.Message.GetValueOrDefault("role") is not { } role || role is "user" or "assistant"
+                    || head.Fields.GetValueOrDefault("timestamp") is not { } stamp
+                    || (role == "toolResult" && !head.Message.ContainsKey("toolCallId"))) return false;
+                if (LogFields.Date(stamp) is not { } at) return role != "toolResult";
+                LastLogAt = Later(LastLogAt, at);
+                if (role == "toolResult") ConsumeToolResult(head.Message["toolCallId"] is { Length: > 0 } id ? id : null, at, headSkipped);
+                return true;
+            default:
+                if ((head.Fields.GetValueOrDefault("timestamp") ?? head.TrailingTimestamp) is not { } text) return false;
+                if (LogFields.Date(text) is { } logged) LastLogAt = Later(LastLogAt, logged);
+                return true;
+        }
+    }
+
+    /// Subagent status comes from the folder nesting alone: `/fork` and branched sessions also name a `parentSession`, but
+    /// they are top-level conversations of their own.
     void ConsumeIdentity(JsonElement record)
     {
         switch (record.Field("type")?.Text)
@@ -197,12 +230,6 @@ sealed class OmpLogState
             case "session":
                 SessionID = LogFields.Text(record.Field("id")) ?? SessionID;
                 if (LogFields.Text(record.Field("cwd")) is { Length: <= 4_096 } cwd) Cwd = cwd;
-                if (LogFields.Text(record.Field("parentSession")) is { } parent)
-                {
-                    IsSubagent = true;
-                    ParentSessionID ??= SessionFileID(Path.GetFileNameWithoutExtension(parent.Replace('\\', '/').Split('/')[^1]));
-                    AgentID ??= SessionID;
-                }
                 break;
             case "session_init":
                 AgentRole = TokenLogParser.Label(record.Field("agent")) ?? AgentRole;
@@ -214,7 +241,12 @@ sealed class OmpLogState
     {
         if (stamp is not { } at) return;
         var role = message.Field("role")?.Text;
-        if (role is not ("user" or "assistant" or "toolResult")) return;
+        if (role == "toolResult")
+        {
+            ConsumeToolResult(LogFields.Text(message.Field("toolCallId")), at, headSkipped);
+            return;
+        }
+        if (role is not ("user" or "assistant")) return;
         // A tail that starts inside a turn has not seen its prompt, so that turn's output is unknown.
         var unseenStart = headSkipped && !sawContent;
         sawContent = true;
@@ -235,11 +267,11 @@ sealed class OmpLogState
                 var output = LogFields.Count(usage?.Field("output")) ?? 0;
                 if (output > 0)
                 {
-                    TurnOutput += output;
+                    TurnOutput = LogFields.Add(TurnOutput, output);
                     Events.Add(new TokenOutputEvent(finished, output));
                     if (Events.Count > 512) Events.RemoveRange(0, Events.Count - 512);
                 }
-                var used = new[] { "input", "cacheRead", "cacheWrite" }.Sum(key => LogFields.Count(usage?.Field(key)) ?? 0);
+                var used = new[] { "input", "cacheRead", "cacheWrite" }.Aggregate(0, (sum, key) => LogFields.Add(sum, LogFields.Count(usage?.Field(key)) ?? 0));
                 if (used > 0) Context = new TokenContextUsage(used, null, finished, null);
                 var stop = message.Field("stopReason")?.Text;
                 // The client's own timing of this request (start to completion, first token included); never log times.
@@ -270,13 +302,17 @@ sealed class OmpLogState
                         break;
                 }
                 break;
-            default:
-                LastActivity = Later(LastActivity, at);
-                if (!Open) OpenTurn(unseenStart ? null : at);
-                if (LogFields.Text(message.Field("toolCallId")) is { } callID) pendingTools.RemoveAll(tool => tool.Id == callID);
-                observed = pendingTools.Count == 0 ? TokenActivityState.Working : TokenActivityState.Tool;
-                break;
         }
+    }
+
+    void ConsumeToolResult(string? callID, DateTimeOffset at, bool headSkipped)
+    {
+        var unseenStart = headSkipped && !sawContent;
+        sawContent = true;
+        LastActivity = Later(LastActivity, at);
+        if (!Open) OpenTurn(unseenStart ? null : at);
+        if (callID is not null) pendingTools.RemoveAll(tool => tool.Id == callID);
+        observed = pendingTools.Count == 0 ? TokenActivityState.Working : TokenActivityState.Tool;
     }
 
     void OpenTurn(DateTimeOffset? start)
@@ -300,7 +336,7 @@ sealed class OmpLogState
 
     static JsonDocument? Parse(byte[] line)
     {
-        try { return JsonDocument.Parse(line); }
+        try { return JsonDocument.Parse(line, Json.Depth); }
         catch (JsonException) { return null; }
     }
 
@@ -340,4 +376,91 @@ sealed class OmpLogState
         "ask" => ToolCategory.Question,
         _ => TokenLogParser.Category(name),
     };
+}
+
+/// OmpRecordHead (OmpLog.swift): the plain string fields at the start of an omp record, read without decoding the rest of the
+/// line: top-level fields up to the first nested value, then the same inside `message` (`role`, `toolCallId` precede
+/// `content`), and a `timestamp` that closes the line (`custom` records stamp after their `data`). Numbers, nulls and escaped
+/// strings are skipped, so a field the caller needs may be missing; it then parses the whole line. Null when the line is not
+/// an object.
+sealed record OmpRecordHead(Dictionary<string, string> Fields, Dictionary<string, string> Message, string? TrailingTimestamp)
+{
+    const int Limit = 1_024;
+    static readonly byte[] TimestampKey = ",\"timestamp\":\""u8.ToArray();
+
+    public static OmpRecordHead? Scan(byte[] line)
+    {
+        var end = Math.Min(line.Length, Limit);
+        var index = 0;
+        void SkipSpace() { while (index < end && line[index] is (byte)' ' or (byte)'\t') index++; }
+        // The string opening at `index`: false past the limit; `value` null when it holds an escape (skipped, not kept).
+        bool ReadString(out string? value)
+        {
+            value = null;
+            var cursor = index + 1;
+            var escaped = false;
+            while (cursor < end && line[cursor] != '"')
+            {
+                if (line[cursor] == '\\') { escaped = true; cursor++; }
+                cursor++;
+            }
+            if (cursor >= end) return false;
+            if (!escaped) value = Encoding.UTF8.GetString(line, index + 1, cursor - index - 1);
+            index = cursor + 1;
+            return true;
+        }
+        // The string fields of the object opening at `index`, up to its first nested value or the limit. `nested` is true
+        // when that value is the object under `message`.
+        Dictionary<string, string>? Object(out bool nested)
+        {
+            nested = false;
+            if (index >= end || line[index] != '{') return null;
+            index++;
+            var fields = new Dictionary<string, string>(StringComparer.Ordinal);
+            while (true)
+            {
+                SkipSpace();
+                if (index >= end || line[index] != '"' || !ReadString(out var key)) return fields;
+                SkipSpace();
+                if (index >= end || line[index] != ':') return fields;
+                index++;
+                SkipSpace();
+                if (index >= end) return fields;
+                switch (line[index])
+                {
+                    case (byte)'"':
+                        if (!ReadString(out var value)) return fields;
+                        if (key is not null && value is not null) fields[key] = value;
+                        break;
+                    case (byte)'{':
+                        nested = key == "message";
+                        return fields;
+                    case (byte)'[':
+                        return fields;
+                    default:
+                        while (index < end && line[index] is not ((byte)',' or (byte)'}')) index++;
+                        break;
+                }
+                SkipSpace();
+                if (index >= end || line[index] != ',') return fields;
+                index++;
+            }
+        }
+        if (Object(out var nested) is not { } top) return null;
+        var message = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (nested)
+        {
+            if (Object(out _) is not { } inner) return null;
+            message = inner;
+        }
+        // `,"timestamp":"<value>"}` ending the line is a top-level key: inside a nested object the line would end in `}}`.
+        var last = line.Length;
+        while (last > 0 && line[last - 1] is (byte)' ' or (byte)'\t' or (byte)'\r') last--;
+        if (last < 2 || line[last - 1] != '}' || line[last - 2] != '"') return new(top, message, null);
+        var open = last - 3;
+        while (open >= 0 && last - open < 64 && line[open] is not ((byte)'"' or (byte)'\\')) open--;
+        if (open < TimestampKey.Length - 1 || line[open] != '"'
+            || !line.AsSpan(open - TimestampKey.Length + 1, TimestampKey.Length).SequenceEqual(TimestampKey)) return new(top, message, null);
+        return new(top, message, Encoding.UTF8.GetString(line, open + 1, last - 2 - open - 1));
+    }
 }

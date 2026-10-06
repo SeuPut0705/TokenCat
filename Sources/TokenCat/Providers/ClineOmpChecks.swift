@@ -97,6 +97,56 @@ func runClineOmpChecks(root: URL, check: (Bool, String) -> Void) {
         now = start.addingTimeInterval(7_202)
         row = tracker.sample().first { !$0.isSubagent }
         check(row?.active == false && row?.activityState == .interrupted, "omp: an aborted reply did not end the turn as interrupted")
+
+        // A /fork names its parent in `parentSession` but is a top-level conversation; Pi's own folder is labelled Pi.
+        let fork = project.appendingPathComponent("2026-10-04T06-00-00-000Z_omp-fork.jsonl")
+        try append(fork, [["type": "session", "version": 3, "id": "omp-fork", "timestamp": iso(7_203), "cwd": "/tmp/Fixture/OmpProject",
+                           "parentSession": main.path],
+                          message(7_203, ["role": "user", "content": "PRIVATE_PROMPT", "timestamp": ms(7_203)]),
+                          assistant(7_205, output: 4, stop: "stop")])
+        let piProject = home.appendingPathComponent(".pi/agent/sessions/--tmp-Fixture-PiProject--")
+        try FileManager.default.createDirectory(at: piProject, withIntermediateDirectories: true)
+        try append(piProject.appendingPathComponent("2026-10-04T06-00-00-000Z_pi-main.jsonl"), [
+            ["type": "session", "version": 3, "id": "pi-main", "timestamp": iso(7_203), "cwd": "/tmp/Fixture/PiProject"],
+            message(7_203, ["role": "user", "content": "PRIVATE_PROMPT", "timestamp": ms(7_203)]),
+            assistant(7_205, output: 4, stop: "stop")])
+        now = start.addingTimeInterval(7_206)
+        let forked = tracker.sample()
+        let forkRow = forked.first { $0.sessionID == "omp-fork" }
+        check(forkRow?.isSubagent == false && forkRow?.agentID == nil && forkRow?.parentSessionID == nil
+              && forkRow?.activityState == .complete,
+              "omp: a /fork session with parentSession was folded under its parent as a subagent")
+        check(forked.first { $0.sessionID == "pi-main" }?.clientTitle == "Pi" && forkRow?.clientTitle == "omp",
+              "omp: a Pi session was not labelled Pi, or an omp session was")
+
+        // omp's own key order (type, ids, timestamp, then the body): tool results and side records are read from their head
+        // without decoding the body; a result whose call id follows its content, or an escaped body, still counts.
+        let raw = project.appendingPathComponent("2026-10-04T07-00-00-000Z_omp-raw.jsonl")
+        func rawLines(_ lines: [String]) throws {
+            let data = Data(lines.map { $0 + "\n" }.joined().utf8)
+            guard let handle = try? FileHandle(forWritingTo: raw) else { return try data.write(to: raw) }
+            defer { try? handle.close() }
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+        }
+        try rawLines([
+            #"{"type":"session","version":3,"id":"omp-raw","timestamp":"\#(iso(8_000))","cwd":"/tmp/Fixture/OmpProject"}"#,
+            #"{"type":"message","id":"r1","parentId":null,"timestamp":"\#(iso(8_001))","message":{"role":"user","content":[{"type":"text","text":"PRIVATE_PROMPT"}],"timestamp":\#(ms(8_001))}}"#,
+            #"{"type":"message","id":"r2","parentId":"r1","timestamp":"\#(iso(8_003))","message":{"role":"assistant","content":[{"type":"toolCall","id":"raw-1","name":"bash","arguments":{}},{"type":"toolCall","id":"raw-2","name":"read","arguments":{}}],"model":"omp-model","usage":{"input":1,"output":5},"stopReason":"toolUse","timestamp":\#(ms(8_001))}}"#,
+            #"{"type":"message","id":"r3","parentId":"r2","timestamp":"\#(iso(8_004))","message":{"role":"toolResult","toolCallId":"raw-1","toolName":"bash","content":[{"type":"text","text":"PRIVATE_OUT \"timestamp\":\"2030-01-01T00:00:00Z\"}"}],"timestamp":\#(ms(8_004))}}"#,
+            #"{"type":"custom","customType":"tool_execution_start","data":{"toolCallId":"raw-2","toolName":"read"},"id":"r4","parentId":"r3","timestamp":"\#(iso(8_005))"}"#,
+        ])
+        now = start.addingTimeInterval(8_031)
+        let rawTool = tracker.sample().first { $0.sessionID == "omp-raw" }
+        try rawLines([
+            #"{"type":"message","id":"r5","parentId":"r4","timestamp":"\#(iso(8_006))","message":{"content":[{"type":"text","text":"PRIVATE_OUT"}],"role":"toolResult","toolCallId":"raw-2","toolName":"read"}}"#,
+            #"{"type":"custom_message","customType":"async-result","content":"PRIVATE \"notice\"\n","id":"r6","parentId":"r5","timestamp":"\#(iso(8_030))"}"#,
+        ])
+        let rawRow = tracker.sample().first { $0.sessionID == "omp-raw" }
+        check(rawTool?.activityState == .tool && rawTool?.toolName == "read" && rawTool?.lastLogAt == start.addingTimeInterval(8_005)
+              && rawRow?.activityState == .working && rawRow?.toolName == nil && rawRow?.currentTurnOutputTokens == 5
+              && rawRow?.lastActivity == start.addingTimeInterval(8_006) && rawRow?.lastLogAt == start.addingTimeInterval(8_030),
+              "omp: a tool result or side record read from its head lost its call, time or turn, or one with its call id late was dropped")
     } catch {
         check(false, "omp fixture error: \(error.localizedDescription)")
     }
@@ -156,6 +206,35 @@ func runClineOmpChecks(root: URL, check: (Bool, String) -> Void) {
         check(roo?.active == true && roo?.activityState == .input && roo?.toolCategory == .question && roo?.model == "roo-model"
               && roo?.project == "RooProject" && roo?.currentTurnOutputTokens == 20,
               "Roo Code: a two-hour-old question was not live input, or its model and workspace were not read")
+
+        // Roo Code orchestration: a subtask ends with `finishTask`, its parent waits on the approved `newTask`.
+        let rooTasks = rooTask.deletingLastPathComponent()
+        for name in ["roo-sub", "roo-parent"] {
+            try FileManager.default.createDirectory(at: rooTasks.appendingPathComponent(name), withIntermediateDirectories: true)
+        }
+        func toolAsk(_ seconds: TimeInterval, _ tool: String) -> [String: Any] {
+            ["ts": ms(seconds), "type": "ask", "ask": "tool", "text": text(["tool": tool, "content": "PRIVATE_TEXT"])]
+        }
+        try json([say(7_190, "text"), request(7_191, output: 15, model: nil), say(7_192, "completion_result"), toolAsk(7_193, "finishTask")])
+            .write(to: rooTasks.appendingPathComponent("roo-sub/ui_messages.json"))
+        try json([say(7_180, "text"), request(7_181, output: 5, model: nil), toolAsk(7_182, "newTask")])
+            .write(to: rooTasks.appendingPathComponent("roo-parent/ui_messages.json"))
+        let orchestrated = tracker.sample()
+        let sub = orchestrated.first { $0.sessionID == "roo-sub" }, parent = orchestrated.first { $0.sessionID == "roo-parent" }
+        check(sub?.active == false && sub?.activityState == .complete && sub?.lastOutputTokens == 15 && sub?.clientTitle == "Roo Code",
+              "Roo Code: a subtask that handed its result back (finishTask) still waited for input, or was not labelled Roo Code")
+        check(parent?.active == true && parent?.activityState == .tool && parent?.toolCategory == .agent,
+              "Roo Code: a parent waiting on its subtask (newTask) read as a question to the person")
+
+        // A pasted screenshot ahead of the environment details pushes the working directory past 256 KB.
+        let bigTask = clineTask.deletingLastPathComponent().appendingPathComponent("1791100000001")
+        try FileManager.default.createDirectory(at: bigTask, withIntermediateDirectories: true)
+        try Data(("[{\"role\":\"user\",\"content\":[{\"type\":\"image\",\"source\":{\"data\":\"" + String(repeating: "A", count: 400_000)
+                  + "\"}},{\"type\":\"text\",\"text\":\"<environment_details>\\n# Current Working Directory (/tmp/Fixture/BigProject) Files"
+                  + "\\n</environment_details>\"}]}]").utf8).write(to: bigTask.appendingPathComponent("api_conversation_history.json"))
+        try json([say(7_190, "text"), request(7_191, output: 10)]).write(to: bigTask.appendingPathComponent("ui_messages.json"))
+        check(tracker.sample().first { $0.sessionID == "1791100000001" }?.project == "BigProject",
+              "Cline: a working directory after a large pasted image was not found")
 
         let manifest = session.appendingPathComponent("cli-1.json")
         func writeManifest(_ status: String) throws {

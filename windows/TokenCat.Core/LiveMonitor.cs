@@ -140,7 +140,13 @@ public sealed class LiveMonitor : IDisposable
             running = new CancellationTokenSource();
             var token = running.Token;
             var channel = wake = Channel.CreateUnbounded<string[]>(new UnboundedChannelOptions { SingleReader = true });
-            watcher = new LogWatcher(paths => channel.Writer.TryWrite(paths));
+            // Filtered on the watcher's thread: the watched roots also hold tool output, lock files and OpenCode's snapshot
+            // git store, whose bursts would otherwise wake a full sample each. The 1 s tick covers the rest.
+            watcher = new LogWatcher(paths =>
+            {
+                var logs = Array.FindAll(paths, tracker.WakesSampling);
+                if (logs.Length > 0) channel.Writer.TryWrite(logs);
+            });
             watcher.Start(tracker.WatchedDirectories);
             _ = Task.Run(() => SystemLoop(channel.Writer, token));
             _ = Task.Run(() => TokenLoop(channel.Reader, token));
@@ -234,7 +240,7 @@ public sealed class LiveMonitor : IDisposable
                             cpuHistory.Add(cpu);
                             if (cpuHistory.Count > 90) cpuHistory.RemoveRange(0, cpuHistory.Count - 90);
                         }
-                        Publish();
+                        PublishSystem();
                     }
                 }
                 // A failed sample keeps the previous values; the footer's collection delay shows it.
@@ -257,7 +263,7 @@ public sealed class LiveMonitor : IDisposable
                 var wait = MinimumTokenInterval - Stopwatch.GetElapsedTime(lastStart).TotalSeconds;
                 if (wait > 0) await Task.Delay(TimeSpan.FromSeconds(wait), token).ConfigureAwait(false);
                 var paths = new List<string>();
-                while (reader.TryRead(out var batch)) paths.AddRange(batch.Where(tracker.IsLog).Take(64));
+                while (reader.TryRead(out var batch)) paths.AddRange(batch.Take(64));
                 if (paths.Count > 256) paths.RemoveRange(0, paths.Count - 256);
                 lastStart = Stopwatch.GetTimestamp();
                 try
@@ -270,9 +276,12 @@ public sealed class LiveMonitor : IDisposable
                         var existing = tracker.WatchedDirectories.Where(Directory.Exists).ToHashSet();
                         found = existing.Count > 0;
                         detected = tracker.DetectedSources();
-                        // A folder created after the watcher started (first Codex or Claude Code run): watch it and read it now.
+                        // A folder created after the watcher started (first Codex or Claude Code run): watch it, list it and read it now.
                         if (foldersSeen is not null && !existing.IsSubsetOf(foldersSeen))
+                        {
                             lock (gate) if (!token.IsCancellationRequested) watcher?.Start(tracker.WatchedDirectories);
+                            tracker.Rediscover();
+                        }
                         foldersSeen = existing;
                     }
                     SampleTokens(paths, found, detected, token);
@@ -392,6 +401,19 @@ public sealed class LiveMonitor : IDisposable
         var now = tokensSampledAt is { } sampled && sampled > system.SampledAt ? sampled : system.SampledAt;
         current = State(now, FlowSeries.Make(tokens, now), SessionPresentation.Groups(tokens, now),
                         SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed, codexLive: codexLive));
+        if (running is { IsCancellationRequested: false }) Updated?.Invoke(current);
+    }
+
+    /// The system sample's publish. The token sample of the same tick rebuilds the sessions, so this one only swaps in the
+    /// system values, unless that sample is slow or stalled and the clocks need this one. Caller holds `gate`.
+    void PublishSystem()
+    {
+        if (tokensSampledAt is not { } sampled || (system.SampledAt - sampled).TotalSeconds >= 2 * SamplingInterval)
+        {
+            Publish();
+            return;
+        }
+        current = State(current.Now, current.Flow, current.Groups, current.Sessions);
         if (running is { IsCancellationRequested: false }) Updated?.Invoke(current);
     }
 }

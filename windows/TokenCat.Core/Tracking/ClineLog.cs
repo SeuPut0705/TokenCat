@@ -34,9 +34,15 @@ sealed class ClineLogReader(string path) : ITokenLogReader
     const FileShare Sharing = FileShare.ReadWrite | FileShare.Delete; // never block the extension's rewrites
     const long MaximumBytes = 67_108_864;
     readonly bool cli = Path.GetFileName(path) != "ui_messages.json";
+    /// Roo Code and Kilo Code, by the extension folder the task lives in; null for Cline.
+    readonly string? clientName = path.Replace('\\', '/') is var normalized && normalized.Contains("/rooveterinaryinc.roo-cline/", StringComparison.OrdinalIgnoreCase)
+        ? "Roo Code" : normalized.Contains("/kilocode.kilo-code/", StringComparison.OrdinalIgnoreCase) ? "Kilo Code" : null;
     (long Ticks, long Size)? stamp, manifestStamp, historyStamp, metadataStamp;
+    DateTimeOffset? parsedAt;
     ClineLogSummary? summary;
     string? cwd;
+    /// The first request was read without a working directory in it: it is never searched again.
+    bool cwdSearched;
     /// Extension tasks: the newest model named in the conversation's environment details (Roo Code, Kilo Code).
     string? historyModel;
     string? metadataModel;
@@ -72,14 +78,17 @@ sealed class ClineLogReader(string path) : ITokenLogReader
         }
         var currentStamp = Stamp(path);
         if (currentStamp is null || currentStamp == stamp) return;
+        // A large task rewritten while it streams is summarised at most every 5 s.
+        if (currentStamp.Value.Item2 > 8_388_608 && parsedAt is { } parsed && (now - parsed).TotalSeconds < 5) return;
         stamp = currentStamp;
+        parsedAt = now;
         using (var document = Document(path, MaximumBytes))
         {
             if (document is null || MessageArray(document.RootElement) is not { } messages) return;
             summary = ClineLogSummary.FromTask(messages);
         }
         if (summary.Model is null) ReadTaskMetadata(folder);
-        if (cwd is null || (summary.Model is null && metadataModel is null)) ReadHistory(folder);
+        if ((cwd is null && !cwdSearched) || (summary.Model is null && metadataModel is null)) ReadHistory(folder);
     }
 
     public IEnumerable<TokenReading> Readings(string id, DateTimeOffset now)
@@ -88,6 +97,7 @@ sealed class ClineLogReader(string path) : ITokenLogReader
         var tool = s.Open ? s.Tool : null;
         return [new TokenReading(TokenSource.Cline, id)
         {
+            ClientName = clientName,
             SessionID = Path.GetFileName(Path.GetDirectoryName(path)),
             Project = cwd is null ? null : LastComponent(cwd),
             ProjectPath = cwd,
@@ -126,7 +136,8 @@ sealed class ClineLogReader(string path) : ITokenLogReader
 
     /// The working directory from the first request's environment details (Cline "Current Working Directory (…) Files",
     /// Roo Code and Kilo Code "Current Workspace Directory (…) Files"), and Roo Code's `<model>…</model>` from the newest one.
-    /// Only a bounded head and tail of the conversation are read; the text between the markers is all that is decoded.
+    /// The head is read in 1 MB steps (pasted images and attached files come first) until the marker, the first reply or
+    /// 8 MB; the tail is bounded. Only the text between the markers is decoded.
     void ReadHistory(string folder)
     {
         var historyPath = Path.Combine(folder, "api_conversation_history.json");
@@ -136,9 +147,22 @@ sealed class ClineLogReader(string path) : ITokenLogReader
         try
         {
             using var handle = new FileStream(historyPath, FileMode.Open, FileAccess.Read, Sharing, bufferSize: 0);
-            if (cwd is null)
-                cwd = PathText(Between(ReadAt(handle, 0, (int)Math.Min(262_144, handle.Length)),
-                    ["Current Working Directory (", "Current Workspace Directory ("], ") Files", last: false));
+            if (cwd is null && !cwdSearched)
+            {
+                var head = new MemoryStream();
+                while (head.Length < 8_388_608 && ReadAt(handle, head.Length, (int)Math.Min(1_048_576, handle.Length - head.Length)) is { Length: > 0 } chunk)
+                {
+                    head.Write(chunk);
+                    var bytes = head.ToArray();
+                    cwd = PathText(Between(bytes, ["Current Working Directory (", "Current Workspace Directory ("], ") Files", last: false));
+                    if (cwd is not null) break;
+                    if (bytes.AsSpan().IndexOf("\"role\":\"assistant\""u8) >= 0 || head.Length >= 8_388_608)
+                    {
+                        cwdSearched = true;
+                        break;
+                    }
+                }
+            }
             if (summary?.Model is not null || metadataModel is not null) return;
             var start = Math.Max(0, handle.Length - 131_072);
             historyModel = ClineLogSummary.ModelName(Between(ReadAt(handle, start, (int)(handle.Length - start)), ["<model>"], "</model>", last: true))
@@ -184,7 +208,7 @@ sealed class ClineLogReader(string path) : ITokenLogReader
         {
             using var handle = new FileStream(file, FileMode.Open, FileAccess.Read, Sharing, bufferSize: 0);
             if (handle.Length > limit) return null;
-            return JsonDocument.Parse(ReadAt(handle, 0, (int)handle.Length));
+            return JsonDocument.Parse(ReadAt(handle, 0, (int)handle.Length), Json.Depth);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return null; }
     }
@@ -232,6 +256,8 @@ sealed class ClineLogSummary
             if (pending is { } tokens && pendingAt is { } at) s.Record(tokens, at);
             pending = null;
         }
+        // Only the last message of an open turn decides its tool and state.
+        (string? Say, string? Ask, bool Partial, string? Text)? last = null;
         for (var index = 0; index < messages.Count; index++)
         {
             var message = messages[index];
@@ -260,7 +286,7 @@ sealed class ClineLogSummary
             {
                 if (LogFields.Count(info.Field("tokensOut")) is { } tokens and > 0)
                 {
-                    s.TurnOutput += tokens;
+                    s.TurnOutput = LogFields.Add(s.TurnOutput, tokens);
                     pending = tokens;
                 }
                 if (info.Field("cancelReason")?.ValueKind == JsonValueKind.String)
@@ -273,22 +299,31 @@ sealed class ClineLogSummary
             if (!s.Open) continue;
             if (ask is not null && !partial)
             {
-                if (FinishingAsks.Contains(ask))
+                // A Roo Code or Kilo Code subtask ends by asking to hand its result back to the parent (`finishTask`).
+                if (FinishingAsks.Contains(ask)
+                    || (ask == "tool" && message.Field("text")?.Text is { } text && text.Contains("finishTask", StringComparison.Ordinal)
+                        && ToolName(text) == "finishTask"))
                 {
                     s.Completion = (s.TurnOutput, at);
                     s.Open = false;
                     s.waiting = TokenActivityState.Complete;
+                    last = null;
                     continue;
                 }
                 if (ask == "resume_task")
                 {
                     s.Open = false;
                     s.waiting = TokenActivityState.Interrupted;
+                    last = null;
                     continue;
                 }
             }
-            s.Tool = ToolOf(say, ask, partial, message.Field("text")?.Text);
-            s.waiting = StateOf(say, ask, partial);
+            last = (say, ask, partial, message.Field("text")?.Text);
+        }
+        if (s.Open && last is { } final)
+        {
+            s.Tool = ToolOf(final.Say, final.Ask, final.Partial, final.Text);
+            s.waiting = s.Tool?.Category == ToolCategory.Agent ? TokenActivityState.Tool : StateOf(final.Say, final.Ask, final.Partial);
         }
         Flush();
         return s;
@@ -318,7 +353,7 @@ sealed class ClineLogSummary
             {
                 if (LogFields.Count(message.Field("metrics")?.Field("outputTokens")) is { } tokens and > 0)
                 {
-                    s.TurnOutput += tokens;
+                    s.TurnOutput = LogFields.Add(s.TurnOutput, tokens);
                     s.Record(tokens, at);
                 }
                 var call = blocks.LastOrDefault(block => block.Field("type")?.Text is "tool_use" or "tool_call" or "tool-call");
@@ -357,11 +392,12 @@ sealed class ClineLogSummary
         if (Events.Count > 512) Events.RemoveRange(0, Events.Count - 512);
     }
 
-    /// How long an open turn may stay silent and still count as running; a question or approval waits for the person.
+    /// How long an open turn may stay silent and still count as running; a question or approval waits for the person, and
+    /// a Roo Code or Kilo Code parent waits for its subtask as long as that runs.
     double LiveHorizon => waiting switch
     {
         TokenActivityState.Input => 86_400,
-        TokenActivityState.Tool => 900,
+        TokenActivityState.Tool => Tool?.Category == ToolCategory.Agent ? 3_600 : 900,
         _ => 600,
     };
 
@@ -385,6 +421,8 @@ sealed class ClineLogSummary
 
     static (string Name, ToolCategory Category)? ToolOf(string? say, string? ask, bool partial, string? text)
     {
+        // An approved `newTask` ask is the parent's last record while its subtask runs.
+        if (ask == "tool" && !partial && ToolName(text) == "newTask") return ("newTask", ToolCategory.Agent);
         if (ask is not null && !partial && InputAsks.Contains(ask)) return (ask, ToolCategory.Question);
         switch (ask ?? say)
         {
@@ -393,15 +431,19 @@ sealed class ClineLogSummary
             case "use_mcp_server" or "mcp_server_request_started": return ("mcp", ToolCategory.Mcp);
             case "tool":
                 // The tool's own name ("readFile", "editedExistingFile"); its paths and content are not kept.
-                using (var document = Parse(text))
-                {
-                    var name = TokenLogParser.Label(document?.RootElement.Field("tool")) ?? "tool";
-                    return (name, name.StartsWith("web", StringComparison.Ordinal) ? ToolCategory.Web
-                        : new[] { "File", "file", "Diff", "Definition" }.Any(part => name.Contains(part, StringComparison.Ordinal)) ? ToolCategory.File
-                        : ToolCategory.Other);
-                }
+                var name = ToolName(text) ?? "tool";
+                return (name, name.StartsWith("web", StringComparison.Ordinal) ? ToolCategory.Web
+                    : new[] { "File", "file", "Diff", "Definition" }.Any(part => name.Contains(part, StringComparison.Ordinal)) ? ToolCategory.File
+                    : ToolCategory.Other);
             default: return null;
         }
+    }
+
+    /// The `tool` field of a tool message's JSON text.
+    static string? ToolName(string? text)
+    {
+        using var document = Parse(text);
+        return TokenLogParser.Label(document?.RootElement.Field("tool"));
     }
 
     public static string? ModelName(JsonElement? value) => ModelName(value?.Text);
@@ -412,7 +454,7 @@ sealed class ClineLogSummary
     static JsonDocument? Parse(string? text)
     {
         if (text is null) return null;
-        try { return JsonDocument.Parse(text); }
+        try { return JsonDocument.Parse(text, Json.Depth); }
         catch (JsonException) { return null; }
     }
 }

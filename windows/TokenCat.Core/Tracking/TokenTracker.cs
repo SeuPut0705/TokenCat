@@ -9,6 +9,8 @@ namespace TokenCat;
 public sealed class TokenTracker
 {
     public const double RecentOutputWindow = 600;
+    /// Readers kept past the discovery caps by `IsRecent`, most recently active first.
+    public const int RetentionLimit = 256;
     readonly string home;
     readonly Func<string, string?> environment;
     readonly IReadOnlyList<TokenProvider> providers;
@@ -17,11 +19,13 @@ public sealed class TokenTracker
     readonly double discoveryInterval;
     DateTimeOffset? lastDiscovery;
     Dictionary<string, (TokenSource Source, ITokenLogReader Reader)> files = new(StringComparer.Ordinal);
-    /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out ranks again at the
-    /// periodic rescan instead of rerunning discovery on each file event.
+    /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out opens its reader
+    /// directly (it is now the newest), instead of rerunning discovery on each file event.
     HashSet<string> known = new(StringComparer.Ordinal);
+    /// Each read client's root prefixes, `/`-separated with a trailing `/`, computed once: file events may name thousands of paths.
+    readonly (string[] Prefixes, TokenSource Source, TokenLogFormat Format)[] logRoots;
 
-    public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 5,
+    public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 60,
         Func<string, string?>? environment = null, IReadOnlyList<TokenProvider>? providers = null)
     {
         this.home = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
@@ -30,6 +34,9 @@ public sealed class TokenTracker
         clock = now ?? (() => DateTimeOffset.UtcNow);
         this.initialTailBytes = Math.Max(128, initialTailBytes);
         discoveryInterval = discoveryIntervalSeconds;
+        logRoots = [.. this.providers.Where(provider => provider.Format is not null).Select(provider => (
+            provider.Roots(this.home, this.environment).Select(root => Path.TrimEndingDirectorySeparator(root).Replace('\\', '/') + "/").Distinct().ToArray(),
+            provider.Source, provider.Format!))];
     }
 
     /// Candidate roots of every client with a parser, for `LogWatcher`; the watcher and the folder check keep the existing ones.
@@ -42,20 +49,36 @@ public sealed class TokenTracker
 
     /// Whether a changed path is a log some client's format would list: under one of that client's roots (Windows paths are
     /// matched with `/`, case-insensitively) and accepted by its `IsLog`. A Claude workflow journal is then never a Codex log.
-    public bool IsLog(string path)
+    /// Uses only immutable state, so any thread may ask.
+    public bool IsLog(string path) => LogRoot(path) is not null;
+
+    /// Whether a file event should wake a sample: a log, or the `-wal` journal of a database log (OpenCode writes its changes
+    /// there until a checkpoint). Other files under the watched roots wait for the 1 s tick. Any thread may ask.
+    public bool WakesSampling(string path) =>
+        IsLog(path) || (path.EndsWith("-wal", StringComparison.OrdinalIgnoreCase) && IsLog(path[..^4]));
+
+    (string[] Prefixes, TokenSource Source, TokenLogFormat Format)? LogRoot(string path)
     {
         var normalized = path.Replace('\\', '/');
-        return providers.Any(provider => provider.Format is { } format && format.IsLog(path)
-            && provider.Roots(home, environment).Any(root =>
-                normalized.StartsWith(Path.TrimEndingDirectorySeparator(root).Replace('\\', '/') + "/", StringComparison.OrdinalIgnoreCase)));
+        foreach (var root in logRoots)
+            if (root.Format.IsLog(path) && root.Prefixes.Any(prefix => normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))) return root;
+        return null;
     }
 
-    /// File-system events name changed paths. A log that is not tracked yet triggers
-    /// discovery on the next sample instead of waiting for the periodic rescan.
+    /// File-system events name changed paths. A log discovery has not seen triggers discovery on the next sample; one it listed
+    /// but the caps left out is opened now, so the periodic rescan only catches what events missed.
     public void NoteChanged(IEnumerable<string> paths)
     {
-        if (paths.Any(path => !files.ContainsKey(path) && !known.Contains(path) && IsLog(path))) lastDiscovery = null;
+        foreach (var path in paths)
+        {
+            if (files.ContainsKey(path) || LogRoot(path) is not { } root) continue;
+            if (known.Contains(path)) files[path] = (root.Source, root.Format.Open(path));
+            else lastDiscovery = null;
+        }
     }
+
+    /// Runs discovery on the next sample: a client folder appeared, and logs written before it was watched raised no event.
+    public void Rediscover() => lastDiscovery = null;
 
     public List<TokenReading> Sample()
     {
@@ -65,13 +88,17 @@ public sealed class TokenTracker
             Discover(now);
             lastDiscovery = now;
         }
-        foreach (var file in files.Values) file.Reader.Read(initialTailBytes, now);
+        // One reader that throws (a corrupt or hostile log) keeps its previous state and rows; the others still report.
+        foreach (var file in files.Values)
+            try { file.Reader.Read(initialTailBytes, now); }
+            catch (Exception) { }
         var readings = new List<TokenReading>();
         foreach (var (path, file) in files)
         {
             var relative = path.Length > home.Length + 1 && path.StartsWith(home, StringComparison.Ordinal) && path[home.Length] is '/' or '\\'
                 ? path[(home.Length + 1)..] : path;
-            readings.AddRange(file.Reader.Readings($"{file.Source.Id}:{relative.Replace('\\', '/')}", now));
+            try { readings.AddRange(file.Reader.Readings($"{file.Source.Id}:{relative.Replace('\\', '/')}", now)); }
+            catch (Exception) { }
         }
         readings.Sort((a, b) =>
             a.Active != b.Active ? (a.Active ? -1 : 1)
@@ -96,10 +123,22 @@ public sealed class TokenTracker
             }
         }
         known = discovery.Known;
-        // A quiet session in a turn, or logged within the hour, is not evicted by a burst of
-        // newer subagent logs; re-adding it later would restart from a bounded tail.
-        foreach (var (path, file) in files.OrderBy(pair => pair.Key, StringComparer.Ordinal))
-            if (!retained.Contains(path) && retained.Count < 256 && file.Reader.IsRecent(now) && File.Exists(path)) retained.Add(path);
+        // A quiet session in a turn, or logged within the hour, is not evicted by a burst of newer subagent logs; re-adding it
+        // later would restart from a bounded tail. Only these count against their own limit, open turns and the most recently
+        // active first, so listing more clients never crowds them out.
+        var kept = files
+            .Where(pair => !retained.Contains(pair.Key) && pair.Value.Reader.IsRecent(now) && File.Exists(pair.Key))
+            .Select(pair =>
+            {
+                List<TokenReading> rows;
+                try { rows = [.. pair.Value.Reader.Readings(pair.Key, now)]; }
+                catch (Exception) { rows = []; }
+                return (Path: pair.Key, Active: rows.Any(row => row.Active), Last: rows.Max(row => row.LastActivity) ?? DateTimeOffset.MinValue);
+            })
+            .OrderByDescending(candidate => candidate.Active).ThenByDescending(candidate => candidate.Last)
+            .ThenBy(candidate => candidate.Path, StringComparer.Ordinal)
+            .Take(RetentionLimit);
+        foreach (var candidate in kept) retained.Add(candidate.Path);
         files = files.Where(pair => retained.Contains(pair.Key)).ToDictionary(StringComparer.Ordinal);
     }
 }

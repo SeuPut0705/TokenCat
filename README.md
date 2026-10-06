@@ -7,7 +7,7 @@ English · [한국어](README.ko.md)
 <h1 align="center">TokenCat</h1>
 
 <p align="center">
-  <b>A pixel cat in your menu bar that tells you<br>what Codex and Claude Code are doing right now.</b>
+  <b>A pixel cat in your menu bar that tells you<br>what your coding agents are doing right now.</b>
 </p>
 
 <p align="center">
@@ -45,9 +45,9 @@ English · [한국어](README.ko.md)
 
 ---
 
-Run Codex and Claude Code in a few terminals and it's easy to lose track of which session is working and which one is waiting for you. TokenCat gathers that state into a single menu bar item. A walking cat means work is in progress; a cat sitting and facing you means a session needs input. Click the item to see each session's state, output tokens from the last 5 minutes, the current speed, Codex and Claude usage limits, and your Mac's system metrics on one screen.
+Run Codex, Claude Code or other coding agents (OpenCode, Gemini CLI, omp and more) in a few terminals and it's easy to lose track of which session is working and which one is waiting for you. TokenCat gathers that state into a single menu bar item. A walking cat means work is in progress; a cat sitting and facing you means a session needs input. Click the item to see each session's state, output tokens from the last 5 minutes, the current speed, Codex and Claude usage limits, and your Mac's system metrics on one screen.
 
-The numbers are shown as they are. Token counts are the values actually recorded in local logs, and a tok/s speed appears only from a real **measurement**: one a client sent to the collector on this Mac, or the generation times a client records for each of its messages (OpenCode). TokenCat never estimates speed from gaps between log timestamps, never sums speeds across sessions, averages them only in the opt-in **Average speed** item, and leaves unknown values as `—`.
+The numbers are shown as they are. Token counts are the values actually recorded in local logs, and a tok/s speed appears only from a real **measurement**: one a client sent to the collector on this Mac, or the request times a client records for each of its replies (OpenCode and omp). TokenCat never estimates speed from gaps between log timestamps, never sums speeds across sessions, averages them only in the opt-in **Average speed** item, and leaves unknown values as `—`.
 
 - **Never miss an input request**: a session waiting for an answer or a plan approval shows a yellow `?` and a cat facing you. Notifications are available if you want them.
 - **Sessions and subagents in one list**: each session shows its progress, the kind of tool running, output this turn and context, and subagents are grouped under their parent.
@@ -66,9 +66,9 @@ The numbers are shown as they are. Token counts are the values actually recorded
   </picture>
 </p>
 
-Output tokens recorded in the logs over the last 5 minutes are shown as 5-second bars. When both clients record, the total is split, as in `Codex 1.2k · Claude Code 6.6k`. The right side shows the last record; after 30 seconds without a new one, that spot tells you what is being waited on instead (input, plan approval, an API retry, or a tool category such as `Running command`). The bars are amounts recorded and are never converted into a speed.
+Output tokens recorded in the logs over the last 5 minutes are shown as 5-second bars. When more than one client records, the total is split, largest first, as in `Claude Code 6.6k · Codex 1.2k`; when they don't all fit beside the speed, the smallest fold into `+N`. The right side shows the last record; after 30 seconds without a new one, that spot tells you what is being waited on instead (input, plan approval, an API retry, or a tool category such as `Running command`). The bars are amounts recorded and are never converted into a speed.
 
-**Speed now**, under the number, is the single most recent measurement from the visible working sessions within the last 2 minutes (`Speed now · docs-site 55.6 generation tok/s`): telemetry received by the collector, or the generation times OpenCode records for each message. Only a value measured with that session's current model counts, clients waiting for a restart are left out, and sessions are never summed or averaged. If sessions are working, running a tool or retrying the API with no measurement, it shows `—`; if they are only waiting for input or logs, it's hidden. Speeds derived from log timestamps are never used.
+**Speed now**, under the number, is the single most recent measurement from the visible working sessions within the last 2 minutes (`Speed now · docs-site 55.6 generation tok/s`): telemetry received by the collector, or the request times OpenCode and omp record for each reply. Only a value measured with that session's current model counts, clients waiting for a restart are left out, and sessions are never summed or averaged. If sessions are working, running a tool or retrying the API with no measurement, it shows `—`; if they are only waiting for input or logs, it's hidden. Speeds derived from log timestamps are never used.
 
 ### What each session is doing
 
@@ -132,7 +132,7 @@ With **Live usage limits** on (the default, in Settings › Telemetry), TokenCat
 
 Choose **Minimal** (about 72 pt), **Two Lines** (the default, about 272 pt) or **One Line** (about 410 pt), then turn items on or off and drag them to reorder. Each item has a fixed width, so the icons next to it don't shift when values change, and labels follow the bar's light or dark appearance so they stay readable on tinted bars. On a Mac without a battery, the battery item is hidden.
 
-One more item is off by default: **Average speed** (`AVG`), turned on in Settings › Menu Bar, is an explicit opt-in mean of the per-session measured rates of every client that the dashboard's **Speed now** rule accepts; it averages only measured rates and estimates nothing. In place of its label it shows the icons of the clients contributing a rate right now, fastest first: one icon for one client, or up to three overlapping like an avatar group. Without a fresh measurement it shows `AVG` and `—`.
+One more item is off by default: **Average speed** (`AVG`), turned on in Settings › Menu Bar, is an explicit opt-in mean of the per-session measured rates of every client that the dashboard's **Speed now** rule accepts; it averages only measured rates and estimates nothing, and its Settings row says so. In place of its label it shows the icons of the clients contributing a rate right now, fastest first: one icon for one client, or up to three overlapping like an avatar group. Without a fresh measurement it shows `AVG` and `—`.
 
 <p align="center">
   <picture>
@@ -282,11 +282,11 @@ open dist/TokenCat.app
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/en/popover-empty-dark.png">
-    <img src="docs/images/en/popover-empty-light.png" width="468" alt="The dashboard with no records: a sleeping cat and a note that there are no Codex or Claude Code sessions yet.">
+    <img src="docs/images/en/popover-empty-light.png" width="468" alt="The dashboard with no records: a sleeping cat and a note that there are no coding agent sessions yet.">
   </picture>
 </p>
 
-With no records yet, you'll see the sleeping cat. Start a new session in Codex or Claude Code and it appears right away.
+With no records yet, you'll see the sleeping cat. Start a new session in any supported client and it appears right away. If no client's log folder exists, the card lists the supported clients in one line; hover it for the folders TokenCat looks in.
 
 ### Updates
 
@@ -340,7 +340,7 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 - **Settings › Widget** is the Mac's Menu Bar tab: preset, layout, and which items show in what order (drag a row, press Alt+↑/↓ or right-click it), including the Average speed item, which is off by default. It also sets the widget's size, 100–300 %, which **Widget Size** in the right-click menu and Ctrl + mouse wheel over the widget change too; a resized widget keeps its nearest screen edges in place. `Show character in widget` is on the Character tab.
 - **Tray icon**: the character and its state. A yellow corner dot means input is needed, an orange one an API retry. Hover for a short summary, click for the dashboard with all the numbers, and right-click for the quick menu.
 - **Size follows the display scale**: at 100–175 % the icon is the cat head, which bobs while working; at 200 % and above it's the full-body character you picked.
-- **WSL isn't tracked**: only Codex and Claude Code running on Windows itself are collected (`%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.claude\projects`).
+- **WSL isn't tracked**: only clients running on Windows itself are collected (their folders under `%USERPROFILE%`, such as `%USERPROFILE%\.codex\sessions` and `%USERPROFILE%\.claude\projects`).
 - **Claude limits**: an existing Claude Code `statusLine` isn't wrapped, so apart from the live check (which reads Claude Code's token from `%USERPROFILE%\.claude\.credentials.json`), Claude limits then come only from the Claude desktop app's usage history, if you use the desktop app.
 - **Language**: follows the Windows display language (Korean if it's Korean, English otherwise).
 
@@ -379,7 +379,7 @@ It runs on Windows 10 and 11 (x64). There's no installer.
 |---|---|
 | generation tok/s | The inverse of the actual time between tokens (TBT) reported by the Codex server |
 | model tok/s | The average time between tokens from a server metric that bundles several observations. Not attributed to any single session's speed |
-| request tok/s | Output tokens ÷ successful request time from Claude Code's `api_request`. Includes the wait for the first response and reasoning, so it isn't a pure generation speed |
+| request tok/s | Output tokens ÷ request time: successful request time from Claude Code's `api_request`, or the reply times OpenCode and omp record in their logs. Includes the wait for the first response and reasoning, so it isn't a pure generation speed |
 
 The full rules are in [Details](docs/DETAILS.md), under [Token metrics](docs/DETAILS.md#token-metrics), [Sessions and states](docs/DETAILS.md#sessions-and-states) and [Collection scope and refresh](docs/DETAILS.md#collection-scope-and-refresh).
 
@@ -505,7 +505,7 @@ TokenCat never overwrites an existing external telemetry destination that would 
 
 CPU and memory measurements aren't documented here yet. Instead, TokenCat keeps the load down like this:
 
-- Log files are read only from where they were appended. It wakes on file change events (FSEvents) but rereads at most 4 times per second, alongside a check every second and a new-file check every 5 seconds.
+- Log files are read only from where they were appended. It wakes on file change events (FSEvents) but rereads at most 4 times per second, alongside a check every second and a new-file check every 60 seconds (a write to a log not yet tracked is opened at once).
 - System and log collection and local measurements each run on their own background queue.
 - Measurements are kept in memory up to a fixed count, and the collector limits body size, concurrent connections and request time.
 - The animation timer stops when the cat is hidden, the display sleeps or the menu bar is covered, and also 20 minutes after the cat falls asleep.

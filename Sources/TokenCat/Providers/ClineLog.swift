@@ -27,9 +27,14 @@ extension TokenLogFormat {
 private final class ClineLogReader: TokenLogReader {
     private let url: URL
     private let cli: Bool
+    /// Roo Code and Kilo Code, by the extension folder the task lives in; nil for Cline.
+    private let clientName: String?
     private var stamp: ClineLogStamp?
+    private var parsedAt: Date?
     private var summary: ClineLogSummary?
     private var cwd: String?
+    /// The first request was read without a working directory in it: it is never searched again.
+    private var cwdSearched = false
     /// Extension tasks: the newest model named in the conversation's environment details (Roo Code, Kilo Code).
     private var historyModel: String?
     private var historyStamp: ClineLogStamp?
@@ -41,6 +46,8 @@ private final class ClineLogReader: TokenLogReader {
     init(url: URL) {
         self.url = url
         cli = url.lastPathComponent != "ui_messages.json"
+        let path = url.path
+        clientName = path.contains("/rooveterinaryinc.roo-cline/") ? "Roo Code" : path.contains("/kilocode.kilo-code/") ? "Kilo Code" : nil
     }
 
     func read(tailLimit: Int, now: Date) {
@@ -58,16 +65,20 @@ private final class ClineLogReader: TokenLogReader {
             return
         }
         guard let current = ClineLogStamp(url), current != stamp else { return }
+        // A large task rewritten while it streams is summarised at most every 5 s.
+        if current.size > 8_388_608, let parsedAt, now.timeIntervalSince(parsedAt) < 5 { return }
         stamp = current
+        parsedAt = now
         guard let messages = Self.messages(url) else { return }
         summary = ClineLogSummary(task: messages)
         if summary?.model == nil { readTaskMetadata(folder) }
-        if cwd == nil || (summary?.model == nil && metadataModel == nil) { readHistory(folder) }
+        if (cwd == nil && !cwdSearched) || (summary?.model == nil && metadataModel == nil) { readHistory(folder) }
     }
 
     func readings(id: String, now: Date) -> [TokenReading] {
         guard let summary, let last = summary.lastAt else { return [] }
         var reading = TokenReading(source: .cline, id: id)
+        reading.clientName = clientName
         reading.sessionID = url.deletingLastPathComponent().lastPathComponent
         if let cwd {
             reading.project = URL(fileURLWithPath: cwd).lastPathComponent
@@ -112,16 +123,26 @@ private final class ClineLogReader: TokenLogReader {
 
     /// The working directory from the first request's environment details (Cline "Current Working Directory (…) Files",
     /// Roo Code and Kilo Code "Current Workspace Directory (…) Files"), and Roo Code's `<model>…</model>` from the newest one.
-    /// Only a bounded head and tail of the conversation are read; the text between the markers is all that is decoded.
+    /// The head is read in 1 MB steps (pasted images and attached files come first) until the marker, the first reply or
+    /// 8 MB; the tail is bounded. Only the text between the markers is decoded.
     private func readHistory(_ folder: URL) {
         let historyURL = folder.appendingPathComponent("api_conversation_history.json")
         guard let current = ClineLogStamp(historyURL), current != historyStamp,
               let handle = try? FileHandle(forReadingFrom: historyURL) else { return }
         historyStamp = current
         defer { try? handle.close() }
-        if cwd == nil, let head = try? handle.read(upToCount: 262_144) {
-            cwd = Self.between(head, ["Current Working Directory (", "Current Workspace Directory ("], ") Files", last: false)
-                .flatMap { Self.path($0) }
+        if cwd == nil, !cwdSearched {
+            var head = Data()
+            while head.count < 8_388_608, let chunk = try? handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+                head.append(chunk)
+                cwd = Self.between(head, ["Current Working Directory (", "Current Workspace Directory ("], ") Files", last: false)
+                    .flatMap { Self.path($0) }
+                if cwd != nil { break }
+                if head.range(of: Data(#""role":"assistant""#.utf8)) != nil || head.count >= 8_388_608 {
+                    cwdSearched = true
+                    break
+                }
+            }
         }
         let size = UInt64(current.size)
         guard summary?.model == nil, metadataModel == nil, (try? handle.seek(toOffset: size > 131_072 ? size - 131_072 : 0)) != nil,
@@ -205,6 +226,8 @@ private struct ClineLogSummary {
             if let tokens = pending, let at = pendingAt { record(tokens, at: at) }
             pending = nil
         }
+        // Only the last message of an open turn decides its tool and state.
+        var last: (say: String?, ask: String?, partial: Bool, text: Any?)?
         for (index, message) in messages.enumerated() {
             guard let at = LogFields.milliseconds(message["ts"]) else { continue }
             lastAt = max(lastAt ?? at, at)
@@ -236,20 +259,28 @@ private struct ClineLogSummary {
             pendingAt = at
             guard open else { continue }
             if let ask, !partial {
-                if Self.finishingAsks.contains(ask) {
+                // A Roo Code or Kilo Code subtask ends by asking to hand its result back to the parent (`finishTask`).
+                if Self.finishingAsks.contains(ask)
+                    || (ask == "tool" && (message["text"] as? String)?.contains("finishTask") == true
+                        && Self.toolName(message["text"]) == "finishTask") {
                     completion = (turnOutput, at)
                     open = false
                     waiting = .complete
+                    last = nil
                     continue
                 }
                 if ask == "resume_task" {
                     open = false
                     waiting = .interrupted
+                    last = nil
                     continue
                 }
             }
-            tool = Self.tool(say: say, ask: ask, partial: partial, text: message["text"])
-            waiting = Self.state(say: say, ask: ask, partial: partial)
+            last = (say, ask, partial, message["text"])
+        }
+        if open, let last {
+            tool = Self.tool(say: last.say, ask: last.ask, partial: last.partial, text: last.text)
+            waiting = tool?.category == .agent ? .tool : Self.state(say: last.say, ask: last.ask, partial: last.partial)
         }
         flush()
     }
@@ -302,11 +333,12 @@ private struct ClineLogSummary {
         if events.count > 512 { events.removeFirst(events.count - 512) }
     }
 
-    /// How long an open turn may stay silent and still count as running; a question or approval waits for the person.
+    /// How long an open turn may stay silent and still count as running; a question or approval waits for the person, and
+    /// a Roo Code or Kilo Code parent waits for its subtask as long as that runs.
     private var liveHorizon: TimeInterval {
         switch waiting {
         case .input: return 86_400
-        case .tool: return 900
+        case .tool: return tool?.category == .agent ? 3_600 : 900
         default: return 600
         }
     }
@@ -336,6 +368,8 @@ private struct ClineLogSummary {
     }
 
     private static func tool(say: String?, ask: String?, partial: Bool, text: Any?) -> (name: String, category: ToolCategory)? {
+        // An approved `newTask` ask is the parent's last record while its subtask runs.
+        if ask == "tool", !partial, toolName(text) == "newTask" { return ("newTask", .agent) }
         if let ask, !partial, inputAsks.contains(ask) { return (ask, .question) }
         switch ask ?? say {
         case "command", "command_output": return ("command", .command)
@@ -343,10 +377,15 @@ private struct ClineLogSummary {
         case "use_mcp_server", "mcp_server_request_started": return ("mcp", .mcp)
         case "tool":
             // The tool's own name ("readFile", "editedExistingFile"); its paths and content are not kept.
-            let name = (text as? String).flatMap { json($0) }.flatMap { label($0["tool"]) } ?? "tool"
+            let name = toolName(text) ?? "tool"
             return (name, name.hasPrefix("web") ? .web : ["File", "file", "Diff", "Definition"].contains { name.contains($0) } ? .file : .other)
         default: return nil
         }
+    }
+
+    /// The `tool` field of a tool message's JSON text.
+    static func toolName(_ text: Any?) -> String? {
+        (text as? String).flatMap { json($0) }.flatMap { label($0["tool"]) }
     }
 
     private static func label(_ value: Any?) -> String? { TokenLogParser.label(value) }

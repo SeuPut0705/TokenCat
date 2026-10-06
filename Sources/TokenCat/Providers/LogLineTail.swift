@@ -84,7 +84,8 @@ final class LogLineTail {
             }
             guard let newline else { break }
             if !dropping, !pending.isEmpty { line(pending) }
-            pending.removeAll(keepingCapacity: true)
+            // One long line must not pin up to 1 MB per reader for good.
+            pending.removeAll(keepingCapacity: pending.count <= 65_536)
             dropping = false
             start = data.index(after: newline)
         }

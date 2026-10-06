@@ -542,7 +542,7 @@ public static class SessionPresentation
 
     /// A live row's second line, one text with one separator: "Claude Code · claude-opus-5-5 · xhigh".
     public static string ClientLine(TokenReading reading) =>
-        string.Join(" · ", new[] { reading.Source.Title, reading.Model ?? Loc("모델 기록 대기", "waiting for model"), EffortLabel(reading) }.OfType<string>());
+        string.Join(" · ", new[] { reading.ClientTitle, reading.Model ?? Loc("모델 기록 대기", "waiting for model"), EffortLabel(reading) }.OfType<string>());
 
     /// Raw client value, lowercased and never translated.
     public static string? EffortLabel(TokenReading reading) => reading.Effort?.Trim() is { Length: > 0 } effort ? effort.ToLowerInvariant() : null;
@@ -589,7 +589,7 @@ public static class SessionPresentation
         var word = StateTitle(state, reading);
         if (reading.IsSubagent)
             return Loc($"하위 에이전트 {ChildTitle(reading).Title}, {word}", $"Subagent {ChildTitle(reading).Title}, {word}");
-        return $"{word}, {reading.Project ?? Loc("프로젝트 미확인", "Unknown project")}, {reading.Source.Title} {reading.Model ?? Loc("모델 미확인", "unknown model")}";
+        return $"{word}, {reading.Project ?? Loc("프로젝트 미확인", "Unknown project")}, {reading.ClientTitle} {reading.Model ?? Loc("모델 미확인", "unknown model")}";
     }
 
     /// "재시도 2/10 · 4초 후" / "Retry 2/10 · in 4s"; `api` starts it "API 재시도" / "API retry".
@@ -636,7 +636,7 @@ public static class SessionPresentation
     public static ContextSlot? Context(TokenReading reading, DateTimeOffset now)
     {
         if (reading.Context is not { UsedTokens: > 0 } context) return null;
-        var source = reading.Source.Title;
+        var source = reading.ClientTitle;
         string text, @short, spoken, help;
         double? fraction = null;
         var warning = false;
@@ -789,7 +789,7 @@ public static class SessionPresentation
         var reading = newest.Row.Reading;
         var project = reading.Project ?? Loc("프로젝트 미확인", "Unknown project");
         var session = string.Join(" · ", new[] { project, reading.IsSubagent ? Loc("하위 ", "subagent ") + ChildTitle(reading).Title : null,
-                                                 reading.Source.Title + (reading.Model is { } model ? " " + model : "") }.OfType<string>());
+                                                 reading.ClientTitle + (reading.Model is { } model ? " " + model : "") }.OfType<string>());
         var value = Format.Tps(newest.Rate);
         var age = HelpAge(newest.Measurement.At, now);
         var kind = SpokenKind(newest.Measurement.Kind);
@@ -888,7 +888,7 @@ public static class SessionPresentation
     public static HeaderStatus Header(SessionCounts counts, bool loading, DateTimeOffset now, DateTimeOffset? quietSince = null, bool spoken = false)
     {
         if (loading)
-            return new HeaderStatus(Loc("기록 확인 중", "Reading records"), "", null, Loc("Codex·Claude Code 기록을 읽고 있습니다", "Reading Codex and Claude Code records"))
+            return new HeaderStatus(Loc("기록 확인 중", "Reading records"), "", null, Loc("코딩 에이전트 기록을 읽고 있습니다", "Reading coding agent records"))
             { Muted = true };
         var tools = Enum.GetValues<ToolCategory>().Where(category => counts.ToolCategories.GetValueOrDefault(category) > 0)
             .Select(category => $"{ToolTitle(category)} {counts.ToolCategories[category]}").ToList();
@@ -936,8 +936,22 @@ public static class SessionPresentation
         var quiet = (quietSince ?? counts.NewestActivity) is not { } reference || Seconds(now, reference) >= SleepAfter;
         return new HeaderStatus(Loc("진행 중인 세션 없음", "No active sessions"),
                                 counts.NewestActivity is { } newest ? Loc(" · 마지막 활동 ", " · last activity ") + HelpAge(newest, now, spoken) : "",
-                                null, Loc("진행 중인 Codex·Claude Code 세션이 없습니다", "No active Codex or Claude Code sessions"))
+                                null, Loc("진행 중인 코딩 에이전트 세션이 없습니다", "No active coding agent sessions"))
         { Head = quiet ? RunnerHead.Sleep : RunnerHead.Normal };
+    }
+
+    /// The flow card's per-client split, widest first: "Claude Code 6.6k · Codex 1.2k · OpenCode 300", then the smallest
+    /// folding into "+N" down to the largest alone; one client is its name only (never the hero number again). The card
+    /// shows the first candidate that fits beside "지금 속도", so four or more clients never spill past it.
+    public static IReadOnlyList<string> ProviderSplits(IReadOnlyDictionary<TokenSource, int> byProvider)
+    {
+        var parts = Enum.GetValues<TokenSource>().Select(source => (source, value: byProvider.GetValueOrDefault(source)))
+            .Where(p => p.value > 0).OrderByDescending(p => p.value).ToList();
+        if (parts.Count < 2) return [parts.Count == 0 ? "" : parts[0].source.Title];
+        return Enumerable.Range(1, parts.Count).Reverse()
+            .Select(shown => string.Join(" · ", parts.Take(shown).Select(p => $"{p.source.Title} {Format.CompactTokens(p.value)}"))
+                + (shown < parts.Count ? $" · +{parts.Count - shown}" : ""))
+            .ToList();
     }
 
     /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record.
@@ -946,8 +960,8 @@ public static class SessionPresentation
         var @base = new FlowCaption(LastRecordCaption, Loc("최근 5분 안에 로그에 기록된 마지막 출력입니다", "The latest output recorded in the logs within the last 5 min"));
         if (counts.LiveGroups <= 0) return @base;
         if (last is { } at && Seconds(now, at) <= 30) return @base;
-        var help = Loc("응답이 끝나면 토큰이 기록됩니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다",
-                       "Tokens are recorded when a response ends. Codex records at the end of a response and Claude Code at the end of a message, so tokens still being generated aren't included yet");
+        var help = Loc("응답이 끝나면 토큰이 기록됩니다. 코딩 에이전트는 응답이나 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다",
+                       "Tokens are recorded when a response ends. Coding agents record at the end of a response or message, so tokens still being generated aren't included yet");
         if (counts.Input > 0)
             return new FlowCaption(counts.InputPlansOnly ? Loc("계획 승인 대기 · 승인하면 계속 기록", "Plan approval · approve to resume")
                                        : Loc("입력 대기 · 답변하면 계속 기록", "Waiting for input · reply to resume"), help)
@@ -1057,20 +1071,25 @@ public static class SessionPresentation
         }
         var codex = reading.Source == TokenSource.Codex;
         items.Add(new(Loc("기록 시점", "Recorded"),
-                      Loc($"{reading.Source.Title}는 {(codex ? "응답" : "메시지")} 완료 시 기록", $"When a {reading.Source.Title} {(codex ? "response" : "message")} ends")));
+                      Loc($"{reading.ClientTitle}는 {(codex ? "응답" : "메시지")} 완료 시 기록", $"When a {reading.ClientTitle} {(codex ? "response" : "message")} ends")));
         return items;
     }
 
     /// 8 + 15 per line + 8, plus the 0.5 pt rule above it.
     public static double DetailHeight(TokenReading reading, SessionDisplayState state) => 16 + 15 * DetailItems(reading, state).Count + 0.5;
 
-    /// The log file the reading came from: its id is "<source>:<path relative to home>" with "/" separators (rule 7).
+    /// The log file the reading came from: its id is "<source>:<path relative to home>" with "/" separators (rule 7), and a
+    /// log holding several sessions (OpenCode's database) appends "#<session>". JSONL logs, JSON snapshots (Amp, Cline,
+    /// legacy Gemini) and databases are revealed.
     public static string? LogFilePath(TokenReading reading, string home)
     {
         var colon = reading.Id.IndexOf(':');
         if (IsTelemetry(reading) || colon < 0) return null;
-        var path = reading.Id[(colon + 1)..];
-        if (!path.EndsWith(".jsonl", StringComparison.Ordinal)) return null;
+        var id = reading.Id[(colon + 1)..];
+        var fragment = id.LastIndexOf('#');
+        var path = fragment >= 0 ? id[..fragment] : id;
+        if (path.Length == 0 || (fragment < 0 && !new[] { ".jsonl", ".json", ".db" }.Any(extension => path.EndsWith(extension, StringComparison.Ordinal))))
+            return null;
         return Path.IsPathFullyQualified(path) ? path : Path.Combine(home, path.Replace('/', Path.DirectorySeparatorChar));
     }
 

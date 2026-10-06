@@ -1,3 +1,4 @@
+import CommonCrypto
 import Foundation
 
 // Gemini CLI and Qwen Code (a Gemini CLI fork) chat logs. Only ids, counts, times, statuses, tool and model names are read;
@@ -71,6 +72,8 @@ private final class ChatTurnState {
     private var compactedAt: Date?
     private var open = false
     private var startedAt: Date?
+    /// The message that began the open turn: a rollback that removes it cancelled the turn.
+    private(set) var turnMessageID: String?
     /// The person's input of the current turn was read, so its output count is complete.
     private var startSeen = false
     private var output = 0
@@ -92,6 +95,15 @@ private final class ChatTurnState {
     init(source: TokenSource) { self.source = source }
 
     var hasTools: Bool { !tools.isEmpty }
+    var isOpen: Bool { open }
+
+    /// Whether a record at `date` still belongs to the open turn: it came within the turn's liveness horizon. Read before
+    /// the record is noted.
+    func continues(at date: Date?) -> Bool {
+        guard open else { return false }
+        guard let date, let liveAt else { return true }
+        return date.timeIntervalSince(liveAt) <= liveHorizon
+    }
 
     func setProject(_ path: String?) {
         guard let path, !path.isEmpty else { return }
@@ -117,9 +129,10 @@ private final class ChatTurnState {
     }
 
     /// The person's input starts a turn.
-    func begin(at date: Date?) {
+    func begin(at date: Date?, message: String? = nil) {
         open = true
         startedAt = date
+        turnMessageID = message
         startSeen = date != nil
         output = 0
         turnHasOutput = false
@@ -287,11 +300,12 @@ private final class ChatTurnState {
         return base + thoughts
     }
 
+    /// Counts are capped at Int32.max as everywhere else (`LogFields.count`, the Windows build), so sums cannot overflow.
     static func integer(_ value: Any?) -> Int? {
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
         let double = number.doubleValue
-        guard double.isFinite, double >= 0, double < Double(Int.max), double.rounded(.towardZero) == double else { return nil }
-        return number.intValue
+        guard double.isFinite, double >= 0, double <= Double(Int32.max), double.rounded(.towardZero) == double else { return nil }
+        return Int(double)
     }
 }
 
@@ -362,7 +376,8 @@ private final class ChatLineTail {
             }
             guard let newline else { break }
             if !dropping, !pending.isEmpty { line(pending) }
-            pending.removeAll(keepingCapacity: true)
+            // One long line must not pin up to 1 MB per reader for good.
+            pending.removeAll(keepingCapacity: pending.count <= 65_536)
             dropping = false
             start = data.index(after: newline)
         }
@@ -424,9 +439,13 @@ private final class GeminiChatReader: TokenLogReader {
 
     private var subagentParent: String? { state.isSubagent ? state.parentSessionID : nil }
 
-    func isRecent(at now: Date) -> Bool { state.isRecent(at: now) }
+    /// A resumed legacy snapshot was migrated whole into `<name>.jsonl`, whose reader now counts it; the retained snapshot
+    /// reader would list the same session twice.
+    private var migrated: Bool { legacy && FileManager.default.fileExists(atPath: url.path + "l") }
 
-    func readings(id: String, now: Date) -> [TokenReading] { state.reading(id: id, now: now) }
+    func isRecent(at now: Date) -> Bool { !migrated && state.isRecent(at: now) }
+
+    func readings(id: String, now: Date) -> [TokenReading] { migrated ? [] : state.reading(id: id, now: now) }
 
     func read(tailLimit: Int, now: Date) {
         state.clamp(to: now.addingTimeInterval(5))
@@ -455,10 +474,15 @@ private final class GeminiChatReader: TokenLogReader {
             metadata(update)
             for message in update["messages"] as? [[String: Any]] ?? [] { self.message(message) }
         } else if record["$rewindTo"] is String {
-            // The person rewound the conversation; it waits for new input.
-            state.close(.idle, at: nil)
-        } else if record["$patch"] != nil {
-            return
+            // A cancelled or failed request rolls the open turn back; otherwise the person rewound and waits to type.
+            state.close(state.isOpen ? .interrupted : .idle, at: nil)
+        } else if let patch = record["$patch"] as? [String: Any] {
+            // A rollback that is no pure tail removes the turn's own prompt. Compression also removes messages, but
+            // reorders the history (`orderIds`) around its summary, and the turn goes on.
+            if state.isOpen, patch["orderIds"] == nil, let removed = patch["removeIds"] as? [String],
+               let start = state.turnMessageID, removed.contains(start) {
+                state.close(.interrupted, at: nil)
+            }
         } else if record["id"] is String, record["type"] is String {
             message(record)
         } else if record["sessionId"] is String {
@@ -478,6 +502,14 @@ private final class GeminiChatReader: TokenLogReader {
         if projectRoot == nil, let directory = (record["directories"] as? [String])?.first { state.setProject(directory) }
     }
 
+    /// `deriveStableId(["environment-context"])`: the session-context turn every start, `/clear` and new chat records.
+    static let environmentContextID: String = {
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        let input = Array("environment-context".utf8)
+        CC_SHA256(input, CC_LONG(input.count), &digest)
+        return String(digest.map { String(format: "%02x", $0) }.joined().prefix(32))
+    }()
+
     private func message(_ record: [String: Any]) {
         guard let id = record["id"] as? String, let type = record["type"] as? String else { return }
         let date = TokenLogParser.date(record["timestamp"])
@@ -488,20 +520,27 @@ private final class GeminiChatReader: TokenLogReader {
             lastMessageID = id
         }
         let isLatest = id == lastMessageID
+        let continuing = state.continues(at: date)
         state.note(date)
         switch type {
         case "user":
-            guard isNew else { return }
+            guard isNew, id != Self.environmentContextID else { return }
             // Newer builds record tool results as user messages made only of functionResponse parts.
             let parts = record["content"] as? [[String: Any]] ?? []
             let responses = parts.compactMap { $0["functionResponse"] as? [String: Any] }
-            if responses.isEmpty {
-                state.begin(at: date)
-            } else {
+            if !responses.isEmpty {
                 for response in responses { if let call = response["id"] as? String { state.removeTool(call) } }
                 state.resume(at: date)
+            } else if continuing {
+                // Input inside a live turn is the client's own: "Please continue." or a compression summary.
+                state.resume(at: date)
+            } else {
+                state.begin(at: date, message: id)
             }
         case "gemini":
+            // Replies are recorded with text content; a part list is a turn the client synced from its own history
+            // (a compression acknowledgement, a placeholder for an interrupted reply) and carries no turn change.
+            guard !(record["content"] is [Any]) else { return }
             if let model = record["model"] as? String, !model.isEmpty { state.model = model }
             if let tokens = record["tokens"] as? [String: Any] {
                 let input = ChatTurnState.integer(tokens["input"])

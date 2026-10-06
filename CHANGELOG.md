@@ -2,6 +2,28 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.14.2
+
+**macOS and Windows**
+
+- With no log folders, the empty dashboard no longer lists every client and about 30 folders: the title names no client (`Couldn't find any coding agent log folders`), one line names the supported clients, and the folders searched are in its help. · 기록 폴더가 없을 때 빈 상세 화면이 모든 클라이언트와 30개쯤의 폴더를 늘어놓지 않습니다. 제목에는 클라이언트 이름을 넣지 않고(`코딩 에이전트 기록 폴더를 찾지 못했습니다`), 지원하는 클라이언트를 한 줄로 보여 주며, 찾는 폴더는 그 줄의 도움말에 있습니다.
+- The output card's per-client split lists clients largest first and folds those that don't fit beside Speed now into `+N`, so four or more clients no longer spill past the card. · 출력 카드의 클라이언트별 내역을 많은 순서로 보이고, 지금 속도 옆에 들어가지 않는 클라이언트는 `+N`으로 접어 클라이언트가 넷 이상이어도 카드 밖으로 넘치지 않습니다.
+- Help texts that still named only Codex and Claude Code (loading, no active sessions, the output card's ⓘ and waiting captions) now speak of coding agents in general. · 아직 Codex·Claude Code만 말하던 도움말(기록 확인 중, 진행 중인 세션 없음, 출력 카드의 ⓘ와 대기 문구)을 코딩 에이전트 전반으로 고쳤습니다.
+- The Average speed row in Settings now says what the item is (`Mean of measured session speeds, all clients`), since its bar label shows client icons instead of `AVG`. · 설정의 평균 속도 항목 줄에 이 항목이 무엇인지 적었습니다(`모든 클라이언트 세션의 실측 속도 평균`). 메뉴 막대에서는 `AVG` 대신 클라이언트 아이콘이 보이기 때문입니다.
+- Gemini CLI: starting Gemini or a new chat no longer shows a phantom working turn; Esc-cancelled requests show as interrupted; mid-turn history compression keeps the turn's start and output; a resumed old session is no longer listed twice; out-of-range token counts can no longer crash the app. · Gemini CLI: 실행·새 대화만으로 작업 중 턴이 생기지 않고, Esc 취소는 중단으로, 턴 중 기록 압축은 턴 시작·출력을 유지하며, 이어 연 옛 세션이 두 줄로 나오지 않고, 범위를 벗어난 토큰 값으로 앱이 멈추지 않습니다.
+- Roo Code / Kilo Code: a finished subtask completes instead of waiting for input for 24 h, and its parent shows as running an agent while it works; rows, details and speed help are labelled Roo Code, Kilo Code and Pi instead of Cline and omp. · Roo Code / Kilo Code: 끝난 하위 작업이 24시간 입력 대기로 남지 않고 완료되며, 그동안 부모 작업은 에이전트 실행 중으로 보입니다. 행·상세·속도 도움말에 Cline·omp 대신 Roo Code·Kilo Code·Pi로 표시합니다.
+- omp / Pi: forked sessions stay top-level conversations instead of folding under the original as subagents; `PI_CODING_AGENT_DIR` is honoured. · omp / Pi: 포크한 세션이 원래 세션의 하위 에이전트로 접히지 않고 독립 대화로 남으며, `PI_CODING_AGENT_DIR`을 따릅니다.
+- OpenCode: a request that failed with a large error page shows as interrupted instead of a stuck working turn; a busy database is read again instead of caching a wrong role; a relative `OPENCODE_DB` resolves inside OpenCode's data folder like OpenCode does; on Windows new activity is picked up even when no session was recent. · OpenCode: 큰 오류 페이지로 실패한 요청이 멈춘 작업 중 턴 대신 중단으로 표시되고, 바쁜 DB는 잘못된 역할을 캐시하지 않고 다시 읽으며, 상대 경로 `OPENCODE_DB`를 OpenCode처럼 데이터 폴더 기준으로 찾고, Windows에서 최근 세션이 없어도 새 활동을 감지합니다.
+- Cline / Roo Code / Kilo Code: the project is found even when a pasted screenshot or large attachment comes first; large tasks are re-summarised at most every 5 s while streaming. · Cline / Roo Code / Kilo Code: 붙여넣은 스크린샷·큰 첨부가 앞에 있어도 프로젝트를 찾고, 스트리밍 중 큰 작업은 5초에 한 번만 다시 요약합니다.
+- "Show Log File" now works for OpenCode, Amp, Cline/Roo/Kilo and older Gemini rows. · "기록 파일 보기"가 OpenCode·Amp·Cline/Roo/Kilo·옛 Gemini 행에서도 동작합니다.
+- Windows: one oversized token total no longer freezes token updates for every client. · Windows: 토큰 합계 하나가 너무 커도 모든 클라이언트의 토큰 갱신이 멈추지 않습니다.
+- Lower idle CPU: log folders are re-listed every 60 s instead of every 5 s, and a write to a session left out by the caps opens it at once. · 대기 중 CPU 감소: 로그 폴더를 5초가 아닌 60초마다 다시 훑고, 목록 한도 밖 세션에 기록이 생기면 바로 엽니다.
+- Tool output, lock files and OpenCode snapshot writes in watched folders no longer wake a full log read (OpenCode's WAL still does). · 감시 폴더의 도구 출력·잠금 파일·OpenCode 스냅샷 기록은 더 이상 전체 로그 읽기를 깨우지 않습니다(OpenCode WAL은 계속 깨움).
+- A quiet session still in a turn is no longer dropped when many clients list hundreds of logs. · 여러 클라이언트가 로그 수백 개를 나열해도 턴이 진행 중인 조용한 세션이 더 이상 빠지지 않습니다.
+- One sessions rebuild per second instead of two; on macOS the menu bar is redrawn only when it changes. · 세션 목록 재구성을 초당 2회에서 1회로 줄였고, macOS에서는 메뉴 막대를 바뀔 때만 다시 그립니다.
+- Faster first read of omp/Pi logs: tool results and side records are read from their first bytes, not decoded whole. · omp/Pi 로그 첫 읽기 가속: 도구 결과와 부가 기록을 통째로 해석하지 않고 앞부분만 읽습니다.
+- Windows: one unreadable log no longer freezes every client's rows. · Windows: 읽을 수 없는 로그 하나가 모든 클라이언트 행을 멈추지 않습니다.
+
 ## 0.14.1
 
 **macOS and Windows**
@@ -12,7 +34,7 @@ The release workflow puts the `## <version>` entry into that version's release n
 
 **macOS and Windows**
 
-- Other coding agents are now recognised automatically from their own data folders, with no setup: OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline · Roo Code · Kilo Code, omp · Pi and Factory Droid show their sessions, turn state, model, project and output tokens next to Codex and Claude Code. OpenCode and omp record real generation times, so they also feed the Average speed. · 다른 코딩 에이전트도 각자의 데이터 폴더로 자동 인식합니다. 설정은 필요 없습니다. OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline·Roo Code·Kilo Code, omp·Pi, Factory Droid의 세션·턴 상태·모델·프로젝트·출력 토큰을 Codex·Claude Code와 함께 보여 줍니다. OpenCode와 omp는 실제 생성 시간을 기록하므로 평균 속도에도 들어갑니다.
+- Other coding agents are now recognised automatically from their own data folders, with no setup: OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline · Roo Code · Kilo Code, omp · Pi and Factory Droid show their sessions, turn state, model, project and output tokens next to Codex and Claude Code. OpenCode and omp record request durations, so their replies get a measured request tok/s and also feed the Average speed. · 다른 코딩 에이전트도 각자의 데이터 폴더로 자동 인식합니다. 설정은 필요 없습니다. OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline·Roo Code·Kilo Code, omp·Pi, Factory Droid의 세션·턴 상태·모델·프로젝트·출력 토큰을 Codex·Claude Code와 함께 보여 줍니다. OpenCode와 omp는 요청 시간을 기록하므로 응답에 실측 요청 tok/s가 붙고 평균 속도에도 들어갑니다.
 - The separate Codex speed and Claude speed items are gone; the **Average speed** item now shows which clients are contributing a fresh measured rate in place of `AVG`: one client's icon, or up to three icons overlapping like an avatar group (fastest first), named in its help (`Average speed 55.6 tokens per second · Codex, Claude Code`). Every client has its icon, and a Codex or Claude speed item you had turned on becomes the Average speed item. On one line the item is 81 pt wide (was 69) so `9999 tok/s` still fits beside three icons. · 따로 있던 Codex 속도·Claude 속도 항목을 없애고, **평균 속도** 항목이 `AVG` 자리에 지금 실측을 보태는 클라이언트를 보여 줍니다. 하나면 그 아이콘, 여럿이면 최대 세 개를 프로필 사진 묶음처럼 겹쳐(빠른 순) 그리고, 도움말에 이름을 붙입니다(`평균 속도 55.6 토큰/초 · Codex, Claude Code`). 모든 클라이언트에 아이콘이 있으며, 켜 두었던 Codex·Claude 속도 항목은 평균 속도 항목으로 바뀝니다. 한 줄에서는 폭이 81pt(이전 69pt)라 아이콘 세 개 옆에서도 `9999 tok/s`가 들어갑니다.
 
 ## 0.13.2

@@ -138,6 +138,9 @@ struct TokenReading: Codable, Identifiable {
     var effort: String? = nil
     /// Subagent role or nickname (Codex agent_nickname/role, Claude agentType).
     var agentRole: String? = nil
+    /// The product that wrote the log when one source covers several ("Roo Code", "Kilo Code", "Pi"); nil means `source`.
+    var clientName: String? = nil
+    var clientTitle: String { clientName ?? source.title }
     var speedMeasurement: TokenSpeedMeasurement? = nil
     var lastOutputTokens: Int? = nil
     var active: Bool = false

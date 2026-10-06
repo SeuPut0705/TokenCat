@@ -380,8 +380,13 @@ final class DashboardModel: ObservableObject {
         next.tolerance = interval * 0.1
         RunLoop.main.add(next, forMode: .common)
         timer = next
+        // Filtered on the watcher's queue: the watched roots also hold tool output, lock files and OpenCode's snapshot git
+        // store, whose bursts would otherwise reach the main thread and wake a full sample. The 1 s timer covers the rest.
+        let tracker = self.tracker
         let watcher = LogWatcher { [weak self] paths in
-            DispatchQueue.main.async { self?.logsChanged(paths) }
+            let logs = paths.filter(tracker.wakesSampling)
+            guard !logs.isEmpty else { return }
+            DispatchQueue.main.async { self?.logsChanged(logs) }
         }
         watcher.start(directories: tracker.watchedDirectories)
         self.watcher = watcher
@@ -414,16 +419,18 @@ final class DashboardModel: ObservableObject {
                 if self.detectedSources != detected { self.detectedSources = detected }
                 let seen = self.foldersSeen
                 self.foldersSeen = existing
-                // A folder created after the watcher started (a client's first run): watch it and read it now.
+                // A folder created after the watcher started (a client's first run): watch it, list it and read it now.
                 guard let seen, !existing.isSubset(of: seen) else { return }
                 self.watcher?.start(directories: self.tracker.watchedDirectories)
+                self.tokenQueue.async { self.tracker.rediscover() }
                 self.refreshTokens()
             }
         }
     }
+    /// `paths` already passed `TokenTracker.wakesSampling`.
     private func logsChanged(_ paths: [String]) {
         guard running else { return }
-        changedPaths.append(contentsOf: paths.filter(tracker.isLog).prefix(64))
+        changedPaths.append(contentsOf: paths.prefix(64))
         if changedPaths.count > 256 { changedPaths.removeFirst(changedPaths.count - 256) }
         logEventCount += 1
         refreshTokens()
@@ -550,7 +557,11 @@ final class DashboardModel: ObservableObject {
                         self.cpuHistory.append(cpu)
                         self.cpuHistory = Array(self.cpuHistory.suffix(90))
                     }
-                    self.rebuildPresentation()
+                    // The token sample of the same tick rebuilds the sessions; only a slow or stalled one leaves the
+                    // clocks to this sample.
+                    if self.tokensSampledAt.map({ system.sampledAt.timeIntervalSince($0) >= 2 * Self.samplingInterval }) ?? true {
+                        self.rebuildPresentation()
+                    }
                     self.onUpdate?()
                 }
             }

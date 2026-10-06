@@ -478,6 +478,9 @@ sealed class SettingsView : Grid
         text.Children.Add(line);
         var noBattery = Loc("이 PC에는 배터리가 없습니다", "This PC has no battery");
         if (missing) text.Children.Add(Caption(noBattery));
+        // The widget shows the contributing clients' icons in place of "AVG", so the row says what the number is.
+        else if (id == MetricID.AverageSpeed)
+            text.Children.Add(Caption(Loc("모든 클라이언트 세션의 실측 속도 평균", "Mean of measured session speeds, all clients")));
         var title = id.BarLabel is { } label ? $"{id.Title} · {label}" : id.Title;
         var lockedHelp = Loc("캐릭터를 숨긴 상태에서는 최소 한 항목을 표시해야 합니다", "With the character hidden, at least one item must stay visible");
         // A CheckBox, so UI Automation reports the item by name with its checked state. Its own Checked/Unchecked act, so a UI

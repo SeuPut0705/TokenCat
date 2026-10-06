@@ -224,6 +224,17 @@ func runSessionPresentationChecks() -> [String] {
     check(SessionPresentation.headerStatus(counts: oldCounts, loading: false, now: now, quietSince: now.addingTimeInterval(-300)).head == .normal
           && SessionPresentation.headerStatus(counts: oldCounts, loading: false, now: now, quietSince: now.addingTimeInterval(-700)).head == .sleep,
           "the header head sleeps on the menu-bar cat's quiet reference, not only the last log record")
+    // Every client is read now, so help that applies to all of them names none (an omp-only Mac saw "no Codex or Claude Code").
+    check([loadingHeader.help, restHeader.help, caption(noticeCounts, nil).help].allSatisfy { !$0.contains("Codex") && !$0.contains("Claude") }
+          && restHeader.help == "진행 중인 코딩 에이전트 세션이 없습니다",
+          "client-neutral header and caption help")
+    // The flow card's split with four clients: widest first, then the smallest folding into "+N" (it used to list every
+    // client at a fixed size and spill past the card); one client is its name only.
+    let splits = SessionPresentation.providerSplits([.codex: 1_200, .claude: 6_600, .opencode: 300, .omp: 70_000])
+    check(splits.first == "omp 70k · Claude Code 6.6k · Codex 1.2k · OpenCode 300" && splits.count == 4
+          && splits[1] == "omp 70k · Claude Code 6.6k · Codex 1.2k · +1" && splits.last == "omp 70k · +3"
+          && SessionPresentation.providerSplits([.codex: 10]) == ["Codex"] && SessionPresentation.providerSplits([:]) == [""],
+          "provider split folds into +N, widest first: \(splits)")
 
     // Stable ordering: input first, then running groups by project and session, unaffected by activity time.
     let beta = reading("claude:beta", session: "B", project: "beta", active: true, state: .working, last: -1)
@@ -621,6 +632,12 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.logFileURL(located, home: home)?.path == "/Users/example/.claude/projects/-work-TokenCat/S1.jsonl"
           && SessionPresentation.rowActions(claudeChild, home: home).map(\.title) == ["세션 ID 복사", "에이전트 ID 복사"]
           && SessionPresentation.rowActions(telemetry, home: home).map(\.title) == ["세션 ID 복사"], "row actions: copies, then reveals")
+    var openCodeRow = located, ampRow = located
+    openCodeRow.id = "opencode:.local/share/opencode/opencode.db#ses_1"
+    ampRow.id = "amp:.local/share/amp/threads/T-1.json"
+    check(SessionPresentation.logFileURL(openCodeRow, home: home)?.path == "/Users/example/.local/share/opencode/opencode.db"
+          && SessionPresentation.logFileURL(ampRow, home: home)?.path == "/Users/example/.local/share/amp/threads/T-1.json",
+          "row actions: a database row or a JSON snapshot log had no Show Log File")
     // Resume command (decision 7): single-quoted folder, hidden for subagents or without an ID or folder.
     var quoted = located
     quoted.projectPath = "/work/it's here"

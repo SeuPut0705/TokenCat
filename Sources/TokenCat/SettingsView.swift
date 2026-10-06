@@ -850,6 +850,13 @@ extension MetricID {
         case .averageSpeed: return "AVG"
         }
     }
+
+    /// The speed item's subtitle: the bar shows the contributing clients' icons in place of "AVG", so it says what the
+    /// number is (the old per-client speed items became this one).
+    static var averageSpeedNote: String {
+        loc("모든 클라이언트 세션의 실측 속도 평균",
+            "Mean of measured session speeds, all clients")
+    }
 }
 
 /// Reorderable item list: drag, context menu, or the VoiceOver actions "위로 이동"/"아래로 이동".
@@ -869,6 +876,8 @@ private struct MetricRows: View {
                         id.barLabel.map { Text(id.title) + Text(" · \($0)").font(.system(size: 11)).foregroundColor(.secondary) } ?? Text(id.title)
                         if missingBattery {
                             Text(loc("이 Mac에는 배터리가 없습니다", "This Mac has no battery")).font(.system(size: 11)).foregroundStyle(.secondary)
+                        } else if id == .averageSpeed {
+                            Text(MetricID.averageSpeedNote).font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }

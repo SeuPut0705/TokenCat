@@ -32,7 +32,7 @@ public static class Json
         bytes.StartsWith((ReadOnlySpan<byte>)[0xEF, 0xBB, 0xBF]) ? bytes[3..] : bytes;
 
     /// Foundation nests about 512 levels; the default 64 would drop a deep tool input or a whole batch.
-    static readonly JsonDocumentOptions Depth = new() { MaxDepth = 512 };
+    public static readonly JsonDocumentOptions Depth = new() { MaxDepth = 512 };
 
     /// `try? JSONSerialization.jsonObject(with:)`: null when the bytes are not JSON.
     public static JsonElement? Parse(ReadOnlySpan<byte> bytes)

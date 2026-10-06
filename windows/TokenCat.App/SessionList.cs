@@ -328,13 +328,11 @@ sealed class SessionList : Border
         sprite.HorizontalAlignment = HorizontalAlignment.Center;
         stack.Children.Add(sprite);
         TextBlock Centered(TextBlock text) { text.TextAlignment = TextAlignment.Center; text.HorizontalAlignment = HorizontalAlignment.Center; text.TextWrapping = TextWrapping.Wrap; return text; }
-        // The clients TokenCat reads (providers with a format): "Codex·Claude Code" / "Codex or Claude Code" / "A, B or C".
+        // Client-neutral title and one wrapping line of client names; the default folders (about 30 with every editor
+        // extension) live in the tooltip only, so the card stays short and screen readers don't read them.
         var read = TokenProvider.All.Where(provider => provider.Format is not null).ToList();
-        var titles = read.Select(provider => provider.Source.Title).ToList();
-        var names = Loc(string.Join("·", titles),
-            titles.Count < 2 ? string.Concat(titles) : string.Join(", ", titles.SkipLast(1)) + " or " + titles[^1]);
-        var title = Centered(Ui.Text(foldersFound ? Loc($"아직 {names} 세션 기록이 없습니다", $"No {names} sessions yet")
-            : Loc($"{names} 기록 폴더를 찾지 못했습니다", $"Couldn't find {names} log folders"), Font.BodyMedium));
+        var title = Centered(Ui.Text(foldersFound ? Loc("아직 코딩 에이전트 세션 기록이 없습니다", "No coding agent sessions yet")
+            : Loc("코딩 에이전트 기록 폴더를 찾지 못했습니다", "Couldn't find any coding agent log folders"), Font.BodyMedium));
         title.Margin = new Thickness(0, 8, 0, 4);
         stack.Children.Add(title);
         if (foldersFound)
@@ -345,9 +343,12 @@ sealed class SessionList : Border
         }
         else
         {
-            // Default folders, home written as %USERPROFILE% (no environment override applied).
+            // Default folders, home written as %USERPROFILE% (no environment override applied), in the tooltip.
             var folders = read.SelectMany(provider => provider.Roots("%USERPROFILE%", _ => null));
-            stack.Children.Add(Centered(Ui.Text(string.Join(" · ", folders), Font.MetaMono, Theme.Secondary)));
+            var clients = Centered(Ui.Text(string.Join(" · ", read.Select(provider => provider.Source.Title)), Font.Meta, Theme.Secondary));
+            clients.Margin = new Thickness(16, 0, 16, 0);
+            clients.ToolTip = string.Join("\n", folders);
+            stack.Children.Add(clients);
             var again = Ui.SmallButton(Loc("다시 확인", "Check Again"), () => Recheck?.Invoke());
             again.HorizontalAlignment = HorizontalAlignment.Center;
             again.Margin = new Thickness(0, 8, 0, 0);
@@ -759,7 +760,7 @@ sealed class IdleRow : RowShell
         {
             var title = Ui.Text(reading.Project ?? Loc("프로젝트 미확인", "Unknown project"), Font.Body);
             return new TrimLine(trim ? TrimLine.Shrink(title) : title,
-                withClient ? Spaced(Ui.Text(reading.Source.Title, Font.Meta, Theme.Secondary)) : null,
+                withClient ? Spaced(Ui.Text(reading.ClientTitle, Font.Meta, Theme.Secondary)) : null,
                 withWord && word is not null ? Spaced(Ui.Text(word, Font.Micro, Theme.Secondary)) : null,
                 withId ? Spaced(Ui.Text(SessionPresentation.ShortID(reading), Font.Meta, Theme.Secondary)) : null);
         }
@@ -890,7 +891,7 @@ sealed class MeasurementRow : RowShell
         var now = context.Now;
         var name = reading.Project ?? Loc("모델 실측", "Model measurement");
         var modelName = reading.Model ?? Loc("모델 미확인", "Unknown model");
-        Bind(item.Id, reading, context, 28, Loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu"), $"{name}, {reading.Source.Title} {modelName}");
+        Bind(item.Id, reading, context, 28, Loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu"), $"{name}, {reading.ClientTitle} {modelName}");
         project.Text = name;
         model.Text = modelName;
         var speed = SessionPresentation.Speed(reading, now, false);

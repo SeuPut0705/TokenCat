@@ -714,12 +714,18 @@ public static class TrackerChecks
             var discoveryNow = longNow;
             var newSessionTracker = new TokenTracker(newSessionHome, () => discoveryNow);
             check(newSessionTracker.Sample().Count == 0, "An empty home fabricated live placeholder sessions");
-            File.WriteAllBytes(Path.Combine(newSessionFolder, "new.jsonl"), Line(Codex("task_started", "2026-10-04T04:00:10Z", """{"turn_id":"new-session"}""")));
+            var newlyStartedFile = Path.Combine(newSessionFolder, "new.jsonl");
+            File.WriteAllBytes(newlyStartedFile, Line(Codex("task_started", "2026-10-04T04:00:10Z", """{"turn_id":"new-session"}""")));
             discoveryNow = longNow.AddSeconds(5);
+            // The listing is not rewalked every few seconds: the file event lists it at once, the 60 s rescan catches a missed one.
+            var unannounced = newSessionTracker.Sample().Count == 0;
+            newSessionTracker.NoteChanged([newlyStartedFile]);
             var newlyDiscovered = newSessionTracker.Sample().FirstOrDefault();
-            check(newlyDiscovered?.ActivityState == TokenActivityState.Working && newlyDiscovered?.CurrentTurnOutputTokens == 0
-                  && newlyDiscovered?.SampledAt == discoveryNow,
-                  "Default discovery must collect a new observed session within five seconds");
+            File.WriteAllBytes(Path.Combine(newSessionFolder, "missed.jsonl"), Line(Codex("task_started", "2026-10-04T04:00:20Z", """{"turn_id":"missed"}""")));
+            discoveryNow = longNow.AddSeconds(65);
+            check(unannounced && newlyDiscovered?.ActivityState == TokenActivityState.Working && newlyDiscovered?.CurrentTurnOutputTokens == 0
+                  && newlyDiscovered?.SampledAt == longNow.AddSeconds(5) && newSessionTracker.Sample().Count == 2,
+                  "Discovery rewalked the folders within seconds, or a new session's file event or the 60 s rescan did not list it");
 
             // Appends wake sampling through file-system events, and Stop() ends callbacks.
             var watchRoot = Path.Combine(root, "watch", ".codex", "sessions");
@@ -768,7 +774,7 @@ public static class TrackerChecks
             File.WriteAllBytes(quiet, Lines(ClaudeUser("q-in", "2026-10-04T04:00:00Z", "long job", """{"sessionId":"quiet","origin":{"kind":"human"}}"""),
                 ClaudeReply("q-msg", 10, "2026-10-04T04:00:01Z", "q-out", """[{"type":"tool_use","id":"q-tool"}]""")));
             File.SetLastWriteTimeUtc(quiet, now.AddSeconds(-600).UtcDateTime);
-            var retainTracker = new TokenTracker(retainHome, () => now, discoveryIntervalSeconds: 0);
+            var retainTracker = new TokenTracker(retainHome, () => now, discoveryIntervalSeconds: 0, environment: _ => null);
             check(retainTracker.Sample().Any(r => r.SessionID == "quiet"), "Retention fixture: quiet session not discovered");
             for (var index = 0; index < 33; index++)
                 File.WriteAllBytes(Path.Combine(retainFolder, $"busy-{index}.jsonl"), Lines(
@@ -776,6 +782,22 @@ public static class TrackerChecks
                     J("""{"type":"system","subtype":"stop_hook_summary","timestamp":"2026-10-04T04:00:03Z"}""")));
             check(retainTracker.Sample().Any(r => r.SessionID == "quiet" && r.CurrentTurnOutputTokens == 10),
                   "Discovery evicted a quiet session that is still in a turn");
+            // Retention has its own budget: 288 logs listed across clients (Claude subagent, omp and Gemini caps) do not crowd it out.
+            (string Folder, int Count, Func<int, string> Name)[] fill = [
+                (Path.Combine(".claude", "projects", "busy", "fill", "subagents"), 64, index => $"agent-fill-{index}.jsonl"),
+                (Path.Combine(".omp", "agent", "sessions", "fill"), 32, index => $"fill-{index}.jsonl"),
+                (Path.Combine(".omp", "agent", "sessions", "fill", "2026-10-04T04-00-00-000Z_fill"), 64, index => $"Fill{index}.jsonl"),
+                (Path.Combine(".gemini", "tmp", "fill", "chats"), 32, index => $"session-fill-{index}.jsonl"),
+                (Path.Combine(".gemini", "tmp", "fill", "chats", "fill-parent"), 64, index => $"fill-{index}.jsonl"),
+            ];
+            foreach (var (fillFolder, count, name) in fill)
+            {
+                var directory = Path.Combine(retainHome, fillFolder);
+                Directory.CreateDirectory(directory);
+                for (var index = 0; index < count; index++) File.WriteAllBytes(Path.Combine(directory, name(index)), []);
+            }
+            check(retainTracker.Sample().Any(r => r.SessionID == "quiet" && r.CurrentTurnOutputTokens == 10),
+                  "Discovery listing 256+ logs across clients evicted a quiet session that is still in a turn");
 
             // A tool result over the 1 MB line limit still completes its call.
             var bigHome = Path.Combine(root, "oversized");
@@ -863,14 +885,23 @@ public static class TrackerChecks
             }
             var burst = new TokenTracker(Path.Combine(root, "burst"), () => now);
             check(burst.Sample().Count == 35, "Cold discovery dropped subagent logs from the last hour past the newest 32, or kept older ones");
-            // A write to a log the caps left out waits for the periodic rescan; only a log discovery has not seen reruns it.
+            // A write to a log the caps left out opens it without rerunning discovery (the silent new log stays unseen);
+            // only a log discovery has not seen reruns it.
             var unseen = Path.Combine(burstFolder, "agent-burst-new.jsonl");
             File.WriteAllBytes(unseen, Line(Assistant("burst-new", 5, "2026-10-04T04:00:01Z", "burst-new")));
             File.SetLastWriteTimeUtc(unseen, now.AddSeconds(-30).UtcDateTime);
             burst.NoteChanged([Path.Combine(burstFolder, "agent-burst-35.jsonl")]);
             var capped = burst.Sample().Count;
             burst.NoteChanged([unseen]);
-            check(capped == 35 && burst.Sample().Count == 36, "A write to a log outside the discovery caps reran discovery, or a new log did not");
+            check(capped == 36 && burst.Sample().Count == 37,
+                  "A write to a log outside the discovery caps reran discovery or was not opened, or a new log did not rerun it");
+            var wakes = new TokenTracker(Path.Combine(root, "burst"), environment: _ => null);
+            var openCodeData = Path.Combine(root, "burst", ".local", "share", "opencode");
+            check(wakes.WakesSampling(Path.Combine(burstFolder, "agent-burst-35.jsonl")) && wakes.WakesSampling(Path.Combine(openCodeData, "opencode.db-wal"))
+                  && !wakes.WakesSampling(Path.Combine(openCodeData, "snapshot", "objects", "ab"))
+                  && !wakes.WakesSampling(Path.Combine(openCodeData, "log", "opencode.log"))
+                  && !wakes.WakesSampling(Path.Combine(burstFolder, "journal.jsonl")),
+                  "File events: a non-log file under a watched root woke sampling, or a log or OpenCode WAL write did not");
 
             // Windows (DESIGN WP1): watcher hints use backslashes there; only agent-* logs under subagents\ are tracked, and only
             // paths under a client's root count.
@@ -1022,6 +1053,42 @@ public static class TrackerChecks
             check(gqTracker.IsLog(geminiLog) && gqTracker.IsLog(geminiSubLog) && !gqTracker.IsLog(Path.Combine(gemini, ".project_root"))
                   && !gqTracker.IsLog(Path.Combine(gemini, "chats", "notes.jsonl")),
                   "Gemini: a chat log was not recognised, or a side file was");
+            // Records the client writes on its own: the session-context turn at start, rollbacks and compression.
+            var geminiChats = Path.Combine(gemini, "chats");
+            Add(Path.Combine(geminiChats, "session-env.jsonl"), N("""{"sessionId":"gem-env","projectHash":"h","kind":"main"}"""),
+                // deriveStableId(["environment-context"]): sha256 hex, first 32 characters.
+                N($$"""{"id":"d04923d38bb0f6017037e74183378ef4","timestamp":"{{T(2_100)}}","type":"user","content":[{"text":"<session_context>"}]}"""));
+            Add(Path.Combine(geminiChats, "session-rewind.jsonl"), N("""{"sessionId":"gem-rw","projectHash":"h","kind":"main"}"""),
+                N($$"""{"id":"r1","timestamp":"{{T(2_100)}}","type":"user","content":[{"text":"fixture"}]}"""),
+                // Counts past int.MaxValue are dropped on both platforms (Swift's Int sum trapped on them).
+                N($$$"""{"id":"r2","timestamp":"{{{T(2_101)}}}","type":"gemini","content":"","tokens":{"input":9e18,"output":9e18,"thoughts":1,"total":1}}"""),
+                N("""{"$rewindTo":"r1"}"""));
+            Add(Path.Combine(geminiChats, "session-patch.jsonl"), N("""{"sessionId":"gem-pt","projectHash":"h","kind":"main"}"""),
+                N($$"""{"id":"p1","timestamp":"{{T(2_100)}}","type":"user","content":[{"text":"fixture"}]}"""),
+                N($$"""{"id":"p2","timestamp":"{{T(2_101)}}","type":"gemini","content":""}"""),
+                N("""{"$patch":{"removeIds":["p1","p2"]}}"""));
+            Add(Path.Combine(geminiChats, "session-compress.jsonl"), N("""{"sessionId":"gem-cp","projectHash":"h","kind":"main"}"""),
+                N($$"""{"id":"c1","timestamp":"{{T(2_090)}}","type":"user","content":[{"text":"fixture"}]}"""),
+                N($$$"""{"id":"c2","timestamp":"{{{T(2_091)}}}","type":"gemini","content":"","tokens":{"input":10,"output":20,"total":30}}"""),
+                N($$"""{"id":"c3","timestamp":"{{T(2_095)}}","type":"user","content":[{"text":"summary"}]}"""),
+                N($$"""{"id":"c4","timestamp":"{{T(2_095)}}","type":"gemini","content":[{"text":"Got it."}]}"""),
+                N("""{"$patch":{"removeIds":["c1","c2"],"orderIds":["c3","c4"]}}"""));
+            // The resumed legacy snapshot is migrated into its .jsonl twin; the retained snapshot reader must step aside.
+            Add(Path.Combine(geminiChats, "session-old.jsonl"), N("""{"sessionId":"gem-old","projectHash":"h"}"""));
+            gqNow = gqStart.AddSeconds(2_102);
+            var syncRows = gqTracker.Sample().Where(r => r.Source == TokenSource.Gemini).ToList();
+            TokenReading? SyncRow(string name) => syncRows.FirstOrDefault(r => r.Id.EndsWith(name, StringComparison.Ordinal));
+            check(SyncRow("session-env.jsonl") is null or { Active: false, ActivityState: TokenActivityState.Idle },
+                  "Gemini: the session-context record a start writes opened a phantom working turn");
+            check(SyncRow("session-rewind.jsonl") is { Active: false, ActivityState: TokenActivityState.Interrupted }
+                  && SyncRow("session-patch.jsonl")?.ActivityState == TokenActivityState.Interrupted,
+                  "Gemini: a cancelled request rolled back with $rewindTo or $patch did not read as interrupted");
+            check(SyncRow("session-rewind.jsonl")?.RecentOutputs.Select(e => e.Tokens).SequenceEqual([1]) == true,
+                  "Gemini: token counts past int.MaxValue were accepted");
+            check(SyncRow("session-compress.jsonl") is { Active: true, CurrentTurnOutputTokens: 20 } compress
+                  && compress.CurrentTurnStartedAt == gqStart.AddSeconds(2_090),
+                  "Gemini: mid-turn compression restarted or closed the turn");
+            check(SyncRow("session-old.json") is null, "Gemini: a migrated legacy snapshot kept its row beside the .jsonl twin");
 
             var qwen = Path.Combine(gqHome, ".qwen", "projects", "-tmp-QwenProject");
             Directory.CreateDirectory(Path.Combine(qwen, "chats"));

@@ -191,6 +191,19 @@ public static class SessionPresentationChecks
         check(Header(oldCounts, false, now, quietSince: now.AddSeconds(-300)).Head == RunnerHead.Normal
               && Header(oldCounts, false, now, quietSince: now.AddSeconds(-700)).Head == RunnerHead.Sleep,
               "the header head sleeps on the menu-bar cat's quiet reference, not only the last log record");
+        // Every client is read now, so help that applies to all of them names none (an omp-only Mac saw "no Codex or Claude Code").
+        check(new[] { loadingHeader.Help, restHeader.Help, caption(noticeCounts, null).Help }.All(help => !help.Contains("Codex") && !help.Contains("Claude"))
+              && restHeader.Help == "진행 중인 코딩 에이전트 세션이 없습니다",
+              "client-neutral header and caption help");
+        // The flow card's split with four clients: widest first, then the smallest folding into "+N" (it used to list every
+        // client at a fixed size and spill past the card); one client is its name only.
+        var splits = ProviderSplits(new Dictionary<TokenSource, int>
+            { [TokenSource.Codex] = 1_200, [TokenSource.Claude] = 6_600, [TokenSource.OpenCode] = 300, [TokenSource.Omp] = 70_000 });
+        check(splits[0] == "omp 70k · Claude Code 6.6k · Codex 1.2k · OpenCode 300" && splits.Count == 4
+              && splits[1] == "omp 70k · Claude Code 6.6k · Codex 1.2k · +1" && splits[^1] == "omp 70k · +3"
+              && ProviderSplits(new Dictionary<TokenSource, int> { [TokenSource.Codex] = 10 }).SequenceEqual(["Codex"])
+              && ProviderSplits(new Dictionary<TokenSource, int>()).SequenceEqual([""]),
+              $"provider split folds into +N, widest first: {string.Join(" | ", splits)}");
 
         // Stable ordering: input first, then running groups by project and session, unaffected by activity time.
         var beta = reading("claude:beta", session: "B", project: "beta", active: true, state: A.Working, last: -1);
@@ -503,6 +516,9 @@ public static class SessionPresentationChecks
               && actions.Select(action => action.IsReveal).SequenceEqual([false, false, true, true]) && LogFilePath(located, home) == logPath
               && RowActions(claudeChild, home).Select(action => action.Title).SequenceEqual(["세션 ID 복사", "에이전트 ID 복사"])
               && RowActions(telemetry, home).Select(action => action.Title).SequenceEqual(["세션 ID 복사"]), "row actions: copies, then reveals");
+        check(LogFilePath(located with { Id = "opencode:.local/share/opencode/opencode.db#ses_1" }, home) == Path.Combine(home, ".local", "share", "opencode", "opencode.db")
+              && LogFilePath(located with { Id = "amp:.local/share/amp/threads/T-1.json" }, home) == Path.Combine(home, ".local", "share", "amp", "threads", "T-1.json"),
+              "row actions: a database row or a JSON snapshot log had no Show Log File");
         // Resume command (decision 7), PowerShell: single-quoted folder, hidden for subagents or without an ID or folder.
         var quoted = located with { ProjectPath = @"C:\work\it's here" };
         var codexRoot = codexParent with { ProjectPath = "C:/work/TokenCat" };

@@ -20,7 +20,7 @@ public sealed record TokenProvider(TokenSource Source, Func<string, Func<string,
         new(TokenSource.Codex, (home, _) => [AppPaths.CodexSessions(home)], TokenLogFormat.Codex),
         new(TokenSource.Claude, (home, _) => [AppPaths.ClaudeProjects(home)], TokenLogFormat.Claude),
         new(TokenSource.OpenCode, (home, env) =>
-            [.. EnvPath(home, env, "OPENCODE_DB") is { } db && Path.GetDirectoryName(db) is { } folder ? [folder] : Array.Empty<string>(),
+            [.. OpenCodeDatabasePath(home, env) is { } db && Path.GetDirectoryName(db) is { } folder ? [folder] : Array.Empty<string>(),
              Path.Combine(DataHome(home, env), "opencode")], TokenLogFormat.OpenCode),
         new(TokenSource.Gemini, (home, env) => [Path.Combine(EnvPath(home, env, "GEMINI_CLI_HOME") ?? home, ".gemini", "tmp")], TokenLogFormat.Gemini),
         // Qwen keeps sessions under its runtime dir: QWEN_RUNTIME_DIR, else QWEN_HOME, else ~\.qwen.
@@ -40,14 +40,24 @@ public sealed record TokenProvider(TokenSource Source, Func<string, Func<string,
                         Path.Combine(appData, editor, "User", "globalStorage", extension, "tasks"))),
                     Path.Combine(home, ".cline", "data", "sessions")];
         }, TokenLogFormat.Cline),
-        new(TokenSource.Omp, (home, _) => [Path.Combine(home, ".omp", "agent", "sessions"), Path.Combine(home, ".pi", "agent", "sessions")],
-            TokenLogFormat.Omp),
+        // omp and Pi both move their agent folder to PI_CODING_AGENT_DIR; sessions live in its `sessions`.
+        new(TokenSource.Omp, (home, env) =>
+            [.. new[] { EnvPath(home, env, "PI_CODING_AGENT_DIR"), Path.Combine(home, ".omp", "agent"), Path.Combine(home, ".pi", "agent") }
+                .OfType<string>().Select(folder => Path.Combine(folder, "sessions"))], TokenLogFormat.Omp),
         new(TokenSource.Droid, (home, _) => [Path.Combine(home, ".factory", "sessions")], TokenLogFormat.Droid),
     ];
 
     /// `XDG_DATA_HOME`, else ~\.local\share (OpenCode and Amp use it on Windows too).
     static string DataHome(string home, Func<string, string?> env) =>
         EnvPath(home, env, "XDG_DATA_HOME") ?? Path.Combine(home, ".local", "share");
+
+    /// `OPENCODE_DB` as OpenCode resolves it: a rooted path, else a path inside its data folder; `:memory:` is no file.
+    public static string? OpenCodeDatabasePath(string home, Func<string, string?> env)
+    {
+        if (env("OPENCODE_DB") is not { Length: > 0 } value || value == ":memory:") return null;
+        try { return Path.GetFullPath(Path.IsPathRooted(value) ? value : Path.Combine(DataHome(home, env), "opencode", value)); }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or SecurityException) { return null; }
+    }
 
     /// A non-empty environment value as a full path; a leading `~` names `home`.
     static string? EnvPath(string home, Func<string, string?> env, string key)
@@ -68,7 +78,7 @@ public sealed record TokenProvider(TokenSource Source, Func<string, Func<string,
 
 /// How a client's logs are listed and read. Every delegate runs on the tracker's caller (one at a time).
 /// - `Files`: logs worth tracking under the client's existing roots. Rank and cap them with `TokenDiscovery.Recent`, so every
-///   listed path is also `Known` (a write to a log the caps left out then waits for the 5 s rescan instead of forcing one).
+///   listed path is also `Known` (a write to a log the caps left out then opens it directly instead of forcing a rescan).
 /// - `IsLog`: whether a path from a file event is a log `Files` would list; an untracked one triggers discovery on the next sample.
 /// - `Open`: the reader for one listed log, kept while discovery lists it or `IsRecent` holds.
 public sealed partial record TokenLogFormat(

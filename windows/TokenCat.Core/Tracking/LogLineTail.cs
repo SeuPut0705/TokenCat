@@ -111,7 +111,9 @@ public sealed class LogLineTail(string path)
             }
             if (found < 0) break;
             if (!dropping && pending.Length > 0) line(pending.ToArray());
-            pending.SetLength(0);
+            // One long line must not pin up to 1 MB per reader for good.
+            if (pending.Length > 65_536) pending = new();
+            else pending.SetLength(0);
             dropping = false;
             start = end + 1;
         }
@@ -123,9 +125,12 @@ public static class LogFields
 {
     /// An ISO 8601 string as ISO8601DateFormatter reads it (TokenLogParser's rule 4): seconds, an optional fraction kept
     /// to milliseconds, Z or ±hh:mm.
-    public static DateTimeOffset? Date(JsonElement? value)
+    public static DateTimeOffset? Date(JsonElement? value) => Date(value?.Text);
+
+    /// The same for a string already read (OmpRecordHead's head fields).
+    public static DateTimeOffset? Date(string? text)
     {
-        if (value?.Text is not { } text || IsoDate.Match(text) is not { Success: true } match
+        if (text is null || IsoDate.Match(text) is not { Success: true } match
             || !DateTimeOffset.TryParseExact(match.Groups[1].Value + (match.Groups[3].Value == "Z" ? "+00:00" : match.Groups[3].Value),
                 "yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)) return null;
         var milliseconds = match.Groups[2].Success ? int.Parse(match.Groups[2].Value.PadRight(3, '0'), CultureInfo.InvariantCulture) : 0;
@@ -143,6 +148,9 @@ public static class LogFields
     /// A non-negative whole count; booleans, strings and fractions are not counts.
     public static int? Count(JsonElement? value) =>
         value?.Number is { } number && number >= 0 && number <= int.MaxValue && Math.Truncate(number) == number ? (int)number : null;
+
+    /// `a + b` for counts, held at int.MaxValue: C# `+` wraps and LINQ's `Sum` throws, where Swift's 64-bit Int does neither.
+    public static int Add(int a, int b) => (int)Math.Min((long)a + b, int.MaxValue);
 
     /// A non-empty string.
     public static string? Text(JsonElement? value) => value?.Text is { Length: > 0 } text ? text : null;

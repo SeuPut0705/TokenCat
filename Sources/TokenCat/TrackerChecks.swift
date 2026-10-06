@@ -838,10 +838,15 @@ func runTrackerChecks() -> [String] {
         let newlyStartedFile = newSessionFolder.appendingPathComponent("new.jsonl")
         try line(codex("task_started", "2026-10-04T04:00:10Z", ["turn_id": "new-session"])).write(to: newlyStartedFile)
         discoveryNow = longNow.addingTimeInterval(5)
+        // The listing is not rewalked every few seconds: the file event lists it at once, the 60 s rescan catches a missed one.
+        let unannounced = newSessionTracker.sample().isEmpty
+        newSessionTracker.noteChanged(paths: [newlyStartedFile.path])
         let newlyDiscovered = newSessionTracker.sample().first
-        check(newlyDiscovered?.activityState == .working && newlyDiscovered?.currentTurnOutputTokens == 0
-              && newlyDiscovered?.sampledAt == discoveryNow,
-              "Default discovery must collect a new observed session within five seconds")
+        try line(codex("task_started", "2026-10-04T04:00:20Z", ["turn_id": "missed"])).write(to: newSessionFolder.appendingPathComponent("missed.jsonl"))
+        discoveryNow = longNow.addingTimeInterval(65)
+        check(unannounced && newlyDiscovered?.activityState == .working && newlyDiscovered?.currentTurnOutputTokens == 0
+              && newlyDiscovered?.sampledAt == longNow.addingTimeInterval(5) && newSessionTracker.sample().count == 2,
+              "Discovery rewalked the folders within seconds, or a new session's file event or the 60 s rescan did not list it")
 
         // Appends wake sampling through file-system events, and stop() ends callbacks.
         let watchRoot = root.appendingPathComponent("watch/.codex/sessions")
@@ -899,7 +904,7 @@ func runTrackerChecks() -> [String] {
         quietBody.append(line(claudeReply("q-msg", 10, "2026-10-04T04:00:01Z", "q-out", blocks: [["type": "tool_use", "id": "q-tool"]])))
         try quietBody.write(to: quiet)
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-600)], ofItemAtPath: quiet.path)
-        let retainTracker = TokenTracker(homeDirectory: retainHome, now: { now }, discoveryInterval: 0)
+        let retainTracker = TokenTracker(homeDirectory: retainHome, environment: [:], now: { now }, discoveryInterval: 0)
         check(retainTracker.sample().contains(where: { $0.sessionID == "quiet" }), "Retention fixture: quiet session not discovered")
         for index in 0..<33 {
             var busy = line(claudeUser("b\(index)", "2026-10-04T04:00:02Z", content: "x", extra: ["sessionId": "busy-\(index)"]))
@@ -908,6 +913,19 @@ func runTrackerChecks() -> [String] {
         }
         check(retainTracker.sample().contains(where: { $0.sessionID == "quiet" && $0.currentTurnOutputTokens == 10 }),
               "Discovery evicted a quiet session that is still in a turn")
+        // Retention has its own budget: 288 logs listed across clients (Claude subagent, omp and Gemini caps) do not crowd it out.
+        let fill: [(folder: String, count: Int, name: (Int) -> String)] = [
+            (".claude/projects/busy/fill/subagents", 64, { "agent-fill-\($0).jsonl" }),
+            (".omp/agent/sessions/fill", 32, { "fill-\($0).jsonl" }), (".omp/agent/sessions/fill/2026-10-04T04-00-00-000Z_fill", 64, { "Fill\($0).jsonl" }),
+            (".gemini/tmp/fill/chats", 32, { "session-fill-\($0).jsonl" }), (".gemini/tmp/fill/chats/fill-parent", 64, { "fill-\($0).jsonl" }),
+        ]
+        for (folder, count, name) in fill {
+            let url = retainHome.appendingPathComponent(folder)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            for index in 0..<count { try Data().write(to: url.appendingPathComponent(name(index))) }
+        }
+        check(retainTracker.sample().contains(where: { $0.sessionID == "quiet" && $0.currentTurnOutputTokens == 10 }),
+              "Discovery listing 256+ logs across clients evicted a quiet session that is still in a turn")
 
         // A record stamped two hours ahead (a briefly wrong clock) must not freeze the session: the next turn still counts.
         let futureFolder = root.appendingPathComponent("future-record/.claude/projects/future")
@@ -1023,7 +1041,8 @@ func runTrackerChecks() -> [String] {
         }
         let burst = TokenTracker(homeDirectory: root.appendingPathComponent("burst"), now: { now })
         check(burst.sample().count == 35, "Cold discovery dropped subagent logs from the last hour past the newest 32, or kept older ones")
-        // A write to a log the caps left out waits for the periodic rescan; only a log discovery has not seen reruns it.
+        // A write to a log the caps left out opens it without rerunning discovery (the silent new log stays unseen);
+        // only a log discovery has not seen reruns it.
         let unseen = burstFolder.appendingPathComponent("agent-burst-new.jsonl")
         try line(assistant("burst-new", 5, "2026-10-04T04:00:01Z", "burst-new")).write(to: unseen)
         try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-30)], ofItemAtPath: unseen.path)
@@ -1033,8 +1052,15 @@ func runTrackerChecks() -> [String] {
         burst.noteChanged(paths: [left ?? ""])
         let capped = burst.sample().count
         burst.noteChanged(paths: [unseen.path])
-        check(left != nil && capped == 35 && burst.sample().count == 36,
-              "A write to a log outside the discovery caps reran discovery, or a new log did not")
+        check(left != nil && capped == 36 && burst.sample().count == 37,
+              "A write to a log outside the discovery caps reran discovery or was not opened, or a new log did not rerun it")
+        let wakes = TokenTracker(homeDirectory: root.appendingPathComponent("burst"), environment: [:])
+        let openCodeData = root.appendingPathComponent("burst/.local/share/opencode")
+        check(wakes.wakesSampling(left ?? "") && wakes.wakesSampling(openCodeData.appendingPathComponent("opencode.db-wal").path)
+              && !wakes.wakesSampling(openCodeData.appendingPathComponent("snapshot/objects/ab").path)
+              && !wakes.wakesSampling(openCodeData.appendingPathComponent("log/opencode.log").path)
+              && !wakes.wakesSampling(burstFolder.appendingPathComponent("journal.jsonl").path),
+              "File events: a non-log file under a watched root woke sampling, or a log or OpenCode WAL write did not")
         check(burst.isLog(unseen.path) && burst.isLog(left ?? "") && !burst.isLog(burstFolder.appendingPathComponent("journal.jsonl").path)
               && !burst.isLog(root.appendingPathComponent("elsewhere/agent-x.jsonl").path),
               "A changed path was matched to a client by its extension alone: a Claude subagent journal or a log outside every root counted")
@@ -1120,6 +1146,43 @@ func runTrackerChecks() -> [String] {
               && !tracker.isLog(gemini.appendingPathComponent(".project_root").path)
               && !tracker.isLog(gemini.appendingPathComponent("chats/notes.jsonl").path),
               "Gemini: a chat log was not recognised, or a side file was")
+        // Records the client writes on its own: the session-context turn at start, rollbacks and compression.
+        let geminiChats = gemini.appendingPathComponent("chats")
+        try append(geminiChats.appendingPathComponent("session-env.jsonl"), [["sessionId": "gem-env", "projectHash": "h", "kind": "main"],
+            // deriveStableId(["environment-context"]): sha256 hex, first 32 characters.
+            ["id": "d04923d38bb0f6017037e74183378ef4", "timestamp": at(2_100), "type": "user", "content": [["text": "<session_context>"]]]])
+        try append(geminiChats.appendingPathComponent("session-rewind.jsonl"), [["sessionId": "gem-rw", "projectHash": "h", "kind": "main"],
+            ["id": "r1", "timestamp": at(2_100), "type": "user", "content": [["text": "fixture"]]],
+            // 9e18 + 9e18 trapped Swift's Int sum in the thoughts test; out-of-range counts are now dropped like Windows does.
+            ["id": "r2", "timestamp": at(2_101), "type": "gemini", "content": "", "tokens": ["input": 9e18, "output": 9e18, "thoughts": 1, "total": 1]],
+            ["$rewindTo": "r1"]])
+        try append(geminiChats.appendingPathComponent("session-patch.jsonl"), [["sessionId": "gem-pt", "projectHash": "h", "kind": "main"],
+            ["id": "p1", "timestamp": at(2_100), "type": "user", "content": [["text": "fixture"]]],
+            ["id": "p2", "timestamp": at(2_101), "type": "gemini", "content": ""],
+            ["$patch": ["removeIds": ["p1", "p2"]]]])
+        let compressed = geminiChats.appendingPathComponent("session-compress.jsonl")
+        try append(compressed, [["sessionId": "gem-cp", "projectHash": "h", "kind": "main"],
+            ["id": "c1", "timestamp": at(2_090), "type": "user", "content": [["text": "fixture"]]],
+            ["id": "c2", "timestamp": at(2_091), "type": "gemini", "content": "", "tokens": ["input": 10, "output": 20, "total": 30]],
+            ["id": "c3", "timestamp": at(2_095), "type": "user", "content": [["text": "summary"]]],
+            ["id": "c4", "timestamp": at(2_095), "type": "gemini", "content": [["text": "Got it."]]],
+            ["$patch": ["removeIds": ["c1", "c2"], "orderIds": ["c3", "c4"]]]])
+        // The resumed legacy snapshot is migrated into its .jsonl twin; the retained snapshot reader must step aside.
+        try append(geminiChats.appendingPathComponent("session-old.jsonl"), [["sessionId": "gem-old", "projectHash": "h"]])
+        now = start.addingTimeInterval(2_102)
+        let syncRows = tracker.sample().filter { $0.source == .gemini }
+        func syncRow(_ name: String) -> TokenReading? { syncRows.first { $0.id.hasSuffix(name) } }
+        check(syncRow("session-env.jsonl").map { !$0.active && $0.activityState == .idle } ?? true,
+              "Gemini: the session-context record a start writes opened a phantom working turn")
+        check(syncRow("session-rewind.jsonl")?.activityState == .interrupted && syncRow("session-rewind.jsonl")?.active == false
+              && syncRow("session-patch.jsonl")?.activityState == .interrupted,
+              "Gemini: a cancelled request rolled back with $rewindTo or $patch did not read as interrupted")
+        check(syncRow("session-rewind.jsonl")?.recentOutputs.map(\.tokens) == [1],
+              "Gemini: token counts past Int32.max were accepted (Swift sums could trap)")
+        check(syncRow("session-compress.jsonl")?.active == true && syncRow("session-compress.jsonl")?.currentTurnStartedAt == start.addingTimeInterval(2_090)
+              && syncRow("session-compress.jsonl")?.currentTurnOutputTokens == 20,
+              "Gemini: mid-turn compression restarted or closed the turn")
+        check(syncRow("session-old.json") == nil, "Gemini: a migrated legacy snapshot kept its row beside the .jsonl twin")
 
         let qwen = home.appendingPathComponent(".qwen/projects/-tmp-QwenProject")
         try FileManager.default.createDirectory(at: qwen.appendingPathComponent("chats"), withIntermediateDirectories: true)

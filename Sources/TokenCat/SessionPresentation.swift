@@ -432,7 +432,7 @@ enum SessionPresentation {
 
     /// A live row's second line, one text with one separator: "Claude Code · claude-opus-5-5 · xhigh".
     static func clientLine(_ reading: TokenReading) -> String {
-        [reading.source.title, reading.model ?? loc("모델 기록 대기", "waiting for model"), effortLabel(reading)].compactMap { $0 }.joined(separator: " · ")
+        [reading.clientTitle, reading.model ?? loc("모델 기록 대기", "waiting for model"), effortLabel(reading)].compactMap { $0 }.joined(separator: " · ")
     }
 
     /// Raw client value, lowercased and never translated.
@@ -483,7 +483,7 @@ enum SessionPresentation {
     static func spokenLabel(_ reading: TokenReading, state: SessionDisplayState) -> String {
         let word = stateTitle(state, reading)
         if reading.isSubagent { return loc("하위 에이전트 \(childTitle(reading).title), \(word)", "Subagent \(childTitle(reading).title), \(word)") }
-        return "\(word), \(reading.project ?? loc("프로젝트 미확인", "Unknown project")), \(reading.source.title) \(reading.model ?? loc("모델 미확인", "unknown model"))"
+        return "\(word), \(reading.project ?? loc("프로젝트 미확인", "Unknown project")), \(reading.clientTitle) \(reading.model ?? loc("모델 미확인", "unknown model"))"
     }
 
     /// "재시도 2/10 · 4초 후" / "Retry 2/10 · in 4s"; `api` starts it "API 재시도" / "API retry".
@@ -525,7 +525,7 @@ enum SessionPresentation {
 
     static func context(_ reading: TokenReading, now: Date) -> ContextSlot? {
         guard let context = reading.context, context.usedTokens > 0 else { return nil }
-        let source = reading.source.title
+        let source = reading.clientTitle
         var help: String
         let slot: (text: String, short: String, fraction: Double?, warning: Bool, spoken: String)
         if let window = context.windowTokens, window > 0 {
@@ -672,7 +672,7 @@ enum SessionPresentation {
         let reading = newest.row.reading
         let project = reading.project ?? loc("프로젝트 미확인", "Unknown project")
         let session = [project, reading.isSubagent ? loc("하위 ", "subagent ") + childTitle(reading).title : nil,
-                       reading.source.title + (reading.model.map { " " + $0 } ?? "")].compactMap { $0 }.joined(separator: " · ")
+                       reading.clientTitle + (reading.model.map { " " + $0 } ?? "")].compactMap { $0 }.joined(separator: " · ")
         let value = Format.tps(newest.rate), age = helpAge(newest.measurement.at, now: now)
         return SpeedHeadline(value: value, kind: newest.measurement.kind?.title ?? "tok/s", project: project,
                              help: loc("\(session) · 측정 \(age)\n\(newest.measurement.details)\n가장 최근 실측 한 건이며 세션끼리 합치거나 평균내지 않습니다",
@@ -780,7 +780,7 @@ enum SessionPresentation {
     static func headerStatus(counts: SessionCounts, loading: Bool, now: Date, quietSince: Date? = nil, spoken: Bool = false) -> HeaderStatus {
         if loading {
             return HeaderStatus(sentence: loc("기록 확인 중", "Reading records"), suffix: "", glyph: nil, muted: true,
-                                help: loc("Codex·Claude Code 기록을 읽고 있습니다", "Reading Codex and Claude Code records"))
+                                help: loc("코딩 에이전트 기록을 읽고 있습니다", "Reading coding agent records"))
         }
         let tools = [ToolCategory.command, .file, .web, .agent, .mcp, .question, .other].compactMap { category -> String? in
             guard let n = counts.toolCategories[category], n > 0 else { return nil }
@@ -822,7 +822,22 @@ enum SessionPresentation {
         let quiet = (quietSince ?? counts.newestActivity).map { now.timeIntervalSince($0) >= sleepAfter } ?? true
         return HeaderStatus(sentence: loc("진행 중인 세션 없음", "No active sessions"),
                             suffix: counts.newestActivity.map { loc(" · 마지막 활동 ", " · last activity ") + helpAge($0, now: now, spoken: spoken) } ?? "",
-                            glyph: nil, head: quiet ? .sleep : .normal, help: loc("진행 중인 Codex·Claude Code 세션이 없습니다", "No active Codex or Claude Code sessions"))
+                            glyph: nil, head: quiet ? .sleep : .normal, help: loc("진행 중인 코딩 에이전트 세션이 없습니다", "No active coding agent sessions"))
+    }
+
+    /// The flow card's per-client split, widest first: "Claude Code 6.6k · Codex 1.2k · OpenCode 300", then the smallest
+    /// folding into "+N" down to the largest alone; one client is its name only (never the hero number again). The card
+    /// shows the first candidate that fits beside "지금 속도", so four or more clients never spill past it.
+    static func providerSplits(_ byProvider: [TokenSource: Int]) -> [String] {
+        let parts = TokenSource.allCases.compactMap { source -> (TokenSource, Int)? in
+            guard let value = byProvider[source], value > 0 else { return nil }
+            return (source, value)
+        }.sorted { $0.1 > $1.1 }
+        guard parts.count > 1 else { return [parts.first?.0.title ?? ""] }
+        return (1...parts.count).reversed().map { shown in
+            parts.prefix(shown).map { "\($0.0.title) \(Format.compactTokens($0.1))" }.joined(separator: " · ")
+                + (shown < parts.count ? " · +\(parts.count - shown)" : "")
+        }
     }
 
     /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record.
@@ -830,8 +845,8 @@ enum SessionPresentation {
         let base = FlowCaption(text: lastRecordCaption, help: loc("최근 5분 안에 로그에 기록된 마지막 출력입니다", "The latest output recorded in the logs within the last 5 min"))
         guard counts.liveGroups > 0 else { return base }
         if let last, now.timeIntervalSince(last) <= 30 { return base }
-        let help = loc("응답이 끝나면 토큰이 기록됩니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다",
-                       "Tokens are recorded when a response ends. Codex records at the end of a response and Claude Code at the end of a message, so tokens still being generated aren't included yet")
+        let help = loc("응답이 끝나면 토큰이 기록됩니다. 코딩 에이전트는 응답이나 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다",
+                       "Tokens are recorded when a response ends. Coding agents record at the end of a response or message, so tokens still being generated aren't included yet")
         if counts.input > 0 {
             return FlowCaption(text: counts.inputPlansOnly ? loc("계획 승인 대기 · 승인하면 계속 기록", "Plan approval · approve to resume")
                                    : loc("입력 대기 · 답변하면 계속 기록", "Waiting for input · reply to resume"),
@@ -950,8 +965,8 @@ enum SessionPresentation {
         }
         let codex = reading.source == .codex
         items.append(DetailItem(label: loc("기록 시점", "Recorded"),
-                                value: loc("\(reading.source.title)는 \(codex ? "응답" : "메시지") 완료 시 기록",
-                                           "When a \(reading.source.title) \(codex ? "response" : "message") ends")))
+                                value: loc("\(reading.clientTitle)는 \(codex ? "응답" : "메시지") 완료 시 기록",
+                                           "When a \(reading.clientTitle) \(codex ? "response" : "message") ends")))
         return items
     }
 
@@ -960,11 +975,15 @@ enum SessionPresentation {
         16 + 15 * CGFloat(detailItems(reading, state: state).count) + 0.5
     }
 
-    /// The log file the reading came from: its id is "<source>:<path relative to home>".
+    /// The log file the reading came from: its id is "<source>:<path relative to home>", and a log holding several
+    /// sessions (OpenCode's database) appends "#<session>". JSONL logs, JSON snapshots (Amp, Cline, legacy Gemini) and
+    /// databases are revealed.
     static func logFileURL(_ reading: TokenReading, home: URL) -> URL? {
         guard !isTelemetry(reading), let colon = reading.id.firstIndex(of: ":") else { return nil }
-        let path = String(reading.id[reading.id.index(after: colon)...])
-        guard path.hasSuffix(".jsonl"), !path.isEmpty else { return nil }
+        let id = reading.id[reading.id.index(after: colon)...]
+        let fragment = id.lastIndex(of: "#")
+        let path = String(id[..<(fragment ?? id.endIndex)])
+        guard !path.isEmpty, fragment != nil || [".jsonl", ".json", ".db"].contains(where: { path.hasSuffix($0) }) else { return nil }
         return path.hasPrefix("/") ? URL(fileURLWithPath: path) : home.appendingPathComponent(path)
     }
 

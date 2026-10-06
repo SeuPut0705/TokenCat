@@ -19,7 +19,7 @@ enum StatusBarLayout: String, CaseIterable, Identifiable {
     }
 }
 
-struct StatusBarMetric {
+struct StatusBarMetric: Equatable {
     var id: MetricID
     var label: String
     var value: String
@@ -294,7 +294,9 @@ final class StatusBarContentView: NSView {
     // The native status button owns mouse input, highlight, tooltip and AX.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+    /// Publishes arrive every second or more; an unchanged menu bar is not redrawn.
     func update(metrics: [StatusBarMetric], layout: StatusBarLayout, showRunner: Bool) {
+        guard metrics != self.metrics || layout != self.layout || showRunner != self.showRunner else { return }
         let previousWidth = requiredWidth
         self.metrics = metrics
         self.layout = layout

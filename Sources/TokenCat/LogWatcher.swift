@@ -1,7 +1,7 @@
 import CoreServices
 import Foundation
 
-/// Wakes token sampling as soon as Codex/Claude logs change. Only paths are delivered;
+/// Wakes token sampling as soon as a read client's log changes. Only paths are delivered;
 /// TokenTracker still reads the files. The 1 s timer remains the fallback.
 final class LogWatcher {
     private let queue = DispatchQueue(label: "dev.seuput.TokenCat.logs", qos: .utility)

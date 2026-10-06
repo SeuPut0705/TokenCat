@@ -561,8 +561,8 @@ struct FlowCard: View {
     @State private var showsHelp = false
     @Environment(\.tokenCatHighContrast) private var high
     static var help: String {
-        loc("막대 하나는 5초 동안 로그에 기록된 출력 토큰 수입니다. Codex는 응답이 끝날 때, Claude Code는 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다. 속도로 환산하지 않습니다.",
-            "Each bar is the number of output tokens recorded in the log over 5 seconds. Codex records them when a response ends and Claude Code when a message ends, so tokens still being generated aren't included yet. They're never converted into a speed.")
+        loc("막대 하나는 5초 동안 로그에 기록된 출력 토큰 수입니다. 코딩 에이전트는 응답이나 메시지가 끝날 때 기록하므로 생성 중인 토큰은 아직 포함되지 않습니다. 속도로 환산하지 않습니다.",
+            "Each bar is the number of output tokens recorded in the log over 5 seconds. Coding agents record them when a response or message ends, so tokens still being generated aren't included yet. They're never converted into a speed.")
     }
 
     private var total: Int { flow.total }
@@ -615,9 +615,9 @@ struct FlowCard: View {
             .overlay(alignment: .top) {
                 if let lowerHeight {
                     HStack(alignment: .firstTextBaseline, spacing: 0) {
-                        providerRow.fixedSize().accessibilityHidden(true)
+                        providerRow.accessibilityHidden(true)
                         Spacer(minLength: 8)
-                        if let speed { SpeedHeadlineView(headline: speed) }
+                        if let speed { SpeedHeadlineView(headline: speed).layoutPriority(1) }
                     }
                     .frame(height: lowerHeight).padding(.top, 40)
                 }
@@ -674,15 +674,13 @@ struct FlowCard: View {
         }
     }
 
-    /// Both clients: "Codex 1.2k · Claude Code 6.6k"; one client: its name only, never the hero number again.
+    /// `SessionPresentation.providerSplits`: the first candidate that fits beside the speed.
     private var providerRow: some View {
-        let parts = TokenSource.allCases.compactMap { source -> (TokenSource, Int)? in
-            guard let value = flow.byProvider[source], value > 0 else { return nil }
-            return (source, value)
+        ViewThatFits(in: .horizontal) {
+            ForEach(SessionPresentation.providerSplits(flow.byProvider), id: \.self) {
+                Text($0).font(TCFont.metaMono).toneSecondary().lineLimit(1).fixedSize()
+            }
         }
-        let text = parts.count > 1 ? parts.map { "\($0.0.title) \(Format.compactTokens($0.1))" }.joined(separator: " · ")
-            : (parts.first?.0.title ?? "")
-        return Text(text).font(TCFont.metaMono).toneSecondary().lineLimit(1)
     }
 
     private var accessibilityValue: String {
@@ -1272,16 +1270,20 @@ private struct EmptySessions: View {
             }
             .frame(width: Runner.size.width * 2, height: Runner.size.height * 2)
             .accessibilityHidden(true)
-            let names = TokenProvider.readTitles
-            Text(foldersFound ? loc("아직 \(names.korean) 세션 기록이 없습니다", "No \(names.english) sessions yet")
-                 : loc("\(names.korean) 기록 폴더를 찾지 못했습니다", "Couldn't find \(names.english) log folders"))
+            // Client-neutral title and one wrapping line of client names; the default folders (about 30 with every editor
+            // extension) live in the tooltip only, so the card stays short and VoiceOver doesn't read them.
+            Text(foldersFound ? loc("아직 코딩 에이전트 세션 기록이 없습니다", "No coding agent sessions yet")
+                 : loc("코딩 에이전트 기록 폴더를 찾지 못했습니다", "Couldn't find any coding agent log folders"))
                 .font(TCFont.bodyMedium).multilineTextAlignment(.center).padding(.top, 8)
             VStack(spacing: 2) {
                 if foldersFound {
                     Text(loc("새 세션을 시작하면 여기에 표시됩니다", "New sessions appear here when you start them"))
                     Text(Self.webNote)
                 } else {
-                    Text(TokenProvider.readRootsText(home: FileManager.default.homeDirectoryForCurrentUser)).font(TCFont.meta.monospaced())
+                    Text(TokenProvider.readSources.map(\.title).joined(separator: " · "))
+                        .multilineTextAlignment(.center).lineLimit(3).padding(.horizontal, 16)
+                        .help(TokenProvider.readRootsText(home: FileManager.default.homeDirectoryForCurrentUser)
+                            .replacingOccurrences(of: " · ", with: "\n"))
                 }
             }
             .font(TCFont.meta).toneSecondary().padding(.top, 4)
@@ -1667,7 +1669,7 @@ struct IdleSessionRow: View {
     private func names(client: Bool, id: Bool, word: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(reading.project ?? loc("프로젝트 미확인", "Unknown project")).font(TCFont.body).lineLimit(1).truncationMode(.tail).layoutPriority(2)
-            if client { Text(reading.source.title).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
+            if client { Text(reading.clientTitle).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
             if word, let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).fixedSize() }
             if id { Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
         }
@@ -1789,7 +1791,7 @@ struct MeasurementRow: View {
         .help(loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu"))
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel("\(reading.project ?? loc("모델 실측", "Model measurement")), \(reading.source.title) \(reading.model ?? loc("모델 미확인", "Unknown model"))")
+        .accessibilityLabel("\(reading.project ?? loc("모델 실측", "Model measurement")), \(reading.clientTitle) \(reading.model ?? loc("모델 미확인", "Unknown model"))")
         .accessibilityValue(speed.spoken + loc(", 측정 ", ", measured ") + Format.age(measuredAt, now: now, spoken: true))
         .rowActions(reading)
     }

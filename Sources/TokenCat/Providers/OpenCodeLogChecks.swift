@@ -124,6 +124,20 @@ func runOpenCodeLogChecks(root: URL, check: (Bool, String) -> Void) {
     check(tracker.isLog(path) && tracker.isLog(folder.appendingPathComponent("opencode-beta.db").path)
           && !tracker.isLog(folder.appendingPathComponent("other.db").path) && !tracker.isLog(path + "-wal"),
           "OpenCode: database file matching is wrong")
+    check(TokenProvider.openCodeDatabasePath(home, ["OPENCODE_DB": "custom.db"])?.path == folder.appendingPathComponent("custom.db").path
+          && TokenProvider.openCodeDatabasePath(home, ["OPENCODE_DB": ":memory:"]) == nil
+          && TokenProvider.openCodeDatabasePath(home, ["OPENCODE_DB": "/tmp/x.db"])?.path == "/tmp/x.db",
+          "OpenCode: OPENCODE_DB was not resolved like OpenCode (relative to its data folder; :memory: is no file)")
+
+    // A failed request whose error holds a large gateway page (over the 64 KB body cap) is an assistant message, not a prompt.
+    session("ses_err", directory: "/tmp/ErrProject", updated: -3)
+    message("u6", "ses_err", created: -8, updated: -8, user(-8))
+    message("e1", "ses_err", created: -6, updated: -3,
+            json(["role": "assistant", "parentID": "u6", "modelID": "fixture-model", "time": ["created": ms(-6), "completed": ms(-3)],
+                  "error": ["name": "APIError", "data": ["responseBody": String(repeating: "<html>", count: 15_000)]]]))
+    let errored = tracker.sample().first { $0.sessionID == "ses_err" }
+    check(!failed && errored?.activityState == .interrupted && errored?.active == false,
+          "OpenCode: an assistant row over 64 KB was read as the person's prompt instead of a failed request")
 
     // The bash step finishes the turn: the cached message row is replaced because its time_updated moved.
     message("a2", "ses_work", created: -9, updated: -1,

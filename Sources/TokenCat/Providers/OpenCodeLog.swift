@@ -11,10 +11,12 @@ extension TokenLogFormat {
 
 /// Reads OpenCode sessions from its database, opened read-only (OpenCode writes it in WAL mode).
 /// - Re-queried only when the database or its WAL changed, and then only sessions updated within the hour, with an open
-///   turn, or whose `time_updated` moved; message bodies are fetched again only when a row's `time_updated` changes.
+///   turn, or whose `time_updated` moved; message bodies are fetched again only when a row's `time_updated` changes. A
+///   read the database refused (busy) is never cached: that session is queried again on the next read.
 /// - Only roles, times, finish reasons, token counts, model, agent, cwd and tool names/states are kept; never text.
-/// - A message body over 64 KB is never loaded: assistant rows carry no content and stay far smaller, so it is a user
-///   message (a summary with file diffs can reach hundreds of MB).
+/// - A message body over 64 KB is never loaded whole when its first 4 KB name a user message (a summary with file diffs
+///   can reach hundreds of MB). Anything else, such as an assistant message holding a provider's error page, is loaded up
+///   to 16 MB; past that an assistant message counts as a failed request.
 /// - Turn state: an assistant message without `time.completed` is generating (a running tool shows as `tool`, the
 ///   question tool as `input`); `finish: "tool-calls"` continues the loop; another finish ends the turn (`complete`); an
 ///   error or no finish at all ends it as `interrupted`.
@@ -34,9 +36,8 @@ final class OpenCodeLog: TokenLogReader {
         return name == "opencode.db" || (name.hasPrefix("opencode-") && name.hasSuffix(".db")) || path == overridePath
     }
 
-    private static let overridePath: String? = ProcessInfo.processInfo.environment["OPENCODE_DB"].flatMap {
-        $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath).standardizedFileURL.path
-    }
+    private static let overridePath = TokenProvider.openCodeDatabasePath(FileManager.default.homeDirectoryForCurrentUser,
+                                                                         ProcessInfo.processInfo.environment)?.path
 
     // MARK: Reading
 
@@ -55,6 +56,7 @@ final class OpenCodeLog: TokenLogReader {
         guard database.query("SELECT \(columns) WHERE time_archived IS NULL \(order)", row: collect)
                 || database.query("SELECT \(columns) \(order)", row: collect) else { return }
         var kept: [String: Session] = [:]
+        var complete = true
         for (offset, row) in listed.enumerated() {
             let existing = sessions[row.id]
             guard offset < 32 || now.timeIntervalSince(row.updated) <= 3_600 || existing?.summary.open == true else { continue }
@@ -65,13 +67,15 @@ final class OpenCodeLog: TokenLogReader {
             session.agent = row.agent
             session.sessionModel = row.model.flatMap(Self.modelID)
             session.updated = row.updated
-            if moved || now.timeIntervalSince(row.updated) <= 3_600 || session.summary.open {
-                refresh(session, database)
+            if moved || now.timeIntervalSince(row.updated) <= 3_600 || session.summary.open, !refresh(session, database) {
+                // Keeps what was read before; `distantPast` makes the next read refresh it again.
+                session.updated = .distantPast
+                complete = false
             }
             kept[row.id] = session
         }
         sessions = kept
-        signature = current
+        signature = complete ? current : nil
     }
 
     /// Database and WAL identity, size and modification time; any write changes one of them.
@@ -87,22 +91,21 @@ final class OpenCodeLog: TokenLogReader {
         return result
     }
 
-    private func refresh(_ session: Session, _ database: OpenCodeDatabase) {
+    /// False when the database refused a read; the session then keeps its previous messages.
+    private func refresh(_ session: Session, _ database: OpenCodeDatabase) -> Bool {
         var index: [(id: String, created: Date, updated: Date)] = []
         guard database.query("SELECT id, time_created, time_updated FROM message WHERE session_id = ? ORDER BY time_created DESC, id DESC LIMIT 200",
                              [session.id], row: { row in
             if let id = row.text(0), let created = row.date(1), let updated = row.date(2) { index.append((id, created, updated)) }
-        }) else { return }
+        }) else { return false }
         var messages: [Message] = []
         for entry in index {
             if let cached = session.cache[entry.id], cached.updated == entry.updated {
                 messages.append(cached)
                 continue
             }
-            var body: String?
-            _ = database.query("SELECT CASE WHEN \(database.sizeOfData) <= 65536 THEN data END FROM message WHERE id = ?",
-                               [entry.id], row: { body = $0.text(0) })
-            messages.append(Message(id: entry.id, created: entry.created, updated: entry.updated, body: body))
+            guard let message = message(entry, database) else { return false }
+            messages.append(message)
         }
         session.messages = messages
         session.cache = Dictionary(messages.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -117,6 +120,29 @@ final class OpenCodeLog: TokenLogReader {
             session.speed = nil
         }
         session.summary = Summary(session)
+        return true
+    }
+
+    /// One message's metadata; nil when the database refused the read or the row changed under it.
+    private func message(_ entry: (id: String, created: Date, updated: Date), _ database: OpenCodeDatabase) -> Message? {
+        var body: String?
+        var rowid: Int64?
+        guard database.query("SELECT CASE WHEN \(database.sizeOfData) <= 65536 THEN data END, rowid FROM message WHERE id = ?",
+                             [entry.id], row: { body = $0.text(0); rowid = $0.integer(1) }), let rowid else { return nil }
+        if let body { return Message(id: entry.id, created: entry.created, updated: entry.updated, body: body) }
+        guard let head = database.head(ofMessage: rowid) else { return nil }
+        let role = Message.role(inHead: head)
+        if role == .user { return Message(id: entry.id, created: entry.created, updated: entry.updated, role: .user) }
+        var full: String?
+        guard database.query("SELECT CASE WHEN \(database.sizeOfData) <= 16777216 THEN data END FROM message WHERE id = ?",
+                             [entry.id], row: { full = $0.text(0) }) else { return nil }
+        if let full { return Message(id: entry.id, created: entry.created, updated: entry.updated, body: full) }
+        var message = Message(id: entry.id, created: entry.created, updated: entry.updated, role: role)
+        if role == .assistant {
+            message.failed = true
+            message.completed = entry.updated
+        }
+        return message
     }
 
     private func parts(of message: String, _ database: OpenCodeDatabase) -> [Part]? {
@@ -260,12 +286,18 @@ private struct Message {
     /// Input + cache read + cache write of this request.
     var context = 0
 
-    init(id: String, created: Date, updated: Date, body: String?) {
+    /// A message known only by its role (a body too large to load).
+    init(id: String, created: Date, updated: Date, role: Role) {
         self.id = id
         self.created = created
         self.updated = updated
-        // Only a user message can exceed the body cap (see OpenCodeLog).
-        guard let body else { role = .user; return }
+        self.role = role
+    }
+
+    init(id: String, created: Date, updated: Date, body: String) {
+        self.id = id
+        self.created = created
+        self.updated = updated
         guard let object = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String: Any] else { return }
         switch object["role"] as? String {
         case "user": role = .user
@@ -285,6 +317,17 @@ private struct Message {
             let cache = tokens["cache"] as? [String: Any]
             context = OpenCodeLog.count(tokens["input"]) + OpenCodeLog.count(cache?["read"]) + OpenCodeLog.count(cache?["write"])
         }
+    }
+
+    /// The role from the first bytes of a message body. OpenCode writes `role` among the first keys, and any `"role"` in
+    /// text would be escaped (`\"role\"`), so the first unescaped one is the message's own.
+    static func role(inHead head: Data) -> Role {
+        let text = String(decoding: head, as: UTF8.self)
+        guard let key = text.range(of: "\"role\"") else { return .other }
+        let rest = text[key.upperBound...].drop { $0 == " " || $0 == ":" }
+        if rest.hasPrefix("\"user\"") { return .user }
+        if rest.hasPrefix("\"assistant\"") { return .assistant }
+        return .other
     }
 }
 
@@ -431,6 +474,21 @@ private final class OpenCodeDatabase {
             let value = sqlite3_column_int64(statement, column)
             return value > 0 ? Date(timeIntervalSince1970: Double(value) / 1_000) : nil
         }
+        func integer(_ column: Int32) -> Int64? {
+            sqlite3_column_type(statement, column) == SQLITE_INTEGER ? sqlite3_column_int64(statement, column) : nil
+        }
+    }
+
+    /// The first `count` bytes of a message's `data`, read in place (incremental blob I/O), so a body of hundreds of MB is
+    /// never loaded; nil when the row cannot be opened.
+    func head(ofMessage rowid: Int64, count: Int32 = 4_096) -> Data? {
+        var blob: OpaquePointer?
+        defer { sqlite3_blob_close(blob) }
+        guard sqlite3_blob_open(handle, "main", "message", "data", rowid, 0, &blob) == SQLITE_OK, let opened = blob else { return nil }
+        let length = min(count, sqlite3_blob_bytes(opened))
+        var data = Data(count: Int(length))
+        let status = data.withUnsafeMutableBytes { sqlite3_blob_read(opened, $0.baseAddress, length, 0) }
+        return status == SQLITE_OK ? data : nil
     }
 
     init?(path: String) {

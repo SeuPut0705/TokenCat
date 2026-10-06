@@ -112,6 +112,30 @@ static class OpenCodeLogChecks
         check(tracker.IsLog(path) && tracker.IsLog(Path.Combine(folder, "opencode-beta.db"))
               && !tracker.IsLog(Path.Combine(folder, "other.db")) && !tracker.IsLog(path + "-wal"),
               "OpenCode: database file matching is wrong");
+        check(TokenProvider.OpenCodeDatabasePath(home, key => key == "OPENCODE_DB" ? "custom.db" : null) == Path.GetFullPath(Path.Combine(folder, "custom.db"))
+              && TokenProvider.OpenCodeDatabasePath(home, key => key == "OPENCODE_DB" ? ":memory:" : null) is null,
+              "OpenCode: OPENCODE_DB was not resolved like OpenCode (relative to its data folder; :memory: is no file)");
+
+        // A failed request whose error holds a large gateway page (over the 64 KB body cap) is an assistant message, not a prompt.
+        Session("ses_err", "/tmp/ErrProject", -3);
+        Message("u6", "ses_err", -8, -8, User(-8));
+        Message("e1", "ses_err", -6, -3, Json(new
+        {
+            error = new { name = "APIError", data = new { responseBody = string.Concat(Enumerable.Repeat("<html>", 15_000)) } },
+            role = "assistant", parentID = "u6", modelID = "fixture-model", time = new { created = Ms(-6), completed = Ms(-3) },
+        }));
+        check(!failed && tracker.Sample().FirstOrDefault(r => r.SessionID == "ses_err") is { ActivityState: TokenActivityState.Interrupted, Active: false },
+              "OpenCode: an assistant row over 64 KB was read as the person's prompt instead of a failed request");
+
+        // Two steps at int.MaxValue each: LINQ's checked Sum threw on every sample and froze every client's tokens.
+        Session("ses_huge", "/tmp/HugeProject", -3);
+        Message("u7", "ses_huge", -8, -8, User(-8));
+        Message("h1", "ses_huge", -7, -6, Assistant("u7", -7, -6, "tool-calls", int.MaxValue, cwd: "/tmp/HugeProject"));
+        Message("h2", "ses_huge", -5, -3, Assistant("u7", -5, -3, "stop", int.MaxValue, cwd: "/tmp/HugeProject"));
+        TokenReading? huge = null;
+        try { huge = tracker.Sample().FirstOrDefault(r => r.SessionID == "ses_huge"); } catch (OverflowException) { }
+        check(huge is { LastOutputTokens: int.MaxValue },
+              "OpenCode: a turn total past int.MaxValue threw instead of holding at the maximum");
 
         // The bash step finishes the turn: the cached message row is replaced because its time_updated moved.
         Message("a2", "ses_work", -9, -1, Assistant("u1", -9, -1, "stop", 80, cwd: "/tmp/WorkProject"));

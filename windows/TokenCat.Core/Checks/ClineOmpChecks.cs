@@ -104,6 +104,42 @@ public static class ClineOmpChecks
             now = Start.AddSeconds(7_202);
             row = tracker.Sample().FirstOrDefault(r => !r.IsSubagent);
             check(row is { Active: false, ActivityState: TokenActivityState.Interrupted }, "omp: an aborted reply did not end the turn as interrupted");
+
+            // A /fork names its parent in `parentSession` but is a top-level conversation; Pi's own folder is labelled Pi.
+            Append(Path.Combine(project, "2026-10-04T06-00-00-000Z_omp-fork.jsonl"),
+                new JsonObject { ["type"] = "session", ["version"] = 3, ["id"] = "omp-fork", ["timestamp"] = Iso(7_203), ["cwd"] = "/tmp/Fixture/OmpProject", ["parentSession"] = main },
+                User(7_203), Assistant(7_205, 4, "stop"));
+            Append(Path.Combine(home, ".pi", "agent", "sessions", "--tmp-Fixture-PiProject--", "2026-10-04T06-00-00-000Z_pi-main.jsonl"),
+                new JsonObject { ["type"] = "session", ["version"] = 3, ["id"] = "pi-main", ["timestamp"] = Iso(7_203), ["cwd"] = "/tmp/Fixture/PiProject" },
+                User(7_203), Assistant(7_205, 4, "stop"));
+            now = Start.AddSeconds(7_206);
+            var forked = tracker.Sample();
+            var forkRow = forked.FirstOrDefault(r => r.SessionID == "omp-fork");
+            check(forkRow is { IsSubagent: false, AgentID: null, ParentSessionID: null, ActivityState: TokenActivityState.Complete },
+                  "omp: a /fork session with parentSession was folded under its parent as a subagent");
+            check(forked.FirstOrDefault(r => r.SessionID == "pi-main")?.ClientTitle == "Pi" && forkRow?.ClientTitle == "omp",
+                  "omp: a Pi session was not labelled Pi, or an omp session was");
+
+            // omp's own key order (type, ids, timestamp, then the body): tool results and side records are read from their head
+            // without decoding the body; a result whose call id follows its content, or an escaped body, still counts.
+            var raw = Path.Combine(project, "2026-10-04T07-00-00-000Z_omp-raw.jsonl");
+            void RawLines(params string[] lines) => File.AppendAllText(raw, string.Concat(lines.Select(line => line + "\n")));
+            RawLines(
+                $$$"""{"type":"session","version":3,"id":"omp-raw","timestamp":"{{{Iso(8_000)}}}","cwd":"/tmp/Fixture/OmpProject"}""",
+                $$$"""{"type":"message","id":"r1","parentId":null,"timestamp":"{{{Iso(8_001)}}}","message":{"role":"user","content":[{"type":"text","text":"PRIVATE_PROMPT"}],"timestamp":{{{Ms(8_001)}}}}}""",
+                $$$"""{"type":"message","id":"r2","parentId":"r1","timestamp":"{{{Iso(8_003)}}}","message":{"role":"assistant","content":[{"type":"toolCall","id":"raw-1","name":"bash","arguments":{}},{"type":"toolCall","id":"raw-2","name":"read","arguments":{}}],"model":"omp-model","usage":{"input":1,"output":5},"stopReason":"toolUse","timestamp":{{{Ms(8_001)}}}}}""",
+                $$$"""{"type":"message","id":"r3","parentId":"r2","timestamp":"{{{Iso(8_004)}}}","message":{"role":"toolResult","toolCallId":"raw-1","toolName":"bash","content":[{"type":"text","text":"PRIVATE_OUT \"timestamp\":\"2030-01-01T00:00:00Z\"}"}],"timestamp":{{{Ms(8_004)}}}}}""",
+                $$$"""{"type":"custom","customType":"tool_execution_start","data":{"toolCallId":"raw-2","toolName":"read"},"id":"r4","parentId":"r3","timestamp":"{{{Iso(8_005)}}}"}""");
+            now = Start.AddSeconds(8_031);
+            var rawTool = tracker.Sample().FirstOrDefault(r => r.SessionID == "omp-raw");
+            RawLines(
+                $$$"""{"type":"message","id":"r5","parentId":"r4","timestamp":"{{{Iso(8_006)}}}","message":{"content":[{"type":"text","text":"PRIVATE_OUT"}],"role":"toolResult","toolCallId":"raw-2","toolName":"read"}}""",
+                $$$"""{"type":"custom_message","customType":"async-result","content":"PRIVATE \"notice\"\n","id":"r6","parentId":"r5","timestamp":"{{{Iso(8_030)}}}"}""");
+            var rawRow = tracker.Sample().FirstOrDefault(r => r.SessionID == "omp-raw");
+            check(rawTool is { ActivityState: TokenActivityState.Tool, ToolName: "read" } && rawTool.LastLogAt == Start.AddSeconds(8_005)
+                  && rawRow is { ActivityState: TokenActivityState.Working, ToolName: null, CurrentTurnOutputTokens: 5 }
+                  && rawRow.LastActivity == Start.AddSeconds(8_006) && rawRow.LastLogAt == Start.AddSeconds(8_030),
+                  "omp: a tool result or side record read from its head lost its call, time or turn, or one with its call id late was dropped");
         }
         catch (Exception error)
         {
@@ -169,6 +205,29 @@ public static class ClineOmpChecks
             check(roo is { Active: true, ActivityState: TokenActivityState.Input, ToolCategory: ToolCategory.Question, Model: "roo-model",
                       Project: "RooProject", CurrentTurnOutputTokens: 20 },
                   "Roo Code: a two-hour-old question was not live input, or its model and workspace were not read");
+
+            // Roo Code orchestration: a subtask ends with `finishTask`, its parent waits on the approved `newTask`.
+            var rooTasks = Path.GetDirectoryName(rooTask)!;
+            JsonNode ToolAsk(double seconds, string tool) =>
+                new JsonObject { ["ts"] = Ms(seconds), ["type"] = "ask", ["ask"] = "tool", ["text"] = new JsonObject { ["tool"] = tool, ["content"] = "PRIVATE_TEXT" }.ToJsonString() };
+            Write(Path.Combine(rooTasks, "roo-sub", "ui_messages.json"),
+                new JsonArray(Say(7_190, "text"), Request(7_191, 15, model: null), Say(7_192, "completion_result"), ToolAsk(7_193, "finishTask")));
+            Write(Path.Combine(rooTasks, "roo-parent", "ui_messages.json"),
+                new JsonArray(Say(7_180, "text"), Request(7_181, 5, model: null), ToolAsk(7_182, "newTask")));
+            var orchestrated = tracker.Sample();
+            check(orchestrated.FirstOrDefault(r => r.SessionID == "roo-sub") is { Active: false, ActivityState: TokenActivityState.Complete, LastOutputTokens: 15, ClientTitle: "Roo Code" },
+                  "Roo Code: a subtask that handed its result back (finishTask) still waited for input, or was not labelled Roo Code");
+            check(orchestrated.FirstOrDefault(r => r.SessionID == "roo-parent") is { Active: true, ActivityState: TokenActivityState.Tool, ToolCategory: ToolCategory.Agent },
+                  "Roo Code: a parent waiting on its subtask (newTask) read as a question to the person");
+
+            // A pasted screenshot ahead of the environment details pushes the working directory past 256 KB.
+            var bigTask = Path.Combine(Path.GetDirectoryName(clineTask)!, "1791100000001");
+            Directory.CreateDirectory(bigTask);
+            File.WriteAllText(Path.Combine(bigTask, "api_conversation_history.json"),
+                """[{"role":"user","content":[{"type":"image","source":{"data":""" + "\"" + new string('A', 400_000) + "\"" + """}},{"type":"text","text":"<environment_details>\n# Current Working Directory (/tmp/Fixture/BigProject) Files\n</environment_details>"}]}]""");
+            Write(Path.Combine(bigTask, "ui_messages.json"), new JsonArray(Say(7_190, "text"), Request(7_191, 10)));
+            check(tracker.Sample().FirstOrDefault(r => r.SessionID == "1791100000001")?.Project == "BigProject",
+                  "Cline: a working directory after a large pasted image was not found");
 
             var manifest = Path.Combine(session, "cli-1.json");
             void WriteManifest(string status) => Write(manifest, new JsonObject

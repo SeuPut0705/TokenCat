@@ -174,6 +174,9 @@ public sealed record TokenReading
     public string? Effort { get; init; }
     /// Subagent role or nickname (Codex agent_nickname/role, Claude agentType).
     public string? AgentRole { get; init; }
+    /// The product that wrote the log when one source covers several ("Roo Code", "Kilo Code", "Pi"); null means `Source`.
+    public string? ClientName { get; init; }
+    [JsonIgnore] public string ClientTitle => ClientName ?? Source.Title;
     public TokenSpeedMeasurement? SpeedMeasurement { get; init; }
     public int? LastOutputTokens { get; init; }
     public bool Active { get; init; }

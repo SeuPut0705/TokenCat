@@ -264,7 +264,7 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
 ## 3. Scope — Windows v1
 
 ### 3.1 Parity (ported 1:1, same rules and texts)
-* Codex and Claude Code log tracking: discovery caps (32 recent per source, subagents capped separately, 128 retained), bounded tails,
+* Codex and Claude Code log tracking: discovery caps (32 recent per source, subagents capped separately; retention has its own budget, `TokenTracker.RetentionLimit` = 256, open turns first, then the most recently active, not counted against listed logs), bounded tails,
   oversized-line handling, Claude open-turn start, Codex metadata restore. Per-session state (working/tool/input/retry/log wait/idle/stale/
   unfinished), turns, output tokens, context, subagent trees (Claude `subagents/agent-*`, Codex forked threads), Codex rate limits,
   5-minute output flow. Same JSONL gives the same `TokenReading` (§6.3 parity test).
@@ -769,12 +769,14 @@ Owns `Core/Tracking/*` (incl. `TokenDiagnostics.cs` behind `--diagnose-tokens`),
 API:
 ```csharp
 public sealed class TokenTracker {
-  public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 5,
+  public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 60,
       Func<string, string?>? environment = null, IReadOnlyList<TokenProvider>? providers = null);
   public IReadOnlyList<string> WatchedDirectories { get; }   // roots of providers with a format
   public IReadOnlySet<TokenSource> DetectedSources();        // providers with an existing root, read or not
   public bool IsLog(string path);
+  public bool WakesSampling(string path);   // a log or a database log's -wal
   public void NoteChanged(IEnumerable<string> paths);
+  public void Rediscover();   // a client folder appeared
   public List<TokenReading> Sample(); }
 public sealed record TokenProvider(TokenSource Source, Func<string, Func<string, string?>, IReadOnlyList<string>> Roots, TokenLogFormat? Format);
 public sealed record TokenLogFormat(Func<IReadOnlyList<string>, TokenDiscovery, IEnumerable<string>> Files, Func<string, bool> IsLog,

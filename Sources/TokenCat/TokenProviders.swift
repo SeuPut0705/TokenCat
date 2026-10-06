@@ -16,7 +16,7 @@ struct TokenProvider {
         TokenProvider(source: .codex, roots: { home, _ in [home.appendingPathComponent(".codex/sessions")] }, format: .codex),
         TokenProvider(source: .claude, roots: { home, _ in [home.appendingPathComponent(".claude/projects")] }, format: .claude),
         TokenProvider(source: .opencode, roots: { home, env in
-            [env.path("OPENCODE_DB")?.deletingLastPathComponent(), dataHome(home, env).appendingPathComponent("opencode")].compactMap { $0 }
+            [openCodeDatabasePath(home, env)?.deletingLastPathComponent(), dataHome(home, env).appendingPathComponent("opencode")].compactMap { $0 }
         }, format: .opencode),
         TokenProvider(source: .gemini, roots: { home, env in
             [(env.path("GEMINI_CLI_HOME") ?? home).appendingPathComponent(".gemini/tmp")]
@@ -39,8 +39,10 @@ struct TokenProvider {
                 vscodeExtensions.map { support.appendingPathComponent("\(editor)/User/globalStorage/\($0)/tasks") }
             } + [home.appendingPathComponent(".cline/data/sessions")]
         }, format: .cline),
-        TokenProvider(source: .omp, roots: { home, _ in
-            [home.appendingPathComponent(".omp/agent/sessions"), home.appendingPathComponent(".pi/agent/sessions")]
+        // omp and Pi both move their agent folder to $PI_CODING_AGENT_DIR; sessions live in its `sessions`.
+        TokenProvider(source: .omp, roots: { home, env in
+            [env.path("PI_CODING_AGENT_DIR"), home.appendingPathComponent(".omp/agent"), home.appendingPathComponent(".pi/agent")]
+                .compactMap { $0?.appendingPathComponent("sessions") }
         }, format: .omp),
         TokenProvider(source: .droid, roots: { home, _ in [home.appendingPathComponent(".factory/sessions")] }, format: .droid),
     ]
@@ -54,6 +56,13 @@ struct TokenProvider {
         environment.path("XDG_DATA_HOME") ?? home.appendingPathComponent(".local/share")
     }
 
+    /// `OPENCODE_DB` as OpenCode resolves it: an absolute path, else a path inside its data folder; `:memory:` is no file.
+    static func openCodeDatabasePath(_ home: URL, _ environment: [String: String]) -> URL? {
+        guard let value = environment["OPENCODE_DB"], !value.isEmpty, value != ":memory:" else { return nil }
+        return value.hasPrefix("/") ? URL(fileURLWithPath: value).standardizedFileURL
+            : dataHome(home, environment).appendingPathComponent("opencode").appendingPathComponent(value).standardizedFileURL
+    }
+
     func existingRoots(home: URL, environment: [String: String]) -> [URL] {
         var seen = Set<String>()
         return roots(home, environment).filter { seen.insert($0.path).inserted && FileManager.default.fileExists(atPath: $0.path) }
@@ -61,13 +70,6 @@ struct TokenProvider {
 
     /// Clients whose logs TokenCat reads, in registry order.
     static var readSources: [TokenSource] { all.filter { $0.format != nil }.map(\.source) }
-
-    /// Their titles for the empty state: "Codex·Claude Code" and "Codex or Claude Code" ("A, B or C" for more).
-    static var readTitles: (korean: String, english: String) {
-        let titles = readSources.map(\.title)
-        let english = titles.count > 1 ? titles.dropLast().joined(separator: ", ") + " or " + titles.last! : titles.joined()
-        return (titles.joined(separator: "·"), english)
-    }
 
     /// Their default roots with "~" for home: "~/.codex/sessions · ~/.claude/projects".
     static func readRootsText(home: URL) -> String {
@@ -80,7 +82,7 @@ struct TokenProvider {
 /// How a client's logs are listed and read. Every closure runs on the tracker's queue.
 struct TokenLogFormat {
     /// Logs worth tracking under the client's existing `roots`. Rank and cap them with `discovery.recent`, so every listed
-    /// path is also `known` (a write to a log the caps left out then waits for the 5 s rescan instead of forcing one).
+    /// path is also `known` (a write to a log the caps left out then opens it directly instead of forcing a rescan).
     let files: (_ roots: [URL], _ discovery: TokenDiscovery) -> [URL]
     /// Whether a path from a file event is a log `files` would list; an untracked one triggers discovery on the next sample.
     let isLog: (_ path: String) -> Bool
@@ -112,6 +114,12 @@ final class TokenDiscovery {
         (try? FileManager.default.contentsOfDirectory(at: directory,
             includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey],
             options: [.skipsHiddenFiles])) ?? []
+    }
+
+    /// Whether a `children` entry is a folder (its type was fetched with the listing). Folder names may hold dots
+    /// (a Droid slug of `~/my.project`), so the extension tells nothing.
+    func isFolder(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == false
     }
 
     /// The 32 newest, plus up to 32 more modified since `cutoff` (the retention hour), so a cold start opens them too.

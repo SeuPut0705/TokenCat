@@ -16,7 +16,7 @@ extension TokenLogFormat {
         for root in roots {
             for entry in discovery.children(root) {
                 if isThread(entry) { found.append(entry) }
-                else if entry.pathExtension.isEmpty { found.append(contentsOf: discovery.children(entry).filter(isThread)) }
+                else if discovery.isFolder(entry) { found.append(contentsOf: discovery.children(entry).filter(isThread)) }
             }
         }
         return discovery.recent(found)

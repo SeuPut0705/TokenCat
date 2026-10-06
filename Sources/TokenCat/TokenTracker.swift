@@ -12,13 +12,15 @@ final class TokenTracker {
     private let discoveryInterval: TimeInterval
     private var lastDiscovery: Date?
     private var files: [String: (source: TokenSource, reader: TokenLogReader)] = [:]
-    /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out ranks again at the
-    /// periodic rescan instead of rerunning discovery on each file event.
+    /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out opens its reader
+    /// directly (it is now the newest), instead of rerunning discovery on each file event.
     private var known = Set<String>()
     private let manager = FileManager.default
     /// Each read client's root prefixes as given, under the real home and with the root's symlinks resolved: FSEvents and
     /// listings name real paths (/private/var for a temporary home, a symlinked ~/.codex by its target).
-    private let logRoots: [(prefixes: [String], format: TokenLogFormat)]
+    private let logRoots: [(prefixes: [String], source: TokenSource, format: TokenLogFormat)]
+    /// Readers kept past the discovery caps by `isRecent`, most recently active first.
+    static let retentionLimit = 256
     static let recentOutputWindow: TimeInterval = 600
 
     init(homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
@@ -26,7 +28,7 @@ final class TokenTracker {
          providers: [TokenProvider] = TokenProvider.all,
          now: @escaping () -> Date = Date.init,
          initialTailBytes: Int = 1_048_576,
-         discoveryInterval: TimeInterval = 5) {
+         discoveryInterval: TimeInterval = 60) {
         home = homeDirectory
         self.environment = environment
         self.providers = providers
@@ -40,7 +42,7 @@ final class TokenTracker {
             provider.format.map { format in
                 let given = provider.roots(homeDirectory, environment).map(\.path)
                 let paths = given + (realHome.map { provider.roots($0, environment).map(\.path) } ?? []) + given.compactMap(real)
-                return (Array(Set(paths.map { $0 + "/" })), format)
+                return (Array(Set(paths.map { $0 + "/" })), provider.source, format)
             }
         }
         clock = now
@@ -60,15 +62,29 @@ final class TokenTracker {
 
     /// Whether a changed path is a log of the client whose root holds it (a Claude subagent journal is not a Codex log).
     /// Uses only immutable state, so any thread may ask.
-    func isLog(_ path: String) -> Bool {
-        logRoots.contains { root in root.prefixes.contains(where: path.hasPrefix) && root.format.isLog(path) }
+    func isLog(_ path: String) -> Bool { logRoot(of: path) != nil }
+
+    /// Whether a file event should wake a sample: a log, or the `-wal` journal of a database log (OpenCode writes its
+    /// changes there until a checkpoint). Other files under the watched roots wait for the 1 s timer. Any thread may ask.
+    func wakesSampling(_ path: String) -> Bool {
+        isLog(path) || (path.hasSuffix("-wal") && isLog(String(path.dropLast(4))))
     }
 
-    /// File-system events name changed paths. A log that is not tracked yet triggers
-    /// discovery on the next sample instead of waiting for the periodic rescan.
-    func noteChanged(paths: [String]) {
-        if paths.contains(where: { files[$0] == nil && !known.contains($0) && isLog($0) }) { lastDiscovery = nil }
+    private func logRoot(of path: String) -> (prefixes: [String], source: TokenSource, format: TokenLogFormat)? {
+        logRoots.first { root in root.prefixes.contains(where: path.hasPrefix) && root.format.isLog(path) }
     }
+
+    /// File-system events name changed paths. A log discovery has not seen triggers discovery on the next sample; one it
+    /// listed but the caps left out is opened now, so the periodic rescan only catches what events missed.
+    func noteChanged(paths: [String]) {
+        for path in paths where files[path] == nil {
+            guard let root = logRoot(of: path) else { continue }
+            if known.contains(path) { files[path] = (root.source, root.format.open(URL(fileURLWithPath: path))) } else { lastDiscovery = nil }
+        }
+    }
+
+    /// Runs discovery on the next sample: a client folder appeared, and logs written before it was watched sent no event.
+    func rediscover() { lastDiscovery = nil }
 
     func sample() -> [TokenReading] {
         let now = clock()
@@ -104,13 +120,18 @@ final class TokenTracker {
             }
         }
         known = discovery.known
-        // A quiet session in a turn, or logged within the hour, is not evicted by a burst of
-        // newer subagent logs; re-adding it later would restart from a bounded tail.
-        for (path, file) in files.sorted(by: { $0.key < $1.key })
-        where !retained.contains(path) && retained.count < 256 && file.reader.isRecent(at: now)
-            && manager.fileExists(atPath: path) {
-            retained.insert(path)
-        }
+        // A quiet session in a turn, or logged within the hour, is not evicted by a burst of newer subagent logs; re-adding
+        // it later would restart from a bounded tail. Only these count against their own limit, open turns and the most
+        // recently active first, so listing more clients never crowds them out.
+        let kept = files.compactMap { path, file -> (path: String, active: Bool, last: Date)? in
+            guard !retained.contains(path), file.reader.isRecent(at: now), manager.fileExists(atPath: path) else { return nil }
+            let readings = file.reader.readings(id: path, now: now)
+            return (path, readings.contains(where: \.active), readings.compactMap(\.lastActivity).max() ?? .distantPast)
+        }.sorted {
+            if $0.active != $1.active { return $0.active }
+            return $0.last != $1.last ? $0.last > $1.last : $0.path < $1.path
+        }.prefix(Self.retentionLimit)
+        retained.formUnion(kept.map(\.path))
         files = files.filter { retained.contains($0.key) }
     }
 }

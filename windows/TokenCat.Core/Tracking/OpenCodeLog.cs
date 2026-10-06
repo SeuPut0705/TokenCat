@@ -17,11 +17,14 @@ public sealed partial record TokenLogFormat
 }
 
 /// Reads OpenCode sessions from its database, opened read-only (OpenCode writes it in WAL mode).
-/// - Re-queried when the database or its WAL changed, and at least every 2 s while a session is in a turn or updated within
-///   the hour (NTFS may report a file held open with stale times, rule 8). Then only sessions updated within the hour, with an
-///   open turn, or whose `time_updated` moved; a message body is fetched again only when its row's `time_updated` changes.
-/// - A message body over 64 KB is never loaded: assistant rows carry no content and stay far smaller, so it is a user message
-///   (a summary with file diffs can reach hundreds of MB).
+/// - Re-queried when the database, its WAL or the WAL index header in `-shm` changed (every commit rewrites that header,
+///   while NTFS may report a file held open with stale times, rule 8), and at least every 2 s while a session is in a turn
+///   or updated within the hour. Then only sessions updated within the hour, with an open turn, or whose `time_updated`
+///   moved; a message body is fetched again only when its row's `time_updated` changes. A read the database refused
+///   (busy) is never cached: that session is queried again on the next read.
+/// - A message body over 64 KB is never loaded whole when its first 4 KB name a user message (a summary with file diffs can
+///   reach hundreds of MB). Anything else, such as an assistant message holding a provider's error page, is loaded up to
+///   16 MB; past that an assistant message counts as a failed request.
 /// - Turn state: an assistant message without `time.completed` is generating (a running tool shows as `tool`, the question
 ///   tool as `input`); `finish: "tool-calls"` continues the loop; another finish ends the turn (`complete`); an error or no
 ///   finish at all ends it as `interrupted`.
@@ -35,8 +38,7 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
     DateTimeOffset? lastRead;
     Dictionary<string, OpenCodeSession> sessions = new(StringComparer.Ordinal);
 
-    static readonly string? OverridePath = Environment.GetEnvironmentVariable("OPENCODE_DB") is { Length: > 0 } value
-        ? System.IO.Path.GetFullPath(value.StartsWith('~') ? AppPaths.Home + value[1..] : value) : null;
+    static readonly string? OverridePath = TokenProvider.OpenCodeDatabasePath(AppPaths.Home, Environment.GetEnvironmentVariable);
 
     /// A database `Files` lists: OpenCode's default or channel file name, or the `OPENCODE_DB` file.
     public static bool IsDatabase(string path)
@@ -68,6 +70,7 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
             if (!database.Query($"SELECT {columns} WHERE time_archived IS NULL {order}", [], Collect)
                 && !database.Query($"SELECT {columns} {order}", [], Collect)) return;
             var kept = new Dictionary<string, OpenCodeSession>(StringComparer.Ordinal);
+            var complete = true;
             for (var offset = 0; offset < listed.Count; offset++)
             {
                 var row = listed[offset];
@@ -80,32 +83,47 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
                 session.Agent = row.Agent;
                 session.SessionModel = row.Model is { } model ? ModelID(model) : null;
                 session.Updated = row.Updated;
-                if (moved || (now - row.Updated).TotalSeconds <= 3_600 || session.Summary.Open) Refresh(session, database);
+                if ((moved || (now - row.Updated).TotalSeconds <= 3_600 || session.Summary.Open) && !Refresh(session, database))
+                {
+                    // Keeps what was read before; MinValue makes the next read refresh it again.
+                    session.Updated = DateTimeOffset.MinValue;
+                    complete = false;
+                }
                 kept[row.Id] = session;
             }
             sessions = kept;
-            signature = current;
+            signature = complete ? current : null;
             lastRead = now;
         }
         finally { database.Execute("COMMIT"); }
     }
 
-    /// Database identity, size and write time, and the WAL's size and write time.
+    /// Database identity, size and write time, the WAL's size and write time, and the WAL index header (the first 48 bytes
+    /// of `-shm`, whose change counter and frame count move on every commit).
     long[]? CurrentSignature()
     {
         var info = new FileInfo(Path);
         if (!info.Exists) return null;
         var wal = new FileInfo(Path + "-wal");
+        var header = new byte[48];
+        try
+        {
+            using var shm = new FileStream(Path + "-shm", FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 0);
+            shm.ReadAtLeast(header, header.Length, throwOnEndOfStream: false);
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         return [info.CreationTimeUtc.Ticks, info.Length, info.LastWriteTimeUtc.Ticks,
-                wal.Exists ? wal.Length : -1, wal.Exists ? wal.LastWriteTimeUtc.Ticks : -1];
+                wal.Exists ? wal.Length : -1, wal.Exists ? wal.LastWriteTimeUtc.Ticks : -1,
+                .. Enumerable.Range(0, 6).Select(index => BitConverter.ToInt64(header, index * 8))];
     }
 
-    void Refresh(OpenCodeSession session, OpenCodeDatabase database)
+    /// False when the database refused a read; the session then keeps its previous messages.
+    bool Refresh(OpenCodeSession session, OpenCodeDatabase database)
     {
         var index = new List<(string Id, DateTimeOffset Created, DateTimeOffset Updated)>();
         if (!database.Query("SELECT id, time_created, time_updated FROM message WHERE session_id = ? ORDER BY time_created DESC, id DESC LIMIT 200",
                 [session.Id], row => { if (row.Text(0) is { } id && row.Date(1) is { } created && row.Date(2) is { } updated) index.Add((id, created, updated)); }))
-            return;
+            return false;
         var messages = new List<OpenCodeMessage>(index.Count);
         foreach (var entry in index)
         {
@@ -114,9 +132,8 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
                 messages.Add(cached);
                 continue;
             }
-            string? body = null;
-            database.Query($"SELECT CASE WHEN {database.SizeOfData} <= 65536 THEN data END FROM message WHERE id = ?", [entry.Id], row => body = row.Text(0));
-            messages.Add(OpenCodeMessage.Parse(entry.Id, entry.Created, entry.Updated, body));
+            if (Message(entry.Id, entry.Created, entry.Updated, database) is not { } message) return false;
+            messages.Add(message);
         }
         session.Messages = messages;
         session.Cache = messages.GroupBy(message => message.Id, StringComparer.Ordinal).ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
@@ -128,6 +145,25 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
         }
         else session.Speed = null;
         session.Summary = OpenCodeSummary.Of(session);
+        return true;
+    }
+
+    /// One message's metadata; null when the database refused the read or the row changed under it.
+    static OpenCodeMessage? Message(string id, DateTimeOffset created, DateTimeOffset updated, OpenCodeDatabase database)
+    {
+        string? body = null;
+        long? rowid = null;
+        if (!database.Query($"SELECT CASE WHEN {database.SizeOfData} <= 65536 THEN data END, rowid FROM message WHERE id = ?", [id],
+                row => { body = row.Text(0); rowid = row.Int64(1); }) || rowid is not { } found) return null;
+        if (body is not null) return OpenCodeMessage.Parse(id, created, updated, body);
+        if (database.MessageHead(found) is not { } head) return null;
+        var role = OpenCodeMessage.RoleInHead(head);
+        if (role == OpenCodeRole.User) return new(id, created, updated) { Role = OpenCodeRole.User };
+        string? full = null;
+        if (!database.Query($"SELECT CASE WHEN {database.SizeOfData} <= 16777216 THEN data END FROM message WHERE id = ?", [id],
+                result => full = result.Text(0))) return null;
+        if (full is not null) return OpenCodeMessage.Parse(id, created, updated, full);
+        return role == OpenCodeRole.Assistant ? new(id, created, updated) { Role = role, Failed = true, Completed = updated } : new(id, created, updated);
     }
 
     static List<OpenCodePart>? Parts(string message, OpenCodeDatabase database)
@@ -243,7 +279,7 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
         if (Encoding.UTF8.GetByteCount(json) > 4_096) return null;
         try
         {
-            using var document = JsonDocument.Parse(json);
+            using var document = JsonDocument.Parse(json, Json.Depth);
             return Short(document.RootElement.Field("id")) ?? Short(document.RootElement.Field("modelID"));
         }
         catch (JsonException) { return null; }
@@ -275,13 +311,11 @@ sealed record OpenCodeMessage(string Id, DateTimeOffset Created, DateTimeOffset 
     /// Input + cache read + cache write of this request.
     public int Context { get; init; }
 
-    public static OpenCodeMessage Parse(string id, DateTimeOffset created, DateTimeOffset updated, string? body)
+    public static OpenCodeMessage Parse(string id, DateTimeOffset created, DateTimeOffset updated, string body)
     {
-        // Only a user message can exceed the body cap (see OpenCodeLog).
-        if (body is null) return new(id, created, updated) { Role = OpenCodeRole.User };
         try
         {
-            using var document = JsonDocument.Parse(body);
+            using var document = JsonDocument.Parse(body, Json.Depth);
             var root = document.RootElement;
             var role = root.Field("role")?.Text switch { "user" => OpenCodeRole.User, "assistant" => OpenCodeRole.Assistant, _ => OpenCodeRole.Other };
             if (role == OpenCodeRole.Other) return new(id, created, updated);
@@ -297,11 +331,24 @@ sealed record OpenCodeMessage(string Id, DateTimeOffset Created, DateTimeOffset 
                 ParentID = OpenCodeLog.Short(root.Field("parentID")),
                 Cwd = root.Field("path")?.Field("cwd")?.Text,
                 Agent = OpenCodeLog.Short(root.Field("agent")) ?? OpenCodeLog.Short(root.Field("mode")),
-                Generated = OpenCodeLog.Count(tokens?.Field("output")) + OpenCodeLog.Count(tokens?.Field("reasoning")),
-                Context = OpenCodeLog.Count(tokens?.Field("input")) + OpenCodeLog.Count(cache?.Field("read")) + OpenCodeLog.Count(cache?.Field("write")),
+                Generated = LogFields.Add(OpenCodeLog.Count(tokens?.Field("output")), OpenCodeLog.Count(tokens?.Field("reasoning"))),
+                Context = LogFields.Add(LogFields.Add(OpenCodeLog.Count(tokens?.Field("input")), OpenCodeLog.Count(cache?.Field("read"))),
+                    OpenCodeLog.Count(cache?.Field("write"))),
             };
         }
         catch (JsonException) { return new(id, created, updated); }
+    }
+
+    /// The role from the first bytes of a message body. OpenCode writes `role` among the first keys, and any `"role"` in
+    /// text would be escaped (`\"role\"`), so the first unescaped one is the message's own.
+    public static OpenCodeRole RoleInHead(byte[] head)
+    {
+        var text = Encoding.UTF8.GetString(head);
+        var key = text.IndexOf("\"role\"", StringComparison.Ordinal);
+        if (key < 0) return OpenCodeRole.Other;
+        var rest = text.AsSpan(key + 6).TrimStart(" :");
+        return rest.StartsWith("\"user\"", StringComparison.Ordinal) ? OpenCodeRole.User
+            : rest.StartsWith("\"assistant\"", StringComparison.Ordinal) ? OpenCodeRole.Assistant : OpenCodeRole.Other;
     }
 }
 
@@ -370,7 +417,7 @@ sealed record OpenCodeSummary
         // The person's message that opened a turn, and its output when the whole turn is in the window.
         (DateTimeOffset Start, int Output)? Turn(string? user) =>
             user is not null && messages.FirstOrDefault(message => message.Id == user && message.Role == OpenCodeRole.User) is { } opener
-                ? (opener.Created, assistants.Where(message => message.ParentID == user).Sum(message => message.Generated)) : null;
+                ? (opener.Created, assistants.Where(message => message.ParentID == user).Aggregate(0, (sum, message) => LogFields.Add(sum, message.Generated))) : null;
 
         var open = false;
         var state = TokenActivityState.Idle;
@@ -525,9 +572,33 @@ sealed class OpenCodeDatabase : IDisposable
         public DateTimeOffset? Date(int column) =>
             sqlite3_column_type(statement, column) == Integer && sqlite3_column_int64(statement, column) is > 0 and < 253_402_300_800_000 and var value
                 ? DateTimeOffset.FromUnixTimeMilliseconds(value) : null;
+
+        public long? Int64(int column) => sqlite3_column_type(statement, column) == Integer ? sqlite3_column_int64(statement, column) : null;
+    }
+
+    /// The first `count` bytes of a message's `data`, read in place (incremental blob I/O), so a body of hundreds of MB is
+    /// never loaded; null when the row cannot be opened.
+    public byte[]? MessageHead(long rowid, int count = 4_096)
+    {
+        if (sqlite3_blob_open(handle, Utf8("main"), Utf8("message"), Utf8("data"), rowid, 0, out var blob) != Ok || blob == IntPtr.Zero)
+        {
+            if (blob != IntPtr.Zero) sqlite3_blob_close(blob);
+            return null;
+        }
+        try
+        {
+            var head = new byte[Math.Min(count, sqlite3_blob_bytes(blob))];
+            return sqlite3_blob_read(blob, head, head.Length, 0) == Ok ? head : null;
+        }
+        finally { sqlite3_blob_close(blob); }
     }
 
     static byte[] Utf8(string value) => Encoding.UTF8.GetBytes(value + "\0");
+
+    [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern int sqlite3_blob_open(IntPtr database, byte[] schema, byte[] table, byte[] column, long row, int flags, out IntPtr blob);
+    [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern int sqlite3_blob_bytes(IntPtr blob);
+    [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern int sqlite3_blob_read(IntPtr blob, byte[] buffer, int count, int offset);
+    [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern int sqlite3_blob_close(IntPtr blob);
 
     [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern int sqlite3_open_v2(byte[] filename, out IntPtr database, int flags, IntPtr vfs);
     [DllImport(Library, CallingConvention = CallingConvention.Winapi)] static extern int sqlite3_close_v2(IntPtr database);
