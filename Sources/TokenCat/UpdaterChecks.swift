@@ -14,9 +14,9 @@ func runUpdaterChecks() -> [String] {
         do { try body(); return nil } catch { return error as? UpdateFailure }
     }
     let at = Date(timeIntervalSince1970: 1_800_000_000)
-    let suite = "dev.seuput.TokenCat.UpdaterCheck.\(UUID().uuidString)"
-    guard let defaults = UserDefaults(suiteName: suite) else { return ["Updater: could not create an isolated defaults domain"] }
-    defer { defaults.removePersistentDomain(forName: suite) }
+    guard let scratch = ScratchDefaults("dev.seuput.TokenCat.UpdaterCheck") else { return ["Updater: could not create an isolated defaults domain"] }
+    defer { scratch.discard() }
+    let defaults = scratch.defaults
 
     // Versions: numeric parts, "v" prefix, suffix ignored, missing parts are 0.
     func version(_ text: String) -> AppVersion? { AppVersion(text) }

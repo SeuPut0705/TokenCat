@@ -170,15 +170,15 @@ func runLiveLimitChecks() -> [String] {
     }
 
     // The toggle: on by default, remembered, outside "기본값으로 되돌리기".
-    let suite = "TokenCat-live-\(UUID().uuidString)"
-    if let defaults = UserDefaults(suiteName: suite) {
+    if let scratch = ScratchDefaults("TokenCat-live") {
+        let defaults = scratch.defaults
         let preferences = Preferences(defaults: defaults)
         let defaultOn = preferences.liveUsageLimits
         preferences.liveUsageLimits = false
         preferences.reset()
         check(defaultOn && !preferences.liveUsageLimits && !Preferences(defaults: defaults).liveUsageLimits,
               "live usage limits are not on by default, not remembered, or reset with the display defaults")
-        defaults.removePersistentDomain(forName: suite)
+        scratch.discard()
     } else { check(false, "temporary defaults suite unavailable") }
 
     print("Live limit checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")

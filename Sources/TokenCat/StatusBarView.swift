@@ -857,13 +857,13 @@ func runStatusBarChecks() -> [String] {
         return actual == expected ? nil : "Status bar \(name): expected \(expected), got \(actual)"
     }
     var checks = cases.count
-    let suiteName = "dev.seuput.TokenCat.StatusBarChecks.\(UUID().uuidString)"
-    guard let defaults = UserDefaults(suiteName: suiteName) else {
+    guard let scratch = ScratchDefaults("dev.seuput.TokenCat.StatusBarChecks") else {
         failures.append("Status bar: isolated preferences unavailable")
         print("Status bar checks: \(checks + 1 - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
         return failures
     }
-    defer { defaults.removePersistentDomain(forName: suiteName) }
+    defer { scratch.discard() }
+    let defaults = scratch.defaults
     let preferences = Preferences(defaults: defaults)
     preferences.reset()
     var system = SystemSnapshot()

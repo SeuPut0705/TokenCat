@@ -299,9 +299,9 @@ enum TokenCatMain {
 
     /// Synthetic states only (no local logs, host names or paths): rows are AI states, columns light/dark × normal/highlighted.
     private static func menuBarFixtures(layout: StatusBarLayout, showRunner: Bool) -> NSImage? {
-        let suite = "dev.seuput.TokenCat.MenuFixtures.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suite) else { return nil }
-        defer { defaults.removePersistentDomain(forName: suite) }
+        guard let scratch = ScratchDefaults("dev.seuput.TokenCat.MenuFixtures") else { return nil }
+        defer { scratch.discard() }
+        let defaults = scratch.defaults
         let preferences = Preferences(defaults: defaults)
         preferences.statusBarLayout = layout
         let at = Date()
@@ -414,8 +414,8 @@ enum TokenCatMain {
         let model = fixtures ? DashboardModel(telemetryProvider: { [] }, restoresRestartState: false)
             : DashboardModel(telemetryProvider: { LocalTelemetryCollector.fetchSnapshot() },
                              telemetryProbe: { LocalTelemetryCollector.isOwnCollectorRunning(timeout: 0.5) })
-        let suite = "dev.seuput.TokenCat.SettingsSnapshot.\(UUID().uuidString)"
-        guard let defaults = UserDefaults(suiteName: suite) else { print("Settings snapshot failed"); exit(1) }
+        guard let scratch = ScratchDefaults("dev.seuput.TokenCat.SettingsSnapshot") else { print("Settings snapshot failed"); exit(1) }
+        let defaults = scratch.defaults
         let preferences = fixtures ? Preferences(defaults: defaults) : model.preferences
         // Fixtures show the flag's character in the picker too; this Mac's own preferences are never written.
         let character = characterFlag()
@@ -492,7 +492,7 @@ enum TokenCatMain {
             }
             func finish() {
                 window.orderOut(nil)
-                UserDefaults.standard.removePersistentDomain(forName: suite)
+                scratch.discard()
                 guard let image = stack(shots, gap: 24, dark: !light),
                       let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { print("Settings snapshot failed"); exit(1) }
                 do {

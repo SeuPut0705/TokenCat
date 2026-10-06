@@ -1,9 +1,9 @@
 import Foundation
 
 func runPreferenceChecks() -> [String] {
-    let suite = "dev.seuput.TokenCat.check.\(UUID().uuidString)"
-    guard let defaults = UserDefaults(suiteName: suite) else { return ["Could not create isolated preference domain"] }
-    defer { defaults.removePersistentDomain(forName: suite) }
+    guard let scratch = ScratchDefaults("dev.seuput.TokenCat.check") else { return ["Could not create isolated preference domain"] }
+    defer { scratch.discard() }
+    let suite = scratch.name, defaults = scratch.defaults
     var failures: [String] = []
     var checks = 0
     func check(_ valid: @autoclosure () -> Bool, _ description: String) {

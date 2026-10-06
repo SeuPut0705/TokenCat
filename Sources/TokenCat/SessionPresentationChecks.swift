@@ -506,8 +506,8 @@ func runSessionPresentationChecks() -> [String] {
     let newer = ClaudeUsageLimits(fiveHour: claudeWindow(44, resetsIn: 7_000, received: -5))
     let merged = bothLive.merged(newer).merged(ClaudeUsageLimits(fiveHour: claudeWindow(10, resetsIn: 7_000, received: -500)))
     check(merged.fiveHour?.usedPercent == 44 && merged.sevenDay == bothLive.sevenDay, "newer receipts win per window")
-    let suite = "TokenCat-check-\(UUID().uuidString)"
-    if let defaults = UserDefaults(suiteName: suite) {
+    if let scratch = ScratchDefaults("TokenCat-check") {
+        let defaults = scratch.defaults
         merged.save(to: defaults)
         let stored = defaults.data(forKey: ClaudeUsageLimits.defaultsKey).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         let keys = Set(((stored?["fiveHour"] as? [String: Any]) ?? [:]).keys)
@@ -516,7 +516,7 @@ func runSessionPresentationChecks() -> [String] {
         ClaudeUsageLimits().save(to: defaults)
         check(defaults.data(forKey: ClaudeUsageLimits.defaultsKey) == nil && ClaudeUsageLimits.load(from: defaults).isEmpty,
               "empty Claude limits clear the stored value")
-        defaults.removePersistentDomain(forName: suite)
+        scratch.discard()
     } else { check(false, "temporary defaults suite unavailable") }
 
     // Effort, last turn and help ages.
