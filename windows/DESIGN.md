@@ -356,7 +356,7 @@ The taskbar can't show text the way the mac menu bar does, so the menu-bar item 
   (labels and units at label 0.72, idle "0" at 0.45). Without the character (mac rules) the runner slot goes, the minimal AI cell is 41
   and a strip with nothing left is the 28 pt "TC"; `Preferences` never lets that happen outside the minimal layout. The one-line layout
   shows the short names (CPU, RAM…) where the mac draws SF Symbols. The Codex and Claude speed items (opt-in, after AI without a
-  separator) draw the mac's `SpeedGlyph` (">_", "✦") in the label slot and that client's "지금 속도" (`SessionPresentation.CurrentSpeed`,
+  separator) draw the mac's `SpeedGlyph` (the Codex and Claude app icons, `speed-codex.png`/`speed-claude.png`) in the label slot and that client's "지금 속도" (`SessionPresentation.CurrentSpeed`,
   `Format.Tps` + a smaller "tok/s") or "—", in 66 pt (two lines) / 80 pt (one line) cells. Narrator reads the strip as one text
   element (`StatusBarMetric.Spoken`). Layout, items, order and the character come from Settings › Widget (§4.4); default **two
   lines** (like the mac bar), the six standard items, the character shown, 100 %.
@@ -960,5 +960,5 @@ add members freely.
   "ages use the model clock"); WP3 skips them and ports the SessionPresentation/OnboardingCard halves of the Swift
   localization checks into its own suite with the same descriptions.
 * Entry points for the App CLI: `Updater.CommandLineCheck()`, `UpdateInstaller.FinishAfterUpdate(pid)`, `UpdateInstaller.SelfTest(zip)`.
-* The App embeds the 21 artwork files from `../../Assets` (`GetManifestResourceStream("runner-v2@1x.png")`); nothing is copied
+* The App embeds the 23 artwork files from `../../Assets` (`GetManifestResourceStream("runner-v2@1x.png")`); nothing is copied
   into the repo. The skeleton App shows the cat head and an empty flyout with the §4.2 mechanics.

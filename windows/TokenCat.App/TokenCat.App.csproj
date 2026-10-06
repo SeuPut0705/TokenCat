@@ -30,7 +30,7 @@
     <ProjectReference Include="../TokenCat.Core/TokenCat.Core.csproj" />
     <!-- Same artwork as the mac bundle (build.sh's list), embedded at build so the exe stays one file and the repo keeps
          one copy. Read with GetManifestResourceStream("runner-v2@1x.png") etc. -->
-    <EmbeddedResource Include="$(RepoAssets)runner-*@1x.png;$(RepoAssets)runner-*@2x.png;$(RepoAssets)app-head-*.png;$(RepoAssets)runner-v2.json"
+    <EmbeddedResource Include="$(RepoAssets)runner-*@1x.png;$(RepoAssets)runner-*@2x.png;$(RepoAssets)app-head-*.png;$(RepoAssets)speed-*.png;$(RepoAssets)runner-v2.json"
                       Exclude="$(RepoAssets)runner-sheet-v1.png" LogicalName="%(Filename)%(Extension)" />
   </ItemGroup>
 </Project>

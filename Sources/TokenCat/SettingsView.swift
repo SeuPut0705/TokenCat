@@ -869,8 +869,8 @@ private struct MetricRows: View {
                         if let source = id.speedSource {
                             HStack(alignment: .firstTextBaseline, spacing: 0) {
                                 Text(id.title)
-                                (Text(" · ").font(.system(size: 11)) + Text(Image(nsImage: SpeedGlyph.image(source, side: 9))))
-                                    .foregroundColor(.secondary).accessibilityHidden(true)
+                                (Text(" · ").font(.system(size: 11)).foregroundColor(.secondary) + Text(Image(nsImage: SpeedGlyph.image(source, side: 9))))
+                                    .accessibilityHidden(true)
                             }
                         } else {
                             id.barLabel.map { Text(id.title) + Text(" · \($0)").font(.system(size: 11)).foregroundColor(.secondary) } ?? Text(id.title)

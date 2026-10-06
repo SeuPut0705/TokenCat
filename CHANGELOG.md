@@ -2,6 +2,12 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## Unreleased
+
+**macOS and Windows**
+
+- The Codex and Claude speed items show the Codex and Claude app icons in their own colours instead of the generic `>_` and `✦` glyphs. · Codex·Claude 속도 항목이 일반 기호 `>_`·`✦` 대신 Codex·Claude 앱 아이콘을 원래 색 그대로 표시합니다.
+
 ## 0.13.0
 
 **macOS and Windows**

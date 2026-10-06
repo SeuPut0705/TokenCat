@@ -132,7 +132,7 @@ With **Live usage limits** on (the default, in Settings › Telemetry), TokenCat
 
 Choose **Minimal** (about 72 pt), **Two Lines** (the default, about 272 pt) or **One Line** (about 410 pt), then turn items on or off and drag them to reorder. Each item has a fixed width, so the icons next to it don't shift when values change, and labels follow the bar's light or dark appearance so they stay readable on tinted bars. On a Mac without a battery, the battery item is hidden.
 
-Two more items are off by default: turn on **Codex speed** or **Claude speed** in Settings › Menu Bar to show a `>_` or `✦` glyph with that client's current speed in tok/s, picked by the same rule as the dashboard's **Speed now**, or `—` without a fresh measurement.
+Two more items are off by default: turn on **Codex speed** or **Claude speed** in Settings › Menu Bar to show the Codex or Claude app icon with that client's current speed in tok/s, picked by the same rule as the dashboard's **Speed now**, or `—` without a fresh measurement.
 
 <p align="center">
   <picture>

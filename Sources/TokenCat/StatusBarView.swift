@@ -462,15 +462,9 @@ final class StatusBarContentView: NSView {
                 Run(text: (parts.unit == "%" ? "" : "\u{2009}") + parts.unit, font: .systemFont(ofSize: 8.5, weight: .medium), color: palette.secondary)]
     }
 
-    /// A speed item's glyph, centred on `center` in the labels' secondary tone.
-    private func drawGlyph(_ source: TokenSource, side: CGFloat, center: NSPoint, _ palette: Palette) {
-        guard let context = NSGraphicsContext.current?.cgContext else { return }
-        let rect = CGRect(x: snap(center.x - side / 2), y: snap(center.y - side / 2), width: side, height: side)
-        context.saveGState()
-        context.setFillColor(palette.secondary.cgColor)
-        context.addPath(SpeedGlyph.path(source, in: rect))
-        context.fillPath()
-        context.restoreGState()
+    /// A speed item's glyph, the client's app icon, centred on `center`.
+    private func drawGlyph(_ source: TokenSource, side: CGFloat, center: NSPoint) {
+        SpeedGlyph.draw(source, in: CGRect(x: snap(center.x - side / 2), y: snap(center.y - side / 2), width: side, height: side))
     }
 
     private func drawCompact(_ metric: StatusBarMetric, in cell: NSRect, _ palette: Palette) {
@@ -481,7 +475,7 @@ final class StatusBarContentView: NSView {
         }
         let inner = cell.insetBy(dx: 1, dy: 0)
         if let source = metric.id.speedSource {
-            drawGlyph(source, side: Self.glyphSide.compact, center: NSPoint(x: inner.midX, y: top + 4.5), palette)
+            drawGlyph(source, side: Self.glyphSide.compact, center: NSPoint(x: inner.midX, y: top + 4.5))
         } else {
             draw([Run(text: metric.label, font: labelFont, color: palette.secondary, kern: 0.3)], centerY: top + 4.5, in: inner)
         }
@@ -507,7 +501,7 @@ final class StatusBarContentView: NSView {
         if let source = metric.id.speedSource {
             // Like the "AI" caption: 4 pt clear of the cell's leading edge, then the value 3 pt after the glyph.
             let side = Self.glyphSide.inline
-            drawGlyph(source, side: side, center: NSPoint(x: cell.minX + 4 + side / 2, y: cell.midY), palette)
+            drawGlyph(source, side: side, center: NSPoint(x: cell.minX + 4 + side / 2, y: cell.midY))
             let x = cell.minX + 4 + side + 3
             draw(valueRuns(metric.value, palette), centerY: cell.midY, in: NSRect(x: x, y: 0, width: cell.maxX - x, height: cell.height),
                  alignment: .left)
@@ -691,44 +685,29 @@ final class StatusBarContentView: NSView {
     }
 }
 
-/// The speed items' glyphs: generic symbols, not the clients' logos. Coordinates in a 10 × 10 box, y-down, scaled to the
-/// centred square of `rect`; each is one fill (nonzero winding).
-/// - Codex, a terminal prompt ">_": the polyline (1, 1.75) (4.75, 5) (1, 8.25) and the line (5.75, 8.25) (9, 8.25), stroked
-///   1.5 wide with round caps and joins.
-/// - Claude, a four-point sparkle "✦": tips (5, 0) (10, 5) (5, 10) (0, 5) joined clockwise by quadratic curves whose controls
-///   sit 0.6 from the centre toward the corner between them: (5.6, 4.4) (5.6, 5.6) (4.4, 5.6) (4.4, 4.4).
+/// The speed items' glyphs: each client's app icon in its own colours (Codex's blue cloud with ">_", Claude's orange spark
+/// tile), 64 px PNGs in Assets (`speed-codex.png`, `speed-claude.png`) trimmed to the artwork and drawn smoothly scaled.
+/// Windows (`SpeedGlyph` in Widget.cs) embeds the same two files.
 enum SpeedGlyph {
-    static func path(_ source: TokenSource, in rect: CGRect) -> CGPath {
-        let unit = min(rect.width, rect.height) / 10
-        func p(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.midX + (x - 5) * unit, y: rect.midY + (y - 5) * unit) }
-        let path = CGMutablePath()
-        switch source {
-        case .codex:
-            path.addLines(between: [p(1, 1.75), p(4.75, 5), p(1, 8.25)])
-            path.addLines(between: [p(5.75, 8.25), p(9, 8.25)])
-            return path.copy(strokingWithWidth: 1.5 * unit, lineCap: .round, lineJoin: .round, miterLimit: 10)
-        case .claude:
-            path.move(to: p(5, 0))
-            path.addQuadCurve(to: p(10, 5), control: p(5.6, 4.4))
-            path.addQuadCurve(to: p(5, 10), control: p(5.6, 5.6))
-            path.addQuadCurve(to: p(0, 5), control: p(4.4, 5.6))
-            path.addQuadCurve(to: p(5, 0), control: p(4.4, 4.4))
-            path.closeSubpath()
-            return path
-        }
+    private static let images: [TokenSource: NSImage] = [.codex: load("speed-codex"), .claude: load("speed-claude")].compactMapValues { $0 }
+
+    private static func load(_ name: String) -> NSImage? {
+        Bundle.main.url(forResource: name, withExtension: "png").flatMap(NSImage.init(contentsOf:))
     }
 
-    /// A template image for the Settings item list; the list tints it.
+    /// Draws `source`'s icon into `rect`; nothing when the file is missing from the bundle.
+    static func draw(_ source: TokenSource, in rect: CGRect) {
+        guard let image = images[source] else { return }
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+    }
+
+    /// The icon at `side` points for the Settings item list.
     static func image(_ source: TokenSource, side: CGFloat) -> NSImage {
-        let image = NSImage(size: NSSize(width: side, height: side), flipped: true) { rect in
-            guard let context = NSGraphicsContext.current?.cgContext else { return false }
-            context.setFillColor(NSColor.black.cgColor)
-            context.addPath(path(source, in: rect))
-            context.fillPath()
+        NSImage(size: NSSize(width: side, height: side), flipped: true) { rect in
+            draw(source, in: rect)
             return true
         }
-        image.isTemplate = true
-        return image
     }
 }
 
@@ -1079,21 +1058,22 @@ func runStatusBarChecks() -> [String] {
     check("the inline symbol reaches 3.5:1 on a light bar (got \(String(format: "%.2f", symbolContrast)):1), dimmed once by 0.72 (0.8 contrast)",
           symbolContrast >= 3.5 && StatusBarContentView.symbolFraction(contrast: false) == 0.72
           && StatusBarContentView.symbolFraction(contrast: true) == 0.8)
-    // Speed items on one line: the glyph (8–18 pt: 4 pt edge, 4 pt into the cell) and "—" in the secondary tone, digits in
-    // the label tone, so the darkest glyph or dash pixel stays clearly lighter than the darkest digit pixel.
-    func darkest(_ metric: StatusBarMetric, columns: Range<Int>) -> Double {
+    // Speed items on one line: the glyph (8–18 pt: 4 pt edge, 4 pt into the cell) is the client's app icon in its own colours;
+    // "—" is in the secondary tone and digits in the label tone, so the darkest dash pixel stays clearly lighter than a digit's.
+    func columns(_ metric: StatusBarMetric, _ range: Range<Int>) -> [(luma: Double, rgb: [Double])] {
         let speedView = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
         speedView.appearance = NSAppearance(named: .aqua)
         speedView.update(metrics: [metric], layout: .inline, showRunner: false)
         speedView.frame.size.width = speedView.requiredWidth
-        guard let pixels = render(speedView) else { return 1 }
-        return columns.flatMap { x in (0..<pixels.height).map { pixels.pixel(x, $0).luma } }.min() ?? 1
+        guard let pixels = render(speedView) else { return [] }
+        return range.flatMap { x in (0..<pixels.height).map { pixels.pixel(x, $0) } }
     }
-    let glyphTone = darkest(metric(.claudeSpeed, "—"), columns: 16..<36), dashTone = darkest(metric(.claudeSpeed, "—"), columns: 42..<80)
-    let codexGlyphTone = darkest(metric(.codexSpeed, "55.6tok/s"), columns: 16..<36)
-    let digitTone = darkest(metric(.codexSpeed, "55.6tok/s"), columns: 42..<60)
-    check("speed glyphs and dashes are secondary, digits label-toned (luma \([glyphTone, codexGlyphTone, dashTone, digitTone]))",
-          [glyphTone, codexGlyphTone, dashTone].allSatisfy { $0 < 0.5 && $0 > digitTone * 1.5 })
+    func darkest(_ metric: StatusBarMetric, _ range: Range<Int>) -> Double { columns(metric, range).map(\.luma).min() ?? 1 }
+    func saturation(_ metric: StatusBarMetric) -> Double { columns(metric, 16..<36).map { $0.rgb.max()! - $0.rgb.min()! }.max() ?? 0 }
+    let dashTone = darkest(metric(.claudeSpeed, "—"), 42..<80), digitTone = darkest(metric(.codexSpeed, "55.6tok/s"), 42..<60)
+    let glyphColour = [saturation(metric(.codexSpeed, "55.6tok/s")), saturation(metric(.claudeSpeed, "—"))]
+    check("speed glyphs are the clients' coloured app icons, dashes secondary, digits label-toned (saturation \(glyphColour), luma \([dashTone, digitTone]))",
+          glyphColour.allSatisfy { $0 > 0.4 } && dashTone < 0.5 && dashTone > digitTone * 1.5)
 
     // The sleep z: a template mask at the sprite's snapped origin, label-coloured, nothing outside the mask (K-2).
     let fxView = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))

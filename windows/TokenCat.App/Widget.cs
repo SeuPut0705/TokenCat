@@ -353,7 +353,7 @@ sealed class WidgetView : FrameworkElement
 
     /// A speed item's glyph, centred on `center` in the labels' secondary tone.
     void DrawGlyph(DrawingContext context, TokenSource source, double side, Point center) =>
-        SpeedGlyph.Draw(context, source, new Rect(Snap(center.X - side / 2), Snap(center.Y - side / 2), side, side), Theme.Brush(secondary));
+        SpeedGlyph.Draw(context, source, new Rect(Snap(center.X - side / 2), Snap(center.Y - side / 2), side, side));
 
     /// Mark slot (shape = state) then the count: label while running, secondary for log wait or before the first sample,
     /// tertiary "0" with an empty slot (M-2). The slot is always reserved, so the count never moves.
@@ -458,13 +458,9 @@ sealed class WidgetView : FrameworkElement
     }
 }
 
-/// The speed items' glyphs (mac `SpeedGlyph`): generic symbols, not the clients' logos. Coordinates in a 10 × 10 box, y down,
-/// scaled to the centred square of `box`.
-/// - Codex, a terminal prompt ">_": the polyline (1, 1.75) (4.75, 5) (1, 8.25) and the line (5.75, 8.25) (9, 8.25), stroked
-///   1.5 wide with round caps and joins.
-/// - Claude, a four-point sparkle "✦": tips (5, 0) (10, 5) (5, 10) (0, 5) joined clockwise by quadratic curves whose controls
-///   sit 0.6 from the centre toward the corner between them, filled.
-/// As an element, the Settings item rows' glyph in the secondary tone.
+/// The speed items' glyphs (mac `SpeedGlyph`): each client's app icon in its own colours, the embedded 64 px
+/// `speed-codex.png` and `speed-claude.png`, drawn smoothly scaled into `box`.
+/// As an element, the Settings item rows' glyph.
 sealed class SpeedGlyph : FrameworkElement
 {
     readonly TokenSource source;
@@ -475,34 +471,24 @@ sealed class SpeedGlyph : FrameworkElement
         Width = Height = side;
     }
 
-    protected override void OnRender(DrawingContext context) => Draw(context, source, new Rect(RenderSize), Theme.Brush(Theme.Secondary));
+    protected override void OnRender(DrawingContext context) => Draw(context, source, new Rect(RenderSize));
 
-    public static void Draw(DrawingContext context, TokenSource source, Rect box, Brush brush)
+    /// Smooth scaling even inside the widget, which draws its pixel art nearest-neighbour.
+    public static void Draw(DrawingContext context, TokenSource source, Rect box)
     {
-        var unit = Math.Min(box.Width, box.Height) / 10;
-        Point p(double x, double y) => new(box.X + box.Width / 2 + (x - 5) * unit, box.Y + box.Height / 2 + (y - 5) * unit);
-        var shape = new StreamGeometry();
-        using (var path = shape.Open())
-        {
-            if (source == TokenSource.Codex)
-            {
-                path.BeginFigure(p(1, 1.75), false, false);
-                path.PolyLineTo([p(4.75, 5), p(1, 8.25)], true, false);
-                path.BeginFigure(p(5.75, 8.25), false, false);
-                path.LineTo(p(9, 8.25), true, false);
-            }
-            else
-            {
-                path.BeginFigure(p(5, 0), true, true);
-                path.QuadraticBezierTo(p(5.6, 4.4), p(10, 5), true, false);
-                path.QuadraticBezierTo(p(5.6, 5.6), p(5, 10), true, false);
-                path.QuadraticBezierTo(p(4.4, 5.6), p(0, 5), true, false);
-                path.QuadraticBezierTo(p(4.4, 4.4), p(5, 0), true, false);
-            }
-        }
-        shape.Freeze();
-        if (source == TokenSource.Codex)
-            context.DrawGeometry(null, new Pen(brush, 1.5 * unit) { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round }, shape);
-        else context.DrawGeometry(brush, null, shape);
+        var group = new DrawingGroup();
+        RenderOptions.SetBitmapScalingMode(group, BitmapScalingMode.HighQuality);
+        group.Children.Add(new ImageDrawing(source == TokenSource.Codex ? Codex : Claude, box));
+        context.DrawDrawing(group);
+    }
+
+    static readonly BitmapSource Codex = Load("speed-codex.png"), Claude = Load("speed-claude.png");
+
+    static BitmapSource Load(string name)
+    {
+        var decoder = BitmapDecoder.Create(new System.IO.MemoryStream(Sprites.Resource(name)), BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+        var frame = decoder.Frames[0];
+        frame.Freeze();
+        return frame;
     }
 }
