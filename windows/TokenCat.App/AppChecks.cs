@@ -155,12 +155,12 @@ static class AppChecks
             check(UIElementAutomationPeer.CreatePeerForElement(spoken) is { } widgetPeer && widgetPeer.GetAutomationControlType() == AutomationControlType.Text
                   && widgetPeer.GetName() == "CPU 100%, Codex 속도 55.6 토큰/초, Claude 속도 측정 없음",
                   "Narrator reads the widget's items, the speed items by client and rate");
-            // Speed items on one line without the character (mac "speed glyphs and dashes are secondary"): the glyph (12–22 pt) and "—"
-            // in the secondary tone, digits in the label tone. The light label is black, so on the clear backdrop a pixel's alpha is its
-            // tone: secondary tops out at 184 (0.72), label at 217 (0.85).
+            // Speed items on one line without the character (mac "speed glyphs are the clients' coloured app icons"): the glyph
+            // (12–22 pt) is the client's app icon in its own colours; "—" in the secondary tone, digits in the label tone. The light
+            // label is black, so on the clear backdrop a pixel's alpha is its tone: secondary tops out at 184 (0.72), label at 217 (0.85).
             var toned = StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Inline, [MetricID.CodexSpeed, MetricID.ClaudeSpeed], true, true,
                 new Dictionary<TokenSource, double> { [TokenSource.Codex] = 55.56 });
-            byte Darkest(StatusBarMetric metric, double from, double to)
+            (byte alpha, int colour) Scan(StatusBarMetric metric, double from, double to)
             {
                 var toneView = new WidgetView();
                 toneView.Update([metric], StatusBarLayout.Inline, nextRunner: false);
@@ -169,13 +169,20 @@ static class AppChecks
                 image.CopyPixels(pixels, image.PixelWidth * 4, 0);
                 int first = (int)(from * toneView.Scale * 2), last = Math.Min(image.PixelWidth, (int)Math.Ceiling(to * toneView.Scale * 2));
                 byte darkest = 0;
+                var colour = 0;
                 for (var y = 0; y < image.PixelHeight; y++)
-                    for (var x = first; x < last; x++) darkest = Math.Max(darkest, pixels[(y * image.PixelWidth + x) * 4 + 3]);
-                return darkest;
+                    for (var x = first; x < last; x++)
+                    {
+                        var i = (y * image.PixelWidth + x) * 4;
+                        darkest = Math.Max(darkest, pixels[i + 3]);
+                        colour = Math.Max(colour, Math.Max(pixels[i], Math.Max(pixels[i + 1], pixels[i + 2])) - Math.Min(pixels[i], Math.Min(pixels[i + 1], pixels[i + 2])));
+                    }
+                return (darkest, colour);
             }
-            byte[] tones = [Darkest(toned[0], 12, 22), Darkest(toned[1], 12, 22), Darkest(toned[1], 25, 45), Darkest(toned[0], 25, 45)];
-            check(tones[0] is >= 170 and <= 187 && tones[1] is >= 170 and <= 187 && tones[2] is > 60 and <= 187 && tones[3] > 190,
-                  $"speed glyphs and dashes are secondary, digits label-toned (alpha {string.Join(", ", tones)})");
+            int[] glyphColour = [Scan(toned[0], 12, 22).colour, Scan(toned[1], 12, 22).colour];
+            byte[] tones = [Scan(toned[1], 25, 45).alpha, Scan(toned[0], 25, 45).alpha];
+            check(glyphColour.All(colour => colour > 100) && tones[0] is > 60 and <= 187 && tones[1] > 190,
+                  $"speed glyphs are the clients' coloured app icons, dashes secondary, digits label-toned (colour {string.Join(", ", glyphColour)}, alpha {string.Join(", ", tones)})");
 
             // Sizes: the width is the contract × the size, with and without the character; whole pixels per point keep the runner
             // nearest-neighbour at exactly that size, a fractional size scales the next whole size up down smoothly.
