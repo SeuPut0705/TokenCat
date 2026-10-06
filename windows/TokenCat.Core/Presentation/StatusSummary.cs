@@ -171,13 +171,13 @@ public static class StatusBarContent
     /// is shown and fixed cells, so the width never follows the values.
     public const double Edge = 4, RunnerWidth = 32, Height = 24, MarkSlot = 8 + 3;
 
-    /// Without the character the minimal AI cell widens to 41 pt. Speed items fit "9999.9 tok/s" (an 11 pt value, a thin space and
-    /// an 8.5 pt unit), so a 4-digit rate never shrinks.
+    /// Without the character the minimal AI cell widens to 41 pt. Speed items fit "9999 tok/s" (`Format.BarTps` drops the decimal
+    /// from 100 up; an 11 pt value, a thin space and an 8.5 pt unit), so a 4-digit rate never shrinks.
     public static double CellWidth(StatusBarLayout layout, MetricID id, bool showRunner = true) => layout switch
     {
         StatusBarLayout.Minimal => showRunner ? 30 : 41,
-        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.CodexSpeed or MetricID.ClaudeSpeed => 66, _ => 32 },
-        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.CodexSpeed or MetricID.ClaudeSpeed => 80, _ => 52 },
+        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.CodexSpeed or MetricID.ClaudeSpeed => 56, _ => 32 },
+        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.CodexSpeed or MetricID.ClaudeSpeed => 69, _ => 52 },
     };
 
     /// Neither items nor the character: the 28 pt "TC" placeholder.
@@ -233,8 +233,9 @@ public static class StatusBarContent
                     break;
                 case MetricID.CodexSpeed or MetricID.ClaudeSpeed:
                     // A glyph stands in for the label; the unit is split off and drawn smaller like "%".
-                    var rate = speeds is not null && speeds.TryGetValue(id.SpeedSource!.Value, out var measured) ? Format.Tps(measured) : null;
-                    metrics.Add(new(id, "", rate is null ? "—" : rate + "tok/s", Detail: id.Title + " "
+                    double? measured = speeds is not null && speeds.TryGetValue(id.SpeedSource!.Value, out var found) ? found : null;
+                    var rate = measured is { } known ? Format.Tps(known) : null;
+                    metrics.Add(new(id, "", measured is { } shown ? Format.BarTps(shown) + "tok/s" : "—", Detail: id.Title + " "
                         + (rate is null ? Loc("측정 없음", "no measurement") : Loc($"{rate} 토큰/초", $"{rate} tokens per second"))));
                     break;
             }

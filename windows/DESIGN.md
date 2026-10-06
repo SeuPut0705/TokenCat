@@ -357,7 +357,7 @@ The taskbar can't show text the way the mac menu bar does, so the menu-bar item 
   and a strip with nothing left is the 28 pt "TC"; `Preferences` never lets that happen outside the minimal layout. The one-line layout
   shows the short names (CPU, RAM…) where the mac draws SF Symbols. The Codex and Claude speed items (opt-in, after AI without a
   separator) draw the mac's `SpeedGlyph` (the Codex and Claude app icons, `speed-codex.png`/`speed-claude.png`) in the label slot and that client's "지금 속도" (`SessionPresentation.CurrentSpeed`,
-  `Format.Tps` + a smaller "tok/s") or "—", in 66 pt (two lines) / 80 pt (one line) cells. Narrator reads the strip as one text
+  `Format.BarTps`, whole numbers from 100 up, + a smaller "tok/s") or "—", in 56 pt (two lines) / 69 pt (one line) cells. Narrator reads the strip as one text
   element (`StatusBarMetric.Spoken`). Layout, items, order and the character come from Settings › Widget (§4.4); default **two
   lines** (like the mac bar), the six standard items, the character shown, 100 %.
 * **Size**: 100, 125, 150, 175, 200, 250 or 300 % (`widgetScale`, default 100; another stored value becomes the nearest). Device pixels

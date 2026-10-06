@@ -200,10 +200,10 @@ public static class StatusSummaryChecks
                 stable = stable && unknown == widths[key];
             }
         check("layout width is stable from unknown to maximum values", stable);
-        // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30; each speed item 66 on two
-        // lines, 80 on one.
+        // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30; each speed item 56 on two
+        // lines, 69 on one.
         check($"cell widths match the layout contract: {string.Join(", ", widths)}", widths["Compact"] == 272 && widths["Inline"] == 410 && widths["Minimal"] == 72
-              && widths["Compact/speed"] == 404 && widths["Inline/speed"] == 570 && widths["Minimal/speed"] == 72);
+              && widths["Compact/speed"] == 384 && widths["Inline/speed"] == 548 && widths["Minimal/speed"] == 72);
         // Without the character (mac StatusBarContentView): no runner slot, the minimal AI cell 41, nothing at all the 28 pt "TC".
         check("without the character the runner slot goes, the minimal cell widens and an empty strip is 28 pt",
               StatusBarContent.RequiredWidth(StatusBarLayout.Minimal, [MetricID.Ai], showRunner: false) == 49

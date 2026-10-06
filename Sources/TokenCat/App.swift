@@ -570,6 +570,8 @@ final class DashboardModel: ObservableObject {
 enum Format {
     static func percent(_ value: Double?) -> String { value.map { String(format: "%.0f%%", $0) } ?? "—" }
     static func tps(_ value: Double?) -> String { value.map { String(format: "%.1f", $0) } ?? "—" }
+    /// The bar's narrower rate: one decimal below 100 tok/s, whole numbers from 100 up ("55.6", "312", "1234").
+    static func barTps(_ value: Double) -> String { String(format: value < 99.95 ? "%.1f" : "%.0f", value) }
     static func ratio(_ used: UInt64?, _ total: UInt64?) -> Double? {
         guard let used, let total, total > 0 else { return nil }
         return Double(used) / Double(total) * 100

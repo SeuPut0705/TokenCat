@@ -152,8 +152,9 @@ enum StatusBarContent {
                                        isActive: hasTokenSample && ai.running > 0, activityState: state)
             case .codexSpeed, .claudeSpeed:
                 // A glyph (`SpeedGlyph`) stands in for the label; the unit is split off and drawn smaller like "%".
-                let rate = id.speedSource.flatMap { speeds[$0] }.map(Format.tps)
-                return StatusBarMetric(id: id, label: "", value: rate.map { $0 + "tok/s" } ?? "—", symbol: "",
+                let measured = id.speedSource.flatMap { speeds[$0] }
+                let rate = measured.map(Format.tps)
+                return StatusBarMetric(id: id, label: "", value: measured.map { Format.barTps($0) + "tok/s" } ?? "—", symbol: "",
                                        detail: id.title + " " + (rate.map { loc("\($0) 토큰/초", "\($0) tokens per second") }
                                                                  ?? loc("측정 없음", "no measurement")))
             }
@@ -345,11 +346,11 @@ final class StatusBarContentView: NSView {
     func cellWidth(_ id: MetricID) -> CGFloat {
         switch layout {
         case .minimal: return showRunner ? 30 : 41
-        // Speed items fit "9999.9 tok/s" (an 11 pt value, a thin space and an 8.5 pt unit: 62 pt), so a 4-digit rate never shrinks.
+        // Speed items fit "9999 tok/s" (`Format.barTps` drops the decimal from 100 up), so a 4-digit rate never shrinks.
         case .compact:
-            switch id { case .network: return 66; case .ai: return 36; case .codexSpeed, .claudeSpeed: return 66; default: return 32 }
+            switch id { case .network: return 66; case .ai: return 36; case .codexSpeed, .claudeSpeed: return 56; default: return 32 }
         case .inline:
-            switch id { case .network: return 114; case .ai: return 46; case .codexSpeed, .claudeSpeed: return 80; default: return 52 }
+            switch id { case .network: return 114; case .ai: return 46; case .codexSpeed, .claudeSpeed: return 69; default: return 52 }
         }
     }
 
@@ -991,9 +992,9 @@ func runStatusBarChecks() -> [String] {
     }
     check("layout width is stable from unknown to maximum values", stable)
     // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30 (41 without the cat);
-    // each speed item 66 on two lines, 80 on one.
+    // each speed item 56 on two lines, 69 on one.
     let expected: [String: CGFloat] = ["compact/true": 272, "inline/true": 410, "minimal/true": 72, "minimal/false": 49,
-                                       "compact/true/speed": 404, "inline/true/speed": 570, "minimal/true/speed": 72]
+                                       "compact/true/speed": 384, "inline/true/speed": 548, "minimal/true/speed": 72]
     check("cell widths match the layout contract", expected.allSatisfy { widths[$0.key] == $0.value })
     check("minimal layout fits beside a notch", (46...72).contains(widths["minimal/true"] ?? 0)
           && (widths["minimal/true"] ?? 0) < (widths["compact/true"] ?? 0))
@@ -1006,7 +1007,7 @@ func runStatusBarChecks() -> [String] {
     }
     let worst = [metric(.cpu, "100%"), metric(.memory, "100%"), metric(.disk, "100%"), metric(.battery, "100%"),
                  metric(.network, "↑999MB/s\n↓125MB/s"), metric(.ai, "99", .input),
-                 metric(.codexSpeed, "9999.9tok/s"), metric(.claudeSpeed, "9999.9tok/s")]
+                 metric(.codexSpeed, "9999tok/s"), metric(.claudeSpeed, "9999tok/s")]
     var shrunk: [String] = []
     var drifting: [String] = []
     for layout in StatusBarLayout.allCases {

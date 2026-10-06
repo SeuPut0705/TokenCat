@@ -2,6 +2,12 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.13.2
+
+**macOS and Windows**
+
+- The Codex and Claude speed items take less room: 56 pt on two lines and 69 pt on one (was 66 and 80), with the bar showing whole numbers from 100 tok/s up. · Codex·Claude 속도 항목의 폭을 줄였습니다(두 줄 56pt, 한 줄 69pt, 이전 66·80pt). 100 tok/s부터는 메뉴 막대에서 소수점 없이 표시합니다.
+
 ## 0.13.1
 
 **macOS and Windows**

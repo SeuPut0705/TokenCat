@@ -126,7 +126,7 @@ static class AppChecks
             };
             var busy = new StatusAISummary { Running = 99, Input = 99, Phase = TokenActivityState.Input };
             var items = Enum.GetValues<MetricID>();
-            // The speed items' worst realistic rate, "9999.9 tok/s" (a sub-millisecond time between tokens).
+            // The speed items' worst realistic rate, "9999 tok/s" on the bar (a sub-millisecond time between tokens).
             var speeds = new Dictionary<TokenSource, double> { [TokenSource.Codex] = 9999.94, [TokenSource.Claude] = 9999.94 };
             List<string> unstable = [], shrunk = [];
             foreach (var layout in Enum.GetValues<StatusBarLayout>())

@@ -88,6 +88,8 @@ public static partial class Format
 
     public static string Percent(double? value) => value is { } v ? v.ToString("F0", Invariant) + "%" : "—";
     public static string Tps(double? value) => value is { } v ? v.ToString("F1", Invariant) : "—";
+    /// The bar's narrower rate: one decimal below 100 tok/s, whole numbers from 100 up ("55.6", "312", "1234").
+    public static string BarTps(double value) => value.ToString(value < 99.95 ? "F1" : "F0", Invariant);
 
     public static double? Ratio(ulong? used, ulong? total) =>
         used is { } u && total is { } t && t > 0 ? (double)u / t * 100 : null;
