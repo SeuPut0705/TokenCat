@@ -66,10 +66,14 @@ public sealed class HermesLog(string path) : ITokenLogReader
     /// The root Hermes lists profiles under: a `HERMES_HOME` of `<root>\profiles\<name>` names `<root>`.
     public static string Root(string home)
     {
+        // Cut the given string itself: GetDirectoryName rewrites '/' to '\' on Windows, so the root would not match the roots
+        // other paths are compared with.
         var trimmed = home.TrimEnd('/', '\\');
-        var parent = System.IO.Path.GetDirectoryName(trimmed);
-        return parent is not null && string.Equals(System.IO.Path.GetFileName(parent), "profiles", StringComparison.OrdinalIgnoreCase)
-            && System.IO.Path.GetDirectoryName(parent) is { } root ? root : trimmed;
+        var name = trimmed.LastIndexOfAny(['/', '\\']);
+        if (name <= 0) return trimmed;
+        var parent = trimmed[..name];
+        var profiles = parent.LastIndexOfAny(['/', '\\']);
+        return profiles > 0 && string.Equals(parent[(profiles + 1)..], "profiles", StringComparison.OrdinalIgnoreCase) ? parent[..profiles] : trimmed;
     }
 
     // Reading
