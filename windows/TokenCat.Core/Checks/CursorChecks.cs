@@ -153,9 +153,11 @@ public static class CursorChecks
                 return;
             }
             // macOS SQLite refuses a read-only connection to a WAL database without its -wal, which is why the reader opens a
-            // snapshot; Windows' winsqlite3 may open it, so the precondition only holds off Windows.
+            // snapshot; on Windows the fixture's -wal may outlive its writer and winsqlite3 may open it, so the precondition
+            // only holds off Windows.
             using (var plain = OpenCodeDatabase.Open(state))
-                check(!File.Exists(state + "-wal") && (OperatingSystem.IsWindows() || plain?.Query("SELECT 1 FROM composerHeaders", [], _ => { }) != true),
+                check(OperatingSystem.IsWindows()
+                      || (!File.Exists(state + "-wal") && plain?.Query("SELECT 1 FROM composerHeaders", [], _ => { }) != true),
                       "Cursor fixture: the IDE database read without its WAL as a plain read-only connection, so the snapshot path goes untested");
 
             var now = Start.AddSeconds(12);
