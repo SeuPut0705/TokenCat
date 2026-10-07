@@ -14,13 +14,23 @@ struct TokenProvider {
     let format: TokenLogFormat?
 
     static let all: [TokenProvider] = [
-        TokenProvider(source: .codex, roots: { home, _ in [home.appendingPathComponent(".codex/sessions")] }, format: .codex),
-        TokenProvider(source: .claude, roots: { home, _ in [home.appendingPathComponent(".claude/projects")] }, format: .claude),
+        // CODEX_HOME moves Codex's state; ~/.codex stays a fallback for a GUI session that lacks the shell's variable.
+        TokenProvider(source: .codex, roots: { home, env in
+            [env.path("CODEX_HOME"), home.appendingPathComponent(".codex")].compactMap { $0?.appendingPathComponent("sessions") }
+                + TokenClientRoots.roots(of: .codex, home, env)
+        }, format: .codex),
+        TokenProvider(source: .claude, roots: { home, env in
+            claudeConfigDirectories(home, env).map { $0.appendingPathComponent("projects") } + TokenClientRoots.roots(of: .claude, home, env)
+        }, format: .claude),
+        // OpenCode and the apps built on its store (Kilo Code, MiMo Code): each app's data folder and its `<APP>_DB` file's.
         TokenProvider(source: .opencode, roots: { home, env in
-            [openCodeDatabasePath(home, env)?.deletingLastPathComponent(), dataHome(home, env).appendingPathComponent("opencode")].compactMap { $0 }
+            OpenCodeApp.all.flatMap { [$0.databasePath(home, env)?.deletingLastPathComponent(), $0.dataFolder(home, env)] }.compactMap { $0 }
         }, format: .opencode),
+        // GEMINI_CLI_HOME replaces home; under the macOS Seatbelt sandbox (SANDBOX=sandbox-exec) Gemini CLI keeps its
+        // runtime files in ~/.cache/.gemini instead.
         TokenProvider(source: .gemini, roots: { home, env in
-            [(env.path("GEMINI_CLI_HOME") ?? home).appendingPathComponent(".gemini/tmp")]
+            let base = env.path("GEMINI_CLI_HOME") ?? home
+            return [base.appendingPathComponent(".gemini/tmp"), base.appendingPathComponent(".cache/.gemini/tmp")]
         }, format: .gemini),
         // Qwen keeps sessions under its runtime dir: $QWEN_RUNTIME_DIR, else $QWEN_HOME, else ~/.qwen.
         TokenProvider(source: .qwen, roots: { home, env in
@@ -34,34 +44,108 @@ struct TokenProvider {
         TokenProvider(source: .amp, roots: { home, env in
             [env.path("AMP_DATA_DIR"), dataHome(home, env).appendingPathComponent("amp")].compactMap { $0?.appendingPathComponent("threads") }
         }, format: .amp),
-        TokenProvider(source: .cline, roots: { home, _ in
-            let support = home.appendingPathComponent("Library/Application Support")
-            return editors.flatMap { editor in
-                vscodeExtensions.map { support.appendingPathComponent("\(editor)/User/globalStorage/\($0)/tasks") }
-            } + [home.appendingPathComponent(".cline/data/sessions")]
+        // Cline-format extensions in any VS Code family editor, then Cline's shared store (CLINE_DIR → ~/.cline,
+        // CLINE_DATA_DIR → <it>/data): `tasks` from the extension and JetBrains, `sessions` (CLINE_SESSION_DATA_DIR) from the CLI.
+        TokenProvider(source: .cline, roots: { home, env in
+            let data = env.path("CLINE_DATA_DIR") ?? (env.path("CLINE_DIR") ?? home.appendingPathComponent(".cline")).appendingPathComponent("data")
+            let defaultData = home.appendingPathComponent(".cline/data")
+            return extensionTaskRoots(in: home.appendingPathComponent("Library/Application Support"))
+                + [env.path("CLINE_SESSION_DATA_DIR") ?? data.appendingPathComponent("sessions"), data.appendingPathComponent("tasks"),
+                   defaultData.appendingPathComponent("sessions"), defaultData.appendingPathComponent("tasks")]
         }, format: .cline),
-        // omp and Pi both move their agent folder to $PI_CODING_AGENT_DIR; sessions live in its `sessions`.
+        // omp and Pi both move their agent folder to $PI_CODING_AGENT_DIR; sessions live in its `sessions`. omp names its
+        // folder ~/$PI_CONFIG_DIR (default .omp), keeps named profiles in <it>/profiles/<name>/agent, and with $XDG_DATA_HOME/omp
+        // present (after `omp config migrate`) writes sessions to $XDG_DATA_HOME/omp[/profiles/<name>]/sessions.
         TokenProvider(source: .omp, roots: { home, env in
-            [env.path("PI_CODING_AGENT_DIR"), home.appendingPathComponent(".omp/agent"), home.appendingPathComponent(".pi/agent")]
-                .compactMap { $0?.appendingPathComponent("sessions") }
+            let configs = [env["PI_CONFIG_DIR"].flatMap { $0.isEmpty ? nil : home.appendingPathComponent($0) }, home.appendingPathComponent(".omp")]
+                .compactMap { $0 }
+            let xdg = env.path("XDG_DATA_HOME")?.appendingPathComponent("omp")
+            let profiles: [URL] = configs.flatMap { subfolders($0.appendingPathComponent("profiles")).map { $0.appendingPathComponent("agent") } }
+            let agents: [URL] = [env.path("PI_CODING_AGENT_DIR")].compactMap { $0 } + configs.map { $0.appendingPathComponent("agent") }
+                + [home.appendingPathComponent(".pi/agent")] + profiles
+            let xdgData: [URL] = xdg.map { [$0] + subfolders($0.appendingPathComponent("profiles")) } ?? []
+            return (agents + xdgData).map { $0.appendingPathComponent("sessions") } + TokenClientRoots.roots(of: .omp, home, env)
         }, format: .omp),
-        TokenProvider(source: .droid, roots: { home, _ in [home.appendingPathComponent(".factory/sessions")] }, format: .droid),
+        // FACTORY_HOME_OVERRIDE replaces the home folder for droid's own session store.
+        TokenProvider(source: .droid, roots: { home, env in
+            [env.path("FACTORY_HOME_OVERRIDE"), home].compactMap { $0?.appendingPathComponent(".factory/sessions") }
+        }, format: .droid),
+        // Cursor agent transcripts (IDE and cursor-agent CLI). CURSOR_CONFIG_DIR moves the CLI's config folder; ~/.cursor stays
+        // the IDE's, so both are listed.
+        TokenProvider(source: .cursor, roots: { home, env in
+            [env.path("CURSOR_CONFIG_DIR"), home.appendingPathComponent(".cursor")].compactMap { $0?.appendingPathComponent("projects") }
+        }, format: .cursor),
+        // Grok Build keeps sessions under $GROK_HOME (default ~/.grok); its logs/unified.jsonl is read beside them.
+        TokenProvider(source: .grok, roots: { home, env in
+            [(env.path("GROK_HOME") ?? home.appendingPathComponent(".grok")).appendingPathComponent("sessions")]
+        }, format: .grok),
+        // HERMES_HOME may name a profile (<root>/profiles/<name>); the root lists every profile's state.db.
+        TokenProvider(source: .hermes, roots: { home, env in
+            [env.path("HERMES_HOME").map(HermesLog.root), home.appendingPathComponent(".hermes")].compactMap { $0 }
+        }, format: .hermes),
+        // OpenClaw's state dir: $OPENCLAW_STATE_DIR, else `.openclaw` (`.openclaw-<name>` for a named $OPENCLAW_PROFILE) in
+        // $OPENCLAW_HOME or home. Before the rename it was ~/.clawdbot (until v2026.3.22 also ~/.moltbot).
+        TokenProvider(source: .openclaw, roots: { home, env in
+            let base = env.path("OPENCLAW_HOME") ?? home
+            let profile = env["OPENCLAW_PROFILE"].flatMap { name -> URL? in
+                guard !name.isEmpty, name.lowercased() != "default",
+                      name.unicodeScalars.allSatisfy({ CharacterSet.alphanumerics.contains($0) || "-_".unicodeScalars.contains($0) }) else { return nil }
+                return base.appendingPathComponent(".openclaw-\(name)")
+            }
+            return [env.path("OPENCLAW_STATE_DIR"), profile, base.appendingPathComponent(".openclaw"), home.appendingPathComponent(".openclaw"),
+                    home.appendingPathComponent(".clawdbot"), home.appendingPathComponent(".moltbot")].compactMap { $0?.appendingPathComponent("agents") }
+        }, format: .openclaw),
+        // Goose (etcetera's XDG strategy on macOS too): $GOOSE_PATH_ROOT/data, else $XDG_DATA_HOME/goose or ~/.local/share/goose.
+        TokenProvider(source: .goose, roots: { home, env in
+            [env.path("GOOSE_PATH_ROOT")?.appendingPathComponent("data"), dataHome(home, env).appendingPathComponent("goose")]
+                .compactMap { $0?.appendingPathComponent("sessions") }
+        }, format: .goose),
+        // Kimi Code ($KIMI_CODE_HOME), the Kimi desktop app's embedded Kimi Code (Kimi Work), then the archived kimi-cli
+        // ($KIMI_SHARE_DIR); each keeps its sessions in `sessions`.
+        TokenProvider(source: .kimi, roots: { home, env in
+            [env.path("KIMI_CODE_HOME") ?? home.appendingPathComponent(".kimi-code"),
+             home.appendingPathComponent("Library/Application Support/kimi-desktop/daimon-share/daimon/runtime/kimi-code/home"),
+             env.path("KIMI_SHARE_DIR") ?? home.appendingPathComponent(".kimi")]
+                .map { $0.appendingPathComponent("sessions") }
+        }, format: .kimi),
     ]
 
-    /// VS Code family editors whose globalStorage may hold Cline, Roo Code or Kilo Code tasks.
-    static let editors = ["Code", "Code - Insiders", "VSCodium", "Cursor", "Windsurf"]
-    static let vscodeExtensions = ["saoudrizwan.claude-dev", "rooveterinaryinc.roo-cline", "kilocode.kilo-code"]
+    /// Cline-format VS Code extensions and the product each one is (nil: Cline itself).
+    static let vscodeExtensions: [(id: String, client: String?)] = [
+        ("saoudrizwan.claude-dev", nil), ("rooveterinaryinc.roo-cline", "Roo Code"), ("kilocode.kilo-code", "Kilo Code"),
+        ("zoocodeorganization.zoo-code", "Zoo Code"), ("ibm.bob-code", "IBM Bob"),
+    ]
+
+    /// `<editor>/User/globalStorage/<extension>/tasks` for every VS Code family editor in `support` (Code, Cursor, Windsurf,
+    /// Antigravity, Kiro, IBM Bob, …): one listing plus one stat per folder, so no list of editor names goes stale.
+    static func extensionTaskRoots(in support: URL) -> [URL] {
+        let apps = (try? FileManager.default.contentsOfDirectory(atPath: support.path)) ?? []
+        return apps.sorted().flatMap { app -> [URL] in
+            let storage = support.appendingPathComponent(app).appendingPathComponent("User/globalStorage")
+            guard FileManager.default.fileExists(atPath: storage.path) else { return [] }
+            return vscodeExtensions.map { storage.appendingPathComponent($0.id).appendingPathComponent("tasks") }
+        }
+    }
+
+    /// Claude Code's config folders: `CLAUDE_CONFIG_DIR` (one folder; a comma-separated list as ccusage reads it), then
+    /// `$XDG_CONFIG_HOME/claude` (default ~/.config/claude, ccusage's legacy location) and ~/.claude.
+    static func claudeConfigDirectories(_ home: URL, _ environment: [String: String]) -> [URL] {
+        let configured = environment.paths("CLAUDE_CONFIG_DIR")
+        return configured + [(environment.path("XDG_CONFIG_HOME") ?? home.appendingPathComponent(".config")).appendingPathComponent("claude"),
+                             home.appendingPathComponent(".claude")]
+    }
+
+    /// Visible subfolders of `directory`, by name; empty when it is missing.
+    static func subfolders(_ directory: URL) -> [URL] {
+        ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isDirectoryKey],
+                                                       options: [.skipsHiddenFiles])) ?? [])
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
 
     /// `$XDG_DATA_HOME`, else ~/.local/share (OpenCode and Amp use it on macOS too).
     static func dataHome(_ home: URL, _ environment: [String: String]) -> URL {
         environment.path("XDG_DATA_HOME") ?? home.appendingPathComponent(".local/share")
-    }
-
-    /// `OPENCODE_DB` as OpenCode resolves it: an absolute path, else a path inside its data folder; `:memory:` is no file.
-    static func openCodeDatabasePath(_ home: URL, _ environment: [String: String]) -> URL? {
-        guard let value = environment["OPENCODE_DB"], !value.isEmpty, value != ":memory:" else { return nil }
-        return value.hasPrefix("/") ? URL(fileURLWithPath: value).standardizedFileURL
-            : dataHome(home, environment).appendingPathComponent("opencode").appendingPathComponent(value).standardizedFileURL
     }
 
     func existingRoots(home: URL, environment: [String: String]) -> [URL] {
@@ -77,6 +161,38 @@ struct TokenProvider {
         let prefix = home.path + "/"
         return all.filter { $0.format != nil }.flatMap { $0.roots(home, [:]) }
             .map { $0.path.hasPrefix(prefix) ? "~/" + $0.path.dropFirst(prefix.count) : $0.path }.joined(separator: " · ")
+    }
+}
+
+/// Folders where another product writes a read source's log format. They join that source's roots, and the tracker labels
+/// rows read under them with `clientName` (the reader's own label wins). A clone's account limits are not the source's
+/// subscription, so the tracker drops them; telemetry still matches by session ID, which is unique per log.
+struct TokenClientRoots {
+    let source: TokenSource
+    let clientName: String
+    let roots: (_ home: URL, _ environment: [String: String]) -> [URL]
+
+    static let all: [TokenClientRoots] = [
+        // TRAE CLI (TraeX), a codex-rs fork: Codex rollouts in ~/.trae/cli/sessions/YYYY/MM/DD. TRAEX_SESSIONS_DIR is
+        // agentsview's convention, not a TRAE setting.
+        TokenClientRoots(source: .codex, clientName: "TRAE CLI", roots: { home, env in
+            [env.path("TRAEX_SESSIONS_DIR"), home.appendingPathComponent(".trae/cli/sessions")].compactMap { $0 }
+        }),
+        // OpenClaude, a Claude Code fork with its own config folder ($OPENCLAUDE_CONFIG_DIR; ~/.openclaude kept as fallback).
+        TokenClientRoots(source: .claude, clientName: "OpenClaude", roots: { home, env in
+            [env.path("OPENCLAUDE_CONFIG_DIR"), home.appendingPathComponent(".openclaude")].compactMap { $0?.appendingPathComponent("projects") }
+        }),
+        // Qoder writes Claude Code transcripts: ~/.qoder (CLI), ~/.qoder-cn (China build), the IDE's SharedClientCache.
+        TokenClientRoots(source: .claude, clientName: "Qoder", roots: { home, _ in
+            [".qoder/projects", ".qoder-cn/projects", "Library/Application Support/Qoder/SharedClientCache/cli/projects"]
+                .map { home.appendingPathComponent($0) }
+        }),
+        // Pi's own sessions folder override (omp has none); logs in ~/.pi/agent are labelled by the omp reader.
+        TokenClientRoots(source: .omp, clientName: "Pi", roots: { _, env in [env.path("PI_CODING_AGENT_SESSION_DIR")].compactMap { $0 } }),
+    ]
+
+    static func roots(of source: TokenSource, _ home: URL, _ environment: [String: String]) -> [URL] {
+        all.filter { $0.source == source }.flatMap { $0.roots(home, environment) }
     }
 }
 
@@ -137,5 +253,11 @@ extension Dictionary where Key == String, Value == String {
     /// A non-empty environment value as a file URL.
     func path(_ key: String) -> URL? {
         self[key].flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
+    }
+
+    /// A comma-separated list of folders (blank entries skipped), each as `path` reads one.
+    func paths(_ key: String) -> [URL] {
+        (self[key] ?? "").split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+            .map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) }
     }
 }

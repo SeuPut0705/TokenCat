@@ -20,7 +20,7 @@ struct SystemSnapshot: Codable {
 
 /// Every client TokenCat recognises; `TokenProvider.all` (TokenProviders.swift) says where each keeps its logs and which are read.
 enum TokenSource: String, Codable, CaseIterable {
-    case codex, claude, opencode, gemini, qwen, copilot, amp, cline, omp, droid
+    case codex, claude, opencode, gemini, qwen, copilot, amp, cline, omp, droid, cursor, grok, hermes, openclaw, goose, kimi
     var title: String {
         switch self {
         case .codex: return "Codex"
@@ -33,6 +33,12 @@ enum TokenSource: String, Codable, CaseIterable {
         case .cline: return "Cline"
         case .omp: return "omp"
         case .droid: return "Droid"
+        case .cursor: return "Cursor"
+        case .grok: return "Grok"
+        case .hermes: return "Hermes"
+        case .openclaw: return "OpenClaw"
+        case .goose: return "Goose"
+        case .kimi: return "Kimi Code"
         }
     }
     /// The vendor name alone, before a word like "한도" ("Claude 5시간 한도").
@@ -54,7 +60,11 @@ enum TokenSource: String, Codable, CaseIterable {
         case .gemini: return "gemini --resume"
         case .copilot: return "copilot --resume"
         case .amp: return "amp threads continue"
-        case .qwen, .cline, .omp, .droid: return nil
+        case .grok: return "grok --resume"
+        case .hermes: return "hermes --resume"
+        case .kimi: return "kimi -r"
+        case .goose: return "goose session --resume --session-id"
+        case .qwen, .cline, .omp, .droid, .cursor, .openclaw: return nil
         }
     }
     /// The clients telemetry setup connects to TokenCat's collector: Codex and Claude Code always, Gemini CLI and Qwen Code

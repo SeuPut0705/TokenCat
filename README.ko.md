@@ -45,9 +45,9 @@
 
 ---
 
-터미널 여러 개에서 Codex·Claude Code나 다른 코딩 에이전트(OpenCode, Gemini CLI, omp 등)를 돌리다 보면 어느 세션이 일하고 있고 어느 세션이 내 답을 기다리는지 놓치기 쉽습니다. TokenCat은 그 상태를 메뉴 막대 한 칸에 모읍니다. 고양이가 걸으면 작업 중이고, 정면을 보고 앉아 있으면 입력이 필요하다는 뜻입니다. 항목을 누르면 세션별 상태, 최근 5분 출력 토큰, 지금 속도, Codex·Claude 사용 한도, Mac 시스템 지표를 한 화면에서 봅니다.
+터미널 여러 개에서 Codex·Claude Code나 다른 코딩 에이전트(OpenCode, Gemini CLI, Cursor, Grok, Kimi Code, omp 등)를 돌리다 보면 어느 세션이 일하고 있고 어느 세션이 내 답을 기다리는지 놓치기 쉽습니다. TokenCat은 그 상태를 메뉴 막대 한 칸에 모읍니다. 고양이가 걸으면 작업 중이고, 정면을 보고 앉아 있으면 입력이 필요하다는 뜻입니다. 항목을 누르면 세션별 상태, 최근 5분 출력 토큰, 지금 속도, Codex·Claude 사용 한도, Mac 시스템 지표를 한 화면에서 봅니다.
 
-숫자는 있는 그대로 보여 줍니다. 토큰 수는 로컬 로그에 실제로 기록된 값이고, tok/s 속도는 실제 **실측**이 있을 때만 표시합니다. 클라이언트가 이 Mac의 수집기로 보낸 실측이거나, 클라이언트가 응답마다 직접 기록한 요청 시간(OpenCode·omp)입니다. 로그 시각의 차이로 속도를 추정하지 않고, 여러 세션의 속도를 합치지 않으며, 직접 켜는 **평균 속도** 항목에서만 세션별 실측을 평균하고, 모르는 값은 `—`로 둡니다.
+숫자는 있는 그대로 보여 줍니다. 토큰 수는 로컬 로그에 실제로 기록된 값이고, tok/s 속도는 실제 **실측**이 있을 때만 표시합니다. 클라이언트가 이 Mac의 수집기로 보낸 실측이거나, 클라이언트가 응답마다 직접 기록한 요청 시간(OpenCode·omp·Grok·Hermes·Goose·Kimi Code)입니다. 로그 시각의 차이로 속도를 추정하지 않고, 여러 세션의 속도를 합치지 않으며, 직접 켜는 **평균 속도** 항목에서만 세션별 실측을 평균하고, 모르는 값은 `—`로 둡니다.
 
 - **입력 요청을 놓치지 않게**: 질문이나 계획 승인을 기다리는 세션은 노란 `?`와 정면을 보는 고양이로 알립니다. 원하면 알림도 보냅니다.
 - **세션과 하위 에이전트를 한 목록에**: 진행 상태, 실행 중인 도구 종류, 이번 턴 출력, 컨텍스트를 세션마다 보여 주고 하위 에이전트는 부모 아래에 묶습니다.
@@ -68,7 +68,7 @@
 
 최근 5분 동안 로그에 기록된 출력 토큰을 5초 단위 막대로 보여 주고, 합계는 카드 제목 줄에 둡니다. 여러 클라이언트가 함께 기록하면 제목 옆에 `Claude Code 6.6k · Codex 1.2k`처럼 많은 순서로 나눠 보이고, 다 들어가지 않으면 작은 쪽부터 `외 N`으로 접습니다. 제목 아래 줄에는 마지막 기록이 나오고, 30초 동안 새 기록이 없으면 그 자리에서 지금 기다리는 이유(API 재시도, `명령 실행 중` 같은 도구 범주, 로그 대기)를 알려 줍니다. 입력을 기다리는 세션은 머리말과 그 행이 이미 말하므로 카드에서 되풀이하지 않습니다. 막대는 기록량이며 속도로 환산하지 않고, 막대 눈금은 그래프 도움말에 있습니다.
 
-그 줄 끝의 **지금 속도**는 보이는 진행 세션 가운데 2분 안의 가장 최근 실측 한 건이며, 그 세션의 제목을 붙입니다(`지금 속도 · Install guide 55.6 생성 tok/s`). 수집기가 받은 실측이거나 OpenCode·omp가 응답마다 기록한 요청 시간입니다. 그 세션의 현재 모델로 잰 값만 쓰고, 재시작을 기다리는 클라이언트는 빼며, 세션끼리 합치거나 평균내지 않습니다. 진행·도구 실행·API 재시도 중인데 실측이 없으면 `속도 실측 없음`, 입력이나 로그만 기다리면 숨깁니다. 로그 시각으로 만든 속도는 쓰지 않습니다.
+그 줄 끝의 **지금 속도**는 보이는 진행 세션 가운데 2분 안의 가장 최근 실측 한 건이며, 그 세션의 제목을 붙입니다(`지금 속도 · Install guide 55.6 생성 tok/s`). 수집기가 받은 실측이거나 OpenCode·omp·Grok·Hermes·Goose·Kimi Code가 응답마다 기록한 요청 시간입니다. 그 세션의 현재 모델로 잰 값만 쓰고, 재시작을 기다리는 클라이언트는 빼며, 세션끼리 합치거나 평균내지 않습니다. 진행·도구 실행·API 재시도 중인데 실측이 없으면 `속도 실측 없음`, 입력이나 로그만 기다리면 숨깁니다. 로그 시각으로 만든 속도는 쓰지 않습니다.
 
 ### 세션마다 지금 하는 일
 
@@ -203,7 +203,7 @@ AI 숫자는 진행 중이거나 입력을 기다리는 최상위 세션 수입�
 
 처음 실행하면 TokenCat이 실제로 한 일과 하지 않는 일을 위 카드가 항목마다 한 줄로 알려 주고, 줄에 포인터를 올리면 자세한 설명이 나옵니다. 실측 연결이 되지 않았으면 그 이유와 `설정 열기`가 카드에 남습니다.
 
-- **본문은 저장하지 않습니다.** 로컬 로그에서 모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 씁니다. 도구 입력은 읽지 않고, API 재시도 기록의 오류 메시지도 저장하지 않습니다. 보여 주는 글은 클라이언트가 직접 만든 세션 제목이나 사용자가 바꾼 세션 이름뿐이며(Claude Code·Codex·OpenCode·omp·Pi·Gemini CLI·Qwen Code·Copilot CLI·Amp·Droid), 한 줄 80자로 자릅니다. 메모리에만 두고 파일·로그로 남기거나 보내지 않으며, 첫 프롬프트를 그대로 옮긴 제목은 쓰지 않습니다.
+- **본문은 저장하지 않습니다.** 로컬 로그에서 모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 씁니다. 도구 입력은 읽지 않고, API 재시도 기록의 오류 메시지도 저장하지 않습니다. 보여 주는 글은 클라이언트가 직접 만든 세션 제목이나 사용자가 바꾼 세션 이름뿐이며(Claude Code·Codex·OpenCode·Kilo Code·MiMo Code·omp·Pi·Gemini CLI·Qwen Code·Copilot CLI·Amp·Droid·Cursor·Grok·Hermes·OpenClaw·Goose·Kimi Code), 한 줄 80자로 자릅니다. 메모리에만 두고 파일·로그로 남기거나 보내지 않으며, 첫 프롬프트를 그대로 옮긴 제목은 쓰지 않습니다.
 - **수집기는 이 Mac 안에만 엽니다.** `127.0.0.1:16493`에서만 받고, 웹페이지 Origin이 붙었거나 Host가 `127.0.0.1`·`localhost`가 아닌 요청은 거부합니다. 받은 실측은 정해진 개수만 메모리에 두고 파일로 남기지 않습니다. 수집기로 받은 것 가운데 디스크에 남는 것은 Claude 한도의 사용률·초기화 시각·받은 시각뿐이며, 다음 실행에도 보이도록 TokenCat 설정 값(UserDefaults)에 둡니다. Claude 데스크톱 앱의 사용량 기록 파일은 읽기만 하고 마지막 기록의 사용률과 시각만 같은 곳에 둡니다.
 - **본문 전송은 끈 채로 연결합니다.** Codex·Claude Code·Gemini CLI·Qwen Code 설정에 실측 전송을 추가할 때 프롬프트·응답 본문 로깅은 끕니다(기본으로 프롬프트를 기록하는 Gemini CLI·Qwen Code에는 `logPrompts: false`).
 - **Claude Code 상태 표시줄은 감싸기만 합니다.** Claude Code는 사용 한도를 상태 표시줄 명령에만 넘겨 주므로, `~/.claude/settings.json`의 `statusLine` 명령을 TokenCat 브리지(`~/Library/Application Support/TokenCat/claude-statusline.sh`)로 바꿉니다. 브리지는 Claude Code가 넘긴 상태 JSON(작업 폴더, 세션, 모델, 비용, 사용 한도 등)을 `127.0.0.1`로만 보내고, 같은 입력으로 원래 명령을 실행해 출력과 종료 코드를 그대로 돌려줍니다. TokenCat은 받은 JSON에서 5시간·주간 한도 숫자만 남기고 나머지는 버립니다. 상태 표시줄이 없었다면 아무것도 출력하지 않는 브리지만 추가합니다.
@@ -368,10 +368,17 @@ Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 
 - **로그**에서 세션, 모델, 출력 토큰, 진행 상태를 읽습니다. 로그가 기록한 시점에만 반영하므로 Claude Code처럼 메시지가 끝날 때 기록하는 클라이언트는 메시지 완료 후 숫자가 오릅니다. 진행 표시는 마지막 기록 뒤 허용 시간(모델 응답 대기 10분, Claude Code 도구 15분, Codex 도구 120초) 안에서만 유지하고, 지나면 `로그 대기`로 바꿉니다. OS 프로세스가 살아 있는지를 뜻하지는 않습니다.
 - **Gemini CLI·Qwen Code** 대화 로그(`~/.gemini/tmp`, `~/.qwen/projects`)도 폴더가 있으면 하위 에이전트까지 같은 방식으로 읽습니다. 로그에는 생성 시간이 없어, 속도는 TokenCat이 Codex·Claude Code처럼 연결하는 각 클라이언트의 자체 실측에서 옵니다. 메인 대화의 응답마다 출력 토큰을 요청 시간으로 나눈 값(**요청 tok/s**)입니다.
-- **OpenCode** 세션은 폴더가 있으면 데이터베이스(`~/.local/share/opencode/opencode.db`)를 읽기 전용으로 열어 읽습니다. OpenCode는 응답마다 시작 시각과 마지막 토큰이 생성된 시각을 기록하므로, 수집기 없이도 그 기록으로 잰 **요청 tok/s**가 붙습니다.
-- **Copilot CLI·Amp·Factory Droid** 로그(`~/.copilot/session-state`, `~/.local/share/amp/threads`, `~/.factory/sessions`)도 폴더가 있으면 같은 방식으로 읽습니다. Copilot CLI는 권한 확인도 기록하므로 `입력 필요`로 보이고, Droid는 세션 출력 합계만 기록하므로 합계가 늘어난 만큼 출력으로 보입니다. 셋 다 생성 시간을 기록하지 않아 속도는 붙지 않습니다.
-- **Cline·Roo Code·Kilo Code** 작업(VS Code 계열 에디터마다의 `globalStorage/<확장>/tasks`)과 **Cline CLI** 세션(`~/.cline/data/sessions`)도 폴더가 있으면 읽습니다. 질문이나 승인 요청은 `입력 필요`로 보입니다. 생성 시간을 기록하지 않아 속도는 붙지 않습니다.
-- **omp·Pi** 세션 로그(`~/.omp/agent/sessions`, `~/.pi/agent/sessions`)도 폴더가 있으면 하위 에이전트까지 같은 방식으로 읽습니다. omp는 요청마다 걸린 시간을 기록하므로, 수집기 없이도 그 기록으로 잰 **요청 tok/s**가 붙습니다.
+- **OpenCode** 세션은 폴더가 있으면 데이터베이스(`~/.local/share/opencode/opencode.db`, 또는 `$XDG_DATA_HOME`·`OPENCODE_DB`)를 읽기 전용으로 열어 읽습니다. 기존 형식과 OpenCode 2의 `session_message` 형식을 모두 읽고, 두 곳에 다 있는 세션은 한쪽만 읽어 두 번 세지 않습니다. **Kilo Code**(`~/.local/share/kilo/kilo.db`)와 **MiMo Code**(`~/.local/share/mimocode/mimocode.db`)도 같은 저장 방식이라 함께 읽고 각자의 이름으로 보입니다. OpenCode는 응답마다 시작 시각과 마지막 토큰이 생성된 시각을 기록하므로, 수집기 없이도 그 기록으로 잰 **요청 tok/s**가 붙습니다.
+- **Copilot CLI·Amp·Factory Droid** 로그(`~/.copilot/session-state`, `~/.local/share/amp/threads`, `~/.factory/sessions` 또는 `$FACTORY_HOME_OVERRIDE/.factory/sessions`)도 폴더가 있으면 같은 방식으로 읽습니다. Copilot CLI는 권한 확인도 기록하므로 `입력 필요`로 보이고, Droid는 세션 출력 합계만 기록하므로 합계가 늘어난 만큼 출력으로 보입니다. 셋 다 생성 시간을 기록하지 않아 속도는 붙지 않습니다.
+- **Cline·Roo Code·Kilo Code·Zoo Code·IBM Bob** 작업(모든 VS Code 계열 에디터의 `globalStorage/<확장>/tasks`)과 Cline 공용 저장소(`~/.cline/data/tasks`, **Cline CLI** 세션은 `~/.cline/data/sessions`; `CLINE_DIR`·`CLINE_DATA_DIR`·`CLINE_SESSION_DATA_DIR`)도 폴더가 있으면 읽습니다. 질문이나 승인 요청은 `입력 필요`로 보입니다. 생성 시간을 기록하지 않아 속도는 붙지 않습니다.
+- **omp·Pi** 세션 로그(`~/.omp/agent/sessions`와 그 이름 붙은 프로필, `~/.pi/agent/sessions`, 그리고 `PI_CODING_AGENT_DIR`·`PI_CONFIG_DIR`·`$XDG_DATA_HOME/omp`·Pi의 `PI_CODING_AGENT_SESSION_DIR`)도 폴더가 있으면 하위 에이전트까지 같은 방식으로 읽습니다. omp는 요청마다 걸린 시간을 기록하므로, 수집기 없이도 그 기록으로 잰 **요청 tok/s**가 붙습니다.
+- **Cursor** 에이전트 세션은 IDE와 `cursor-agent` CLI 모두(`~/.cursor/projects`, `CURSOR_CONFIG_DIR`) Cursor의 대화 기록과 자체 데이터베이스에서 상태·모델·제목·컨텍스트·프로젝트를 읽습니다. Cursor는 토큰 수를 디스크에 남기지 않으므로 출력 토큰과 속도는 표시하지 않습니다.
+- **Grok**(xAI의 Grok Build CLI, `~/.grok/sessions` 또는 `$GROK_HOME`)은 모델 호출마다 걸린 시간을 기록하는 Grok의 `logs/unified.jsonl`에서 호출별 출력 토큰과 잰 **요청 tok/s**를 읽습니다.
+- **Hermes**(Nous Research의 Hermes Agent)는 `~/.hermes/state.db`(또는 `$HERMES_HOME`)와 프로필마다의 `state.db`를 읽기 전용으로 엽니다. 출력은 Hermes 세션 합계가 늘어난 만큼이고, 컨텍스트와 **요청 tok/s**는 `logs/agent.log`의 `API call` 줄에서 오므로 그 로그에 세션의 최근 호출이 남아 있을 때만 보입니다.
+- **OpenClaw**(예전 Clawdbot·Moltbot 설치 포함, `~/.openclaw/agents` 또는 `$OPENCLAW_STATE_DIR`)는 에이전트마다의 SQLite 저장소와 예전 JSONL 파일을 읽습니다. 최근 버전은 큰 항목을 TokenCat이 풀 수 없는 형식으로 압축하므로, 턴의 출력이 실행이 끝난 뒤 OpenClaw 자체 합계로만 보일 수 있습니다. 요청 시간을 기록하지 않아 속도는 붙지 않습니다.
+- **Goose**(`~/.local/share/goose/sessions/sessions.db` 또는 `$GOOSE_PATH_ROOT`)는 읽기 전용으로 열어, 사용량 원장에서 모델 호출마다의 출력 토큰을 읽고 Goose가 호출 시간을 기록했으면 **요청 tok/s**를 붙입니다. 다른 에이전트의 CLI나 ACP 서버를 돌리는 세션(claude-code, codex, gemini-cli, cursor-agent, `*-acp`)은 그 에이전트의 로그를 이미 세므로 토큰과 속도를 보고하지 않습니다.
+- **Kimi Code**(`~/.kimi-code/sessions` 또는 `$KIMI_CODE_HOME`), Kimi 데스크톱 앱 안의 같은 런타임(**Kimi Work**로 표시), 보관된 kimi-cli(`~/.kimi/sessions`, **Kimi CLI**로 표시)를 하위 에이전트까지 읽습니다. Kimi Code는 단계마다 첫 토큰 대기와 스트리밍 시간을 기록하므로 Kimi Code·Kimi Work 세션에는 잰 **요청 tok/s**가 붙고, Kimi CLI 세션에는 속도도 제목도 없습니다. Kimi Code가 kimi-cli에서 옮겨 온 세션은 한 번만 보입니다.
+- **그 밖의 데이터 폴더**도 클라이언트가 쓰는 대로 따라갑니다: `CODEX_HOME`, `CLAUDE_CONFIG_DIR`(쉼표로 여럿 지정 가능)와 `~/.config/claude`, Gemini CLI의 macOS 샌드박스 폴더 `~/.cache/.gemini`. 다른 클라이언트의 형식으로 기록하는 제품은 자기 이름으로 보입니다: **TRAE CLI**(Codex 형식, `~/.trae/cli/sessions`), **OpenClaude**(`~/.openclaude`)와 **Qoder**(`~/.qoder`, Claude Code 형식). 이 행에는 Codex·Claude 계정 한도와 재개 명령이 없습니다.
 - **실측**은 제공사·세션·에이전트 식별자가 정확히 일치할 때만 세션 행에 붙입니다. 모델 이름이나 시간이 가깝다는 이유로 연결하지 않습니다. 속도는 근거에 따라 단위를 나눠 표시합니다.
 - **사용 한도**는 `실시간 한도 확인`이 켜져 있으면 실시간 확인(Codex는 로컬 `codex app-server`, Claude는 Claude Code에 저장된 토큰으로 `api.anthropic.com`)에서, 그리고 Codex 로그, Claude Code가 상태 표시줄을 그릴 때 브리지가 같은 수집기(`/v1/claude/status`)로 보낸 상태 JSON(5시간·주간 한도만), Claude 데스크톱 앱의 사용량 기록 파일(마지막 사용률과 기록 시각만), omp·Pi의 사용량 기록(`agent.db`, 읽기 전용으로 열어 최근 사용률·초기화 시각·기록 시각만)에서 읽습니다.
 - **업데이트**와 **실시간 한도 확인**만 이 Mac 밖으로 나갑니다. 업데이트는 GitHub API에 최신 릴리스를 물어 버전 번호를 비교하고, `업데이트`를 누를 때만 파일을 내려받습니다. 둘 다 위 그림의 수집 경로와는 따로 돕니다.
@@ -380,7 +387,7 @@ Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 |---|---|
 | 생성 tok/s | Codex 서버가 보낸 실제 토큰 간 시간(TBT)의 역수 |
 | 모델 tok/s | 여러 관측을 묶어 보낸 서버 지표의 평균 토큰 간 시간. 개별 세션 속도로 귀속하지 않음 |
-| 요청 tok/s | 출력 토큰 ÷ 요청 시간. Claude Code `api_request`의 성공 요청 시간이거나 OpenCode·omp가 로그에 기록한 응답 시간. 첫 응답 대기·추론을 포함하므로 순수 생성 속도가 아님 |
+| 요청 tok/s | 출력 토큰 ÷ 요청 시간. Claude Code `api_request`의 성공 요청 시간이거나 OpenCode·omp·Grok·Hermes·Goose·Kimi Code가 로그에 기록한 응답 시간. 첫 응답 대기·추론을 포함하므로 순수 생성 속도가 아님 |
 
 더 자세한 규칙은 [자세한 동작](docs/DETAILS.ko.md)의 [토큰 지표](docs/DETAILS.ko.md#토큰-지표), [세션과 상태](docs/DETAILS.ko.md#세션과-상태), [수집 범위와 갱신](docs/DETAILS.ko.md#수집-범위와-갱신)에 있습니다.
 
@@ -421,7 +428,7 @@ TokenCat이 Apple 공증을 받지 않은 앱이라 나오는 안내입니다. [
 
 <br>
 
-실측이 아직 없다는 뜻입니다. TokenCat은 로그 시각으로 속도를 만들지 않습니다. 실측을 받으려면 TokenCat이 실행 중이어야 하고, 연결 뒤 Codex·Claude Code·Gemini CLI·Qwen Code를 새로 실행해야 합니다(OpenCode·omp는 요청 시간을 스스로 기록하므로 따로 할 일이 없습니다). 설정 › 실측 탭에서 클라이언트별 수신 여부를 확인할 수 있습니다. 클라이언트 버전이나 서버 응답에 따라 지표가 오지 않을 수도 있습니다. 출력 카드의 `지금 속도`는 2분 안에 받은 실측만 쓰므로, 그보다 오래됐거나 세션이 지금과 다른 모델로 잰 값이면 행에 속도가 있어도 `속도 실측 없음`으로 둡니다. 이유는 그 문구나 행의 `—`에 포인터를 올리면 보입니다.
+실측이 아직 없다는 뜻입니다. TokenCat은 로그 시각으로 속도를 만들지 않습니다. 실측을 받으려면 TokenCat이 실행 중이어야 하고, 연결 뒤 Codex·Claude Code·Gemini CLI·Qwen Code를 새로 실행해야 합니다(OpenCode·omp·Grok·Hermes·Goose·Kimi Code는 요청 시간을 스스로 기록하므로 따로 할 일이 없습니다). 설정 › 실측 탭에서 클라이언트별 수신 여부를 확인할 수 있습니다. 클라이언트 버전이나 서버 응답에 따라 지표가 오지 않을 수도 있습니다. 출력 카드의 `지금 속도`는 2분 안에 받은 실측만 쓰므로, 그보다 오래됐거나 세션이 지금과 다른 모델로 잰 값이면 행에 속도가 있어도 `속도 실측 없음`으로 둡니다. 이유는 그 문구나 행의 `—`에 포인터를 올리면 보입니다.
 
 </details>
 
@@ -553,7 +560,7 @@ mkdir -p work && swiftc -O docs/Generator/*.swift -o work/docs-generator && work
 | `DashboardView.swift`, `SessionPresentation.swift`, `TokenFlow.swift` | 상세 화면, 세션 묶음과 상태, 출력 막대 |
 | `SettingsView.swift` | 설정 창 |
 | `TokenTracker.swift`, `LogWatcher.swift` | 로컬 JSONL 파싱과 파일 변경 감지 |
-| `TokenProviders.swift`, `Providers/` | 클라이언트 목록과 그 밖의 클라이언트별 기록 읽기(OpenCode, Gemini CLI·Qwen Code, Copilot CLI, Amp, Cline/Roo/Kilo, omp/Pi, Droid) |
+| `TokenProviders.swift`, `Providers/` | 클라이언트 목록과 그 밖의 클라이언트별 기록 읽기(OpenCode/Kilo Code/MiMo Code, Gemini CLI·Qwen Code, Copilot CLI, Amp, Cline/Roo/Kilo/Zoo/IBM Bob, omp/Pi, Droid, Cursor, Grok, Hermes, OpenClaw, Goose, Kimi) |
 | `SessionTitle.swift` | 클라이언트가 만들었거나 사용자가 바꾼 세션 제목 |
 | `LiveLimits.swift`, `AgentUsageHistory.swift` | 실시간 한도 확인(`codex app-server`, Anthropic)과 omp·Pi 사용량 기록 |
 | `Telemetry.swift`, `TelemetrySetup.swift`, `TokenSpeed.swift` | 로컬 OTLP·상태 표시줄 수집기, 클라이언트 설정 연결·복구와 Claude Code 상태 표시줄 브리지, 실측 속도 |

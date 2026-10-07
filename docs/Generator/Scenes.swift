@@ -309,9 +309,11 @@ func architecture(_ theme: Theme, menu: MenuMatrix, assets: String) -> CGImage {
     box(codeGroup, group, radius: 24)
     canvas.text(loc("코딩 에이전트", "Coding agents"), x: codeGroup.minX + 24, baseline: codeGroup.minY + 40, size: 21, bold: true,
                 color: look.secondary)
-    // Every client's own data folder; OpenCode and omp also record each request's duration (a measured speed).
+    // Every client's own data folder; OpenCode, omp, Grok, Hermes, Goose and Kimi Code also record each request's duration
+    // (a measured speed).
     source(jsonl, loc("로컬 기록 · 데이터베이스", "Local logs · databases"),
-           ["Codex · Claude Code · OpenCode", "Gemini CLI · Qwen Code · Copilot CLI", "Amp · Cline · omp · Pi · Droid"])
+           ["Codex · Claude · OpenCode · Gemini · Qwen", "Copilot · Amp · Cline · omp · Droid · Cursor",
+            "Grok · Hermes · OpenClaw · Goose · Kimi"])
     // Both reach the same loopback collector: OTLP for speeds, the Claude Code status line bridge for usage limits.
     source(otlp, loc("OTLP 실측 · 상태 표시줄", "OTLP telemetry · status line"),
            [loc("Codex · Claude · Gemini · Qwen 속도", "Codex · Claude · Gemini · Qwen speed"), loc("Claude Code 상태 표시줄 · 사용 한도", "Claude Code status line · usage limits")])

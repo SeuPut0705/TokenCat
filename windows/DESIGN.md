@@ -105,13 +105,21 @@ cat's (brand)", Runner.swift).
 * Codex: state lives under `CODEX_HOME`, default `~/.codex`, which is `%USERPROFILE%\.codex` (config.toml there). Rollouts are
   `sessions/YYYY/MM/DD/rollout-*.jsonl`. A Codex run in WSL uses the distro's own `~/.codex`. [learn.chatgpt.com config-advanced;
   developers.openai.com/codex/config-basic; search summaries]
-* Parity: the mac app reads `<home>/.codex/sessions` and `<home>/.claude/projects` and ignores `CODEX_HOME`/`CLAUDE_CONFIG_DIR`.
-  Windows v1 does the same (`home = %USERPROFILE%`). WSL logs are out of scope.
-* Other agents (OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline/Roo/Kilo, omp, Droid) are detected automatically by their data
-  folders through the provider registry (`TokenProvider.All`, `Core/Tracking/TokenProviders.cs`, mirroring `TokenProviders.swift`). Each
-  has a parser (`TokenLogFormat`), listed below. Telemetry setup covers `TokenSource.TelemetryClients` (Codex, Claude Code, and Gemini
-  CLI / Qwen Code while their folder exists); live limits and the status line bridge stay with `TokenSource.DefaultClients` (Codex,
-  Claude Code), which `TokenSource.Listed` always names.
+* Parity: log roots honour `CODEX_HOME` (`$CODEX_HOME\sessions`, then `%USERPROFILE%\.codex\sessions`) and `CLAUDE_CONFIG_DIR` (each
+  comma-separated entry's `projects`, then `$XDG_CONFIG_HOME\claude` or `%USERPROFILE%\.config\claude`, then `%USERPROFILE%\.claude`),
+  as on mac; Claude `<session>.orphaned-*.jsonl` copies are skipped. Config and telemetry paths (`AppPaths`: `.codex\config.toml`,
+  `.claude\settings.json`, the bridge) stay fixed under `%USERPROFILE%`. WSL logs are out of scope.
+* Same-format products are extra roots of an existing source (`TokenClientRoots.All` in `TokenProviders.cs`): TRAE CLI
+  (`TRAEX_SESSIONS_DIR`, `%USERPROFILE%\.trae\cli\sessions`) for Codex; OpenClaude (`OPENCLAUDE_CONFIG_DIR`, `%USERPROFILE%\.openclaude`
+  `\projects`) and Qoder (`%USERPROFILE%\.qoder\projects`, `.qoder-cn\projects`, `%APPDATA%\Qoder\SharedClientCache\cli\projects`) for
+  Claude; Pi's `PI_CODING_AGENT_SESSION_DIR` for omp. The tracker sets `ClientName` on rows under them and drops their rate limits;
+  `ResumeCommand` is null for any row with a `ClientName`.
+* Other agents (OpenCode/Kilo Code/MiMo Code, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline/Roo/Kilo/Zoo/IBM Bob, omp/Pi, Droid,
+  Cursor, Grok, Hermes, OpenClaw, Goose, Kimi Code) are detected automatically by their data folders through the provider registry
+  (`TokenProvider.All`, `Core/Tracking/TokenProviders.cs`, mirroring `TokenProviders.swift`). Each has a parser (`TokenLogFormat`),
+  listed below. Telemetry setup covers `TokenSource.TelemetryClients` (Codex, Claude Code, and Gemini CLI / Qwen Code while their folder
+  exists); live limits and the status line bridge stay with `TokenSource.DefaultClients` (Codex, Claude Code), which
+  `TokenSource.Listed` always names.
   * Gemini CLI (`Core/Tracking/GeminiLog.cs`, `TokenLogFormat.Gemini`): `%USERPROFILE%\.gemini\tmp\<project>\chats\session-*.jsonl`
     (`GEMINI_CLI_HOME` moves it), legacy `session-*.json` snapshots unless migrated, subagents in `chats\<parent session>\`; project
     from `.project_root`. Messages are appended again when tokens or tool calls arrive, so output counts per message id. The log has
@@ -120,13 +128,17 @@ cat's (brand)", Runner.swift).
     and `subagents\<session>\agent-*.jsonl` (+ `.meta.json` role). Tool calls/results, `ask_user_question`/`exit_plan_mode` input
     waits and the context window come from the log. Speed only from its telemetry once connected (`qwen-code.api_response`).
   * Both use `GeminiTokens.Output` (candidates, plus thoughts when the total shows they were counted apart), shared with the decoder.
-  * OpenCode (`Core/Tracking/OpenCodeLog.cs`, `TokenLogFormat.OpenCode`): `%USERPROFILE%\.local\share\opencode\opencode.db`
-    (`XDG_DATA_HOME`, a channel build's `opencode-<channel>.db`, or the `OPENCODE_DB` file), SQLite in WAL mode opened read-only through
-    the OS `winsqlite3.dll` (P/Invoke; the checks on a mac host load the system libsqlite3). Re-queried when the database or WAL
-    changes and at least every 2 s while a session is in a turn or updated within the hour (NTFS may report stale times for a file
-    held open). 64 newest sessions (32 + updated within the hour), 200 newest messages each; a message body over 64 KB (a prompt
-    with summary diffs) is never loaded. Turn state from `time.completed`/`finish`/`error` and running tool parts (`question` =
-    input). Speed: a completed reply's output + reasoning over `time.created` → its last generated part (request tok/s).
+  * OpenCode, Kilo Code, MiMo Code (`Core/Tracking/OpenCodeLog.cs`, `TokenLogFormat.OpenCode`):
+    `%USERPROFILE%\.local\share\opencode\opencode.db` (`XDG_DATA_HOME`, a channel build's `opencode-<channel>.db`, or the
+    `OPENCODE_DB` file), Kilo Code's `…\kilo\kilo.db` (`KILO_DB`) and MiMo Code's `…\mimocode\mimocode.db` (`MIMOCODE_HOME\data`,
+    `MIMOCODE_DB`), labelled by `ClientName`. SQLite in WAL mode opened read-only through the OS `winsqlite3.dll` (P/Invoke; the checks
+    on a mac host load the system libsqlite3). Re-queried when the database or WAL changes and at least every 2 s while a session is in
+    a turn or updated within the hour (NTFS may report stale times for a file held open). 64 newest sessions (32 + updated within the
+    hour), 200 newest messages each; a message body over 64 KB (a prompt with summary diffs) is never loaded. Turn state from
+    `time.completed`/`finish`/`error` and running tool parts (`question` = input). Speed: a completed reply's output + reasoning over
+    `time.created` → its last generated part (request tok/s). OpenCode 2's `session_message`/`session_v2` store is read too; each
+    session reads only the store with its newest message, so nothing is counted twice. v2 fields come from `json_extract` in SQLite; an
+    old winsqlite3 without JSON1 parses the v2 row body in memory instead (16 MB cap).
   * Copilot CLI (`Core/Tracking/CopilotLog.cs`, `TokenLogFormat.Copilot`): `<COPILOT_HOME | %USERPROFILE%\.copilot>\session-state\<session>\
     events.jsonl` (legacy `session-state\<session>.jsonl`), bounded tail via `LogLineTail`; project from `session.start`/`session.resume`
     `context.cwd`, `session.context_changed`, else `workspace.yaml` `cwd:`. Turn: `user.message` → `session.task_complete` or an
@@ -139,14 +151,18 @@ cat's (brand)", Runner.swift).
     last assistant `state` (`streaming`, `complete` + `stopReason`, `cancelled`, `error`) and tool `run.status` (`blocked-on-user` =
     input); output from `messages[].usage.outputTokens` at `usage.timestamp`, else `usageLedger.events[]`; project from
     `env.initial.trees[0].uri`. The file's write time is the liveness record. No speed.
-  * Droid (`Core/Tracking/DroidLog.cs`, `TokenLogFormat.Droid`): `%USERPROFILE%\.factory\sessions\<project-slug>\<session>.jsonl`
+  * Droid (`Core/Tracking/DroidLog.cs`, `TokenLogFormat.Droid`): `<FACTORY_HOME_OVERRIDE | %USERPROFILE%>\.factory\sessions\
+    <project-slug>\<session>.jsonl`
     (and directly in `sessions\`) for project and turn state (`llm_only` context messages never open a turn; a text reply without
     `tool_use` completes it), plus `<session>.settings.json` for model (`custom:` and `-[Provider]-N` stripped), effort and the
     `tokenUsage.outputTokens` session total. Growth of that total is output at the settings file's write time; the first read is a
     baseline, so a turn's output counts only when the total was known before it began. No speed.
-  * Cline / Roo Code / Kilo Code (`Core/Tracking/ClineLog.cs`, `TokenLogFormat.Cline`): `<APPDATA | %USERPROFILE%\AppData\Roaming>\<Code |
-    Code - Insiders | VSCodium | Cursor | Windsurf>\User\globalStorage\<extension>\tasks\<task>\ui_messages.json` and the Cline CLI's
-    `%USERPROFILE%\.cline\data\sessions\<id>\<id>.messages.json` (+ `<id>.json` manifest). JSON snapshots re-parsed when write time or
+  * Cline / Roo Code / Kilo Code / Zoo Code / IBM Bob (`Core/Tracking/ClineLog.cs`, `TokenLogFormat.Cline`): `<APPDATA |
+    %USERPROFILE%\AppData\Roaming>\<every editor folder>\User\globalStorage\<extension>\tasks\<task>\ui_messages.json`
+    (`TokenProvider.ExtensionTaskRoots`, extensions and names in `TokenProvider.VSCodeExtensions`), Cline's shared
+    `<CLINE_DATA_DIR | <CLINE_DIR | %USERPROFILE%\.cline>\data>\tasks` and the Cline CLI's `<CLINE_SESSION_DATA_DIR | …\data\sessions>\
+    <id>\<id>.messages.json` (+ `<id>.json` manifest), with the default `%USERPROFILE%\.cline\data` always listed. JSON snapshots
+    re-parsed when write time or
     size change (64 MB cap). Tasks: output = `api_req_started` `tokensOut` at the request's last message; a turn opens on the task,
     `user_feedback` or a new request and ends at `completion_result`/`resume_completed_task`/`plan_mode_respond` (complete),
     `resume_task` or a `cancelReason` (interrupted); interactive asks and retryable failures = input, commands = tool. Model from
@@ -154,12 +170,40 @@ cat's (brand)", Runner.swift).
     `api_conversation_history.json`; cwd from "Current Working/Workspace Directory (…) Files" in its 256 KB head. CLI: output =
     assistant `metrics.outputTokens` at `ts`, model `modelInfo.id`, cwd and turn state from the manifest `status`. No speed.
   * omp / Pi (`Core/Tracking/OmpLog.cs`, `TokenLogFormat.Omp`): `%USERPROFILE%\.omp\agent\sessions\<project>\<timestamp>_<id>.jsonl`
-    and `.pi\agent\sessions`, subagents nested in `<timestamp>_<id>\` up to three folders deep (parent = the root id in that folder
+    (also `PI_CODING_AGENT_DIR\sessions`, `%USERPROFILE%\<PI_CONFIG_DIR>\agent\sessions` and every `<config>\profiles\<name>\agent\
+    sessions`; omp's XDG layout is mac/Linux only) and `.pi\agent\sessions`, subagents nested in `<timestamp>_<id>\` up to three folders
+    deep (parent = the root id in that folder
     name, agent id `<root>/<file name>`, role from `session_init.agent`), bounded tail via `LogLineTail` with the header lines
     re-read when the tail skipped them. Turn: user message → assistant `stopReason` `stop`/`length` (complete) or `aborted`/`error`
     (interrupted); pending `toolCall`s until their `toolResult` (`ask` = input; `task`/`wait` keep a 1 h horizon); a subagent's
     `session_exit` ends it. Output and context from `message.usage`, effort from `thinking_level_change`. Speed: a reply's own
     `duration` (request start → completion, `ttft` kept for the details) with its output = request tok/s.
+  * Cursor (`Core/Tracking/CursorLog.cs`, `TokenLogFormat.Cursor`): `<CURSOR_CONFIG_DIR | %USERPROFILE%\.cursor>\projects\<slug>\
+    agent-transcripts\<id>\<id>.jsonl` (older `<id>.jsonl`/`.txt`), subagents in `<parent>\subagents\<id>.jsonl`. Turn from `role:user`,
+    `tool_use` steps and `turn_ended`; records take the file's write time. Title, model, context, project and pending approvals from
+    `%APPDATA%\Cursor\User\globalStorage\state.vscdb` (read-only, immutable when the WAL is gone, metadata via `json_extract`), the CLI's
+    `chats\*\<id>\store.db` for the model. No tokens and no speed: Cursor stores no reliable counts.
+  * Grok (`Core/Tracking/GrokLog.cs`, `TokenLogFormat.Grok`): `<GROK_HOME | %USERPROFILE%\.grok>\sessions\<cwd>\<session>\updates.jsonl`
+    is the tracked log; `events.jsonl` gives turns, tools and permission waits, `summary.json` model, effort, cwd, title and subagent
+    kind. Output, context and speed per model call from the shared `logs\unified.jsonl` `inference_done` lines (`completion_tokens`
+    over `model_elapsed_ms`, request tok/s); without them only the `turn_completed` total, no speed. A generated title that copies the
+    first prompt is dropped.
+  * Hermes (`Core/Tracking/HermesLog.cs`, `TokenLogFormat.Hermes`): `<HERMES_HOME root | %LOCALAPPDATA%\hermes>\state.db` and every
+    `profiles\<name>\state.db`, read-only (immutable when a WAL store's `-wal` is gone). Compression chains are one row. Output = growth
+    of `sessions.output_tokens`; context and speed (`out` over `latency`, request tok/s) from the newest `API call` line for the session
+    in `logs\agent.log`. Titles only with `title_source` llm/user.
+  * OpenClaw (`Core/Tracking/OpenClawLog.cs`, `TokenLogFormat.OpenClaw`): `<OPENCLAW_STATE_DIR | <OPENCLAW_HOME | %USERPROFILE%>\
+    .openclaw[-<profile>]>\agents\<agent>\agent\openclaw-agent.sqlite` and legacy `agents\<agent>\sessions\*.jsonl` (also
+    `%USERPROFILE%\.clawdbot`, `.moltbot`). Fields via `json_extract` from `event_json` or, for zstd-compressed rows, `navigation_json`;
+    compressed replies get their output from the session entry's `outputTokens` after the run ends. No speed (no recorded durations).
+  * Goose (`Core/Tracking/GooseLog.cs`, `TokenLogFormat.Goose`): `<GOOSE_PATH_ROOT\data | %APPDATA%\Block\goose\data>\sessions\
+    sessions.db`, read-only. Output per call from `usage_ledger`, speed from a reply's `metadata_json` `usage.outputTokens` over
+    `usage.elapsedMs` (request tok/s). Sessions on CLI/ACP agent providers (`claude-code`, `codex`, `gemini-cli`, `cursor-agent`,
+    `*-acp`) report no output or speed. Needs JSON support in winsqlite3; without it the queries fail and Goose shows no rows.
+  * Kimi Code (`Core/Tracking/KimiLog.cs`, `TokenLogFormat.Kimi`): `<KIMI_CODE_HOME | %USERPROFILE%\.kimi-code>\sessions\<wd>\<session>\
+    agents\<agent>\wire.jsonl` + `state.json`, Kimi Work's `%APPDATA%\kimi-desktop\daimon-share\daimon\runtime\kimi-code\home\sessions`
+    (`ClientName` "Kimi Work") and the archived kimi-cli's `<KIMI_SHARE_DIR | %USERPROFILE%\.kimi>\sessions` ("Kimi CLI"). Output and
+    context from turn-scope `usage.record`; speed from `step.end` first-token + stream durations (request tok/s, Kimi Code only).
 * Codex `cwd` and Claude `cwd` in Windows logs look like `C:\Users\me\proj`. The project name must come from splitting on **both** `\`
   and `/`. .NET's `Path.GetFileName` splits on both only on Windows; on macOS it returns the whole `C:\…` string, so the checks running on
   the Mac would disagree.
@@ -315,7 +359,7 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
 | Menu-bar item editing in the tray (per-item visibility and drag ordering) | A tray item is one square icon | Since 0.12.0 the on-screen widget (§4.7) draws the menu-bar item; since 0.13.0 Settings › Widget (§4.4) edits it like the mac's Menu Bar pane (items, order, layout, presets), with the character's visibility on the Character page. |
 | Character art below 30 px (dog/hamster/penguin/robot heads, small bodies) | No such art exists. Non-integer scaling ruins it. | `Assets/Generator` emits `tray-<character>-16/24` sheets; App loads them by manifest. |
 | Wrapping an **existing** Claude statusLine | Needs shell detection, unverifiable here | v1.1 after PC test (open question 2) |
-| WSL logs, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` | Parity with mac. WSL also needs polling over `\\wsl.localhost` (no change notifications) and a collector reachable from WSL2 NAT. | Extra roots in `AppPaths`; the empty state names WSL in v1 (§2.2) |
+| WSL logs | WSL also needs polling over `\\wsl.localhost` (no change notifications) and a collector reachable from WSL2 NAT. `CODEX_HOME` and `CLAUDE_CONFIG_DIR` are honoured for log roots (§2.2); config and telemetry paths stay fixed, as on mac. | Extra roots in `AppPaths`; the empty state names WSL in v1 (§2.2) |
 | Memory pressure level | No Windows equivalent | Shows "—" (spec: unknown is "—") |
 | Persistent toasts, notification sound toggle | Packages/AUMID | Windows App SDK if wanted |
 | VoiceOver announcements (`AnnouncementGate`) | UIA live regions are extra work | `AutomationProperties.LiveSetting` later. v1 gives every control an `AutomationProperties.Name` built from the existing `spoken` texts (rows, limits and the header status get their own peers: Panel and Border have none), and ↑↓ announces the selected row with `RaiseNotificationEvent`. |
@@ -784,7 +828,7 @@ gives PASS (Localization suite ported).
 
 Shared contracts (WP0, `Models.cs`):
 ```csharp
-public enum TokenSource { Codex, Claude, OpenCode, Gemini, Qwen, Copilot, Amp, Cline, Omp, Droid } // ids/JSON = Swift raw values ("codex", "opencode"…);
+public enum TokenSource { Codex, Claude, OpenCode, Gemini, Qwen, Copilot, Amp, Cline, Omp, Droid, Cursor, Grok, Hermes, OpenClaw, Goose, Kimi } // ids/JSON = Swift raw values ("codex", "opencode", "openclaw"…);
 // Title/ShortTitle/ResumeCommand per source; static TokenSource.TelemetryClients = [Codex, Claude, Gemini, Qwen], DefaultClients = [Codex, Claude]; TokenSource.Listed(detected, readings)
 public enum TokenActivityState { Idle, Working, Tool, Output, Complete, Interrupted, Stale, Unfinished, Input }
 public enum ToolCategory { Command, File, Web, Agent, Mcp, Question, Other }
@@ -982,8 +1026,9 @@ WP5 data binding finishes after WP3. All file ownership is disjoint. `Suites.cs`
    Windows asset when it builds?
 7. **Install location:** no installer. **README recommends `%LOCALAPPDATA%\Programs\TokenCat`**, and the app refuses updates/login item when
    run from `%TEMP%`. Should it offer "Move to recommended folder" itself?
-8. **`CODEX_HOME` / `CLAUDE_CONFIG_DIR` / WSL:** **ignored, as on mac; the empty state says WSL isn't tracked.** Honour them on Windows
-   only? WSL is the bigger gap (§2.2, §3.2). Decide after the user says whether they run the CLIs natively or in WSL.
+8. **`CODEX_HOME` / `CLAUDE_CONFIG_DIR` / WSL:** **log roots honour `CODEX_HOME` and `CLAUDE_CONFIG_DIR`, as on mac; config and
+   telemetry paths stay fixed; the empty state says WSL isn't tracked.** WSL is the bigger gap (§2.2, §3.2). Decide after the user says
+   whether they run the CLIs natively or in WSL.
 9. **Notifications:** **balloons** (transient on Windows 11, no packages) are enough for v1?
 10. The PowerShell bridge pays a Windows PowerShell 5.1 start per status line run (unmeasured; expect about 0.3–1 s with Defender), and
     Claude Code cancels it if a newer update arrives first. **Acceptable** (it's the form Claude's docs use; limits change slowly), or is

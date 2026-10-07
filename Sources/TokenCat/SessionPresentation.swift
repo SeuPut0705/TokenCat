@@ -1083,11 +1083,11 @@ enum SessionPresentation {
     static func shellQuote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
     /// "cd '<project>' && <`TokenSource.resumeCommand`> <id>"; nil for subagents, without an ID or folder, or for a client
-    /// with no known resume command.
+    /// with no known resume command (a row of another product, `clientName`, never gets its source's command).
     /// Backslashes (fish reads `\'` inside single quotes) and control characters (keystrokes on paste) are refused.
     static func resumeCommand(_ reading: TokenReading) -> String? {
         let unsafe: (String) -> Bool = { $0.unicodeScalars.contains { $0 == "\\" || $0.properties.generalCategory == .control } }
-        guard !reading.isSubagent, !isTelemetry(reading), let command = reading.source.resumeCommand,
+        guard !reading.isSubagent, !isTelemetry(reading), reading.clientName == nil, let command = reading.source.resumeCommand,
               let session = reading.sessionID, !session.isEmpty,
               let path = reading.projectPath, path.hasPrefix("/"), !unsafe(path), !unsafe(session) else { return nil }
         let plain = session.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || "-_.".contains($0)) }

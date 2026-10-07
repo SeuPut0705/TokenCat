@@ -1191,11 +1191,13 @@ public static class SessionPresentation
 
     /// "cd -LiteralPath '<project>'; <client resume command> <id>" (e.g. "claude --resume <id>") for PowerShell (5.1 has no `&&`); null for
     /// subagents or without an ID or folder. Control characters (keystrokes on paste) and cmd.exe's metacharacters (a paste
-    /// into cmd would run them) are refused, as is a client without a known resume command.
+    /// into cmd would run them) are refused, as is a client without a known resume command (a row of another product,
+    /// `ClientName`, never gets its source's command).
     public static string? ResumeCommand(TokenReading reading)
     {
         static bool Unsafe(string text) => text.Any(c => char.IsControl(c) || c is '&' or '|' or '<' or '>' or '^' or '%');
-        if (reading.Source.ResumeCommand is not { } resume || reading.IsSubagent || IsTelemetry(reading) || reading.SessionID is not { Length: > 0 } session
+        if (reading.Source.ResumeCommand is not { } resume || reading.ClientName is not null || reading.IsSubagent || IsTelemetry(reading)
+            || reading.SessionID is not { Length: > 0 } session
             || reading.ProjectPath is not { } path || !IsWindowsAbsolute(path) || Unsafe(path) || Unsafe(session)) return null;
         var plain = session.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.');
         var id = plain ? session : ShellQuote(session);

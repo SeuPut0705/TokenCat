@@ -1269,6 +1269,10 @@ func runTrackerChecks() -> [String] {
     runOpenCodeLogChecks(root: root, check: { check($0, $1) })
     // Cline, Roo Code, Cline CLI, omp and Pi: fixture files (Providers/ClineOmpChecks.swift).
     runClineOmpChecks(root: root, check: { check($0, $1) })
+    // Hermes Agent: fixture stores and agent.log (Providers/HermesLogChecks.swift).
+    runHermesLogChecks(root: root, check: { check($0, $1) })
+    // OpenClaw: JSONL and SQLite fixtures (Providers/OpenClawLogChecks.swift).
+    runOpenClawLogChecks(root: root, check: { check($0, $1) })
     // Fast timestamp path: bit for bit what the two ISO8601DateFormatters give, and their result for every other shape.
     let fractionalFormatter = ISO8601DateFormatter()
     fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -1292,6 +1296,11 @@ func runTrackerChecks() -> [String] {
     }
     check(mismatched.isEmpty, "Timestamp fast path differs from ISO8601DateFormatter: \(mismatched.prefix(3))")
     copilotAmpDroidChecks { check($0, $1) }
+    providerRootChecks { check($0, $1) }
+    grokChecks { check($0, $1) }
+    cursorChecks { check($0, $1) }
+    kimiChecks { check($0, $1) }
+    gooseLogChecks { check($0, $1) }
     sessionTitleChecks { check($0, $1) }
     print("Tracker checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures

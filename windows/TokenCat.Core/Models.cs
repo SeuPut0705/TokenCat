@@ -10,7 +10,8 @@ namespace TokenCat;
 
 /// Every client TokenCat recognises; `TokenProvider.All` (Tracking/TokenProviders.cs) says where each keeps its logs and which are read.
 /// JSON names are the Swift raw values (`Id`); camelCase gives them for every case but OpenCode.
-public enum TokenSource { Codex, Claude, [JsonStringEnumMemberName("opencode")] OpenCode, Gemini, Qwen, Copilot, Amp, Cline, Omp, Droid }
+public enum TokenSource { Codex, Claude, [JsonStringEnumMemberName("opencode")] OpenCode, Gemini, Qwen, Copilot, Amp, Cline, Omp, Droid,
+    Cursor, Grok, Hermes, [JsonStringEnumMemberName("openclaw")] OpenClaw, Goose, Kimi }
 
 /// `idle`… `input` as in Models.swift: `stale` is an open turn past its liveness horizon but logged within 30 minutes,
 /// `unfinished` one with no log for longer, `input` waits for the person.
@@ -41,6 +42,12 @@ public static class ModelText
             TokenSource.Cline => "cline",
             TokenSource.Omp => "omp",
             TokenSource.Droid => "droid",
+            TokenSource.Cursor => "cursor",
+            TokenSource.Grok => "grok",
+            TokenSource.Hermes => "hermes",
+            TokenSource.OpenClaw => "openclaw",
+            TokenSource.Goose => "goose",
+            TokenSource.Kimi => "kimi",
             _ => throw new ArgumentOutOfRangeException(nameof(source)),
         };
 
@@ -56,6 +63,12 @@ public static class ModelText
             TokenSource.Cline => "Cline",
             TokenSource.Omp => "omp",
             TokenSource.Droid => "Droid",
+            TokenSource.Cursor => "Cursor",
+            TokenSource.Grok => "Grok",
+            TokenSource.Hermes => "Hermes",
+            TokenSource.OpenClaw => "OpenClaw",
+            TokenSource.Goose => "Goose",
+            TokenSource.Kimi => "Kimi Code",
             _ => throw new ArgumentOutOfRangeException(nameof(source)),
         };
 
@@ -78,6 +91,10 @@ public static class ModelText
             TokenSource.Gemini => "gemini --resume",
             TokenSource.Copilot => "copilot --resume",
             TokenSource.Amp => "amp threads continue",
+            TokenSource.Grok => "grok --resume",
+            TokenSource.Hermes => "hermes --resume",
+            TokenSource.Kimi => "kimi -r",
+            TokenSource.Goose => "goose session --resume --session-id",
             _ => null,
         };
     }

@@ -1,54 +1,104 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Text.Json;
 
 namespace TokenCat;
 
-// OpenCode's SQLite store; mirrors the mac's Providers/OpenCodeLog.swift. Only roles, times, finish reasons, token counts,
-// model, agent, cwd, tool names/states and the session's generated or renamed title are read; message text, tool input
-// and output are never kept.
+// OpenCode's SQLite store and the apps built on it; mirrors the mac's Providers/OpenCodeLog.swift. Only roles, times, finish
+// reasons, token counts, model, agent, cwd, tool names/states and the session's generated or renamed title are read; message
+// text, tool input and output are never kept.
 
 public sealed partial record TokenLogFormat
 {
-    /// `opencode.db`, a channel build's `opencode-<channel>.db`, or the `OPENCODE_DB` file. One reader covers every session.
+    /// The SQLite store of OpenCode and of the apps built on it (`OpenCodeApp`): `<app>.db`, a channel build's
+    /// `<app>-<channel>.db`, or the `<APP>_DB` file. One reader covers every session in it.
     public static readonly TokenLogFormat OpenCode = new(
         (roots, discovery) => discovery.Recent(roots.SelectMany(TokenDiscovery.Children).Where(entry => entry is FileInfo && OpenCodeLog.IsDatabase(entry.FullName))),
         OpenCodeLog.IsDatabase, path => new OpenCodeLog(path));
 }
 
+/// OpenCode and the apps built on its store, which keep its schema in their own data folder: Kilo Code (the Kilo CLI and the
+/// extension rebuilt on it) and MiMo Code.
+/// - `Name`: the data folder's name and the database file stem: `<name>.db`, a channel build's `<name>-<channel>.db`.
+/// - `Variable`: the variable naming the database file, resolved like the app does: rooted, else inside the data folder.
+/// - `Client`: `TokenReading.ClientName` of its rows; null for OpenCode itself.
+public sealed record OpenCodeApp(string Name, string Variable, string? Client)
+{
+    public static readonly IReadOnlyList<OpenCodeApp> All =
+        [new("opencode", "OPENCODE_DB", null), new("kilo", "KILO_DB", "Kilo Code"), new("mimocode", "MIMOCODE_DB", "MiMo Code")];
+
+    /// `XDG_DATA_HOME\<name>`, else ~\.local\share\<name> (xdg-basedir, Windows too); MiMo Code's `MIMOCODE_HOME\data`.
+    public string DataFolder(string home, Func<string, string?> env) =>
+        Name == "mimocode" && TokenProvider.EnvPath(home, env, "MIMOCODE_HOME") is { } root ? Path.Combine(root, "data")
+            : Path.Combine(TokenProvider.DataHome(home, env), Name);
+
+    /// The `Variable` file: a rooted path, else a path inside the data folder; `:memory:` is no file.
+    public string? DatabasePath(string home, Func<string, string?> env)
+    {
+        if (env(Variable) is not { Length: > 0 } value || value == ":memory:") return null;
+        try { return Path.GetFullPath(Path.IsPathRooted(value) ? value : Path.Combine(DataFolder(home, env), value)); }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or SecurityException) { return null; }
+    }
+
+    static readonly (string Path, OpenCodeApp App)[] Overrides =
+        [.. All.Select(app => (app.DatabasePath(AppPaths.Home, Environment.GetEnvironmentVariable), app)).Where(entry => entry.Item1 is not null)
+            .Select(entry => (entry.Item1!, entry.app))];
+
+    /// The app whose database a path is: a `Variable` file, else by file name. Kilo's channel build keeps a pre-existing
+    /// `opencode-<channel>.db` in its own folder.
+    public static OpenCodeApp? Of(string path)
+    {
+        foreach (var (file, app) in Overrides)
+            if (string.Equals(path, file, StringComparison.OrdinalIgnoreCase)) return app;
+        var name = Path.GetFileName(path);
+        var match = All.FirstOrDefault(app => name == $"{app.Name}.db"
+            || (name.StartsWith($"{app.Name}-", StringComparison.Ordinal) && name.EndsWith(".db", StringComparison.Ordinal)));
+        return match?.Name == "opencode" && Path.GetFileName(Path.GetDirectoryName(path)) == "kilo" ? All[1] : match;
+    }
+}
+
 /// Reads OpenCode sessions from its database, opened read-only (OpenCode writes it in WAL mode).
+/// - Two stores: v1 `message` + `part` rows, and v2 `session_message` rows (role in `type`, a step's tools, text and reasoning
+///   inside its `content`), with sessions in `session` or, since v2's split, `session_v2`. A database migrated to v2 keeps its
+///   v1 tables and copies their sessions under the same ids, so each session is read from the one store whose newest message
+///   is newer (v2 on a tie) and never counted twice; a session in both session tables takes the row updated last.
 /// - Re-queried when the database, its WAL or the WAL index header in `-shm` changed (every commit rewrites that header,
 ///   while NTFS may report a file held open with stale times, rule 8), and at least every 2 s while a session is in a turn
 ///   or updated within the hour. Then only sessions updated within the hour, with an open turn, or whose `time_updated`
-///   moved; a message body is fetched again only when its row's `time_updated` changes. A read the database refused
-///   (busy) is never cached: that session is queried again on the next read.
-/// - A message body over 64 KB is never loaded whole when its first 4 KB name a user message (a summary with file diffs can
-///   reach hundreds of MB). Anything else, such as an assistant message holding a provider's error page, is loaded up to
-///   16 MB; past that an assistant message counts as a failed request.
+///   moved; a message row is fetched again only when its `time_updated` changes. v2 steps leave the session's
+///   `time_updated` alone, so sessions with v2 messages changed within the hour count as updated then. A read the database
+///   refused (busy) is never cached: that session is queried again on the next read.
+/// - v2 rows are read with SQLite's JSON functions, so their text never leaves SQLite; an OS library without them
+///   (an older winsqlite3) has the row parsed in memory instead, as v1 bodies are, and nothing but the same fields kept.
+/// - A v1 message body over 64 KB is never loaded whole when its first 4 KB name a user message (a summary with file diffs
+///   can reach hundreds of MB). Anything else, such as an assistant message holding a provider's error page, is loaded up to
+///   16 MB; past that (v2: a row over 16 MB) an assistant message counts as a failed request.
 /// - Turn state: an assistant message without `time.completed` is generating (a running tool shows as `tool`, the question
 ///   tool as `input`); `finish: "tool-calls"` continues the loop; another finish ends the turn (`complete`); an error or no
-///   finish at all ends it as `interrupted`.
+///   finish at all ends it as `interrupted`. v2 has no parent link: a turn runs from the prompt that opened it (with idle
+///   markers, the first prompt after the last one; else the latest), and an idle marker ends it with its outcome.
 /// - Speed: per completed assistant message, output + reasoning tokens over the time from `time.created` to its last generated
-///   part (text or reasoning end, or a tool's execution start), so a tool's run time is not counted. Request processing rate,
-///   first-response wait included; nothing is measured when a part could not be read.
+///   part (text or reasoning end, or a tool's execution start), so a tool's run time is not counted. v2 records no text
+///   times: its `time.streamed` when recorded, else the step's end when it ran no tool, else the last tool's execution start
+///   when a tool came last. Request processing rate, first-response wait included; nothing is measured when a part could
+///   not be read.
 public sealed class OpenCodeLog(string path) : ITokenLogReader
 {
     public string Path { get; } = path;
+    /// "Kilo Code" or "MiMo Code" for those apps' databases; null for OpenCode's.
+    public string? ClientName { get; } = OpenCodeApp.Of(path)?.Client;
     long[]? signature;
     DateTimeOffset? lastRead;
     Dictionary<string, OpenCodeSession> sessions = new(StringComparer.Ordinal);
 
-    static readonly string? OverridePath = TokenProvider.OpenCodeDatabasePath(AppPaths.Home, Environment.GetEnvironmentVariable);
+    /// Checks only: read v2 rows as if the SQLite library lacked JSON functions.
+    internal static bool AvoidJsonFunctions;
 
-    /// A database `Files` lists: OpenCode's default or channel file name, or the `OPENCODE_DB` file.
-    public static bool IsDatabase(string path)
-    {
-        var name = System.IO.Path.GetFileName(path);
-        return name == "opencode.db" || (name.StartsWith("opencode-", StringComparison.Ordinal) && name.EndsWith(".db", StringComparison.Ordinal))
-            || (OverridePath is not null && string.Equals(path, OverridePath, StringComparison.OrdinalIgnoreCase));
-    }
+    /// A database `Files` lists: an `OpenCodeApp`'s default or channel file name, or its `<APP>_DB` file.
+    public static bool IsDatabase(string path) => OpenCodeApp.Of(path) is not null;
 
     // Reading
 
@@ -61,34 +111,48 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
         if (database is null || !database.Execute("BEGIN")) return;
         try
         {
-            var listed = new List<(string Id, string? Parent, string? Directory, string? Agent, string? Model, DateTimeOffset Updated, string? Title)>();
-            // The title is bounded in SQL; a generated or renamed one is short.
-            const string columns = "id, parent_id, directory, agent, model, time_updated, substr(title, 1, 1024) FROM session";
-            const string order = "ORDER BY time_updated DESC LIMIT 64";
+            if (OpenCodeSchema.Read(database) is not { } schema) return;
+            var listed = new Dictionary<string, OpenCodeListed>(StringComparer.Ordinal);
             void Collect(OpenCodeDatabase.Row row)
             {
-                if (row.Text(0) is { } id && row.Date(5) is { } updated)
-                    listed.Add((id, row.Text(1), row.Text(2), row.Text(3), row.Text(4), updated, row.Text(6)));
+                if (row.Text(0) is not { } id || row.Date(5) is not { } updated) return;
+                // The first table listed (`session_v2`) wins a tie.
+                if (listed.TryGetValue(id, out var known) && known.Updated >= updated) return;
+                listed[id] = new(id, row.Text(1), row.Text(2), row.Text(3), row.Text(4), updated, row.Text(7) == "fallback" ? null : row.Text(6));
             }
-            // Older schemas lack time_archived.
-            if (!database.Query($"SELECT {columns} WHERE time_archived IS NULL {order}", [], Collect)
-                && !database.Query($"SELECT {columns} {order}", [], Collect)) return;
+            foreach (var table in schema.SessionTables)
+                if (!database.Query($"SELECT {schema.SessionColumns(table)} WHERE {schema.Unarchived(table)} ORDER BY time_updated DESC LIMIT 64", [], Collect)) return;
+            var moved = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
+            if (schema.HasV2)
+            {
+                var since = now.AddSeconds(-3_600).ToUnixTimeMilliseconds();
+                if (!database.Query($"SELECT session_id, MAX(time_updated) FROM session_message WHERE time_created >= {since} GROUP BY session_id", [],
+                        row => { if (row.Text(0) is { } id && row.Date(1) is { } updated) moved[id] = updated; })) return;
+            }
+            var missing = moved.Keys.Union(sessions.Values.Where(session => session.Summary.Open).Select(session => session.Id), StringComparer.Ordinal)
+                .Where(id => !listed.ContainsKey(id)).Order(StringComparer.Ordinal).ToList();
+            foreach (var id in missing)
+                foreach (var table in schema.SessionTables)
+                    if (!database.Query($"SELECT {schema.SessionColumns(table)} WHERE id = ? AND {schema.Unarchived(table)}", [id], Collect)) return;
+            var ordered = listed.Values
+                .Select(row => moved.TryGetValue(row.Id, out var changed) && changed > row.Updated ? row with { Updated = changed } : row)
+                .OrderByDescending(row => row.Updated).ThenBy(row => row.Id, StringComparer.Ordinal).ToList();
             var kept = new Dictionary<string, OpenCodeSession>(StringComparer.Ordinal);
             var complete = true;
-            for (var offset = 0; offset < listed.Count; offset++)
+            for (var offset = 0; offset < ordered.Count; offset++)
             {
-                var row = listed[offset];
+                var row = ordered[offset];
                 sessions.TryGetValue(row.Id, out var existing);
                 if (offset >= 32 && (now - row.Updated).TotalSeconds > 3_600 && existing?.Summary.Open != true) continue;
                 var session = existing ?? new OpenCodeSession(row.Id);
-                var moved = existing is null || session.Updated != row.Updated;
+                var changedRow = existing is null || session.Updated != row.Updated;
                 session.ParentID = row.Parent;
                 session.Directory = row.Directory;
                 session.Agent = row.Agent;
                 session.SessionModel = row.Model is { } model ? ModelID(model) : null;
                 session.Title = Title(row.Title);
                 session.Updated = row.Updated;
-                if ((moved || (now - row.Updated).TotalSeconds <= 3_600 || session.Summary.Open) && !Refresh(session, database))
+                if ((changedRow || (now - row.Updated).TotalSeconds <= 3_600 || session.Summary.Open) && !Refresh(session, database, schema))
                 {
                     // Keeps what was read before; MinValue makes the next read refresh it again.
                     session.Updated = DateTimeOffset.MinValue;
@@ -106,30 +170,44 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
     long[]? CurrentSignature() => OpenCodeDatabase.Signature(Path);
 
     /// False when the database refused a read; the session then keeps its previous messages.
-    bool Refresh(OpenCodeSession session, OpenCodeDatabase database)
+    bool Refresh(OpenCodeSession session, OpenCodeDatabase database, OpenCodeSchema schema)
     {
-        var index = new List<(string Id, DateTimeOffset Created, DateTimeOffset Updated)>();
-        if (!database.Query("SELECT id, time_created, time_updated FROM message WHERE session_id = ? ORDER BY time_created DESC, id DESC LIMIT 200",
-                [session.Id], row => { if (row.Text(0) is { } id && row.Date(1) is { } created && row.Date(2) is { } updated) index.Add((id, created, updated)); }))
+        var v1 = new List<OpenCodeEntry>();
+        var v2 = new List<OpenCodeEntry>();
+        if (schema.HasV1 && !database.Query($"SELECT id, time_created, time_updated FROM message WHERE session_id = ?{schema.MainThread} ORDER BY time_created DESC, id DESC LIMIT 200",
+                [session.Id], row => { if (row.Text(0) is { } id && row.Date(1) is { } created && row.Date(2) is { } updated) v1.Add(new(id, created, updated, null)); }))
             return false;
-        var messages = new List<OpenCodeMessage>(index.Count);
-        foreach (var entry in index)
+        if (schema.HasV2 && !database.Query("SELECT id, time_created, time_updated, type FROM session_message WHERE session_id = ? AND type IN ('user', 'assistant', 'idle') ORDER BY seq DESC LIMIT 200",
+                [session.Id], row => { if (row.Text(0) is { } id && row.Date(1) is { } created && row.Date(2) is { } updated) v2.Add(new(id, created, updated, row.Text(3))); }))
+            return false;
+        var useV2 = v2.Count > 0 && (v1.Count == 0 || v2.Max(entry => entry.Created) >= v1.Max(entry => entry.Created));
+        if (session.V2 != useV2)
+        {
+            session.V2 = useV2;
+            session.Cache = new(StringComparer.Ordinal);
+            session.Speed = null;
+        }
+        var json = useV2 && !AvoidJsonFunctions && database.Query("SELECT json_extract('{}', '$.a')", [], _ => { });
+        var messages = new List<OpenCodeMessage>(useV2 ? v2.Count : v1.Count);
+        foreach (var entry in useV2 ? v2 : v1)
         {
             if (session.Cache.TryGetValue(entry.Id, out var cached) && cached.Updated == entry.Updated)
             {
                 messages.Add(cached);
                 continue;
             }
-            if (Message(entry.Id, entry.Created, entry.Updated, database) is not { } message) return false;
+            if ((useV2 ? V2Message(entry, database, json) : Message(entry.Id, entry.Created, entry.Updated, database)) is not { } message) return false;
             messages.Add(message);
         }
-        session.Messages = messages;
         session.Cache = messages.GroupBy(message => message.Id, StringComparer.Ordinal).ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
-        session.OpenParts = messages.FirstOrDefault() is { Role: OpenCodeRole.Assistant, Completed: null } open ? Parts(open.Id, database) : null;
-        if (messages.FirstOrDefault(message => message is { Role: OpenCodeRole.Assistant, Completed: not null, Failed: false, Generated: > 0 }) is { } measured)
+        session.Messages = useV2 ? LinkTurns(messages) : messages;
+
+        List<OpenCodePart>? PartsOf(OpenCodeMessage message) => useV2 ? V2Parts(message, database, json) : Parts(message.Id, database);
+        session.OpenParts = session.Messages.FirstOrDefault() is { Role: OpenCodeRole.Assistant, Completed: null } open ? PartsOf(open) : null;
+        if (session.Messages.FirstOrDefault(message => message is { Role: OpenCodeRole.Assistant, Completed: not null, Failed: false, Generated: > 0 }) is { } measured)
         {
             if (session.Speed is not { } speed || speed.MessageID != measured.Id || speed.Updated != measured.Updated)
-                session.Speed = (measured.Id, measured.Updated, Parts(measured.Id, database) is { } parts ? Measurement(measured, parts) : null);
+                session.Speed = (measured.Id, measured.Updated, PartsOf(measured) is { } parts ? useV2 ? V2Measurement(measured, parts) : Measurement(measured, parts) : null);
         }
         else session.Speed = null;
         session.Summary = OpenCodeSummary.Of(session);
@@ -154,6 +232,73 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
         return role == OpenCodeRole.Assistant ? new(id, created, updated) { Role = role, Failed = true, Completed = updated } : new(id, created, updated);
     }
 
+    const string V2Fields = """
+        json_extract(data, '$.time.completed'), json_extract(data, '$.time.streamed'), json_extract(data, '$.finish'),
+        coalesce(json_type(data, '$.error'), 'null') != 'null', json_extract(data, '$.model.id'), json_extract(data, '$.agent'),
+        json_extract(data, '$.tokens.output'), json_extract(data, '$.tokens.reasoning'), json_extract(data, '$.tokens.input'),
+        json_extract(data, '$.tokens.cache.read'), json_extract(data, '$.tokens.cache.write'), json_extract(data, '$.outcome'),
+        coalesce(json_type(data, '$.retry'), 'null') != 'null'
+        """;
+
+    /// A v2 row's metadata (through SQLite's JSON functions when `json`); a prompt's row is never read. Null when the
+    /// database refused the read.
+    static OpenCodeMessage? V2Message(OpenCodeEntry entry, OpenCodeDatabase database, bool json)
+    {
+        var role = entry.Type switch { "user" => OpenCodeRole.User, "assistant" => OpenCodeRole.Assistant, "idle" => OpenCodeRole.Idle, _ => OpenCodeRole.Other };
+        var message = new OpenCodeMessage(entry.Id, entry.Created, entry.Updated) { Role = role };
+        if (role is not (OpenCodeRole.Assistant or OpenCodeRole.Idle)) return message;
+        OpenCodeMessage? read = null;
+        if (json)
+        {
+            if (!database.Query($"SELECT {V2Fields} FROM session_message WHERE id = ? AND {database.SizeOfData} <= 16777216 AND json_valid(data)", [entry.Id],
+                    row => read = message with
+                    {
+                        Completed = Milliseconds(row.Double(0)),
+                        Streamed = Milliseconds(row.Double(1)),
+                        Finish = Short(row.Text(2)),
+                        Failed = row.Int64(3) == 1,
+                        Model = Short(row.Text(4)),
+                        Agent = Short(row.Text(5)),
+                        Generated = LogFields.Add(Count(row.Double(6)), Count(row.Double(7))),
+                        Context = LogFields.Add(LogFields.Add(Count(row.Double(8)), Count(row.Double(9))), Count(row.Double(10))),
+                        Outcome = Short(row.Text(11)),
+                        Retried = row.Int64(12) == 1,
+                    })) return null;
+        }
+        else
+        {
+            string? body = null;
+            if (!database.Query($"SELECT CASE WHEN {database.SizeOfData} <= 16777216 THEN data END FROM session_message WHERE id = ?", [entry.Id],
+                    row => body = row.Text(0))) return null;
+            if (body is not null) read = OpenCodeMessage.ParseV2(message, body);
+        }
+        return read ?? (role == OpenCodeRole.Assistant ? message with { Failed = true, Completed = entry.Updated } : message);
+    }
+
+    /// v2 rows name no parent: a prompt opens a turn when none is open (idle markers close one; without them every prompt
+    /// opens its own), and the turn's messages point at it, as v1's `parentID` does. `messages` is newest first.
+    static List<OpenCodeMessage> LinkTurns(List<OpenCodeMessage> messages)
+    {
+        var marked = messages.Any(message => message.Role == OpenCodeRole.Idle);
+        var linked = new OpenCodeMessage[messages.Count];
+        string? opener = null;
+        for (var index = messages.Count - 1; index >= 0; index--)
+        {
+            var message = messages[index];
+            switch (message.Role)
+            {
+                case OpenCodeRole.User:
+                    if (opener is null || !marked) opener = message.Id;
+                    message = message with { ParentID = opener };
+                    break;
+                case OpenCodeRole.Assistant: message = message with { ParentID = opener }; break;
+                case OpenCodeRole.Idle: opener = null; break;
+            }
+            linked[index] = message;
+        }
+        return [.. linked];
+    }
+
     static List<OpenCodePart>? Parts(string message, OpenCodeDatabase database)
     {
         var parts = new List<OpenCodePart>();
@@ -161,18 +306,55 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
             [message], row => { if (row.Date(0) is { } updated) parts.Add(OpenCodePart.Parse(updated, row.Text(1))); }) ? parts : null;
     }
 
+    /// A v2 step's `content` items, in order: type, tool name and status, a tool's execution start and a reasoning end.
+    static List<OpenCodePart>? V2Parts(OpenCodeMessage message, OpenCodeDatabase database, bool json)
+    {
+        var parts = new List<OpenCodePart>();
+        if (json)
+            return database.Query($"""
+                SELECT json_extract(value, '$.type'), json_extract(value, '$.name'), json_extract(value, '$.state.status'),
+                       json_extract(value, '$.time.ran'), json_extract(value, '$.time.completed')
+                FROM session_message, json_each(session_message.data, '$.content')
+                WHERE session_message.id = ? AND {database.SizeOfData} <= 16777216 AND json_valid(session_message.data)
+                ORDER BY json_each.key
+                """, [message.Id], row => parts.Add(new(message.Updated, true, Short(row.Text(0)), Short(row.Text(1)), Short(row.Text(2)),
+                    Milliseconds(row.Double(3)), Milliseconds(row.Double(4))))) ? parts : null;
+        string? body = null;
+        if (!database.Query($"SELECT CASE WHEN {database.SizeOfData} <= 16777216 THEN data END FROM session_message WHERE id = ?", [message.Id],
+                row => body = row.Text(0))) return null;
+        return body is null ? parts : OpenCodePart.ParseV2Content(message.Updated, body);
+    }
+
     /// Output + reasoning over created → last generated part; null when a part was unreadable or no time was recorded.
     static TokenSpeedMeasurement? Measurement(OpenCodeMessage message, List<OpenCodePart> parts)
     {
-        if (message.Completed is not { } completed || parts.Any(part => !part.Readable)) return null;
+        if (parts.Any(part => !part.Readable)) return null;
         var ends = parts.Select(part => part.Type switch
         {
             "text" or "reasoning" => part.End ?? part.Updated,
             "tool" => part.ToolStart,
             _ => (DateTimeOffset?)null,
         }).OfType<DateTimeOffset>().ToList();
-        if (ends.Count == 0) return null;
-        var milliseconds = (ends.Max() - message.Created).TotalMilliseconds;
+        return Speed(message, ends.Count == 0 ? null : ends.Max(), parts.Any(part => part.Type == "retry"));
+    }
+
+    /// v2: output + reasoning over created → the stream's recorded end; else the step's end when it ran no tool; else the
+    /// last tool's execution start (or a reasoning end) when a tool came last. Text carries no time.
+    static TokenSpeedMeasurement? V2Measurement(OpenCodeMessage message, List<OpenCodePart> parts)
+    {
+        DateTimeOffset? end = null;
+        if (message.Streamed is { } streamed) end = streamed;
+        else if (!parts.Any(part => part.Type == "tool")) end = message.Completed;
+        else if (parts[^1].Type == "tool")
+            end = parts.Select(part => part.Type switch { "tool" => part.ToolStart, "reasoning" => part.End, _ => null }).OfType<DateTimeOffset>()
+                .Select(at => (DateTimeOffset?)at).Max();
+        return Speed(message, end, message.Retried);
+    }
+
+    static TokenSpeedMeasurement? Speed(OpenCodeMessage message, DateTimeOffset? end, bool retried)
+    {
+        if (message.Completed is not { } completed || end is not { } last) return null;
+        var milliseconds = (last - message.Created).TotalMilliseconds;
         if (!double.IsFinite(milliseconds) || milliseconds <= 0) return null;
         return new TokenSpeedMeasurement(new TelemetryReading
         {
@@ -181,7 +363,7 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
             Model = message.Model,
             OutputTokens = message.Generated,
             RequestDurationMs = Math.Round(milliseconds),
-            RequestDurationIncludesRetries = parts.Any(part => part.Type == "retry"),
+            RequestDurationIncludesRetries = retried,
         });
     }
 
@@ -212,6 +394,7 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
             var tool = summary.Open ? summary.ToolName : null;
             readings.Add(new TokenReading(TokenSource.OpenCode, $"{id}#{session.Id}")
             {
+                ClientName = ClientName,
                 SessionID = session.Id,
                 Title = session.Title,
                 IsSubagent = session.ParentID is not null,
@@ -264,7 +447,7 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
     };
 
     /// `session.title` once generated or renamed; OpenCode's placeholder ("New session - <ISO time>", "Child session - …",
-    /// its `isDefaultTitle`) is no title.
+    /// its `isDefaultTitle`) is no title, nor is a title MiMo Code marks `title_source = 'fallback'` (dropped when listed).
     public static string? Title(string? raw) =>
         raw is null || Placeholder.IsMatch(raw) ? null : SessionTitle.Clean(raw);
 
@@ -282,24 +465,83 @@ public sealed class OpenCodeLog(string path) : ITokenLogReader
         catch (JsonException) { return null; }
     }
 
-    internal static string? Short(JsonElement? value) => value?.Text is { Length: > 0 and <= 256 } text ? text : null;
+    internal static string? Short(JsonElement? value) => Short(value?.Text);
 
-    internal static DateTimeOffset? Milliseconds(JsonElement? value) =>
-        value?.Number is { } number && number > 0 && number < 253_402_300_800_000 ? DateTimeOffset.FromUnixTimeMilliseconds((long)number) : null;
+    internal static string? Short(string? text) => text is { Length: > 0 and <= 256 } ? text : null;
 
-    internal static int Count(JsonElement? value) => value?.Number is { } number && number > 0 ? (int)Math.Min(number, int.MaxValue) : 0;
+    internal static DateTimeOffset? Milliseconds(JsonElement? value) => Milliseconds(value?.Number);
+
+    internal static DateTimeOffset? Milliseconds(double? number) =>
+        number is { } value && value > 0 && value < 253_402_300_800_000 ? DateTimeOffset.FromUnixTimeMilliseconds((long)value) : null;
+
+    internal static int Count(JsonElement? value) => Count(value?.Number);
+
+    internal static int Count(double? number) => number is { } value && double.IsFinite(value) && value > 0 ? (int)Math.Min(value, int.MaxValue) : 0;
 }
 
-enum OpenCodeRole { User, Assistant, Other }
+/// The schema a pass reads, from `PRAGMA table_info`: which session tables and message stores exist, and the columns that
+/// differ between OpenCode's versions and the apps built on it.
+sealed class OpenCodeSchema
+{
+    readonly Dictionary<string, HashSet<string>> columns = new(StringComparer.Ordinal);
+
+    /// Null when the database refused the read.
+    public static OpenCodeSchema? Read(OpenCodeDatabase database)
+    {
+        var schema = new OpenCodeSchema();
+        foreach (var table in new[] { "session_v2", "session", "message", "part", "session_message" })
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            if (!database.Query($"PRAGMA table_info({table})", [], row => { if (row.Text(1) is { } name) names.Add(name); })) return null;
+            if (names.Count > 0) schema.columns[table] = names;
+        }
+        return schema;
+    }
+
+    bool Has(string table, string column) => columns.TryGetValue(table, out var names) && names.Contains(column);
+
+    /// `session_v2` first: a database migrated to v2 keeps the v1 `session` table beside it.
+    public IEnumerable<string> SessionTables => new[] { "session_v2", "session" }.Where(table => Has(table, "id") && Has(table, "time_updated"));
+    public bool HasV1 => columns.ContainsKey("message") && columns.ContainsKey("part");
+    public bool HasV2 => columns.ContainsKey("session_message");
+    /// MiMo Code keeps its in-session subagent threads beside the main one (`agent_id`); only the main thread is read.
+    public string MainThread => Has("message", "agent_id") ? " AND agent_id = 'main'" : "";
+
+    /// id, parent, directory, agent, model, updated, title (bounded: a generated or renamed one is short), title source.
+    public string SessionColumns(string table)
+    {
+        string Column(string name, string? expression = null) => Has(table, name) ? expression ?? name : "NULL";
+        return $"id, {Column("parent_id")}, {Column("directory")}, {Column("agent")}, {Column("model")}, time_updated, "
+            + $"{Column("title", "substr(title, 1, 1024)")}, {Column("title_source")} FROM {table}";
+    }
+
+    /// Older schemas lack `time_archived`.
+    public string Unarchived(string table) => Has(table, "time_archived") ? "time_archived IS NULL" : "1";
+}
+
+sealed record OpenCodeListed(string Id, string? Parent, string? Directory, string? Agent, string? Model, DateTimeOffset Updated, string? Title);
+
+/// A message row before its body is read; `Type` is v2's role column.
+sealed record OpenCodeEntry(string Id, DateTimeOffset Created, DateTimeOffset Updated, string? Type);
+
+/// `Idle`: v2's marker that a turn ended, with its outcome.
+enum OpenCodeRole { User, Assistant, Idle, Other }
 
 /// One message's metadata; never its text.
 sealed record OpenCodeMessage(string Id, DateTimeOffset Created, DateTimeOffset Updated)
 {
     public OpenCodeRole Role { get; init; } = OpenCodeRole.Other;
     public DateTimeOffset? Completed { get; init; }
+    /// v2: when the provider's response ended, before tools settled.
+    public DateTimeOffset? Streamed { get; init; }
     public string? Finish { get; init; }
     public bool Failed { get; init; }
+    /// v2: the step was retried (its duration then includes the retries).
+    public bool Retried { get; init; }
+    /// v2 idle marker: succeeded, failed or interrupted.
+    public string? Outcome { get; init; }
     public string? Model { get; init; }
+    /// The prompt that opened the turn (v2: set by `LinkTurns`).
     public string? ParentID { get; init; }
     public string? Cwd { get; init; }
     public string? Agent { get; init; }
@@ -336,6 +578,35 @@ sealed record OpenCodeMessage(string Id, DateTimeOffset Created, DateTimeOffset 
         catch (JsonException) { return new(id, created, updated); }
     }
 
+    /// A v2 row parsed in memory (no SQLite JSON functions): the fields `OpenCodeLog.V2Fields` selects; null when invalid.
+    public static OpenCodeMessage? ParseV2(OpenCodeMessage message, string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body, Json.Depth);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return null;
+            var time = root.Field("time");
+            var tokens = root.Field("tokens");
+            var cache = tokens?.Field("cache");
+            return message with
+            {
+                Completed = OpenCodeLog.Milliseconds(time?.Field("completed")),
+                Streamed = OpenCodeLog.Milliseconds(time?.Field("streamed")),
+                Finish = OpenCodeLog.Short(root.Field("finish")),
+                Failed = root.Field("error") is { ValueKind: not JsonValueKind.Null },
+                Model = OpenCodeLog.Short(root.Field("model")?.Field("id")),
+                Agent = OpenCodeLog.Short(root.Field("agent")),
+                Generated = LogFields.Add(OpenCodeLog.Count(tokens?.Field("output")), OpenCodeLog.Count(tokens?.Field("reasoning"))),
+                Context = LogFields.Add(LogFields.Add(OpenCodeLog.Count(tokens?.Field("input")), OpenCodeLog.Count(cache?.Field("read"))),
+                    OpenCodeLog.Count(cache?.Field("write"))),
+                Outcome = OpenCodeLog.Short(root.Field("outcome")),
+                Retried = root.Field("retry") is { ValueKind: not JsonValueKind.Null },
+            };
+        }
+        catch (JsonException) { return null; }
+    }
+
     /// The role from the first bytes of a message body. OpenCode writes `role` among the first keys, and any `"role"` in
     /// text would be escaped (`\"role\"`), so the first unescaped one is the message's own.
     public static OpenCodeRole RoleInHead(byte[] head)
@@ -349,7 +620,8 @@ sealed record OpenCodeMessage(string Id, DateTimeOffset Created, DateTimeOffset 
     }
 }
 
-/// One part's type, tool name and state, and its times; never its text, input or output.
+/// One part's type, tool name and state, and its times; never its text, input or output. A v2 `content` item carries no
+/// time of its own, so `Updated` is its message's.
 sealed record OpenCodePart(DateTimeOffset Updated, bool Readable, string? Type, string? Tool, string? Status, DateTimeOffset? ToolStart, DateTimeOffset? End)
 {
     public static OpenCodePart Parse(DateTimeOffset updated, string? body)
@@ -365,6 +637,20 @@ sealed record OpenCodePart(DateTimeOffset Updated, bool Readable, string? Type, 
         }
         catch (JsonException) { return new(updated, false, null, null, null, null, null); }
     }
+
+    /// A v2 row's `content` items parsed in memory (no SQLite JSON functions); empty when the row is invalid.
+    public static List<OpenCodePart> ParseV2Content(DateTimeOffset updated, string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body, Json.Depth);
+            if (document.RootElement.Field("content") is not { ValueKind: JsonValueKind.Array } content) return [];
+            return [.. content.EnumerateArray().Select(item => new OpenCodePart(updated, true, OpenCodeLog.Short(item.Field("type")),
+                OpenCodeLog.Short(item.Field("name")), OpenCodeLog.Short(item.Field("state")?.Field("status")),
+                OpenCodeLog.Milliseconds(item.Field("time")?.Field("ran")), OpenCodeLog.Milliseconds(item.Field("time")?.Field("completed"))))];
+        }
+        catch (JsonException) { return []; }
+    }
 }
 
 sealed class OpenCodeSession(string id)
@@ -376,6 +662,8 @@ sealed class OpenCodeSession(string id)
     public string? SessionModel { get; set; }
     public string? Title { get; set; }
     public DateTimeOffset Updated { get; set; } = DateTimeOffset.MinValue;
+    /// Whether its messages are read from the v2 store; switching stores drops the cache.
+    public bool V2 { get; set; }
     /// Newest first, at most 200.
     public List<OpenCodeMessage> Messages { get; set; } = [];
     public Dictionary<string, OpenCodeMessage> Cache { get; set; } = new(StringComparer.Ordinal);
@@ -426,13 +714,16 @@ sealed record OpenCodeSummary
         switch (newest.Role)
         {
             case OpenCodeRole.User:
-                (open, state, startedAt, turnOutput) = (true, TokenActivityState.Working, newest.Created, 0);
+                // A v2 prompt sent while a turn runs joins it.
+                var joined = Turn(newest.ParentID ?? newest.Id);
+                (open, state, startedAt, turnOutput) = (true, TokenActivityState.Working, joined?.Start ?? newest.Created, joined?.Output ?? 0);
                 break;
             case OpenCodeRole.Assistant:
                 if (newest.Completed is null)
                 {
                     (open, state) = (true, TokenActivityState.Working);
-                    var running = parts.Where(part => part.Type == "tool" && part.Status is "pending" or "running").ToList();
+                    // v1 tools are pending or running; v2's are streaming (dev builds: pending) or running.
+                    var running = parts.Where(part => part.Type == "tool" && part.Status is "pending" or "streaming" or "running").ToList();
                     if ((running.LastOrDefault(part => part.Tool == "question") ?? running.LastOrDefault()) is { } tool)
                     {
                         toolName = tool.Tool;
@@ -445,6 +736,9 @@ sealed record OpenCodeSummary
                 else if (newest.Finish == "tool-calls") (open, state) = (true, TokenActivityState.Working);
                 else state = TokenActivityState.Complete;
                 if (open && Turn(newest.ParentID) is { } turn) (startedAt, turnOutput) = (turn.Start, turn.Output);
+                break;
+            case OpenCodeRole.Idle:
+                state = newest.Outcome switch { "succeeded" => TokenActivityState.Complete, null => TokenActivityState.Idle, _ => TokenActivityState.Interrupted };
                 break;
         }
         // The newest turn that ended normally, fully seen.
@@ -482,7 +776,7 @@ sealed class OpenCodeDatabase : IDisposable
 {
     const string Library = "winsqlite3";
     const int Ok = 0, RowReady = 100, Done = 101, Integer = 1, Float = 2, Null = 5;
-    const int OpenReadOnly = 0x1, OpenReadWrite = 0x2, OpenCreate = 0x4, OpenNoMutex = 0x8000;
+    const int OpenReadOnly = 0x1, OpenReadWrite = 0x2, OpenCreate = 0x4, OpenUri = 0x40, OpenNoMutex = 0x8000;
     static readonly IntPtr Transient = new(-1);
     IntPtr handle;
 
@@ -510,17 +804,26 @@ sealed class OpenCodeDatabase : IDisposable
         SizeOfData = Query("SELECT octet_length('')", [], _ => { }) ? "octet_length(data)" : "length(CAST(data AS BLOB))";
     }
 
-    public static OpenCodeDatabase? Open(string path, bool create = false)
+    /// `immutable` opens the file as a snapshot (`?immutable=1`): for a WAL database whose writer quit and removed its
+    /// `-wal`/`-shm`, which a read-only connection cannot recreate. Later writes are not seen, so reopen on a changed stamp.
+    public static OpenCodeDatabase? Open(string path, bool create = false, bool immutable = false)
     {
         try
         {
-            var flags = (create ? OpenReadWrite | OpenCreate : OpenReadOnly) | OpenNoMutex;
-            var status = sqlite3_open_v2(Utf8(path), out var handle, flags, IntPtr.Zero);
+            var flags = (create ? OpenReadWrite | OpenCreate : OpenReadOnly) | OpenNoMutex | (immutable ? OpenUri : 0);
+            var status = sqlite3_open_v2(Utf8(immutable ? ImmutableUri(path) : path), out var handle, flags, IntPtr.Zero);
             if (status == Ok && handle != IntPtr.Zero) return new OpenCodeDatabase(handle);
             if (handle != IntPtr.Zero) sqlite3_close_v2(handle);
             return null;
         }
         catch (Exception error) when (error is DllNotFoundException or EntryPointNotFoundException or BadImageFormatException) { return null; }
+    }
+
+    /// `file:` URI of a path (`%`, `?` and `#` escaped; a drive path as `file:///C:/…`) with `immutable=1`.
+    static string ImmutableUri(string path)
+    {
+        var escaped = string.Concat(path.Replace('\\', '/').Select(c => c is '%' or '?' or '#' ? $"%{(int)c:X2}" : c.ToString()));
+        return (escaped.StartsWith('/') ? "file://" : "file:///") + escaped + "?immutable=1";
     }
 
     /// Database identity, size and write time, the WAL's size and write time, and the WAL index header (the first 48 bytes

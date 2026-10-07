@@ -721,10 +721,11 @@ final class StatusBarContentView: NSView {
 
 /// The average speed item's client glyphs: each client's own icon in its colours, 64 px PNGs in Assets
 /// (`speed-<TokenSource raw value>.png`) trimmed to the artwork and drawn smoothly scaled. Codex, Claude, OpenCode, Cline
-/// and Droid (Factory's mark) are the vendors' app or site icons, the square ones given rounded corners; Gemini, Qwen and
-/// Amp the @lobehub/icons colour marks; Copilot the @lobehub/icons GitHub Copilot mark in white on GitHub's dark tile;
-/// omp, which has no published mark, a neutral slate badge with a "π" monogram. Windows (`SpeedGlyph` in Widget.cs) embeds
-/// the same files.
+/// and Droid (Factory's mark) are the vendors' app or site icons, the square ones given rounded corners; Gemini, Qwen, Amp
+/// and OpenClaw the @lobehub/icons colour marks; Copilot the @lobehub/icons GitHub Copilot mark in white on GitHub's dark
+/// tile; Cursor, Grok, Hermes (the Nous Research mark) and Goose the @lobehub/icons marks in white, and Kimi its @lobehub/icons
+/// colour mark (white with its blue dot), each on a dark rounded tile like Droid's and Copilot's; omp, which has no published
+/// mark, a neutral slate badge with a "π" monogram. Windows (`SpeedGlyph` in Widget.cs) embeds the same files.
 enum SpeedGlyph {
     private static let images: [TokenSource: NSImage] = Dictionary(uniqueKeysWithValues: TokenSource.allCases.compactMap { source in
         Bundle.main.url(forResource: "speed-\(source.rawValue)", withExtension: "png").flatMap(NSImage.init(contentsOf:)).map { (source, $0) }

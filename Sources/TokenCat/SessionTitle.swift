@@ -1,10 +1,14 @@
 import Foundation
 
 /// A session's title as its client generated or the person renamed it: Claude Code `custom-title`/`ai-title`/`summary`,
-/// Codex thread names, OpenCode `session.title`, omp `title_change`/Pi `session_info`, Gemini CLI `summary`, Qwen Code
-/// `custom_title`, Copilot CLI `name`/`summary`, Amp thread `title`, a generated or renamed Droid `session_start.title`.
-/// Never a prompt: a client that only copies the first message (Cline, Roo Code, Kilo Code, a Droid title not yet
-/// generated) has none. Kept in memory on the reading only; never stored, logged or sent.
+/// Codex thread names, OpenCode/Kilo Code/MiMo Code `session.title`, omp `title_change`/Pi `session_info`, Gemini CLI
+/// `summary`, Qwen Code `custom_title`, Copilot CLI `name`/`summary`, Amp thread `title`, a generated or renamed Droid
+/// `session_start.title`, the Cursor composer `name`, Grok `generated_title`, a Hermes `title` from the model or the person,
+/// the OpenClaw `label`/`displayName`, a generated, recipe or renamed Goose `name`, a generated or custom Kimi Code `title`.
+/// Never a prompt: a client that only copies the first message (Cline, Roo Code, Kilo Code's extension, Zoo Code, IBM Bob,
+/// kimi-cli, a Droid title not yet generated, a Hermes `derived` title, MiMo `fallback` titles, a Grok title copying the
+/// first prompt, a Goose session on a CLI or ACP agent provider) has none. Kept in memory on the reading only; never stored,
+/// logged or sent.
 enum SessionTitle {
     /// Longer titles end in "…" at this many characters; the rows truncate further to fit.
     static let maximumLength = 80

@@ -8,7 +8,7 @@ for head in normal blink alert sleep; do bundled+=(app-head-$head@1x.png app-hea
 # Character presets share runner-v2.json; each has its own sheet (Assets/Generator/Runner<Name>Art.swift).
 for character in dog hamster penguin robot; do bundled+=(runner-$character@1x.png runner-$character@2x.png); done
 # The average speed item's client glyphs, one per TokenSource (see SpeedGlyph).
-for source in codex claude opencode gemini qwen copilot amp cline omp droid; do bundled+=(speed-$source.png); done
+for source in codex claude opencode gemini qwen copilot amp cline omp droid cursor grok hermes openclaw goose kimi; do bundled+=(speed-$source.png); done
 for asset in $bundled app-mark-v1.png app-icon-v2-16.png app-icon-v2-32.png app-icon-v2-1024.png; do
     [[ -f "Assets/$asset" ]] || { print -u2 "이미지 누락: Assets/$asset"; exit 1; }
 done
@@ -50,8 +50,8 @@ cat > dist/TokenCat.app/Contents/Info.plist <<'PLIST'
 <key>CFBundleDevelopmentRegion</key><string>en</string>
 <key>CFBundleLocalizations</key><array><string>en</string><string>ko</string></array>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.17.0</string>
-<key>CFBundleVersion</key><string>25</string>
+<key>CFBundleShortVersionString</key><string>0.18.0</string>
+<key>CFBundleVersion</key><string>26</string>
 <key>CFBundleIconFile</key><string>TokenCat</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>

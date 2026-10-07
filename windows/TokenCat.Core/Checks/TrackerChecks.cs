@@ -947,10 +947,11 @@ public static class TrackerChecks
                   && TokenSource.Listed(new HashSet<TokenSource>(), []).SequenceEqual([TokenSource.Codex, TokenSource.Claude])
                   && TokenSource.Listed(detectedSources, [new TokenReading(TokenSource.Qwen)])
                       .SequenceEqual([TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.Qwen, TokenSource.Amp, TokenSource.Droid])
-                  && Enum.GetValues<TokenSource>().Select(source => source.Id).SequenceEqual(["codex", "claude", "opencode", "gemini", "qwen", "copilot", "amp", "cline", "omp", "droid"]),
+                  && Enum.GetValues<TokenSource>().Select(source => source.Id).SequenceEqual(["codex", "claude", "opencode", "gemini", "qwen", "copilot", "amp", "cline", "omp", "droid",
+                                                                                             "cursor", "grok", "hermes", "openclaw", "goose", "kimi"]),
                   "Provider registry order, telemetry clients, listed sources or source ids are wrong");
             var sourceJson = string.Concat(Encoding.UTF8.GetString(Json.Serialize(Enum.GetValues<TokenSource>())).Where(c => !char.IsWhiteSpace(c)));
-            check(sourceJson == """["codex","claude","opencode","gemini","qwen","copilot","amp","cline","omp","droid"]""",
+            check(sourceJson == """["codex","claude","opencode","gemini","qwen","copilot","amp","cline","omp","droid","cursor","grok","hermes","openclaw","goose","kimi"]""",
                   $"Source JSON names differ from the Swift raw values: {sourceJson}");
 
             // Windows (DESIGN WP1): CRLF line ends, read forward and scanned backward for a Claude turn start.
@@ -1133,6 +1134,10 @@ public static class TrackerChecks
             OpenCodeLogChecks.Run(root, check);
             // Cline, Roo Code, Cline CLI, omp and Pi: fixture files (ClineOmpChecks.cs).
             ClineOmpChecks.Run(root, check);
+            // Hermes Agent: fixture stores and agent.log (HermesLogChecks.cs).
+            HermesLogChecks.Run(root, check);
+            // OpenClaw: JSONL and SQLite fixtures (OpenClawLogChecks.cs).
+            OpenClawLogChecks.Run(root, check);
         }
         catch (Exception error)
         {
@@ -1144,6 +1149,11 @@ public static class TrackerChecks
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
         CopilotAmpDroidChecks.Run(check);
+        ProviderRootChecks.Run(check);
+        GrokChecks.Run(check);
+        CursorChecks.Run(check);
+        KimiChecks.Run(check);
+        GooseLogChecks.Run(check);
         SessionTitleChecks.Run(check);
         return c.Done();
     }

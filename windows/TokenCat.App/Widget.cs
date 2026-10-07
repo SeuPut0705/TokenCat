@@ -474,7 +474,8 @@ sealed class WidgetView : FrameworkElement
 }
 
 /// The speed item's client glyphs (mac `SpeedGlyph`, whose comment names each icon's origin): each client's own icon in its
-/// colours, the embedded 64 px `speed-<TokenSource.Id>.png`, one per source.
+/// colours (Cursor, Grok, Hermes, Goose and Kimi as @lobehub/icons marks on a dark rounded tile, OpenClaw its @lobehub/icons
+/// colour mark), the embedded 64 px `speed-<TokenSource.Id>.png`, one per source.
 static class SpeedGlyph
 {
     const int Side = 64;

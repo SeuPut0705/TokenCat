@@ -19,6 +19,8 @@ final class TokenTracker {
     /// Each read client's root prefixes as given, under the real home and with the root's symlinks resolved: FSEvents and
     /// listings name real paths (/private/var for a temporary home, a symlinked ~/.codex by its target).
     private let logRoots: [(prefixes: [String], source: TokenSource, format: TokenLogFormat)]
+    /// `TokenClientRoots` of read clients, with prefixes like `logRoots`: rows under them are another product's.
+    private let clientRoots: [(prefixes: [String], name: String)]
     /// Readers kept past the discovery caps by `isRecent`, most recently active first.
     static let retentionLimit = 256
     static let recentOutputWindow: TimeInterval = 600
@@ -38,13 +40,14 @@ final class TokenTracker {
             return String(cString: resolved)
         }
         let realHome = real(homeDirectory.path).map { URL(fileURLWithPath: $0, isDirectory: true) }
-        logRoots = providers.compactMap { provider in
-            provider.format.map { format in
-                let given = provider.roots(homeDirectory, environment).map(\.path)
-                let paths = given + (realHome.map { provider.roots($0, environment).map(\.path) } ?? []) + given.compactMap(real)
-                return (Array(Set(paths.map { $0 + "/" })), provider.source, format)
-            }
+        func prefixes(_ roots: (URL, [String: String]) -> [URL]) -> [String] {
+            let given = roots(homeDirectory, environment).map(\.path)
+            let paths = given + (realHome.map { roots($0, environment).map(\.path) } ?? []) + given.compactMap(real)
+            return Array(Set(paths.map { $0 + "/" }))
         }
+        logRoots = providers.compactMap { provider in provider.format.map { (prefixes(provider.roots), provider.source, $0) } }
+        let read = Set(providers.filter { $0.format != nil }.map(\.source))
+        clientRoots = TokenClientRoots.all.filter { read.contains($0.source) }.map { (prefixes($0.roots), $0.clientName) }
         clock = now
         self.initialTailBytes = max(128, initialTailBytes)
         self.discoveryInterval = discoveryInterval
@@ -97,7 +100,14 @@ final class TokenTracker {
         let prefix = home.path + "/"
         return files.flatMap { path, file -> [TokenReading] in
             let relative = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
-            return file.reader.readings(id: "\(file.source.rawValue):\(relative)", now: now)
+            let readings = file.reader.readings(id: "\(file.source.rawValue):\(relative)", now: now)
+            guard let client = clientRoots.first(where: { $0.prefixes.contains(where: path.hasPrefix) })?.name else { return readings }
+            return readings.map {
+                var reading = $0
+                reading.clientName = reading.clientName ?? client
+                reading.rateLimit = nil
+                return reading
+            }
         }.sorted {
             if $0.active != $1.active { return $0.active }
             if $0.lastActivity != $1.lastActivity {
@@ -167,18 +177,23 @@ extension TokenLogFormat {
         }
         var main: [URL] = []
         var subagents: [URL] = []
-        for project in roots.flatMap(discovery.children) {
-            let entries = discovery.children(project)
+        for entry in roots.flatMap(discovery.children) {
+            // Qoder's SharedClientCache keeps transcripts directly in its root, without project folders.
+            if entry.pathExtension == "jsonl" { main.append(entry); continue }
+            let entries = discovery.children(entry)
             main.append(contentsOf: entries.filter { $0.pathExtension == "jsonl" })
             for session in entries where session.pathExtension.isEmpty {
                 subagents.append(contentsOf: subagentFiles(in: session.appendingPathComponent("subagents"), remainingDepth: 2))
             }
         }
+        // `<session>.orphaned-<time>-<suffix>.jsonl` is a transcript Claude Code set aside; it is no session.
+        let current = main.filter { !$0.lastPathComponent.contains(".orphaned-") }
         // Workflow agents create many files; they get their own cap so main sessions stay visible.
-        return discovery.recent(main) + discovery.recent(subagents, keepingSince: discovery.now.addingTimeInterval(-3_600))
+        return discovery.recent(current) + discovery.recent(subagents, keepingSince: discovery.now.addingTimeInterval(-3_600))
     }, isLog: { path in
-        // Workflow journals and other side files under subagents/ are never tracked.
-        path.hasSuffix(".jsonl") && (!path.contains("/subagents/") || (path as NSString).lastPathComponent.hasPrefix("agent-"))
+        // Workflow journals and other side files under subagents/ are never tracked, nor set-aside transcripts.
+        let name = (path as NSString).lastPathComponent
+        return path.hasSuffix(".jsonl") && !name.contains(".orphaned-") && (!path.contains("/subagents/") || name.hasPrefix("agent-"))
     }, open: { TokenFileCursor(url: $0, source: .claude) })
 }
 

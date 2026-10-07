@@ -2,6 +2,16 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.18.0
+
+**macOS and Windows**
+
+- New clients: Cursor (IDE agent and `cursor-agent` CLI; state, model, title, context and project, but no tokens or speed, which Cursor doesn't store), Grok Build, Hermes Agent, OpenClaw, Goose and Kimi Code (with Kimi Work and the archived kimi-cli as Kimi CLI). Grok, Hermes, Goose and Kimi Code show a measured request tok/s from the times they record; OpenClaw shows none. · 새 클라이언트: Cursor(IDE 에이전트와 `cursor-agent` CLI. 상태·모델·제목·컨텍스트·프로젝트를 보이며, Cursor가 저장하지 않는 토큰과 속도는 없음), Grok Build, Hermes Agent, OpenClaw, Goose, Kimi Code(Kimi Work, 그리고 Kimi CLI로 보이는 보관된 kimi-cli 포함). Grok·Hermes·Goose·Kimi Code는 스스로 기록한 시간으로 잰 요청 tok/s를 보이고, OpenClaw는 속도가 없습니다.
+- Products that write another client's format show under their own names: Kilo Code and MiMo Code (OpenCode's store), OpenClaude and Qoder (Claude Code's), TRAE CLI (Codex's), Zoo Code and IBM Bob (Cline's). These rows show no Codex or Claude usage limits and no resume command. · 다른 클라이언트의 형식으로 기록하는 제품이 자기 이름으로 보입니다: Kilo Code·MiMo Code(OpenCode 저장소), OpenClaude·Qoder(Claude Code), TRAE CLI(Codex), Zoo Code·IBM Bob(Cline). 이 행에는 Codex·Claude 사용 한도와 재개 명령이 없습니다.
+- OpenCode 2's `session_message` store is read beside the classic one; a session present in both is counted once. · OpenCode 2의 `session_message` 저장소도 기존 저장소와 함께 읽고, 양쪽에 있는 세션은 한 번만 셉니다.
+- Existing clients are found in more data folders: `CODEX_HOME`, `CLAUDE_CONFIG_DIR` (also a comma-separated list) and `~/.config/claude`, Gemini CLI's sandbox folder (macOS), Cline's shared `~/.cline/data` and `CLINE_DIR`/`CLINE_DATA_DIR`/`CLINE_SESSION_DATA_DIR`, Cline-family tasks in every VS Code-style editor, omp profiles, `PI_CONFIG_DIR` and `$XDG_DATA_HOME/omp` (macOS), Pi's `PI_CODING_AGENT_SESSION_DIR` and Droid's `FACTORY_HOME_OVERRIDE`. Claude Code's `.orphaned-*` transcripts are ignored. · 기존 클라이언트를 더 많은 데이터 폴더에서 찾습니다: `CODEX_HOME`, `CLAUDE_CONFIG_DIR`(쉼표로 여럿 가능)와 `~/.config/claude`, Gemini CLI의 샌드박스 폴더(macOS), Cline 공용 `~/.cline/data`와 `CLINE_DIR`·`CLINE_DATA_DIR`·`CLINE_SESSION_DATA_DIR`, 모든 VS Code 계열 에디터의 Cline 계열 작업, omp 프로필·`PI_CONFIG_DIR`·`$XDG_DATA_HOME/omp`(macOS), Pi의 `PI_CODING_AGENT_SESSION_DIR`, Droid의 `FACTORY_HOME_OVERRIDE`. Claude Code의 `.orphaned-*` 기록은 무시합니다.
+- Copy Resume Command works for the new clients that have one: `grok --resume`, `hermes --resume`, `kimi -r` and `goose session --resume --session-id`. · 재개 명령 복사가 명령이 있는 새 클라이언트에도 됩니다: `grok --resume`, `hermes --resume`, `kimi -r`, `goose session --resume --session-id`.
+
 ## 0.17.0
 
 **macOS and Windows**

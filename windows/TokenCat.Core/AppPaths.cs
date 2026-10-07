@@ -3,7 +3,8 @@ namespace TokenCat;
 /// Where things live (DESIGN §7.1). Log and config paths take `home` so checks run on temp homes.
 public static class AppPaths
 {
-    /// %USERPROFILE% on Windows, $HOME elsewhere. CODEX_HOME / CLAUDE_CONFIG_DIR / WSL are ignored in v1, as on mac.
+    /// %USERPROFILE% on Windows, $HOME elsewhere. Log roots also honour CODEX_HOME / CLAUDE_CONFIG_DIR (`TokenProvider.All`);
+    /// the config paths below and WSL do not, as on mac.
     public static string Home => Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
     /// %LOCALAPPDATA%\TokenCat. Dev runs on macOS use "TokenCat-windows-dev", never the mac app's folder.

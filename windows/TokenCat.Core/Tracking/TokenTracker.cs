@@ -24,6 +24,8 @@ public sealed class TokenTracker
     HashSet<string> known = new(StringComparer.Ordinal);
     /// Each read client's root prefixes, `/`-separated with a trailing `/`, computed once: file events may name thousands of paths.
     readonly (string[] Prefixes, TokenSource Source, TokenLogFormat Format)[] logRoots;
+    /// `TokenClientRoots` of read clients, with prefixes like `logRoots`: rows under them are another product's.
+    readonly (string[] Prefixes, string Name)[] clientRoots;
 
     public TokenTracker(string home, Func<DateTimeOffset>? now = null, int initialTailBytes = 1_048_576, double discoveryIntervalSeconds = 60,
         Func<string, string?>? environment = null, IReadOnlyList<TokenProvider>? providers = null)
@@ -34,9 +36,13 @@ public sealed class TokenTracker
         clock = now ?? (() => DateTimeOffset.UtcNow);
         this.initialTailBytes = Math.Max(128, initialTailBytes);
         discoveryInterval = discoveryIntervalSeconds;
+        string[] Prefixes(IEnumerable<string> roots) =>
+            [.. roots.Select(root => Path.TrimEndingDirectorySeparator(root).Replace('\\', '/') + "/").Distinct()];
         logRoots = [.. this.providers.Where(provider => provider.Format is not null).Select(provider => (
-            provider.Roots(this.home, this.environment).Select(root => Path.TrimEndingDirectorySeparator(root).Replace('\\', '/') + "/").Distinct().ToArray(),
-            provider.Source, provider.Format!))];
+            Prefixes(provider.Roots(this.home, this.environment)), provider.Source, provider.Format!))];
+        var read = this.providers.Where(provider => provider.Format is not null).Select(provider => provider.Source).ToHashSet();
+        clientRoots = [.. TokenClientRoots.All.Where(clone => read.Contains(clone.Source))
+            .Select(clone => (Prefixes(clone.Roots(this.home, this.environment)), clone.ClientName))];
     }
 
     /// Candidate roots of every client with a parser, for `LogWatcher`; the watcher and the folder check keep the existing ones.
@@ -97,8 +103,12 @@ public sealed class TokenTracker
         {
             var relative = path.Length > home.Length + 1 && path.StartsWith(home, StringComparison.Ordinal) && path[home.Length] is '/' or '\\'
                 ? path[(home.Length + 1)..] : path;
-            try { readings.AddRange(file.Reader.Readings($"{file.Source.Id}:{relative.Replace('\\', '/')}", now)); }
-            catch (Exception) { }
+            List<TokenReading> rows;
+            try { rows = [.. file.Reader.Readings($"{file.Source.Id}:{relative.Replace('\\', '/')}", now)]; }
+            catch (Exception) { continue; }
+            var normalized = path.Replace('\\', '/');
+            var client = clientRoots.FirstOrDefault(root => root.Prefixes.Any(prefix => normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))).Name;
+            readings.AddRange(client is null ? rows : rows.Select(row => row with { ClientName = row.ClientName ?? client, RateLimit = null }));
         }
         readings.Sort((a, b) =>
             a.Active != b.Active ? (a.Active ? -1 : 1)
@@ -150,11 +160,12 @@ public sealed partial record TokenLogFormat
 
     public static readonly TokenLogFormat Claude = new(ClaudeFiles, path =>
     {
-        // Workflow journals and other side files under subagents/ are never tracked. Windows paths are matched with `/`.
+        // Workflow journals and other side files under subagents/ are never tracked, nor set-aside transcripts.
+        // Windows paths are matched with `/`.
         var normalized = path.Replace('\\', '/');
-        return path.EndsWith(".jsonl", StringComparison.Ordinal)
-            && (!normalized.Contains("/subagents/", StringComparison.Ordinal)
-                || normalized[(normalized.LastIndexOf('/') + 1)..].StartsWith("agent-", StringComparison.Ordinal));
+        var name = normalized[(normalized.LastIndexOf('/') + 1)..];
+        return path.EndsWith(".jsonl", StringComparison.Ordinal) && !name.Contains(".orphaned-", StringComparison.Ordinal)
+            && (!normalized.Contains("/subagents/", StringComparison.Ordinal) || name.StartsWith("agent-", StringComparison.Ordinal));
     }, path => new TokenFileCursor(path, TokenSource.Claude));
 
     static bool IsJsonl(FileSystemInfo entry) => Path.GetExtension(entry.Name) == ".jsonl";
@@ -183,13 +194,17 @@ public sealed partial record TokenLogFormat
     {
         var main = new List<FileSystemInfo>();
         var subagents = new List<FileSystemInfo>();
-        foreach (var project in roots.SelectMany(TokenDiscovery.Children))
+        foreach (var entry in roots.SelectMany(TokenDiscovery.Children))
         {
-            var entries = TokenDiscovery.Children(project.FullName);
+            // Qoder's SharedClientCache keeps transcripts directly in its root, without project folders.
+            if (IsJsonl(entry)) { main.Add(entry); continue; }
+            var entries = TokenDiscovery.Children(entry.FullName);
             main.AddRange(entries.Where(IsJsonl));
             foreach (var session in entries.Where(HasNoExtension))
                 subagents.AddRange(ClaudeSubagentFiles(Path.Combine(session.FullName, "subagents"), 2));
         }
+        // `<session>.orphaned-<time>-<suffix>.jsonl` is a transcript Claude Code set aside; it is no session.
+        main.RemoveAll(entry => entry.Name.Contains(".orphaned-", StringComparison.Ordinal));
         // Workflow agents create many files; they get their own cap so main sessions stay visible.
         return [.. discovery.Recent(main), .. discovery.Recent(subagents, discovery.Now.UtcDateTime.AddHours(-1))];
     }

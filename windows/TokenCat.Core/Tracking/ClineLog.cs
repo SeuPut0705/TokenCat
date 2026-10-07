@@ -35,9 +35,10 @@ sealed class ClineLogReader(string path) : ITokenLogReader
     const FileShare Sharing = FileShare.ReadWrite | FileShare.Delete; // never block the extension's rewrites
     const long MaximumBytes = 67_108_864;
     readonly bool cli = Path.GetFileName(path) != "ui_messages.json";
-    /// Roo Code and Kilo Code, by the extension folder the task lives in; null for Cline.
-    readonly string? clientName = path.Replace('\\', '/') is var normalized && normalized.Contains("/rooveterinaryinc.roo-cline/", StringComparison.OrdinalIgnoreCase)
-        ? "Roo Code" : normalized.Contains("/kilocode.kilo-code/", StringComparison.OrdinalIgnoreCase) ? "Kilo Code" : null;
+    /// Roo Code, Kilo Code, Zoo Code or IBM Bob, by the extension folder the task lives in; null for Cline.
+    readonly string? clientName = path.Replace('\\', '/') is var normalized
+        ? TokenProvider.VSCodeExtensions.FirstOrDefault(extension => normalized.Contains($"/{extension.Id}/", StringComparison.OrdinalIgnoreCase)).Client
+        : null;
     (long Ticks, long Size)? stamp, manifestStamp, historyStamp, metadataStamp;
     DateTimeOffset? parsedAt;
     ClineLogSummary? summary;

@@ -28,7 +28,7 @@ extension TokenLogFormat {
 private final class ClineLogReader: TokenLogReader {
     private let url: URL
     private let cli: Bool
-    /// Roo Code and Kilo Code, by the extension folder the task lives in; nil for Cline.
+    /// Roo Code, Kilo Code, Zoo Code or IBM Bob, by the extension folder the task lives in; nil for Cline.
     private let clientName: String?
     private var stamp: ClineLogStamp?
     private var parsedAt: Date?
@@ -48,7 +48,7 @@ private final class ClineLogReader: TokenLogReader {
         self.url = url
         cli = url.lastPathComponent != "ui_messages.json"
         let path = url.path
-        clientName = path.contains("/rooveterinaryinc.roo-cline/") ? "Roo Code" : path.contains("/kilocode.kilo-code/") ? "Kilo Code" : nil
+        clientName = TokenProvider.vscodeExtensions.first { path.contains("/\($0.id)/") }?.client
     }
 
     func read(tailLimit: Int, now: Date) {
