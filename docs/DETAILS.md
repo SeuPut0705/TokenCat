@@ -4,7 +4,7 @@ English · [한국어](DETAILS.ko.md)
 
 Back to the [README](../README.md)
 
-A small macOS menu bar app that shows system metrics alongside the sessions, output tokens, measured speeds and usage limits of your coding agents (Codex, Claude Code, OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline, Roo Code and Kilo Code, omp and Pi, Factory Droid, Cursor, Grok, Hermes, OpenClaw, Goose and Kimi Code). It requires macOS 13 or later and uses only Swift, AppKit and SwiftUI. It uses no images or code from RunCat. The Windows preview is covered in [Windows (preview)](#windows-preview).
+A small macOS menu bar app that shows system metrics alongside the sessions, output tokens, measured speeds and usage limits of your coding agents (Codex, Claude Code, OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline, Roo Code and Kilo Code, omp and Pi, Factory Droid, Cursor, Grok, Hermes, OpenClaw, Goose and Kimi Code). It requires macOS 13 or later and uses only Swift, AppKit and SwiftUI. It uses no images or code from RunCat. The Windows version is covered in [Windows](#windows).
 
 This is a reference that lists every rule for how the screens, collection and measurements behave. The introduction and previews are in the [README](../README.md). Run all commands below from the repository root.
 
@@ -171,7 +171,7 @@ In a real environment, receiving server TBT from Codex 0.160.0 and showing it on
 
 ## Updates and distribution
 
-Distribution is through GitHub Releases. `TokenCat.zip` is uploaded to the latest release tagged `v<CFBundleShortVersionString>` (for example `v0.9.0`), with `TokenCat.app` at the top of the zip; from 0.11.0 the same release also carries `TokenCat-Windows.zip` ([Windows (preview)](#windows-preview)). The app is an arm64 and x86_64 universal binary (macOS 13 minimum) with only an ad-hoc signature, without Developer ID signing or notarization.
+Distribution is through GitHub Releases. `TokenCat.zip` is uploaded to the latest release tagged `v<CFBundleShortVersionString>` (for example `v0.9.0`), with `TokenCat.app` at the top of the zip; from 0.11.0 the same release also carries `TokenCat-Windows.zip` ([Windows](#windows)). The app is an arm64 and x86_64 universal binary (macOS 13 minimum) with only an ad-hoc signature, without Developer ID signing or notarization.
 
 **Checking**: only one request is made, `GET https://api.github.com/repos/SeuPut0705/TokenCat/releases/latest` (`Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `User-Agent: TokenCat/<version>`, and `Accept-Language: en` fixed instead of the user's language list; macOS adds `Host`, `Accept-Encoding: gzip, deflate` and `Connection`). Downloading the release file sends only the same `User-Agent` and `Accept-Language`. From the response, only `tag_name`, `html_url`, `draft`, `prerelease` and the `TokenCat.zip` asset's `browser_download_url`, `size` and `digest` (`sha256:<hex>`) are read, and no identifiers or usage information are sent. When `Check for updates automatically` (on by default) is on, it checks about 5 seconds after launch, every 15 minutes (with timer tolerance), about 15 seconds after waking from sleep, and when you open the dashboard more than 5 minutes after the last check, with only one request at a time. When it's off, it asks only when you click `Check Now`.
 
@@ -185,9 +185,9 @@ Distribution is through GitHub Releases. `TokenCat.zip` is uploaded to the lates
 
 **Gatekeeper**: because the app isn't notarized, `spctl -a -vv -t exec` assesses it as `rejected` whether or not it's quarantined, and `syspolicy_check distribution` reports `Adhoc Signed App` (warning) and `Notary Ticket Missing` (fatal) (confirmed on macOS 27.0.1). macOS applies this assessment the first time an app with the quarantine attribute (`com.apple.quarantine`) is opened, so a copy downloaded with a browser has to be allowed once, while a copy downloaded with `curl` and unpacked with `ditto -x -k` has no quarantine attribute and opens directly.
 
-## Windows (preview)
+## Windows
 
-The Windows version lives in [`windows/`](../windows) (C# on .NET 10, WPF plus the WinForms `NotifyIcon`, no third-party packages). It ports the Mac app's rules, not its UI; the design, the cuts from the Mac app and the PC checklist are in [`windows/DESIGN.md`](../windows/DESIGN.md). Installing and what differs for users are in [README › Windows (preview)](../README.md#windows-preview).
+The Windows version lives in [`windows/`](../windows) (C# on .NET 10, WPF plus the WinForms `NotifyIcon`, no third-party packages). It ports the Mac app's rules, not its UI; the design, the cuts from the Mac app and the PC checklist are in [`windows/DESIGN.md`](../windows/DESIGN.md). Installing and what differs for users are in [README › Windows](../README.md#windows).
 
 - **Projects** (`windows/TokenCat.Windows.slnx`): `TokenCat.Core` (`net10.0`, no Windows APIs) holds every rule and check: log tracking, the loopback collector on `127.0.0.1:16493`, client settings and the PowerShell status line bridge, presentation, the runner and the updater. `TokenCat.App` (`net10.0-windows`) is the thin shell: tray icon, flyout dashboard, Settings window, system sampler, login item (`HKCU\…\Run`) and the command-line flags. `TokenCat.Checks` is a console runner for the Core suites.
 - **Shared with the Mac**: the version is read from `build.sh` through `Directory.Build.props`, and the sprites and manifest are embedded from `Assets/`, so both apps carry one version and one set of art. Settings use the Mac's UserDefaults key names in `%LOCALAPPDATA%\TokenCat\settings.json`.

@@ -23,7 +23,7 @@ English · [한국어](README.ko.md)
   &nbsp;
   <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip"><img alt="Download for Windows" src="https://img.shields.io/badge/Download-Windows%2010%2F11-3b4252?style=for-the-badge"></a>
   <br>
-  <sub>Free and open source · <a href="#install">Mac install steps</a> · <a href="#windows-preview">Windows install steps</a></sub>
+  <sub>Free and open source · <a href="#install">Mac install steps</a> · <a href="#windows">Windows install steps</a></sub>
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@ English · [한국어](README.ko.md)
   <a href="#features">Features</a> ·
   <a href="#privacy-and-safety">Privacy</a> ·
   <a href="#install">Install</a> ·
-  <a href="#windows-preview">Windows</a> ·
+  <a href="#windows">Windows</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#faq">FAQ</a> ·
   <a href="docs/DETAILS.md">Details</a>
@@ -53,7 +53,7 @@ The numbers are shown as they are. Token counts are the values actually recorded
 - **Sessions and subagents in one list**: each session shows its progress, the kind of tool running, output this turn and context, and subagents are grouped under their parent.
 - **Your data stays local**: no conversation text is stored, the measurement collector listens only on `127.0.0.1`, and TokenCat never calls a model or signs in on its own. It goes online only to check for and download updates from GitHub and, with `Live usage limits` on (the default), to ask OpenAI and Anthropic for your usage limits with the sign-in Codex and Claude Code (or omp and Pi) already saved; both can be turned off. To receive measurements, it automatically adds settings to Codex and Claude Code (and to Gemini CLI and Qwen Code when they're installed) that send telemetry to this Mac, and wraps the Claude Code status line command with a TokenCat bridge, backing up the originals first.
 - **Native app**: Swift, AppKit and SwiftUI only, with no third-party packages. Targets macOS 13 and later.
-- **Windows preview**: a notification-area version for Windows 10 and 11 (x64) ships on the same release. See [Windows (preview)](#windows-preview).
+- **Windows**: a notification-area version for Windows 10 and 11 (x64) ships on the same release. See [Windows](#windows).
 
 ## Features
 
@@ -314,7 +314,7 @@ TokenCat checks the measurement connection on every launch and adds it again if 
    Config files unchanged since connecting are restored to their original bytes. In files edited since, only TokenCat's entries are reverted, and the current copy is kept in `~/Library/Application Support/TokenCat/telemetry-backups/`. The command says what it did, including any file left for you to clean up from the backups, and the restore takes effect the next time each client launches. If `statusLine.command` in `~/.claude/settings.json` still points to `claude-statusline.sh`, replace it with the command in `~/Library/Application Support/TokenCat/claude-statusline-command` (or remove `statusLine` if that file doesn't exist). The exact rules are in [Details › Token metrics](docs/DETAILS.md#token-metrics).
 4. Delete the app. Once the restore is done, you can also delete `~/Library/Application Support/TokenCat/` (backups and bridge) and the settings (`defaults delete dev.seuput.TokenCat`, which includes the Claude limit records). Don't delete that folder while `~/.claude/settings.json` still points to `claude-statusline.sh`: the original command would go with it, and the Claude Code status line would fail to run.
 
-## Windows (preview)
+## Windows
 
 <p align="center">
   <picture>
@@ -323,7 +323,7 @@ TokenCat checks the measurement connection on every launch and adds it again if 
   </picture>
 </p>
 
-TokenCat also runs in the Windows notification area, starting with 0.11.0. It's a port of the Mac app's rules, with the same checks, but it has been tried on far fewer PCs, so please [report issues](https://github.com/SeuPut0705/TokenCat/issues) (don't attach `--diagnose` output: it includes project paths). How it's built is in [Details › Windows (preview)](docs/DETAILS.md#windows-preview).
+TokenCat also runs in the Windows notification area, starting with 0.11.0. It's a port of the Mac app's rules with the same checks; please [report issues](https://github.com/SeuPut0705/TokenCat/issues) (don't attach `--diagnose` output: it includes project paths). How it's built is in [Details › Windows](docs/DETAILS.md#windows).
 
 It runs on Windows 10 and 11 (x64). There's no installer.
 

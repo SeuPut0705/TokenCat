@@ -23,7 +23,7 @@
   &nbsp;
   <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip"><img alt="Windows용 내려받기" src="https://img.shields.io/badge/%EB%82%B4%EB%A0%A4%EB%B0%9B%EA%B8%B0-Windows%2010%2F11-3b4252?style=for-the-badge"></a>
   <br>
-  <sub>무료 오픈 소스 · <a href="#설치">Mac 설치 방법</a> · <a href="#windows-미리보기">Windows 설치 방법</a></sub>
+  <sub>무료 오픈 소스 · <a href="#설치">Mac 설치 방법</a> · <a href="#windows">Windows 설치 방법</a></sub>
 </p>
 
 <p align="center">
@@ -37,7 +37,7 @@
   <a href="#주요-기능">주요 기능</a> ·
   <a href="#개인정보와-안전">개인정보</a> ·
   <a href="#설치">설치</a> ·
-  <a href="#windows-미리보기">Windows</a> ·
+  <a href="#windows">Windows</a> ·
   <a href="#작동-방식">작동 방식</a> ·
   <a href="#자주-묻는-질문">자주 묻는 질문</a> ·
   <a href="docs/DETAILS.ko.md">자세한 동작</a>
@@ -53,7 +53,7 @@
 - **세션과 하위 에이전트를 한 목록에**: 진행 상태, 실행 중인 도구 종류, 이번 턴 출력, 컨텍스트를 세션마다 보여 주고 하위 에이전트는 부모 아래에 묶습니다.
 - **데이터는 로컬에**: 대화 본문을 저장하지 않고, 실측 수집기는 `127.0.0.1`에서만 열며, 모델을 호출하거나 직접 계정에 로그인하지 않습니다. 인터넷에는 업데이트를 확인하고 내려받을 때 GitHub에, `실시간 한도 확인`이 켜져 있으면(기본) Codex·Claude Code(또는 omp·Pi)에 이미 저장된 로그인으로 사용 한도를 물을 때 OpenAI·Anthropic에 접속하며, 둘 다 끌 수 있습니다. 실측을 받기 위해 Codex·Claude Code 설정(설치돼 있으면 Gemini CLI·Qwen Code 설정도)에 이 Mac으로 보내는 전송 설정을 자동으로 추가하고 Claude Code 상태 표시줄 명령을 TokenCat 브리지로 감싸며, 원본은 먼저 백업합니다.
 - **네이티브 앱**: Swift·AppKit·SwiftUI만 쓰고 외부 패키지가 없습니다. macOS 13 이상이 대상입니다.
-- **Windows 미리보기**: Windows 10·11(x64)용 알림 영역 버전을 같은 릴리스에 함께 올립니다. [Windows (미리보기)](#windows-미리보기)를 보세요.
+- **Windows**: Windows 10·11(x64)용 알림 영역 버전을 같은 릴리스에 함께 올립니다. [Windows](#windows)를 보세요.
 
 ## 주요 기능
 
@@ -314,7 +314,7 @@ TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다�
    연결한 뒤 바뀌지 않은 설정 파일은 원본 바이트로 되돌립니다. 그사이 수정된 파일은 TokenCat이 넣은 항목만 되돌리고, 지금 파일은 `~/Library/Application Support/TokenCat/telemetry-backups/`에 남깁니다. 명령은 한 일과 백업을 보고 직접 정리할 파일을 알려 주며, 복구는 클라이언트를 다음에 실행할 때부터 적용됩니다. `~/.claude/settings.json`의 `statusLine.command`가 아직 `claude-statusline.sh`를 가리키면 `~/Library/Application Support/TokenCat/claude-statusline-command`에 적힌 명령으로 바꿉니다(이 파일이 없으면 `statusLine`을 지웁니다). 정확한 규칙은 [자세한 동작 › 토큰 지표](docs/DETAILS.ko.md#토큰-지표)에 있습니다.
 4. 앱을 지웁니다. 복구를 마쳤다면 `~/Library/Application Support/TokenCat/`(백업·브리지)과 설정 값(`defaults delete dev.seuput.TokenCat`, Claude 한도 기록 포함)도 지울 수 있습니다. `~/.claude/settings.json`이 아직 `claude-statusline.sh`를 가리키면 이 폴더를 지우지 마세요. 원래 명령이 함께 사라지고 Claude Code 상태 표시줄이 실행에 실패합니다.
 
-## Windows (미리보기)
+## Windows
 
 <p align="center">
   <picture>
@@ -323,7 +323,7 @@ TokenCat은 실행될 때마다 실측 연결을 확인하고 필요하면 다�
   </picture>
 </p>
 
-0.11.0부터 TokenCat은 Windows 알림 영역에서도 실행됩니다. Mac 앱의 규칙을 같은 검사와 함께 옮겼지만 써 본 PC가 훨씬 적으므로, 문제가 있으면 [이슈](https://github.com/SeuPut0705/TokenCat/issues)로 알려 주세요(`--diagnose` 출력은 프로젝트 경로가 들어 있으니 첨부하지 마세요). 만든 방식은 [자세한 동작 › Windows (미리보기)](docs/DETAILS.ko.md#windows-미리보기)에 있습니다.
+0.11.0부터 TokenCat은 Windows 알림 영역에서도 실행됩니다. Mac 앱의 규칙을 같은 검사와 함께 옮겼으며, 문제가 있으면 [이슈](https://github.com/SeuPut0705/TokenCat/issues)로 알려 주세요(`--diagnose` 출력은 프로젝트 경로가 들어 있으니 첨부하지 마세요). 만든 방식은 [자세한 동작 › Windows](docs/DETAILS.ko.md#windows)에 있습니다.
 
 Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 

@@ -4,7 +4,7 @@
 
 [README](../README.ko.md)로 돌아가기
 
-시스템 지표와 함께 코딩 에이전트(Codex, Claude Code, OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline·Roo Code·Kilo Code, omp·Pi, Factory Droid, Cursor, Grok, Hermes, OpenClaw, Goose, Kimi Code)의 세션·출력 토큰·실측 속도·사용 한도를 표시하는 작은 macOS 메뉴 막대 앱입니다. macOS 13 이상, Swift·AppKit·SwiftUI만 사용합니다. RunCat의 이미지나 코드는 사용하지 않습니다. Windows 미리보기는 [Windows (미리보기)](#windows-미리보기)에서 다룹니다.
+시스템 지표와 함께 코딩 에이전트(Codex, Claude Code, OpenCode, Gemini CLI, Qwen Code, Copilot CLI, Amp, Cline·Roo Code·Kilo Code, omp·Pi, Factory Droid, Cursor, Grok, Hermes, OpenClaw, Goose, Kimi Code)의 세션·출력 토큰·실측 속도·사용 한도를 표시하는 작은 macOS 메뉴 막대 앱입니다. macOS 13 이상, Swift·AppKit·SwiftUI만 사용합니다. RunCat의 이미지나 코드는 사용하지 않습니다. Windows 버전은 [Windows](#windows)에서 다룹니다.
 
 이 문서는 화면·수집·실측의 동작 규칙을 빠짐없이 적은 참고 문서입니다. 소개와 미리보기는 [README](../README.ko.md)에 있습니다. 아래 명령은 모두 저장소 루트에서 실행합니다.
 
@@ -171,7 +171,7 @@ TokenCat 자체는 모델을 호출하거나 계정에 로그인하지 않으며
 
 ## 업데이트와 배포
 
-배포는 GitHub Release로 합니다. `v<CFBundleShortVersionString>` 태그(예: `v0.9.0`)의 최신 릴리스에 `TokenCat.zip`을 올리며, zip 맨 위에 `TokenCat.app`이 있습니다. 0.11.0부터는 같은 릴리스에 `TokenCat-Windows.zip`도 함께 올립니다([Windows (미리보기)](#windows-미리보기)). 앱은 arm64·x86_64 universal 바이너리(최소 macOS 13)이고 ad-hoc 서명만 하며 Developer ID 서명·공증은 하지 않습니다.
+배포는 GitHub Release로 합니다. `v<CFBundleShortVersionString>` 태그(예: `v0.9.0`)의 최신 릴리스에 `TokenCat.zip`을 올리며, zip 맨 위에 `TokenCat.app`이 있습니다. 0.11.0부터는 같은 릴리스에 `TokenCat-Windows.zip`도 함께 올립니다([Windows](#windows)). 앱은 arm64·x86_64 universal 바이너리(최소 macOS 13)이고 ad-hoc 서명만 하며 Developer ID 서명·공증은 하지 않습니다.
 
 **확인**: `GET https://api.github.com/repos/SeuPut0705/TokenCat/releases/latest` 한 가지만 요청합니다(`Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `User-Agent: TokenCat/<버전>`, 사용자 언어 목록 대신 고정한 `Accept-Language: en`; macOS가 `Host`·`Accept-Encoding: gzip, deflate`·`Connection`을 덧붙입니다). 설치 파일 내려받기도 같은 `User-Agent`·`Accept-Language`만 보냅니다. 응답에서는 `tag_name`, `html_url`, `draft`, `prerelease`와 `TokenCat.zip` 자산의 `browser_download_url`·`size`·`digest`(`sha256:<hex>`)만 읽고, 식별자나 사용 정보는 보내지 않습니다. `새 버전 자동 확인`(기본 켜짐)이 켜져 있으면 실행 약 5초 뒤, 15분마다(타이머 허용 오차 포함), 잠자기에서 깨고 약 15초 뒤, 마지막 확인이 5분 넘게 지난 상태에서 상세 화면을 열 때 확인하며, 요청은 한 번에 하나만 보냅니다. 끄면 `지금 확인`을 누를 때만 묻습니다.
 
@@ -185,9 +185,9 @@ TokenCat 자체는 모델을 호출하거나 계정에 로그인하지 않으며
 
 **Gatekeeper**: 공증하지 않은 앱이라 `spctl -a -vv -t exec`는 격리 여부와 관계없이 `rejected`로 평가하고, `syspolicy_check distribution`은 `Adhoc Signed App`(경고)과 `Notary Ticket Missing`(치명)을 보고합니다(macOS 27.0.1에서 확인). macOS는 이 평가를 격리 속성(`com.apple.quarantine`)이 붙은 앱을 처음 열 때 적용하므로, 브라우저로 받은 사본은 한 번 허용해야 하고 `curl`로 받아 `ditto -x -k`로 푼 사본은 격리 속성이 없어 바로 열립니다.
 
-## Windows (미리보기)
+## Windows
 
-Windows 버전은 [`windows/`](../windows)에 있습니다(C# .NET 10, WPF와 WinForms `NotifyIcon`, 외부 패키지 없음). Mac 앱의 UI가 아니라 규칙을 옮겼으며, 설계와 Mac 대비 제외 항목, PC 점검 목록은 [`windows/DESIGN.md`](../windows/DESIGN.md)에 있습니다. 설치와 사용자 입장에서 다른 점은 [README › Windows (미리보기)](../README.ko.md#windows-미리보기)에 있습니다.
+Windows 버전은 [`windows/`](../windows)에 있습니다(C# .NET 10, WPF와 WinForms `NotifyIcon`, 외부 패키지 없음). Mac 앱의 UI가 아니라 규칙을 옮겼으며, 설계와 Mac 대비 제외 항목, PC 점검 목록은 [`windows/DESIGN.md`](../windows/DESIGN.md)에 있습니다. 설치와 사용자 입장에서 다른 점은 [README › Windows](../README.ko.md#windows)에 있습니다.
 
 - **프로젝트**(`windows/TokenCat.Windows.slnx`): `TokenCat.Core`(`net10.0`, Windows API 없음)가 모든 규칙과 검사를 담습니다. 로그 추적, `127.0.0.1:16493` 루프백 수집기, 클라이언트 설정과 PowerShell 상태 표시줄 브리지, 표시 규칙, 캐릭터 동작, 업데이트가 여기에 있습니다. `TokenCat.App`(`net10.0-windows`)은 알림 영역 아이콘, 플라이아웃 상세 화면, 설정 창, 시스템 지표, 로그인 항목(`HKCU\…\Run`), 명령줄 옵션만 맡는 얇은 셸입니다. `TokenCat.Checks`는 Core 검사를 돌리는 콘솔 실행기입니다.
 - **Mac과 공유**: 버전은 `Directory.Build.props`가 `build.sh`에서 읽고, 스프라이트와 매니페스트는 `Assets/`에서 그대로 포함하므로 두 앱의 버전과 그림이 하나입니다. 설정 값은 Mac의 UserDefaults 키 이름 그대로 `%LOCALAPPDATA%\TokenCat\settings.json`에 둡니다.

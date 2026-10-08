@@ -218,7 +218,7 @@ jobs:
             echo
             echo "TokenCat은 Codex와 Claude Code 세션이 지금 무엇을 하는지 메뉴 막대의 픽셀 고양이로 알려 주는 macOS 앱입니다."
             echo
-            echo "A Windows preview that lives in the notification area is attached too · 알림 영역에서 실행되는 Windows 미리보기도 함께 올립니다."
+            echo "The Windows version, which lives in the notification area, is attached too · 알림 영역에서 실행되는 Windows 버전도 함께 올립니다."
             echo
             echo "## Changes · 변경 사항"
             awk -v heading="## $VERSION" '$0 == heading { on = 1; next } on && /^## / { exit } on' CHANGELOG.md
@@ -262,7 +262,7 @@ jobs:
 
           **TokenCat.zip** · universal (arm64 · x86_64) · ad-hoc signed · SHA-256 \`$SHA256\`
 
-          ## Install on Windows (preview)
+          ## Install on Windows
 
           Runs on Windows 10 and 11 (x64). There's no installer.
 
@@ -275,7 +275,7 @@ jobs:
 
           **TokenCat-Windows.zip** · Windows x64 · not code-signed · SHA-256 \`$WINDOWS_SHA256\`
 
-          More in the README: [Install]($repo_url#install) · [Windows (preview)]($repo_url#windows-preview).
+          More in the README: [Install]($repo_url#install) · [Windows]($repo_url#windows).
 
           ---
 
@@ -309,7 +309,7 @@ jobs:
 
           **TokenCat.zip** · universal(arm64 · x86_64) · ad-hoc 서명 · SHA-256 \`$SHA256\`
 
-          ## Windows에 설치 (미리보기)
+          ## Windows에 설치
 
           Windows 10과 11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 
@@ -322,7 +322,7 @@ jobs:
 
           **TokenCat-Windows.zip** · Windows x64 · 코드 서명 없음 · SHA-256 \`$WINDOWS_SHA256\`
 
-          자세한 내용은 README의 [설치]($repo_url/blob/main/README.ko.md#설치)와 [Windows (미리보기)]($repo_url/blob/main/README.ko.md#windows-미리보기)에 있습니다.
+          자세한 내용은 README의 [설치]($repo_url/blob/main/README.ko.md#설치)와 [Windows]($repo_url/blob/main/README.ko.md#windows)에 있습니다.
           NOTES
           } > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
