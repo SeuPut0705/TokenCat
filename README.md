@@ -23,7 +23,7 @@ English · [한국어](README.ko.md)
   &nbsp;
   <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip"><img alt="Download for Windows" src="https://img.shields.io/badge/Download-Windows%2010%2F11-3b4252?style=for-the-badge"></a>
   <br>
-  <sub>Free and open source · <a href="#install">Mac install steps</a> · <a href="#windows">Windows install steps</a></sub>
+  <sub>Free and open source · <a href="#install">macOS install steps</a> · <a href="#windows">Windows install steps</a></sub>
 </p>
 
 <p align="center">

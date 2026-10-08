@@ -232,7 +232,7 @@ jobs:
             fi
             cat <<NOTES
 
-          ## Install
+          ## Install on macOS
 
           Runs on macOS 13 or later, on Apple silicon and Intel Macs (universal).
 
@@ -279,7 +279,7 @@ jobs:
 
           ---
 
-          ## 설치
+          ## macOS에 설치
 
           macOS 13 이상, Apple silicon과 Intel Mac에서 실행됩니다(universal).
 

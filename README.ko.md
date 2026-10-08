@@ -23,7 +23,7 @@
   &nbsp;
   <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip"><img alt="Windows용 내려받기" src="https://img.shields.io/badge/%EB%82%B4%EB%A0%A4%EB%B0%9B%EA%B8%B0-Windows%2010%2F11-3b4252?style=for-the-badge"></a>
   <br>
-  <sub>무료 오픈 소스 · <a href="#설치">Mac 설치 방법</a> · <a href="#windows">Windows 설치 방법</a></sub>
+  <sub>무료 오픈 소스 · <a href="#설치">macOS 설치 방법</a> · <a href="#windows">Windows 설치 방법</a></sub>
 </p>
 
 <p align="center">
