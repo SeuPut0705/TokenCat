@@ -19,7 +19,7 @@ English · [한국어](README.ko.md)
 </p>
 
 <p align="center">
-  <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip"><img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS%2013%2B-4b55c8?style=for-the-badge"></a>
+  <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-macOS.zip"><img alt="Download for macOS" src="https://img.shields.io/badge/Download-macOS%2013%2B-4b55c8?style=for-the-badge"></a>
   &nbsp;
   <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip"><img alt="Download for Windows" src="https://img.shields.io/badge/Download-Windows%2010%2F11-3b4252?style=for-the-badge"></a>
   <br>
@@ -218,7 +218,7 @@ On first launch, the card above tells you, one line per point, what TokenCat act
 
 TokenCat runs on macOS 13 and later, and one universal app supports both Apple silicon and Intel Macs.
 
-1. [**Download TokenCat.zip**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip) (attached to the [latest release](https://github.com/SeuPut0705/TokenCat/releases/latest))
+1. [**Download TokenCat-macOS.zip**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-macOS.zip) (attached to the [latest release](https://github.com/SeuPut0705/TokenCat/releases/latest))
 2. Unzip it and move `TokenCat.app` to the **Applications** folder. Opened from Downloads or elsewhere, macOS runs it from a temporary location where it can't update itself.
 3. The first time, open it following [Opening it the first time](#opening-it-the-first-time) below.
 
@@ -246,14 +246,14 @@ TokenCat has only an ad-hoc signature, without an Apple Developer ID signature o
 Download it first, then compare the SHA-256 with the value in the [latest release](https://github.com/SeuPut0705/TokenCat/releases/latest) notes.
 
 ```sh
-curl -fL https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip -o /tmp/TokenCat.zip \
-  && shasum -a 256 /tmp/TokenCat.zip
+curl -fL https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-macOS.zip -o /tmp/TokenCat-macOS.zip \
+  && shasum -a 256 /tmp/TokenCat-macOS.zip
 ```
 
 If the values match, unzip the new app first, then quit the running TokenCat, replace the existing app and open it. If unzipping fails, the existing app isn't removed. Settings and backups live outside the app, so they stay as they are.
 
 ```sh
-rm -rf /tmp/TokenCat-new && ditto -x -k /tmp/TokenCat.zip /tmp/TokenCat-new \
+rm -rf /tmp/TokenCat-new && ditto -x -k /tmp/TokenCat-macOS.zip /tmp/TokenCat-new \
   && { pkill -x TokenCat; rm -rf /Applications/TokenCat.app; } \
   && mv /tmp/TokenCat-new/TokenCat.app /Applications/ \
   && open /Applications/TokenCat.app
@@ -295,7 +295,7 @@ TokenCat checks GitHub for the latest release on its own, and installs only when
 
 - **Checking**: when `Check for updates automatically` in Settings › About › Updates is on (the default), TokenCat checks right after launch, every 15 minutes after that, after your Mac wakes from sleep, and when you open the dashboard more than 5 minutes after the last check. When it's off, it checks only when you click `Check Now`.
 - **Notice**: when a new version is available, `New version 1.0.0` and an `Update` button quietly appear on one line at the bottom of the dashboard, and the right-click quick menu gets `Install Update 1.0.0…`. The line's close button hides the notice for that version only. To get a system notification as well, turn on `Notify about new versions` (off by default).
-- **Installing**: click `Update` and TokenCat downloads `TokenCat.zip` (`Downloading update 45%`), checks that it matches the SHA-256 recorded by GitHub, replaces the app (`Installing…`) and relaunches. When it reopens, it shows `Updated to 1.0.0` once. If it fails, `Update failed` and a way to open the release page appear, plus `Try Again` for failures that a retry might fix. If you quit during installation, TokenCat finishes the install step before quitting.
+- **Installing**: click `Update` and TokenCat downloads `TokenCat-macOS.zip` (`Downloading update 45%`), checks that it matches the SHA-256 recorded by GitHub, replaces the app (`Installing…`) and relaunches. When it reopens, it shows `Updated to 1.0.0` once. If it fails, `Update failed` and a way to open the release page appear, plus `Try Again` for failures that a retry might fix. If you quit during installation, TokenCat finishes the install step before quitting.
 
 Settings and measurement backups live outside the app, so they stay the same after an update. To update by hand, [install](#install) again or run the commands in [Install from the terminal](#install-from-the-terminal). For an app you downloaded or moved yourself, quit the running TokenCat before opening it. If one is running, the newly opened app just opens the existing app's panel and exits.
 
@@ -409,7 +409,7 @@ That message appears because TokenCat isn't notarized by Apple. Allow it once fo
 
 Two kinds of requests, and neither carries usage history, device information or identifiers. Logs, measurements and conversation content never leave this Mac.
 
-- **Update check**: a GET request to `api.github.com` asking for this repository's latest release, carrying only what any HTTP request carries (IP address, a User-Agent such as `TokenCat/0.9.0`, and a language header fixed to `en`). It uses cache validation headers so an unchanged response isn't downloaded again, and when GitHub reports a rate limit it pauses until the given time. If you turn off `Check for updates automatically` in Settings › About, it checks only when you click. When you click `Update`, it downloads `TokenCat.zip` from GitHub at that moment.
+- **Update check**: a GET request to `api.github.com` asking for this repository's latest release, carrying only what any HTTP request carries (IP address, a User-Agent such as `TokenCat/0.9.0`, and a language header fixed to `en`). It uses cache validation headers so an unchanged response isn't downloaded again, and when GitHub reports a rate limit it pauses until the given time. If you turn off `Check for updates automatically` in Settings › About, it checks only when you click. When you click `Update`, it downloads `TokenCat-macOS.zip` from GitHub at that moment.
 - **Live usage limits** (on by default): for Codex, TokenCat starts the local `codex app-server` for a moment, which asks OpenAI for your limits with the Codex CLI's own sign-in. For Claude, it sends Claude Code's saved sign-in token (or, when that one is missing or expired, omp's or Pi's saved token for the same account) in one GET to `https://api.anthropic.com/api/oauth/usage`; the token stays in memory and is never stored, logged or refreshed. Turn it off with `Live usage limits` in Settings › Telemetry.
 
 </details>

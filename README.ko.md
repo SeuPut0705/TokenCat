@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip"><img alt="macOS용 내려받기" src="https://img.shields.io/badge/%EB%82%B4%EB%A0%A4%EB%B0%9B%EA%B8%B0-macOS%2013%2B-4b55c8?style=for-the-badge"></a>
+  <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-macOS.zip"><img alt="macOS용 내려받기" src="https://img.shields.io/badge/%EB%82%B4%EB%A0%A4%EB%B0%9B%EA%B8%B0-macOS%2013%2B-4b55c8?style=for-the-badge"></a>
   &nbsp;
   <a href="https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-Windows.zip"><img alt="Windows용 내려받기" src="https://img.shields.io/badge/%EB%82%B4%EB%A0%A4%EB%B0%9B%EA%B8%B0-Windows%2010%2F11-3b4252?style=for-the-badge"></a>
   <br>
@@ -218,7 +218,7 @@ AI 숫자는 진행 중이거나 입력을 기다리는 최상위 세션 수입�
 
 macOS 13 이상에서 실행되며, 한 앱으로 Apple silicon과 Intel Mac을 모두 지원합니다(universal).
 
-1. [**TokenCat.zip 내려받기**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip) ([최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest)의 첨부 파일)
+1. [**TokenCat-macOS.zip 내려받기**](https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-macOS.zip) ([최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest)의 첨부 파일)
 2. 압축을 풀고 `TokenCat.app`을 **응용 프로그램** 폴더로 옮깁니다. 다운로드 폴더 등 다른 곳에서 열면 macOS가 임시 위치에서 실행해 스스로 업데이트할 수 없습니다.
 3. 처음 한 번은 아래 [처음 열 때](#처음-열-때) 순서로 엽니다.
 
@@ -246,14 +246,14 @@ TokenCat은 Apple Developer ID 서명과 공증을 받지 않고 ad-hoc 서명�
 먼저 내려받아 SHA-256을 [최신 릴리스](https://github.com/SeuPut0705/TokenCat/releases/latest) 노트의 값과 비교합니다.
 
 ```sh
-curl -fL https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat.zip -o /tmp/TokenCat.zip \
-  && shasum -a 256 /tmp/TokenCat.zip
+curl -fL https://github.com/SeuPut0705/TokenCat/releases/latest/download/TokenCat-macOS.zip -o /tmp/TokenCat-macOS.zip \
+  && shasum -a 256 /tmp/TokenCat-macOS.zip
 ```
 
 값이 같으면 새 앱을 먼저 풀어 둔 뒤, 실행 중인 TokenCat을 종료하고 기존 앱과 바꿔 엽니다. 압축 풀기에 실패하면 기존 앱은 지우지 않습니다. 설정 값과 백업은 앱 밖에 있어 그대로 남습니다.
 
 ```sh
-rm -rf /tmp/TokenCat-new && ditto -x -k /tmp/TokenCat.zip /tmp/TokenCat-new \
+rm -rf /tmp/TokenCat-new && ditto -x -k /tmp/TokenCat-macOS.zip /tmp/TokenCat-new \
   && { pkill -x TokenCat; rm -rf /Applications/TokenCat.app; } \
   && mv /tmp/TokenCat-new/TokenCat.app /Applications/ \
   && open /Applications/TokenCat.app
@@ -295,7 +295,7 @@ TokenCat은 GitHub의 최신 릴리스를 스스로 확인하고, 설치는 사�
 
 - **확인**: 설정 › 정보 › 업데이트의 `새 버전 자동 확인`(기본 켜짐)이 켜져 있으면 실행 직후, 이후 15분마다, Mac이 잠자기에서 깬 뒤, 마지막 확인이 5분 넘게 지난 상태에서 상세 화면을 열 때 확인합니다. 끄면 `지금 확인`을 누를 때만 확인합니다.
 - **알림**: 새 버전이 있으면 상세 화면 아래쪽에 `새 버전 1.0.0`과 `업데이트` 버튼이 한 줄로 조용히 나타나고, 우클릭 빠른 메뉴에 `업데이트 1.0.0 설치…`가 생깁니다. 줄의 닫기 버튼은 그 버전 알림만 숨깁니다. 시스템 알림도 받으려면 `새 버전 알림`을 켜세요(기본 꺼짐).
-- **설치**: `업데이트`를 누르면 `TokenCat.zip`을 내려받고(`업데이트 내려받는 중 45%`), GitHub가 기록한 SHA-256과 맞는지 확인한 뒤 앱을 바꾸고(`설치 중…`) 다시 실행합니다. 다시 열리면 `1.0.0으로 업데이트했습니다`를 한 번 보여 줍니다. 실패하면 `업데이트 실패`와 릴리스 페이지 열기가 나오고, 다시 해서 나아질 수 있는 실패에는 `다시 시도`도 나옵니다. 설치 중에 종료하면 설치 단계를 마친 뒤 종료합니다.
+- **설치**: `업데이트`를 누르면 `TokenCat-macOS.zip`을 내려받고(`업데이트 내려받는 중 45%`), GitHub가 기록한 SHA-256과 맞는지 확인한 뒤 앱을 바꾸고(`설치 중…`) 다시 실행합니다. 다시 열리면 `1.0.0으로 업데이트했습니다`를 한 번 보여 줍니다. 실패하면 `업데이트 실패`와 릴리스 페이지 열기가 나오고, 다시 해서 나아질 수 있는 실패에는 `다시 시도`도 나옵니다. 설치 중에 종료하면 설치 단계를 마친 뒤 종료합니다.
 
 설정 값과 실측 백업은 앱 밖에 있어 업데이트 뒤에도 그대로입니다. 직접 받으려면 [설치](#설치)를 다시 하거나 [터미널로 설치](#터미널로-설치)의 명령을 실행합니다. 직접 받거나 옮긴 앱은 실행 중인 TokenCat을 먼저 종료한 뒤 여세요. 실행 중이면 새로 연 앱은 기존 앱의 패널만 열고 끝납니다.
 
@@ -409,7 +409,7 @@ TokenCat이 Apple 공증을 받지 않은 앱이라 나오는 안내입니다. [
 
 두 가지 요청뿐이며, 어느 쪽도 사용 기록·기기 정보·식별자를 보내지 않습니다. 로그·실측·대화 내용은 이 Mac 밖으로 나가지 않습니다.
 
-- **업데이트 확인**: `api.github.com`에 이 저장소의 최신 릴리스를 묻는 GET 요청이며, HTTP 요청에 기본으로 따르는 정보(IP 주소, `TokenCat/0.9.0` 같은 User-Agent, `en`으로 고정한 언어 헤더)만 실립니다. 바뀌지 않은 응답은 다시 받지 않도록 캐시 확인 헤더를 쓰고, GitHub가 요청 한도를 알리면 그 시각까지 쉽니다. 설정 › 정보에서 `새 버전 자동 확인`을 끄면 직접 누를 때만 확인합니다. `업데이트`를 누르면 그때 GitHub에서 `TokenCat.zip`을 내려받습니다.
+- **업데이트 확인**: `api.github.com`에 이 저장소의 최신 릴리스를 묻는 GET 요청이며, HTTP 요청에 기본으로 따르는 정보(IP 주소, `TokenCat/0.9.0` 같은 User-Agent, `en`으로 고정한 언어 헤더)만 실립니다. 바뀌지 않은 응답은 다시 받지 않도록 캐시 확인 헤더를 쓰고, GitHub가 요청 한도를 알리면 그 시각까지 쉽니다. 설정 › 정보에서 `새 버전 자동 확인`을 끄면 직접 누를 때만 확인합니다. `업데이트`를 누르면 그때 GitHub에서 `TokenCat-macOS.zip`을 내려받습니다.
 - **실시간 한도 확인**(기본 켜짐): Codex는 로컬 `codex app-server`를 잠깐 실행해, Codex CLI가 자기 로그인으로 OpenAI에 한도를 묻게 합니다. Claude는 Claude Code에 저장된 로그인 토큰(그 토큰이 없거나 만료됐으면 같은 계정으로 omp·Pi에 저장된 토큰)으로 `https://api.anthropic.com/api/oauth/usage`에 GET 요청을 한 번 보내며, 토큰은 메모리에만 두고 저장·기록·갱신하지 않습니다. 설정 › 실측의 `실시간 한도 확인`으로 끕니다.
 
 </details>

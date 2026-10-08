@@ -2,6 +2,13 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.18.2
+
+**macOS and Windows**
+
+- The Mac download is now `TokenCat-macOS.zip`, next to `TokenCat-Windows.zip`. The same file is also attached as `TokenCat.zip` for a while so TokenCat 0.18.1 and earlier still update in the app; from this version the app takes `TokenCat-macOS.zip`. · Mac용 내려받기 파일 이름이 `TokenCat-Windows.zip`과 짝을 맞춰 `TokenCat-macOS.zip`이 되었습니다. TokenCat 0.18.1 이하도 앱 안에서 업데이트할 수 있도록 한동안 같은 파일을 `TokenCat.zip`으로도 함께 올리며, 이번 버전부터 앱은 `TokenCat-macOS.zip`을 받습니다.
+- The Windows version is no longer labelled a preview in the README, details and release notes. · README·자세한 동작·릴리스 노트에서 Windows 버전의 미리보기 표기를 뺐습니다.
+
 ## 0.18.1
 
 **macOS and Windows**

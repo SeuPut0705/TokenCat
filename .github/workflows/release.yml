@@ -1,6 +1,8 @@
-# Publishes TokenCat.zip (macOS) and TokenCat-Windows.zip as one GitHub Release when the version in build.sh changes on main.
+# Publishes TokenCat-macOS.zip and TokenCat-Windows.zip as one GitHub Release when the version in build.sh changes on main.
 # The in-app updaters read /releases/latest, so the tag (v<version>), the asset names and the zip layouts (TokenCat.app at
-# the root; TokenCat.exe and LICENSE as flat entries) are a contract with the apps. A failing Windows build blocks the release.
+# the root; TokenCat.exe and LICENSE as flat entries) are a contract with the apps. Mac apps up to 0.18.1 look only for
+# TokenCat.zip, so the same file is attached under that name too until those versions no longer need it. A failing Windows
+# build blocks the release.
 name: Release
 
 on:
@@ -202,9 +204,11 @@ jobs:
       - name: 압축
         id: zip
         run: |
-          ditto -c -k --sequesterRsrc --keepParent "$APP" TokenCat.zip
-          sha256=$(shasum -a 256 TokenCat.zip | cut -d ' ' -f 1)
-          echo "TokenCat.zip $(stat -f %z TokenCat.zip) bytes, SHA-256 $sha256"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" TokenCat-macOS.zip
+          # The legacy name for Mac apps up to 0.18.1: the same bytes, so the same digest.
+          cp TokenCat-macOS.zip TokenCat.zip
+          sha256=$(shasum -a 256 TokenCat-macOS.zip | cut -d ' ' -f 1)
+          echo "TokenCat-macOS.zip $(stat -f %z TokenCat-macOS.zip) bytes, SHA-256 $sha256"
           echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
 
       - name: 릴리스 노트
@@ -236,14 +240,14 @@ jobs:
 
           Runs on macOS 13 or later, on Apple silicon and Intel Macs (universal).
 
-          1. Download **TokenCat.zip** below, unzip it and move \`TokenCat.app\` to the **Applications** folder.
+          1. Download **TokenCat-macOS.zip** below, unzip it and move \`TokenCat.app\` to the **Applications** folder.
           2. The app has no Developer ID signature or Apple notarization, so macOS blocks it the first time you open it. You only need to allow it once.
              - **macOS 15 and later**: open the app and click **Done** in the window saying it was blocked. In **System Settings › Privacy & Security**, under **Security**, click **Open Anyway**, then click **Open Anyway** again in the window that appears and confirm with your password.
              - **macOS 13–14**: in Finder, Control-click (or right-click) the app and choose **Open**, then click **Open** again in the confirmation window.
           3. You can also install from the terminal. A file downloaded with curl gets no quarantine attribute, so the windows above don't appear; check first that the SHA-256 matches the value below.
 
              \`\`\`sh
-             curl -fL $repo_url/releases/latest/download/TokenCat.zip -o /tmp/TokenCat.zip \\
+             curl -fL $repo_url/releases/latest/download/TokenCat-macOS.zip -o /tmp/TokenCat.zip \\
                && shasum -a 256 /tmp/TokenCat.zip
              \`\`\`
 
@@ -260,7 +264,7 @@ jobs:
 
           > **On first launch, TokenCat changes client settings automatically.** To receive measurements, it adds local OTLP settings that send to this Mac (\`127.0.0.1:16493\`) to Codex \`~/.codex/config.toml\` and Claude Code \`~/.claude/settings.json\` (creating them if they don't exist yet), and to receive Claude usage limits, it wraps the Claude Code \`statusLine\` command with the TokenCat bridge (\`~/Library/Application Support/TokenCat/claude-statusline.sh\`). The bridge sends the status JSON only to \`127.0.0.1\` and runs the original command unchanged, so the status line output stays the same. The originals are backed up to \`~/Library/Application Support/TokenCat/telemetry-backups/\` first, and prompt and response text logging is turned off. To undo it, quit TokenCat and run \`/Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry\`. Even if automatic restore is refused because a config file changed after connecting, a status line that is still exactly the bridge command is restored. Don't delete \`~/Library/Application Support/TokenCat/\` while \`settings.json\` still points to \`claude-statusline.sh\`.
 
-          **TokenCat.zip** · universal (arm64 · x86_64) · ad-hoc signed · SHA-256 \`$SHA256\`
+          **TokenCat-macOS.zip** · universal (arm64 · x86_64) · ad-hoc signed · SHA-256 \`$SHA256\` · **TokenCat.zip** is the same file, kept for TokenCat 0.18.1 and earlier to update
 
           ## Install on Windows
 
@@ -283,14 +287,14 @@ jobs:
 
           macOS 13 이상, Apple silicon과 Intel Mac에서 실행됩니다(universal).
 
-          1. 아래 **TokenCat.zip**을 내려받아 풀고 \`TokenCat.app\`을 **응용 프로그램** 폴더로 옮깁니다.
+          1. 아래 **TokenCat-macOS.zip**을 내려받아 풀고 \`TokenCat.app\`을 **응용 프로그램** 폴더로 옮깁니다.
           2. Developer ID 서명과 Apple 공증을 하지 않은 앱이라 처음 열 때 macOS가 막습니다. 한 번만 허용하면 됩니다.
              - **macOS 15 이상**: 앱을 열고 막혔다는 창에서 **완료**를 누릅니다. **시스템 설정 › 개인정보 보호 및 보안**의 **보안** 항목에서 **그래도 열기**를 누르고, 다시 나오는 창에서 **그래도 열기**를 누른 뒤 암호로 확인합니다.
              - **macOS 13–14**: Finder에서 앱을 Control-클릭(우클릭)하고 **열기**를 고른 뒤, 확인 창에서 다시 **열기**를 누릅니다.
           3. 터미널로 설치할 수도 있습니다. curl로 받은 파일에는 격리 속성이 붙지 않아 위 확인 창이 나오지 않으므로, 먼저 SHA-256이 아래 값과 같은지 확인합니다.
 
              \`\`\`sh
-             curl -fL $repo_url/releases/latest/download/TokenCat.zip -o /tmp/TokenCat.zip \\
+             curl -fL $repo_url/releases/latest/download/TokenCat-macOS.zip -o /tmp/TokenCat.zip \\
                && shasum -a 256 /tmp/TokenCat.zip
              \`\`\`
 
@@ -307,7 +311,7 @@ jobs:
 
           > **처음 실행하면 클라이언트 설정을 자동으로 바꿉니다.** 실측을 받기 위해 Codex \`~/.codex/config.toml\`과 Claude Code \`~/.claude/settings.json\`에 이 Mac(\`127.0.0.1:16493\`)으로 보내는 로컬 OTLP 전송 설정을 추가하고(파일이 없으면 새로 만듭니다), Claude 사용 한도를 받기 위해 Claude Code \`statusLine\` 명령을 TokenCat 브리지(\`~/Library/Application Support/TokenCat/claude-statusline.sh\`)로 감쌉니다. 브리지는 상태 JSON을 \`127.0.0.1\`로만 보내고 원래 명령을 그대로 실행하므로 상태 표시줄 출력은 바뀌지 않습니다. 원본은 \`~/Library/Application Support/TokenCat/telemetry-backups/\`에 먼저 백업하고 프롬프트·응답 본문 로깅은 끕니다. 되돌리려면 TokenCat을 종료한 뒤 \`/Applications/TokenCat.app/Contents/MacOS/TokenCat --disconnect-telemetry\`를 실행합니다. 연결 뒤 설정 파일이 바뀌어 자동 복구가 거부돼도 브리지 명령 그대로인 상태 표시줄은 원래대로 되돌립니다. \`settings.json\`이 아직 \`claude-statusline.sh\`를 가리키면 \`~/Library/Application Support/TokenCat/\`을 지우지 마세요.
 
-          **TokenCat.zip** · universal(arm64 · x86_64) · ad-hoc 서명 · SHA-256 \`$SHA256\`
+          **TokenCat-macOS.zip** · universal(arm64 · x86_64) · ad-hoc 서명 · SHA-256 \`$SHA256\` · **TokenCat.zip**은 같은 파일이며 TokenCat 0.18.1 이하의 업데이트용으로 함께 올립니다
 
           ## Windows에 설치
 
@@ -352,7 +356,7 @@ jobs:
             echo "이전 실행의 $TAG 초안($id)을 지웁니다."
             gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/$id"
           done
-          gh release create "$TAG" TokenCat.zip TokenCat-Windows.zip \
+          gh release create "$TAG" TokenCat-macOS.zip TokenCat.zip TokenCat-Windows.zip \
             --draft \
             --title "TokenCat $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" \
@@ -371,7 +375,7 @@ jobs:
           SHA256: ${{ steps.zip.outputs.sha256 }}
           ID: ${{ steps.draft.outputs.id }}
         run: |
-          for asset in "TokenCat.zip=$SHA256" "TokenCat-Windows.zip=$WINDOWS_SHA256"; do
+          for asset in "TokenCat-macOS.zip=$SHA256" "TokenCat.zip=$SHA256" "TokenCat-Windows.zip=$WINDOWS_SHA256"; do
             name=${asset%%=*} expected=${asset#*=} found=false
             for attempt in 1 2 3 4 5 6; do
               digest=$(gh api "repos/$GITHUB_REPOSITORY/releases/$ID" --jq ".assets[] | select(.name == \"$name\") | .digest")
@@ -397,14 +401,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SHA256: ${{ steps.zip.outputs.sha256 }}
         run: |
-          expected="$TAG"$'\t'false$'\t'false$'\t'"sha256:$SHA256"$'\t'"sha256:$WINDOWS_SHA256"
+          expected="$TAG"$'\t'false$'\t'false$'\t'"sha256:$SHA256"$'\t'"sha256:$SHA256"$'\t'"sha256:$WINDOWS_SHA256"
           for attempt in 1 2 3 4 5 6; do
             latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" \
-              --jq '[.tag_name, .draft, .prerelease, (.assets[] | select(.name == "TokenCat.zip") | .digest),
+              --jq '[.tag_name, .draft, .prerelease, (.assets[] | select(.name == "TokenCat-macOS.zip") | .digest),
+                     (.assets[] | select(.name == "TokenCat.zip") | .digest),
                      (.assets[] | select(.name == "TokenCat-Windows.zip") | .digest)] | @tsv' || true)
             echo "시도 $attempt: $latest"
             [[ $latest == "$expected" ]] && exit 0
             sleep 10
           done
-          echo "::error::/releases/latest가 $TAG와 TokenCat.zip·TokenCat-Windows.zip SHA-256을 가리키지 않습니다."
+          echo "::error::/releases/latest가 $TAG와 TokenCat-macOS.zip·TokenCat.zip·TokenCat-Windows.zip SHA-256을 가리키지 않습니다."
           exit 1

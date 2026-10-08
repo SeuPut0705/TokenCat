@@ -35,7 +35,10 @@ struct AppVersion: Comparable, CustomStringConvertible {
 
 /// The latest GitHub release as TokenCat uses it; also the cached copy behind the ETag.
 struct UpdateRelease: Codable, Equatable {
-    static let assetName = "TokenCat.zip"
+    /// The Mac asset. Releases from 0.18.2 also carry the same file as `legacyAssetName` for apps up to 0.18.1, which look
+    /// only for that name; this app takes the new name first and the old one only from a release without it.
+    static let assetName = "TokenCat-macOS.zip"
+    static let legacyAssetName = "TokenCat.zip"
     static let bundleIdentifier = "dev.seuput.TokenCat"
     /// The tag without its "v": "0.9.1".
     var version: String
@@ -71,7 +74,7 @@ struct UpdateRelease: Codable, Equatable {
         else { throw UpdateFailure.invalidResponse }
         if payload.draft == true || payload.prerelease == true { return nil }
         let version = payload.tag_name.first == "v" || payload.tag_name.first == "V" ? String(payload.tag_name.dropFirst()) : payload.tag_name
-        let asset = payload.assets?.first { $0.name == assetName }
+        let asset = (payload.assets?.first { $0.name == assetName } ?? payload.assets?.first { $0.name == legacyAssetName })
             .map { Asset(url: $0.browser_download_url, size: $0.size, sha256: sha256(fromDigest: $0.digest)) }
         return UpdateRelease(version: version, tag: payload.tag_name, page: payload.html_url, asset: asset)
     }

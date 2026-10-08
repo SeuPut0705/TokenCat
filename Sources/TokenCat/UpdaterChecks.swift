@@ -47,6 +47,13 @@ func runUpdaterChecks() -> [String] {
           && release?.page.absoluteString == "https://github.com/SeuPut0705/TokenCat/releases/tag/v0.9.1"
           && release?.asset?.size == 5_242_880 && release?.asset?.sha256 == digest.lowercased()
           && release?.asset?.url.lastPathComponent == "TokenCat.zip", "a release with TokenCat.zip and its digest")
+    var macOSAsset = zipAsset
+    macOSAsset["name"] = "TokenCat-macOS.zip"
+    macOSAsset["size"] = 7
+    macOSAsset["browser_download_url"] = "https://github.com/SeuPut0705/TokenCat/releases/download/v0.9.1/TokenCat-macOS.zip"
+    check(parse(json(assets: [zipAsset, macOSAsset]))?.asset?.url.lastPathComponent == "TokenCat-macOS.zip"
+          && parse(json(assets: [macOSAsset]))?.asset?.size == 7,
+          "TokenCat-macOS.zip is not preferred over the legacy TokenCat.zip of the same release")
     let bare = parse(json())
     var noDigest = zipAsset
     noDigest["digest"] = nil
