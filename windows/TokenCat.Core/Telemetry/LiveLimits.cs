@@ -16,8 +16,9 @@ public sealed record LiveLimitResult(IReadOnlyList<TokenRateLimit>? Codex = null
 /// "실시간 한도 확인" (on by default): account usage limits read as they are, instead of the last value a log, the status line
 /// or the Claude desktop app recorded. Codex: a short-lived `codex app-server` (JSON-RPC 2.0, one JSON object per line on
 /// stdio) asked `account/rateLimits/read`; TokenCat never reads OpenAI tokens. Claude: Anthropic's OAuth usage endpoint with
-/// Claude Code's saved sign-in (`~\.claude\.credentials.json`). That access token lives only for its one request: never
-/// stored, logged, passed as a process argument or refreshed (a refresh rotates Claude Code's own refresh token and signs it out).
+/// Claude Code's saved sign-in (`~\.claude\.credentials.json`), or, when that is missing or expired, omp's or Pi's saved
+/// Anthropic sign-in (`agent.db` `auth_credentials`) for the same account. That access token lives only for its one request: never
+/// stored, logged, passed as a process argument or refreshed (a refresh rotates the owning client's refresh token and signs it out).
 /// Requests go only to the codex executable and api.anthropic.com.
 public sealed class LiveLimits(string home, string version, HttpMessageHandler? handler = null)
 {
@@ -163,26 +164,23 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
 
     // MARK: Claude
 
-    /// Skipped without a request when there is no sign-in, the token expires within a minute (or has no expiry), or it was
-    /// refused before.
+    /// Claude Code's sign-in first, then omp's or Pi's for the same account (any account when Claude Code's is unknown). Skipped
+    /// without a request when there is none, every token expires within a minute (or has no expiry), or each was refused before.
     public async Task<LiveLimitResult> ReadClaude(CancellationToken token)
     {
-        JsonElement oauth;
-        try
+        var candidates = ClaudeCandidates(await ClaudeCodeCredential(token).ConfigureAwait(false),
+            AgentCredentials(AgentUsageHistory.Databases(home, Environment.GetEnvironmentVariable)), ClaudeCodeAccount());
+        var now = DateTimeOffset.UtcNow.AddSeconds(60).ToUnixTimeMilliseconds();
+        string? access = null, fingerprint = null;
+        foreach (var (candidate, expires) in candidates)
         {
-            // Claude Code rewrites the file when it refreshes: share everything, as the desktop history reader does.
-            using var stream = new FileStream(credentials, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-            if (stream.Length > TelemetryHttp.MaximumBodyBytes) return new();
-            using var bytes = new MemoryStream();
-            await stream.CopyToAsync(bytes, token).ConfigureAwait(false);
-            if (Json.Parse(bytes.ToArray())?.Field("claudeAiOauth") is not { ValueKind: JsonValueKind.Object } value) return new();
-            oauth = value;
+            if (expires is not { } at || at <= now) continue;
+            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(candidate)));
+            if (hash == rejected) continue;
+            (access, fingerprint) = (candidate, hash);
+            break;
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return new(); }
-        if (oauth.Field("accessToken")?.Text is not { Length: > 0 } access
-            || oauth.Field("expiresAt")?.Number is not { } expires || expires <= DateTimeOffset.UtcNow.AddSeconds(60).ToUnixTimeMilliseconds()) return new();
-        var fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(access)));
-        if (fingerprint == rejected) return new();
+        if (access is null) return new();
         using var request = new HttpRequestMessage(HttpMethod.Get, ClaudeEndpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", access);
         request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
@@ -201,6 +199,62 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
             return DecodeClaude(body, DateTimeOffset.UtcNow) is { } limits ? new(Claude: limits) : new(Failed: true);
         }
         catch (Exception error) when (error is HttpRequestException or OperationCanceledException or IOException) { return new(Failed: true); }
+    }
+
+    /// `{"claudeAiOauth":{"accessToken":…,"expiresAt":ms}}` from ~\.claude\.credentials.json; other fields are not read.
+    async Task<(string Access, double? Expires)?> ClaudeCodeCredential(CancellationToken token)
+    {
+        try
+        {
+            // Claude Code rewrites the file when it refreshes: share everything, as the desktop history reader does.
+            using var stream = new FileStream(credentials, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            if (stream.Length > TelemetryHttp.MaximumBodyBytes) return null;
+            using var bytes = new MemoryStream();
+            await stream.CopyToAsync(bytes, token).ConfigureAwait(false);
+            return Json.Parse(bytes.ToArray())?.Field("claudeAiOauth") is { ValueKind: JsonValueKind.Object } oauth
+                && oauth.Field("accessToken")?.Text is { Length: > 0 } access ? (access, oauth.Field("expiresAt")?.Number) : null;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    /// omp's and Pi's saved Anthropic sign-in (`auth_credentials` in their `agent.db`, an `oauth` row not disabled): only the
+    /// access token, its expiry (ms) and account id leave SQLite. These clients refresh their own token while they run, so it
+    /// stays usable when Claude Code's has expired. Never refreshed, stored or logged, like Claude Code's.
+    public const string AgentCredentialQuery = """
+        SELECT json_extract(data, '$.access'), json_extract(data, '$.expires'), json_extract(data, '$.accountId') FROM auth_credentials
+        WHERE provider = 'anthropic' AND credential_type = 'oauth' AND disabled_cause IS NULL
+        """;
+
+    public static IReadOnlyList<(string Access, double? Expires, string? Account)> AgentCredentials(IEnumerable<string> databases)
+    {
+        var found = new List<(string, double?, string?)>();
+        foreach (var database in databases)
+        {
+            if (!File.Exists(database)) continue;
+            using var connection = OpenCodeDatabase.Open(database);
+            connection?.Query(AgentCredentialQuery, [], row =>
+            {
+                if (row.Text(0) is { Length: > 0 } access) found.Add((access, row.Double(1), row.Text(2)));
+            });
+        }
+        return found;
+    }
+
+    /// Claude Code's sign-in, then omp's or Pi's whose account is Claude Code's (all of them when that account is unknown).
+    public static IReadOnlyList<(string Access, double? Expires)> ClaudeCandidates((string Access, double? Expires)? claudeCode,
+        IEnumerable<(string Access, double? Expires, string? Account)> agents, string? claudeAccount) =>
+        [.. claudeCode is { } own ? [own] : Array.Empty<(string, double?)>(),
+         .. agents.Where(agent => claudeAccount is null || agent.Account is null || agent.Account == claudeAccount).Select(agent => (agent.Access, agent.Expires))];
+
+    string? ClaudeCodeAccount()
+    {
+        var config = Path.Combine(home, ".claude.json");
+        try
+        {
+            var info = new FileInfo(config);
+            return info.Exists && info.Length <= AgentUsageHistoryReader.MaximumConfigBytes ? AgentUsageHistory.ClaudeAccount(File.ReadAllBytes(config)) : null;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
     }
 
     /// Claude Code's usage schema: `limits[]` with `kind` "session" (the 5-hour window) and "weekly_all" (7-day), `percent` and

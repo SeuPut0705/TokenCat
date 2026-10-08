@@ -51,7 +51,7 @@
 
 - **입력 요청을 놓치지 않게**: 질문이나 계획 승인을 기다리는 세션은 노란 `?`와 정면을 보는 고양이로 알립니다. 원하면 알림도 보냅니다.
 - **세션과 하위 에이전트를 한 목록에**: 진행 상태, 실행 중인 도구 종류, 이번 턴 출력, 컨텍스트를 세션마다 보여 주고 하위 에이전트는 부모 아래에 묶습니다.
-- **데이터는 로컬에**: 대화 본문을 저장하지 않고, 실측 수집기는 `127.0.0.1`에서만 열며, 모델을 호출하거나 직접 계정에 로그인하지 않습니다. 인터넷에는 업데이트를 확인하고 내려받을 때 GitHub에, `실시간 한도 확인`이 켜져 있으면(기본) Codex·Claude Code에 이미 저장된 로그인으로 사용 한도를 물을 때 OpenAI·Anthropic에 접속하며, 둘 다 끌 수 있습니다. 실측을 받기 위해 Codex·Claude Code 설정(설치돼 있으면 Gemini CLI·Qwen Code 설정도)에 이 Mac으로 보내는 전송 설정을 자동으로 추가하고 Claude Code 상태 표시줄 명령을 TokenCat 브리지로 감싸며, 원본은 먼저 백업합니다.
+- **데이터는 로컬에**: 대화 본문을 저장하지 않고, 실측 수집기는 `127.0.0.1`에서만 열며, 모델을 호출하거나 직접 계정에 로그인하지 않습니다. 인터넷에는 업데이트를 확인하고 내려받을 때 GitHub에, `실시간 한도 확인`이 켜져 있으면(기본) Codex·Claude Code(또는 omp·Pi)에 이미 저장된 로그인으로 사용 한도를 물을 때 OpenAI·Anthropic에 접속하며, 둘 다 끌 수 있습니다. 실측을 받기 위해 Codex·Claude Code 설정(설치돼 있으면 Gemini CLI·Qwen Code 설정도)에 이 Mac으로 보내는 전송 설정을 자동으로 추가하고 Claude Code 상태 표시줄 명령을 TokenCat 브리지로 감싸며, 원본은 먼저 백업합니다.
 - **네이티브 앱**: Swift·AppKit·SwiftUI만 쓰고 외부 패키지가 없습니다. macOS 13 이상이 대상입니다.
 - **Windows 미리보기**: Windows 10·11(x64)용 알림 영역 버전을 같은 릴리스에 함께 올립니다. [Windows (미리보기)](#windows-미리보기)를 보세요.
 
@@ -119,7 +119,7 @@ Codex와 Claude Code의 하위 에이전트를 정확한 부모 세션 식별자
 **실시간 한도 확인**(기본 켜짐, 설정 › 실측)이 켜져 있으면 그 계정의 모델을 쓰는 세션이 실행 중이거나(자기 클라이언트든, Claude·GPT 모델을 쓰는 omp 같은 다른 클라이언트든) 상세 화면이 열려 있는 동안 1분마다, 그 밖에는 10분마다 계정 한도를 확인합니다. 2분 안에 확인한 값은 `… · 실시간`으로, 그보다 오래된 값은 몇 분 전 기록인지로 보이고, omp나 Pi가 기록한 값은 누가 기록했는지도 함께 보입니다(`… · omp 4분 전 기록`). 초기화 시각은 만들어 내지 않아, 받은 값에 없으면 표시하지 않습니다. 동작과 보내는 내용은 [자세한 동작 › 실시간 한도 확인](docs/DETAILS.ko.md#실시간-한도-확인)에 있습니다.
 
 - **Codex**: 실시간 확인은 로컬 `codex app-server`(Codex CLI)를 잠깐 실행해, Codex CLI가 자기에게 저장된 로그인으로 OpenAI에 묻게 합니다. Codex 로그에 기록된 사용률도 함께 씁니다.
-- **Claude**: 실시간 확인은 Claude Code에 저장된 로그인 토큰을 Anthropic에 보냅니다. 쓸 수 있는 토큰이 없으면 기존 경로를 그대로 씁니다. Claude Code가 상태 표시줄 명령에만 넘기는 5시간·주간 한도를 TokenCat이 그 명령을 [브리지](docs/DETAILS.ko.md#claude-사용-한도와-상태-표시줄-브리지)로 감싸 받고(Claude.ai 구독 계정), Claude 데스크톱 앱이 약 15분마다 남기는 사용량 기록도 읽습니다(데스크톱 앱에서 쓴 Claude Code는 상태 표시줄을 실행하지 않습니다).
+- **Claude**: 실시간 확인은 Claude Code에 저장된 로그인 토큰을 Anthropic에 보냅니다. 그 토큰이 없거나 만료됐으면 같은 계정으로 omp·Pi에 저장된 Claude 로그인을 대신 써서, omp·Pi로 작업하는 동안에도 한도가 실시간으로 유지됩니다. 쓸 수 있는 토큰이 없으면 기존 경로를 그대로 씁니다. Claude Code가 상태 표시줄 명령에만 넘기는 5시간·주간 한도를 TokenCat이 그 명령을 [브리지](docs/DETAILS.ko.md#claude-사용-한도와-상태-표시줄-브리지)로 감싸 받고(Claude.ai 구독 계정), Claude 데스크톱 앱이 약 15분마다 남기는 사용량 기록도 읽습니다(데스크톱 앱에서 쓴 Claude Code는 상태 표시줄을 실행하지 않습니다).
 - **omp·Pi**: 자기 Claude·ChatGPT 로그인의 한도를 직접 확인해 `~/.omp/agent/agent.db`(`~/.pi/agent/agent.db`)에 남깁니다. TokenCat은 여기서 가장 최근 5시간·주간·Codex 창을 읽기만 하므로, Claude Code를 실행하지 않고 omp로 작업해도 한도 줄이 계속 갱신됩니다. 자세한 내용은 [자세한 동작 › omp·Pi 사용량 기록](docs/DETAILS.ko.md#omppi-사용량-기록)에 있습니다.
 
 ### 메뉴 막대는 원하는 만큼
@@ -207,9 +207,9 @@ AI 숫자는 진행 중이거나 입력을 기다리는 최상위 세션 수입�
 - **수집기는 이 Mac 안에만 엽니다.** `127.0.0.1:16493`에서만 받고, 웹페이지 Origin이 붙었거나 Host가 `127.0.0.1`·`localhost`가 아닌 요청은 거부합니다. 받은 실측은 정해진 개수만 메모리에 두고 파일로 남기지 않습니다. 수집기로 받은 것 가운데 디스크에 남는 것은 Claude 한도의 사용률·초기화 시각·받은 시각뿐이며, 다음 실행에도 보이도록 TokenCat 설정 값(UserDefaults)에 둡니다. Claude 데스크톱 앱의 사용량 기록 파일은 읽기만 하고 마지막 기록의 사용률과 시각만 같은 곳에 둡니다.
 - **본문 전송은 끈 채로 연결합니다.** Codex·Claude Code·Gemini CLI·Qwen Code 설정에 실측 전송을 추가할 때 프롬프트·응답 본문 로깅은 끕니다(기본으로 프롬프트를 기록하는 Gemini CLI·Qwen Code에는 `logPrompts: false`).
 - **Claude Code 상태 표시줄은 감싸기만 합니다.** Claude Code는 사용 한도를 상태 표시줄 명령에만 넘겨 주므로, `~/.claude/settings.json`의 `statusLine` 명령을 TokenCat 브리지(`~/Library/Application Support/TokenCat/claude-statusline.sh`)로 바꿉니다. 브리지는 Claude Code가 넘긴 상태 JSON(작업 폴더, 세션, 모델, 비용, 사용 한도 등)을 `127.0.0.1`로만 보내고, 같은 입력으로 원래 명령을 실행해 출력과 종료 코드를 그대로 돌려줍니다. TokenCat은 받은 JSON에서 5시간·주간 한도 숫자만 남기고 나머지는 버립니다. 상태 표시줄이 없었다면 아무것도 출력하지 않는 브리지만 추가합니다.
-- **모델 호출이 없고 직접 로그인하지 않습니다.** TokenCat은 어떤 모델도 호출하지 않고 스스로 계정에 로그인하지 않습니다. 실시간 한도 확인은 Codex·Claude Code에 이미 저장된 로그인을 씁니다.
+- **모델 호출이 없고 직접 로그인하지 않습니다.** TokenCat은 어떤 모델도 호출하지 않고 스스로 계정에 로그인하지 않습니다. 실시간 한도 확인은 Codex·Claude Code(또는 omp·Pi)에 이미 저장된 로그인을 씁니다.
 - **인터넷 접속은 업데이트와 사용 한도 확인뿐입니다.** 업데이트는 GitHub에 최신 릴리스의 버전 번호만 묻습니다. 설정 › 정보의 `새 버전 자동 확인`을 끄면 `지금 확인`을 누를 때만 묻습니다. 새 버전 파일은 `업데이트`를 누를 때만 내려받습니다.
-- **실시간 한도 확인은 토큰을 저장하지 않습니다.** Codex는 로컬 `codex app-server`를 잠깐 실행해, Codex CLI가 자기 로그인으로 OpenAI에 묻게 하며 TokenCat은 Codex 토큰을 읽지 않습니다. Claude는 Claude Code가 저장한 토큰(macOS 키체인 또는 `~/.claude/.credentials.json`)을 읽어 `api.anthropic.com`에만 보냅니다. 토큰은 메모리에만 두고 파일·로그에 남기거나 갱신하지 않으며, 만료된 토큰은 보내지 않습니다. 설정 › 실측의 `실시간 한도 확인`으로 끕니다.
+- **실시간 한도 확인은 토큰을 저장하지 않습니다.** Codex는 로컬 `codex app-server`를 잠깐 실행해, Codex CLI가 자기 로그인으로 OpenAI에 묻게 하며 TokenCat은 Codex 토큰을 읽지 않습니다. Claude는 Claude Code가 저장한 토큰(macOS 키체인 또는 `~/.claude/.credentials.json`)을, 그 토큰이 없거나 만료됐으면 같은 계정으로 omp·Pi가 `agent.db`에 저장한 Claude 토큰을 읽어 `api.anthropic.com`에만 보냅니다. 토큰은 메모리에만 두고 파일·로그에 남기거나 갱신하지 않으며, 만료된 토큰은 보내지 않습니다. 설정 › 실측의 `실시간 한도 확인`으로 끕니다.
 - **그 밖에는 이 Mac 밖으로 나가지 않습니다.** 두 요청 모두 사용 기록·기기 정보·식별자를 보내지 않으며, 나머지 통신은 모두 이 Mac 안(`127.0.0.1`)에서만 일어납니다.
 - **원본 설정을 먼저 백업합니다.** 바꾸기 전에 원본을 접근 제한된 폴더에 보관하고, 기존 외부 실측 목적지와 충돌하면 덮어쓰지 않습니다. 연결 뒤 설정 파일이 바뀌었다면 연결 해제(설정 › 실측의 `연결 해제…`나 `--disconnect-telemetry`)는 그 파일을 통째로 덮어쓰지 않고, 지금 파일을 백업한 뒤 TokenCat이 넣은 항목만 되돌립니다.
 - **로그인 항목과 알림은 직접 켤 때만.** 둘 다 기본으로 꺼져 있습니다. 업데이트 설치도 직접 누를 때만 합니다.
@@ -380,7 +380,7 @@ Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 - **Kimi Code**(`~/.kimi-code/sessions` 또는 `$KIMI_CODE_HOME`), Kimi 데스크톱 앱 안의 같은 런타임(**Kimi Work**로 표시), 보관된 kimi-cli(`~/.kimi/sessions`, **Kimi CLI**로 표시)를 하위 에이전트까지 읽습니다. Kimi Code는 단계마다 첫 토큰 대기와 스트리밍 시간을 기록하므로 Kimi Code·Kimi Work 세션에는 잰 **요청 tok/s**가 붙고, Kimi CLI 세션에는 속도도 제목도 없습니다. Kimi Code가 kimi-cli에서 옮겨 온 세션은 한 번만 보입니다.
 - **그 밖의 데이터 폴더**도 클라이언트가 쓰는 대로 따라갑니다: `CODEX_HOME`, `CLAUDE_CONFIG_DIR`(쉼표로 여럿 지정 가능)와 `~/.config/claude`, Gemini CLI의 macOS 샌드박스 폴더 `~/.cache/.gemini`. 다른 클라이언트의 형식으로 기록하는 제품은 자기 이름으로 보입니다: **TRAE CLI**(Codex 형식, `~/.trae/cli/sessions`), **OpenClaude**(`~/.openclaude`)와 **Qoder**(`~/.qoder`, Claude Code 형식). 이 행에는 Codex·Claude 계정 한도와 재개 명령이 없습니다.
 - **실측**은 제공사·세션·에이전트 식별자가 정확히 일치할 때만 세션 행에 붙입니다. 모델 이름이나 시간이 가깝다는 이유로 연결하지 않습니다. 속도는 근거에 따라 단위를 나눠 표시합니다.
-- **사용 한도**는 `실시간 한도 확인`이 켜져 있으면 실시간 확인(Codex는 로컬 `codex app-server`, Claude는 Claude Code에 저장된 토큰으로 `api.anthropic.com`)에서, 그리고 Codex 로그, Claude Code가 상태 표시줄을 그릴 때 브리지가 같은 수집기(`/v1/claude/status`)로 보낸 상태 JSON(5시간·주간 한도만), Claude 데스크톱 앱의 사용량 기록 파일(마지막 사용률과 기록 시각만), omp·Pi의 사용량 기록(`agent.db`, 읽기 전용으로 열어 최근 사용률·초기화 시각·기록 시각만)에서 읽습니다.
+- **사용 한도**는 `실시간 한도 확인`이 켜져 있으면 실시간 확인(Codex는 로컬 `codex app-server`, Claude는 Claude Code에 저장된 토큰, 그 토큰이 없거나 만료됐으면 같은 계정의 omp·Pi 토큰으로 `api.anthropic.com`)에서, 그리고 Codex 로그, Claude Code가 상태 표시줄을 그릴 때 브리지가 같은 수집기(`/v1/claude/status`)로 보낸 상태 JSON(5시간·주간 한도만), Claude 데스크톱 앱의 사용량 기록 파일(마지막 사용률과 기록 시각만), omp·Pi의 사용량 기록(`agent.db`, 읽기 전용으로 열어 최근 사용률·초기화 시각·기록 시각만)에서 읽습니다.
 - **업데이트**와 **실시간 한도 확인**만 이 Mac 밖으로 나갑니다. 업데이트는 GitHub API에 최신 릴리스를 물어 버전 번호를 비교하고, `업데이트`를 누를 때만 파일을 내려받습니다. 둘 다 위 그림의 수집 경로와는 따로 돕니다.
 
 | 단위 | 근거 |
@@ -410,7 +410,7 @@ TokenCat이 Apple 공증을 받지 않은 앱이라 나오는 안내입니다. [
 두 가지 요청뿐이며, 어느 쪽도 사용 기록·기기 정보·식별자를 보내지 않습니다. 로그·실측·대화 내용은 이 Mac 밖으로 나가지 않습니다.
 
 - **업데이트 확인**: `api.github.com`에 이 저장소의 최신 릴리스를 묻는 GET 요청이며, HTTP 요청에 기본으로 따르는 정보(IP 주소, `TokenCat/0.9.0` 같은 User-Agent, `en`으로 고정한 언어 헤더)만 실립니다. 바뀌지 않은 응답은 다시 받지 않도록 캐시 확인 헤더를 쓰고, GitHub가 요청 한도를 알리면 그 시각까지 쉽니다. 설정 › 정보에서 `새 버전 자동 확인`을 끄면 직접 누를 때만 확인합니다. `업데이트`를 누르면 그때 GitHub에서 `TokenCat.zip`을 내려받습니다.
-- **실시간 한도 확인**(기본 켜짐): Codex는 로컬 `codex app-server`를 잠깐 실행해, Codex CLI가 자기 로그인으로 OpenAI에 한도를 묻게 합니다. Claude는 Claude Code에 저장된 로그인 토큰으로 `https://api.anthropic.com/api/oauth/usage`에 GET 요청을 한 번 보내며, 토큰은 메모리에만 두고 저장·기록·갱신하지 않습니다. 설정 › 실측의 `실시간 한도 확인`으로 끕니다.
+- **실시간 한도 확인**(기본 켜짐): Codex는 로컬 `codex app-server`를 잠깐 실행해, Codex CLI가 자기 로그인으로 OpenAI에 한도를 묻게 합니다. Claude는 Claude Code에 저장된 로그인 토큰(그 토큰이 없거나 만료됐으면 같은 계정으로 omp·Pi에 저장된 토큰)으로 `https://api.anthropic.com/api/oauth/usage`에 GET 요청을 한 번 보내며, 토큰은 메모리에만 두고 저장·기록·갱신하지 않습니다. 설정 › 실측의 `실시간 한도 확인`으로 끕니다.
 
 </details>
 
@@ -464,7 +464,7 @@ Codex 데스크톱(codex-app-server)은 로그와 trace를 보내지만 요청�
 
 <br>
 
-`실시간 한도 확인`(설정 › 실측)이 켜져 있으면 Claude Code에 저장된 로그인으로 Anthropic에 묻고, 상세 화면을 열면 바로 확인합니다. macOS에서는 처음 확인할 때 `Claude Code-credentials` 키체인 항목 접근을 물을 수 있고, 거부하면 그 실행 동안은 `~/.claude/.credentials.json`만 읽습니다. TokenCat은 토큰을 갱신하지 않으므로, 만료된 토큰은 Claude Code를 다시 실행해 갱신될 때까지 보내지 않습니다.
+`실시간 한도 확인`(설정 › 실측)이 켜져 있으면 Claude Code에 저장된 로그인으로 Anthropic에 묻고, 상세 화면을 열면 바로 확인합니다. macOS에서는 처음 확인할 때 `Claude Code-credentials` 키체인 항목 접근을 물을 수 있고, 거부하면 그 실행 동안은 `~/.claude/.credentials.json`만 읽습니다. TokenCat은 토큰을 갱신하지 않습니다. Claude Code 토큰이 없거나 만료됐으면 같은 계정으로 omp·Pi에 저장된 Claude 로그인을 쓰며, omp·Pi는 쓰는 동안 이 토큰을 갱신합니다. 그 밖에는 만료된 토큰을 Claude Code를 다시 실행해 갱신될 때까지 보내지 않습니다.
 
 쓸 수 있는 토큰이 없으면 Claude 한도는 Claude Code가 상태 표시줄 명령에 넘기는 `rate_limits`(5시간·주간)에서 옵니다. 이 값은 Claude.ai 구독 계정에서만, 그것도 첫 응답을 받은 뒤에야 들어 있습니다. 그래서 TokenCat이 실행 중이고, 연결 뒤 새로 실행한 Claude Code가 응답을 한 번 받아 상태 표시줄을 다시 그려야 행이 나타납니다. Claude 데스크톱 앱에서 쓴다면 데스크톱 앱이 약 15분마다 남기는 사용량 기록에서도 읽으므로, 그 앱을 한 번 쓴 뒤 기록이 생기면 나타납니다. 한 번 받은 값은 다음 실행에도 남고, 초기화 시각이 지나면 `—`와 `초기화됨`을 하루 동안 보인 뒤 숨깁니다. `statusLine`이 명령 형식이 아니면 연결을 건너뛰고, 브리지를 직접 지웠다면 다시 넣지 않습니다.
 

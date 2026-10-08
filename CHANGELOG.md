@@ -2,6 +2,12 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.18.1
+
+**macOS and Windows**
+
+- Claude's weekly and 5-hour limits stay live while you work through omp or Pi, even when Claude Code's own sign-in has expired: the live check now falls back to omp's or Pi's saved Claude sign-in for the same account instead of showing an older omp record. · omp·Pi로 작업하는 동안 Claude Code 자체 로그인이 만료됐어도 Claude 주간·5시간 한도가 실시간으로 유지됩니다. 실시간 확인이 오래된 omp 기록을 보이는 대신 같은 계정으로 omp·Pi에 저장된 Claude 로그인을 씁니다.
+
 ## 0.18.0
 
 **macOS and Windows**

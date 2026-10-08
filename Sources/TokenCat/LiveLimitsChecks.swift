@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 /// Live usage limits without the network: the real Codex read path against fake app-servers, Claude's credential gate
 /// and both usage shapes, the cadence, and how live reads merge with records and label the row.
@@ -75,6 +76,28 @@ func runLiveLimitChecks() -> [String] {
               && LiveLimits.claudeUsable(other, rejected: credential.token.hashValue, now: now),
               "a 401 token is sent again, or a changed token stays blocked")
     }
+    // omp's and Pi's saved Anthropic sign-in: read from agent.db, offered after Claude Code's, only for Claude Code's account.
+    let agentDB = folder.appendingPathComponent("agent.db")
+    var handle: OpaquePointer?
+    if sqlite3_open(agentDB.path, &handle) == SQLITE_OK {
+        sqlite3_exec(handle, """
+            CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT);
+            INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause) VALUES
+              ('anthropic', 'oauth', '{"access":"omp-token","refresh":"r","expires":1790000600000,"accountId":"acct-a","email":"PRIVATE"}', NULL),
+              ('anthropic', 'oauth', '{"access":"disabled-token","expires":1790000600000,"accountId":"acct-a"}', 'revoked'),
+              ('openai-codex', 'oauth', '{"access":"codex-token","expires":1790000600000}', NULL);
+            """, nil, nil, nil)
+    }
+    sqlite3_close(handle)
+    let agents = LiveLimits.agentCredentials([agentDB, folder.appendingPathComponent("missing/agent.db")])
+    let expired = LiveLimits.ClaudeCredential(token: "claude-code-token", expiresAt: at(-10))
+    let picked = LiveLimits.claudeCandidates(claudeCode: expired, agents: agents, claudeAccount: "acct-a")
+        .first { LiveLimits.claudeUsable($0, rejected: nil, now: now) }
+    check(agents.map(\.credential.token) == ["omp-token"] && agents.first?.account == "acct-a" && agents.first?.credential.expiresAt == at(600)
+          && picked?.token == "omp-token"
+          && LiveLimits.claudeCandidates(claudeCode: expired, agents: agents, claudeAccount: "acct-b").map(\.token) == ["claude-code-token"]
+          && LiveLimits.claudeCandidates(claudeCode: nil, agents: agents, claudeAccount: nil).map(\.token) == ["omp-token"],
+          "omp's or Pi's Anthropic sign-in is not used when Claude Code's has expired, or is used for another account")
     let current = Data(#"{"limits":[{"kind":"session","group":"session","percent":42,"resets_at":"2026-09-21T14:13:20.000000+00:00","scope":null,"severity":"normal","is_active":true},{"kind":"weekly_scoped","group":"weekly","percent":90,"resets_at":"2026-09-24T00:00:00Z","scope":{"model":{"display_name":"Opus"}}},{"kind":"weekly_all","group":"weekly","percent":31,"resets_at":null,"scope":null}],"extra_usage":{"is_enabled":false}}"#.utf8)
     let legacy = Data(#"{"five_hour":{"utilization":17.0,"resets_at":"2026-09-21T14:13:20Z"},"seven_day":{"utilization":5,"resets_at":"2026-09-24T00:00:00.5+00:00"},"seven_day_opus":null}"#.utf8)
     let reset = Date(timeIntervalSince1970: 1_790_000_000)

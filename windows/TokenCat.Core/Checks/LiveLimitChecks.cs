@@ -133,6 +133,30 @@ public static class LiveLimitChecks
               && stub.Requests.Count == 4, "a token without an expiry is sent, or one refused with 403 is sent again");
         File.Delete(credentials);
         check(Claude() is { Claude: null, Failed: false } && stub.Requests.Count == 4, "no Claude sign-in still sends a request");
+        // omp's and Pi's saved Anthropic sign-in: read from agent.db, offered after Claude Code's, only for Claude Code's account.
+        var agentDb = Path.Combine(folder, ".omp", "agent", "agent.db");
+        Directory.CreateDirectory(Path.GetDirectoryName(agentDb)!);
+        var expiry = DateTimeOffset.UtcNow.AddSeconds(3_600).ToUnixTimeMilliseconds();
+        using (var database = OpenCodeDatabase.Open(agentDb, create: true))
+        {
+            database?.Query("CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT)", [], _ => { });
+            foreach (var (data, cause) in new (string, string?)[]
+            {
+                ($$"""{"access":"omp-token","refresh":"r","expires":{{expiry}},"accountId":"acct-a","email":"PRIVATE"}""", null),
+                ($$"""{"access":"disabled-token","expires":{{expiry}},"accountId":"acct-a"}""", "revoked"),
+            })
+                database?.Query("INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause) VALUES ('anthropic', 'oauth', ?, ?)", [data, cause], _ => { });
+        }
+        var agents = LiveLimits.AgentCredentials([agentDb, Path.Combine(folder, "missing", "agent.db")]);
+        File.WriteAllText(Path.Combine(folder, ".claude.json"), """{"oauthAccount":{"accountUuid":"acct-a"}}""");
+        Store("cc-expired", -10);
+        status = HttpStatusCode.OK;
+        var fallback = Claude();
+        check(agents.Select(agent => agent.Access).SequenceEqual(["omp-token"]) && agents[0].Account == "acct-a"
+              && fallback.Claude is not null && stub.Requests[^1].Headers.Authorization?.ToString() == "Bearer omp-token"
+              && LiveLimits.ClaudeCandidates(("cc", 1), agents, "acct-b").Select(candidate => candidate.Access).SequenceEqual(["cc"])
+              && LiveLimits.ClaudeCandidates(null, agents, null).Select(candidate => candidate.Access).SequenceEqual(["omp-token"]),
+              "omp's or Pi's Anthropic sign-in is not used when Claude Code's has expired, or is used for another account");
     }
 
     static void Rows(Action<bool, string> check)

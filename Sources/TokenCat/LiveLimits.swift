@@ -2,8 +2,9 @@ import Foundation
 
 /// "실시간 한도 확인": account usage read live instead of waiting for a log or status line record.
 /// Codex through its own `codex app-server` (TokenCat never reads OpenAI tokens); Claude through Anthropic's OAuth usage
-/// endpoint with the sign-in Claude Code saved. A token lives in memory for one request only: never logged, stored, put
-/// in process arguments or refreshed (refresh tokens rotate, so a refresh would sign Claude Code out).
+/// endpoint with the sign-in Claude Code saved, or, when that is missing or expired, omp's or Pi's saved Anthropic sign-in
+/// (`agent.db` `auth_credentials`) for the same account. A token lives in memory for one request only: never logged, stored,
+/// put in process arguments or refreshed (refresh tokens rotate, so a refresh would sign the owning client out).
 enum LiveLimits {
     /// While a provider's session runs or the dashboard is open; otherwise the idle interval.
     static let activeInterval: TimeInterval = 60
@@ -163,6 +164,42 @@ enum LiveLimits {
         return ((try? Data(contentsOf: file)).flatMap(claudeCredential), refused)
     }
 
+    /// omp's and Pi's saved Anthropic sign-in (`auth_credentials` in their `agent.db`, an `oauth` row not disabled): only the
+    /// access token, its expiry (ms) and account id leave SQLite. These clients refresh their own token while they run, so it
+    /// stays usable when Claude Code's has expired. Used only for Claude Code's own account (or when that is unknown), and never
+    /// refreshed, stored or logged, like Claude Code's.
+    static let agentCredentialQuery = """
+        SELECT json_extract(data, '$.access'), json_extract(data, '$.expires'), json_extract(data, '$.accountId') FROM auth_credentials
+        WHERE provider = 'anthropic' AND credential_type = 'oauth' AND disabled_cause IS NULL
+        """
+
+    static func agentCredentials(_ databases: [URL]) -> [(credential: ClaudeCredential, account: String?)] {
+        databases.flatMap { database -> [(credential: ClaudeCredential, account: String?)] in
+            guard FileManager.default.fileExists(atPath: database.path), let connection = OpenCodeDatabase(path: database.path) else { return [] }
+            var found: [(credential: ClaudeCredential, account: String?)] = []
+            _ = connection.query(agentCredentialQuery) { row in
+                guard let token = row.text(0), !token.isEmpty else { return }
+                found.append((ClaudeCredential(token: token, expiresAt: row.double(1).map { Date(timeIntervalSince1970: $0 / 1_000) }), row.text(2)))
+            }
+            return found
+        }
+    }
+
+    /// Claude Code's sign-in first; then omp's or Pi's for the same account (any account when Claude Code's is unknown).
+    /// The first one still usable is sent.
+    static func claudeCandidates(claudeCode: ClaudeCredential?, agents: [(credential: ClaudeCredential, account: String?)],
+                                 claudeAccount: String?) -> [ClaudeCredential] {
+        [claudeCode].compactMap { $0 }
+            + agents.filter { claudeAccount == nil || $0.account == nil || $0.account == claudeAccount }.map(\.credential)
+    }
+
+    static func claudeCodeAccount(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
+        let config = home.appendingPathComponent(".claude.json")
+        var info = stat()
+        guard stat(config.path, &info) == 0, Int(info.st_size) <= AgentUsageHistoryReader.maximumConfigBytes else { return nil }
+        return (try? Data(contentsOf: config)).flatMap(AgentUsageHistory.claudeAccount)
+    }
+
     /// `GET /api/oauth/usage`: `limits[]` (`kind` "session" → 5-hour, "weekly_all" → 7-day; model-scoped weeks are left out)
     /// or the older `five_hour`/`seven_day` `{utilization, resets_at}`. Nil when the body is not a JSON object.
     static func claudeUsage(_ data: Data, receivedAt: Date) -> ClaudeUsageLimits? {
@@ -252,9 +289,13 @@ enum LiveLimits {
         guard source == .claude else { outcome.note = "no live limits for \(source.title)"; return outcome }
         let saved = readClaudeCredential(keychain: keychain)
         outcome.keychainRefused = saved.refused
-        guard let credential = saved.credential else { outcome.note = "no Claude Code sign-in found"; return outcome }
-        guard claudeUsable(credential, rejected: rejected, now: Date()) else {
-            outcome.note = credential.token.hashValue == rejected ? "token refused before" : "token expired · Claude Code refreshes it when it runs"
+        let agents = agentCredentials(AgentUsageHistory.databases(home: FileManager.default.homeDirectoryForCurrentUser,
+                                                                  environment: ProcessInfo.processInfo.environment))
+        let candidates = claudeCandidates(claudeCode: saved.credential, agents: agents, claudeAccount: claudeCodeAccount())
+        guard !candidates.isEmpty else { outcome.note = "no Claude Code, omp or Pi sign-in found"; return outcome }
+        guard let credential = candidates.first(where: { claudeUsable($0, rejected: rejected, now: Date()) }) else {
+            outcome.note = candidates.contains { $0.token.hashValue == rejected } ? "token refused before"
+                : "token expired · Claude Code, omp or Pi refresh it when they run"
             return outcome
         }
         let fetched = fetchClaude(token: credential.token)
