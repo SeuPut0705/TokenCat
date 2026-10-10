@@ -77,12 +77,18 @@ final class LimitAccountReader {
         var source: TokenSource
         var metadata: URL
     }
+    struct RootAccount {
+        var account: LimitAccount?
+        var switchedAt: Date?
+    }
     private let home: URL
     private let environment: [String: String]
     private var roots: [Root] = []
     private var clones: [(source: TokenSource, prefixes: [String])] = []
     private var configs: [URL: Config] = [:]
     private var credentials: [URL: (stamp: [Int64], values: [Credential])] = [:]
+    /// Observations survive metadata cache invalidation; identity and switch times are memory-only.
+    private var observedRoots: [URL: RootAccount] = [:]
     private var defaults: [TokenSource: LimitAccount] = [:]
     private var accounts: [TokenSource: [LimitAccount]] = [:]
     private(set) var defaultClaudeOrganizationID: String?
@@ -107,7 +113,7 @@ final class LimitAccountReader {
         (environment.path("CODEX_HOME") ?? home.appendingPathComponent(".codex")).appendingPathComponent("auth.json")
     }
 
-    func refresh() {
+    func refresh(now: Date = Date()) {
         roots = TokenProvider.claudeConfigDirectories(home, environment).map {
             Root(prefixes: Self.prefixes($0.appendingPathComponent("projects")), source: .claude, metadata: claudeConfig($0))
         }
@@ -166,6 +172,21 @@ final class LimitAccountReader {
         for account in codex { add(account, provider: .codex) }
         defaultClaudeOrganizationID = configMetadata(defaultClaudeConfig, provider: .claude)?.organizationID
         for provider in Array(accounts.keys) { accounts[provider]?.sort { $0.key < $1.key } }
+        for root in roots where root.source == .claude || root.source == .codex {
+            let key = root.metadata.standardizedFileURL
+            let account = configAccount(root.metadata, provider: root.source).flatMap {
+                resolve(provider: root.source, id: $0.id, email: $0.email, organizationName: $0.organizationName)
+            }
+            if var previous = observedRoots[key] {
+                if previous.account != account {
+                    previous.account = account
+                    previous.switchedAt = now
+                    observedRoots[key] = previous
+                }
+            } else {
+                observedRoots[key] = RootAccount(account: account, switchedAt: nil)
+            }
+        }
     }
 
     private func add(_ account: LimitAccount, provider: TokenSource) {
@@ -227,6 +248,10 @@ final class LimitAccountReader {
         guard source == .claude || source == .codex, let root = root(source: source, path: path),
               let account = configAccount(root.metadata, provider: source) else { return nil }
         return resolve(provider: source, id: account.id, email: account.email, organizationName: account.organizationName)
+    }
+    func observedAccount(source: TokenSource, path: String) -> RootAccount? {
+        guard source == .claude || source == .codex, let root = root(source: source, path: path) else { return nil }
+        return observedRoots[root.metadata.standardizedFileURL]
     }
     func claudeAccount(configDirectory: URL) -> LimitAccount? {
         let directory = configDirectory.standardizedFileURL.resolvingSymlinksInPath()

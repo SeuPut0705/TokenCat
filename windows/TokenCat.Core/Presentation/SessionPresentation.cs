@@ -845,13 +845,16 @@ public static class SessionPresentation
         IReadOnlyDictionary<TokenSource, IReadOnlyList<LimitAccount>> known, DateTimeOffset now)
     {
         List<UsageLimitSummary> result = [];
+        // A post-switch session can still carry a cached limit from before its account attribution.
+        var codexWindows = tokens.Where(token => token.Source == TokenSource.Codex && !IsTelemetry(token))
+            .Select(token => token.RateLimit).OfType<TokenRateLimit>().Concat(codexReads).ToList();
         foreach (var provider in new[] { TokenSource.Codex, TokenSource.Claude })
         {
             var sessions = tokens.Where(token => token.LimitProvider == provider && !IsTelemetry(token)).ToList();
             var accounts = new HashSet<LimitAccount>(known.GetValueOrDefault(provider) ?? []);
             accounts.UnionWith(sessions.Select(token => token.LimitAccount).OfType<LimitAccount>());
             if (defaults.TryGetValue(provider, out var defaultAccount)) accounts.Add(defaultAccount);
-            if (provider == TokenSource.Codex) accounts.UnionWith(codexReads.Select(read => read.Account).OfType<LimitAccount>());
+            if (provider == TokenSource.Codex) accounts.UnionWith(codexWindows.Select(read => read.Account).OfType<LimitAccount>());
             var orderedAccounts = accounts.OrderBy(account => account.Key, StringComparer.Ordinal).ToList();
             var hashes = orderedAccounts.Select(account => account.StorageKey).ToHashSet(StringComparer.Ordinal);
             if (provider == TokenSource.Claude) hashes.UnionWith(claudeLimits.Keys.Where(key => key != "legacy"));
@@ -859,8 +862,7 @@ public static class SessionPresentation
             UsageLimitSummary? Summary(LimitAccount? account)
             {
                 var value = provider == TokenSource.Codex
-                    ? UsageLimit(sessions.Where(token => token.LimitAccount == account).ToList(), now,
-                        codexReads.Where(read => read.Account == account).ToList())
+                    ? UsageLimit([], now, codexWindows.Where(read => read.Account == account).ToList())
                     : claudeLimits.TryGetValue(account?.StorageKey ?? "legacy", out var limits) ? ClaudeUsageLimit(limits, now) : null;
                 if (value is null || !value.IsShown(now)) return null;
                 string? label = null;
@@ -885,18 +887,18 @@ public static class SessionPresentation
                 else if (showLabels) label = Loc("계정 미확인", "Unknown account");
                 return value with { Account = account, AccountLabel = label };
             }
-            var running = sessions.Where(token => DisplayState(token, now).IsRunning).ToList();
-            if (running.Count > 0)
+            var runningAccounts = sessions.Where(token => DisplayState(token, now).IsRunning)
+                .Select(token => token.LimitAccount).OfType<LimitAccount>().ToHashSet();
+            if (runningAccounts.Count > 0)
             {
-                result.AddRange(running.Select(token => new LimitSlot(provider, token.LimitAccount)).Distinct()
-                    .Select(slot => Summary(slot.Account)).OfType<UsageLimitSummary>()
+                result.AddRange(runningAccounts.Select(Summary).OfType<UsageLimitSummary>()
                     .OrderByDescending(value => value.UsedPercent).ThenBy(value => value.Account?.Key ?? "", StringComparer.Ordinal));
             }
             else
             {
                 var recent = sessions.OrderByDescending(token => token.LastActivity ?? DateTimeOffset.MinValue)
                     .ThenBy(token => token.Id, StringComparer.Ordinal).FirstOrDefault();
-                var value = recent is not null ? Summary(recent.LimitAccount) : null;
+                var value = recent?.LimitAccount is { } recentAccount ? Summary(recentAccount) : null;
                 value ??= defaultAccount is not null ? Summary(defaultAccount) : null;
                 value ??= Summary(null);
                 if (value is not null) result.Add(value);

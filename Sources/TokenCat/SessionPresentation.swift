@@ -723,12 +723,14 @@ enum SessionPresentation {
     static func usageLimits(tokens: [TokenReading], codexReads: [TokenRateLimit], claudeLimits: ClaudeLimitsByAccount,
                             defaults: [TokenSource: LimitAccount], known: [TokenSource: [LimitAccount]], now: Date) -> [UsageLimitSummary] {
         var result: [UsageLimitSummary] = []
+        // A session newly attributed after a login switch may still carry an unattributed older limit.
+        let codexWindows = tokens.filter { $0.source == .codex && !isTelemetry($0) }.compactMap(\.rateLimit) + codexReads
         for provider in [TokenSource.codex, .claude] {
             let sessions = tokens.filter { $0.limitProvider == provider && !isTelemetry($0) }
             var accounts = Set(known[provider] ?? [])
             accounts.formUnion(sessions.compactMap(\.limitAccount))
             if let account = defaults[provider] { accounts.insert(account) }
-            if provider == .codex { accounts.formUnion(codexReads.compactMap(\.account)) }
+            if provider == .codex { accounts.formUnion(codexWindows.compactMap(\.account)) }
             let orderedAccounts = accounts.sorted { $0.key < $1.key }
             var hashes = Set(orderedAccounts.map(\.storageKey))
             if provider == .claude { hashes.formUnion(claudeLimits.keys.filter { $0 != "legacy" }) }
@@ -736,8 +738,7 @@ enum SessionPresentation {
             func summary(_ account: LimitAccount?) -> UsageLimitSummary? {
                 var value: UsageLimitSummary?
                 if provider == .codex {
-                    value = usageLimit(sessions.filter { $0.limitAccount == account },
-                                       reads: codexReads.filter { $0.account == account }, now: now)
+                    value = usageLimit([], reads: codexWindows.filter { $0.account == account }, now: now)
                 } else {
                     value = claudeLimits[account?.storageKey ?? "legacy"].flatMap { claudeUsageLimit($0, now: now) }
                 }
@@ -763,10 +764,9 @@ enum SessionPresentation {
                 }
                 return value
             }
-            let running = sessions.filter { displayState($0, now: now).isRunning }
-            if !running.isEmpty {
-                let slots = Set(running.map { LimitSlot(provider: provider, account: $0.limitAccount) })
-                result += slots.compactMap { summary($0.account) }.sorted {
+            let runningAccounts = Set(sessions.filter { displayState($0, now: now).isRunning }.compactMap(\.limitAccount))
+            if !runningAccounts.isEmpty {
+                result += runningAccounts.compactMap { summary($0) }.sorted {
                     $0.usedPercent != $1.usedPercent ? $0.usedPercent > $1.usedPercent
                         : ($0.account?.key ?? "") < ($1.account?.key ?? "")
                 }
@@ -775,7 +775,7 @@ enum SessionPresentation {
                     let a = $0.lastActivity ?? .distantPast, b = $1.lastActivity ?? .distantPast
                     return a != b ? a < b : $0.id > $1.id
                 }
-                if let recent, let value = summary(recent.limitAccount) {
+                if let account = recent?.limitAccount, let value = summary(account) {
                     result.append(value)
                 } else if let account = defaults[provider], let value = summary(account) {
                     result.append(value)

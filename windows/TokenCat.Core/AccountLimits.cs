@@ -67,9 +67,12 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
     sealed record Config(long[] Stamp, LimitAccount? Account, string? OrganizationID);
     sealed record Credential(TokenSource Provider, string Hash, LimitAccount Account);
     sealed record Root(string[] Prefixes, TokenSource Source, string Metadata);
+    public sealed record RootAccount(LimitAccount? Account, DateTimeOffset? SwitchedAt);
     readonly string home = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
     readonly Dictionary<string, Config> configs = new(PathComparer);
     readonly Dictionary<string, (long[] Stamp, List<Credential> Values)> credentials = new(PathComparer);
+    /// Root observations survive metadata cache invalidation and remain memory-only.
+    readonly Dictionary<string, RootAccount> observedRoots = new(PathComparer);
     readonly Dictionary<TokenSource, LimitAccount> defaults = [];
     readonly Dictionary<TokenSource, List<LimitAccount>> accounts = [];
     List<Root> roots = [];
@@ -103,7 +106,7 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
         ? ClaudeConfig(directory) : Path.Combine(home, ".claude.json");
     string DefaultCodexConfig => Path.Combine(TokenProvider.EnvPath(home, environment, "CODEX_HOME") ?? Path.Combine(home, ".codex"), "auth.json");
 
-    public void Refresh()
+    public void Refresh(DateTimeOffset? now = null)
     {
         roots = [.. TokenProvider.ClaudeConfigDirectories(home, environment).Select(directory =>
             new Root(Prefixes(Path.Combine(directory, "projects")), TokenSource.Claude, ClaudeConfig(directory))),
@@ -156,6 +159,17 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
         foreach (var account in codex) Add(TokenSource.Codex, account);
         DefaultClaudeOrganizationID = ConfigMetadata(DefaultClaudeConfig, TokenSource.Claude)?.OrganizationID;
         foreach (var values in accounts.Values) values.Sort((a, b) => string.CompareOrdinal(a.Key, b.Key));
+        var observedAt = now ?? DateTimeOffset.UtcNow;
+        foreach (var root in roots.Where(root => root.Source is TokenSource.Claude or TokenSource.Codex))
+        {
+            var key = Path.GetFullPath(root.Metadata);
+            var metadata = ConfigMetadata(root.Metadata, root.Source)?.Account;
+            var account = metadata is null ? null : Resolve(root.Source, metadata.Id, metadata.Email, metadata.OrganizationName);
+            if (!observedRoots.TryGetValue(key, out var previous))
+                observedRoots[key] = new RootAccount(account, null);
+            else if (previous.Account != account)
+                observedRoots[key] = new RootAccount(account, observedAt);
+        }
     }
     static bool NormalizedEmpty(string id) => LimitAccount.Normalized(id).Length == 0;
     void Add(TokenSource provider, LimitAccount account)
@@ -229,6 +243,9 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
             || ConfigMetadata(root.Metadata, source)?.Account is not { } account) return null;
         return Resolve(source, account.Id, account.Email, account.OrganizationName);
     }
+    public RootAccount? ObservedAccount(TokenSource source, string path) =>
+        source is TokenSource.Claude or TokenSource.Codex && FindRoot(source, path) is { } root
+            ? observedRoots.GetValueOrDefault(Path.GetFullPath(root.Metadata)) : null;
     public LimitAccount? ClaudeAccount(string configDirectory)
     {
         var real = RealPath(configDirectory);

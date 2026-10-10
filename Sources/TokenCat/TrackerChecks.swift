@@ -1298,6 +1298,7 @@ func runTrackerChecks() -> [String] {
     check(mismatched.isEmpty, "Timestamp fast path differs from ISO8601DateFormatter: \(mismatched.prefix(3))")
     copilotAmpDroidChecks { check($0, $1) }
     runLimitAccountChecks(root: root, check: { check($0, $1) })
+    runAccountSwitchChecks(root: root, check: { check($0, $1) })
     providerRootChecks { check($0, $1) }
     grokChecks { check($0, $1) }
     cursorChecks { check($0, $1) }
@@ -1445,5 +1446,123 @@ private func runLimitAccountChecks(root: URL, check: (Bool, String) -> Void) {
         check(reader.defaultAccount(.codex) == nil, "Limit accounts privacy: Codex identity was taken from a token or non-metadata field")
     } catch {
         check(false, "Limit accounts fixture error: \(error.localizedDescription)")
+    }
+}
+
+private func runAccountSwitchChecks(root: URL, check: (Bool, String) -> Void) {
+    do {
+        let home = root.appendingPathComponent("account-switches")
+        let codexHome = home.appendingPathComponent("codex-home")
+        let claudeConfig = home.appendingPathComponent("claude-config")
+        let codexLogs = codexHome.appendingPathComponent("sessions/2026/10/04")
+        let claudeLogs = claudeConfig.appendingPathComponent("projects/project")
+        for folder in [codexLogs, claudeLogs] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        func config(_ account: String) throws {
+            try JSONSerialization.data(withJSONObject: ["tokens": ["account_id": account]])
+                .write(to: codexHome.appendingPathComponent("auth.json"))
+            try JSONSerialization.data(withJSONObject: ["oauthAccount": ["accountUuid": account, "emailAddress": account + "@example.test"]])
+                .write(to: claudeConfig.appendingPathComponent(".claude.json"))
+        }
+        let start = Date(timeIntervalSince1970: 1_791_100_000)
+        var now = start
+        func stamp(_ date: Date) -> String { ISO8601DateFormatter().string(from: date) }
+        func write(_ records: [[String: Any]], to url: URL) throws {
+            var body = Data()
+            for record in records {
+                body.append(try JSONSerialization.data(withJSONObject: record))
+                body.append(10)
+            }
+            try body.write(to: url)
+        }
+        func codexRecords(_ session: String, at: Date, used: Double, reset: Date) -> [[String: Any]] {
+            [
+                ["type": "session_meta", "payload": ["id": session]],
+                ["type": "turn_context", "payload": ["model": "gpt-switch"]],
+                ["type": "event_msg", "timestamp": stamp(at.addingTimeInterval(-1)),
+                 "payload": ["type": "task_started", "turn_id": session]],
+                ["type": "event_msg", "timestamp": stamp(at), "payload": [
+                    "type": "token_count",
+                    "info": ["total_token_usage": ["output_tokens": 1], "last_token_usage": ["output_tokens": 1]],
+                    "rate_limits": ["limit_id": "codex", "primary": ["used_percent": used, "window_minutes": 300,
+                                                                   "resets_at": reset.timeIntervalSince1970]]]]
+            ]
+        }
+        func claudeRecords(_ session: String, at: Date) -> [[String: Any]] {
+            [["type": "assistant", "sessionId": session, "timestamp": stamp(at), "uuid": session,
+              "message": ["id": session, "role": "assistant", "model": "claude-switch", "usage": ["output_tokens": 1]]]]
+        }
+        try config("account-a")
+        let oldCodex = codexLogs.appendingPathComponent("pinned-a.jsonl")
+        let oldClaude = claudeLogs.appendingPathComponent("pinned-a.jsonl")
+        try write(codexRecords("codex-a", at: start.addingTimeInterval(-10), used: 93, reset: start.addingTimeInterval(10_000)), to: oldCodex)
+        try write(claudeRecords("claude-a", at: start.addingTimeInterval(-10)), to: oldClaude)
+        let tracker = TokenTracker(homeDirectory: home, environment: ["CODEX_HOME": codexHome.path, "CLAUDE_CONFIG_DIR": claudeConfig.path],
+                                   now: { now }, discoveryInterval: 0)
+        let initial = tracker.sample()
+        check(initial.first { $0.sessionID == "codex-a" }?.limitAccount?.id == "account-a"
+              && initial.first { $0.sessionID == "claude-a" }?.limitAccount?.id == "account-a"
+              && tracker.accountReader.observedAccount(source: .codex, path: oldCodex.path)?.switchedAt == nil
+              && tracker.accountReader.observedAccount(source: .claude, path: oldClaude.path)?.switchedAt == nil,
+              "Account switches: initial Claude and Codex root observations or session attribution failed")
+        now = start.addingTimeInterval(60)
+        try config("account-b")
+        let switched = tracker.sample()
+        check(switched.first { $0.sessionID == "codex-a" }?.limitAccount?.id == "account-a"
+              && switched.first { $0.sessionID == "codex-a" }?.rateLimit?.account?.id == "account-a"
+              && switched.first { $0.sessionID == "claude-a" }?.limitAccount?.id == "account-a"
+              && tracker.accountReader.observedAccount(source: .codex, path: oldCodex.path)?.switchedAt == now
+              && tracker.accountReader.observedAccount(source: .claude, path: oldClaude.path)?.switchedAt == now,
+              "Account switches: pinned Claude and Codex sessions or limits changed account after a root login switch")
+        let switchedAt = now
+        try write(codexRecords("codex-unknown", at: start, used: 99, reset: start.addingTimeInterval(20_000)),
+                  to: codexLogs.appendingPathComponent("historical.jsonl"))
+        try write(claudeRecords("claude-unknown", at: start), to: claudeLogs.appendingPathComponent("historical.jsonl"))
+        now = switchedAt.addingTimeInterval(2)
+        try write(codexRecords("codex-b", at: now, used: 7, reset: start.addingTimeInterval(2_000)),
+                  to: codexLogs.appendingPathComponent("fresh-b.jsonl"))
+        try write(claudeRecords("claude-b", at: now), to: claudeLogs.appendingPathComponent("fresh-b.jsonl"))
+        var hybrid = codexRecords("codex-hybrid", at: start, used: 98, reset: start.addingTimeInterval(30_000))
+        hybrid.append(["type": "event_msg", "timestamp": stamp(now), "payload": ["type": "task_started", "turn_id": "new-turn"]])
+        try write(hybrid, to: codexLogs.appendingPathComponent("hybrid.jsonl"))
+        let current = tracker.sample()
+        check(current.first { $0.sessionID == "codex-unknown" }?.limitAccount == nil
+              && current.first { $0.sessionID == "codex-unknown" }?.rateLimit?.account == nil
+              && current.first { $0.sessionID == "claude-unknown" }?.limitAccount == nil
+              && current.contains { $0.sessionID == "codex-unknown" } && current.contains { $0.sessionID == "claude-unknown" },
+              "Account switches: unpinned pre-switch Claude or Codex logs were attributed to the new login")
+        check(current.first { $0.sessionID == "codex-b" }?.limitAccount?.id == "account-b"
+              && current.first { $0.sessionID == "codex-b" }?.rateLimit?.account?.id == "account-b"
+              && current.first { $0.sessionID == "claude-b" }?.limitAccount?.id == "account-b"
+              && current.first { $0.sessionID == "codex-hybrid" }?.limitAccount?.id == "account-b"
+              && current.first { $0.sessionID == "codex-hybrid" }?.rateLimit?.account == nil,
+              "Account switches: post-switch sessions or their cached pre-switch Codex limits were misattributed")
+        let repeated = tracker.sample()
+        check(repeated.first { $0.sessionID == "codex-hybrid" }?.rateLimit?.account == nil
+              && repeated.first { $0.sessionID == "codex-a" }?.rateLimit?.account?.id == "account-a"
+              && tracker.accountReader.observedAccount(source: .codex, path: oldCodex.path)?.switchedAt == switchedAt,
+              "Account switches: resampling promoted an unattributed cached limit or reset the observed switch time")
+        let accountB = LimitAccount(id: "account-b")
+        let liveB = TokenRateLimit(usedPercent: 7, windowMinutes: 300, resetsAt: start.addingTimeInterval(2_000),
+                                   recordedAt: now, live: true, account: accountB)
+        let rows = SessionPresentation.usageLimits(tokens: repeated, codexReads: [liveB], claudeLimits: [:],
+                                                  defaults: [.codex: accountB], known: [:], now: now)
+        check(rows.first { $0.account == accountB }?.usedPercent == 7
+              && rows.filter { $0.source == .codex }.allSatisfy { $0.account != nil },
+              "Account switches: account B displayed account A or unattributed Codex numbers with a later reset")
+        if var unknown = repeated.first(where: { $0.sessionID == "codex-unknown" }) {
+            unknown.active = false
+            unknown.activityState = .complete
+            let defaultRows = SessionPresentation.usageLimits(tokens: [unknown], codexReads: [liveB], claudeLimits: [:],
+                                                             defaults: [.codex: accountB], known: [:], now: now)
+            let legacyRows = SessionPresentation.usageLimits(tokens: [unknown], codexReads: [], claudeLimits: [:],
+                                                            defaults: [:], known: [:], now: now)
+            check(defaultRows.first?.account == accountB && defaultRows.first?.usedPercent == 7
+                  && legacyRows.first?.account == nil && legacyRows.first?.usedPercent == 99,
+                  "Account switches: unattributed Codex limits appeared before the final legacy fallback")
+        } else { check(false, "Account switches: historical Codex fixture was not discovered") }
+    } catch {
+        check(false, "Account switches fixture error: \(error.localizedDescription)")
     }
 }

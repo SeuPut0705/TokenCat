@@ -13,6 +13,16 @@ final class TokenTracker {
     private let discoveryInterval: TimeInterval
     private var lastDiscovery: Date?
     private var files: [String: (source: TokenSource, reader: TokenLogReader)] = [:]
+    private struct LogAccountKey: Hashable {
+        var id: String
+        var sessionID: String?
+    }
+    private struct PinnedLogAccount {
+        var account: LimitAccount
+        /// A newly attributed post-switch session can still carry a cached pre-switch limit.
+        var limitsNotBefore: Date?
+    }
+    private var pinnedLogAccounts: [LogAccountKey: PinnedLogAccount] = [:]
     /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out opens its reader
     /// directly (it is now the newest), instead of rerunning discovery on each file event.
     private var known = Set<String>()
@@ -98,7 +108,7 @@ final class TokenTracker {
             lastDiscovery = now
         }
         // One pool per file: a cold start parses MBs of tails, and without it every temporary lives until the sample ends.
-        accountReader.refresh()
+        accountReader.refresh(now: now)
         for file in files.values { autoreleasepool { file.reader.read(tailLimit: initialTailBytes, now: now) } }
         let prefix = home.path + "/"
         return files.flatMap { path, file -> [TokenReading] in
@@ -113,10 +123,26 @@ final class TokenTracker {
                 }
                 if reading.source == .omp, let provider = reading.limitProvider, let hash = reading.credentialPins[provider] {
                     reading.limitAccount = accountReader.pinnedAccount(provider: provider, hash: hash, path: path)
+                    reading.rateLimit?.account = reading.limitAccount
+                } else if reading.source == .claude || reading.source == .codex {
+                    let key = LogAccountKey(id: reading.id, sessionID: reading.sessionID)
+                    var pinned = pinnedLogAccounts[key]
+                    if pinned == nil, let root = accountReader.observedAccount(source: reading.source, path: path),
+                       let account = root.account,
+                       root.switchedAt.map({ (reading.lastActivity ?? .distantPast) >= $0 }) ?? true {
+                        pinned = PinnedLogAccount(account: account, limitsNotBefore: root.switchedAt)
+                        pinnedLogAccounts[key] = pinned
+                    }
+                    reading.limitAccount = pinned?.account
+                    if let limit = reading.rateLimit {
+                        reading.rateLimit?.account = pinned.flatMap {
+                            ($0.limitsNotBefore.map { limit.recordedAt >= $0 } ?? true) ? $0.account : nil
+                        }
+                    }
                 } else {
-                    reading.limitAccount = accountReader.account(source: reading.source, path: path)
+                    reading.limitAccount = nil
+                    reading.rateLimit?.account = nil
                 }
-                reading.rateLimit?.account = reading.limitAccount
                 return reading
             }
         }.sorted {

@@ -1135,6 +1135,7 @@ public static class TrackerChecks
             // Cline, Roo Code, Cline CLI, omp and Pi: fixture files (ClineOmpChecks.cs).
             ClineOmpChecks.Run(root, check);
             RunLimitAccountChecks(root, check);
+            RunAccountSwitchChecks(root, check);
             // Hermes Agent: fixture stores and agent.log (HermesLogChecks.cs).
             HermesLogChecks.Run(root, check);
             // OpenClaw: JSONL and SQLite fixtures (OpenClawLogChecks.cs).
@@ -1282,5 +1283,114 @@ public static class TrackerChecks
             check(reader.DefaultAccount(TokenSource.Codex) is null, "Limit accounts privacy: Codex identity was taken from a token or non-metadata field");
         }
         catch (Exception error) { check(false, $"Limit accounts fixture error: {error.Message}"); }
+    }
+
+    static void RunAccountSwitchChecks(string root, Action<bool, string> check)
+    {
+        try
+        {
+            var home = Path.Combine(root, "account-switches");
+            var codexHome = Path.Combine(home, "codex-home");
+            var claudeConfig = Path.Combine(home, "claude-config");
+            var codexLogs = Path.Combine(codexHome, "sessions", "2026", "10", "04");
+            var claudeLogs = Path.Combine(claudeConfig, "projects", "project");
+            foreach (var folder in new[] { codexLogs, claudeLogs }) Directory.CreateDirectory(folder);
+            void Config(string account)
+            {
+                File.WriteAllBytes(Path.Combine(codexHome, "auth.json"), Json.Serialize(new { tokens = new { account_id = account } }));
+                File.WriteAllBytes(Path.Combine(claudeConfig, ".claude.json"),
+                    Json.Serialize(new { oauthAccount = new { accountUuid = account, emailAddress = account + "@example.test" } }));
+            }
+            var start = DateTimeOffset.FromUnixTimeSeconds(1_791_100_000);
+            var now = start;
+            static string Stamp(DateTimeOffset date) => date.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", CultureInfo.InvariantCulture);
+            static void Write(IEnumerable<JsonNode> records, string path) => File.WriteAllBytes(path, Lines(records.ToArray()));
+            static List<JsonNode> CodexRecords(string session, DateTimeOffset at, double used, DateTimeOffset reset) =>
+            [
+                new JsonObject { ["type"] = "session_meta", ["payload"] = new JsonObject { ["id"] = session } },
+                N("""{"type":"turn_context","payload":{"model":"gpt-switch"}}"""),
+                Codex("task_started", Stamp(at.AddSeconds(-1)), new JsonObject { ["turn_id"] = session }.ToJsonString()),
+                Codex("token_count", Stamp(at), Fill("""
+                    {"info":{"total_token_usage":{"output_tokens":1},"last_token_usage":{"output_tokens":1}},"rate_limits":{"limit_id":"codex","primary":{"used_percent":<used>,"window_minutes":300,"resets_at":<reset>}}}
+                    """, ("<used>", used), ("<reset>", reset.ToUnixTimeSeconds()))),
+            ];
+            static List<JsonNode> ClaudeRecords(string session, DateTimeOffset at) =>
+            [
+                new JsonObject
+                {
+                    ["type"] = "assistant", ["sessionId"] = session, ["timestamp"] = Stamp(at), ["uuid"] = session,
+                    ["message"] = new JsonObject { ["id"] = session, ["role"] = "assistant", ["model"] = "claude-switch",
+                        ["usage"] = new JsonObject { ["output_tokens"] = 1 } },
+                },
+            ];
+            Config("account-a");
+            var oldCodex = Path.Combine(codexLogs, "pinned-a.jsonl");
+            var oldClaude = Path.Combine(claudeLogs, "pinned-a.jsonl");
+            Write(CodexRecords("codex-a", start.AddSeconds(-10), 93, start.AddSeconds(10_000)), oldCodex);
+            Write(ClaudeRecords("claude-a", start.AddSeconds(-10)), oldClaude);
+            string? Env(string key) => key switch { "CODEX_HOME" => codexHome, "CLAUDE_CONFIG_DIR" => claudeConfig, _ => null };
+            var tracker = new TokenTracker(home, () => now, discoveryIntervalSeconds: 0, environment: Env);
+            var initial = tracker.Sample();
+            check(initial.FirstOrDefault(row => row.SessionID == "codex-a")?.LimitAccount?.Id == "account-a"
+                && initial.FirstOrDefault(row => row.SessionID == "claude-a")?.LimitAccount?.Id == "account-a"
+                && tracker.AccountReader.ObservedAccount(TokenSource.Codex, oldCodex)?.SwitchedAt is null
+                && tracker.AccountReader.ObservedAccount(TokenSource.Claude, oldClaude)?.SwitchedAt is null,
+                "Account switches: initial Claude and Codex root observations or session attribution failed");
+            now = start.AddSeconds(60);
+            Config("account-b");
+            var switched = tracker.Sample();
+            check(switched.FirstOrDefault(row => row.SessionID == "codex-a")?.LimitAccount?.Id == "account-a"
+                && switched.FirstOrDefault(row => row.SessionID == "codex-a")?.RateLimit?.Account?.Id == "account-a"
+                && switched.FirstOrDefault(row => row.SessionID == "claude-a")?.LimitAccount?.Id == "account-a"
+                && tracker.AccountReader.ObservedAccount(TokenSource.Codex, oldCodex)?.SwitchedAt == now
+                && tracker.AccountReader.ObservedAccount(TokenSource.Claude, oldClaude)?.SwitchedAt == now,
+                "Account switches: pinned Claude and Codex sessions or limits changed account after a root login switch");
+            var switchedAt = now;
+            Write(CodexRecords("codex-unknown", start, 99, start.AddSeconds(20_000)), Path.Combine(codexLogs, "historical.jsonl"));
+            Write(ClaudeRecords("claude-unknown", start), Path.Combine(claudeLogs, "historical.jsonl"));
+            now = switchedAt.AddSeconds(2);
+            Write(CodexRecords("codex-b", now, 7, start.AddSeconds(2_000)), Path.Combine(codexLogs, "fresh-b.jsonl"));
+            Write(ClaudeRecords("claude-b", now), Path.Combine(claudeLogs, "fresh-b.jsonl"));
+            var hybrid = CodexRecords("codex-hybrid", start, 98, start.AddSeconds(30_000));
+            hybrid.Add(Codex("task_started", Stamp(now), """{"turn_id":"new-turn"}"""));
+            Write(hybrid, Path.Combine(codexLogs, "hybrid.jsonl"));
+            var current = tracker.Sample();
+            check(current.FirstOrDefault(row => row.SessionID == "codex-unknown")?.LimitAccount is null
+                && current.FirstOrDefault(row => row.SessionID == "codex-unknown")?.RateLimit?.Account is null
+                && current.FirstOrDefault(row => row.SessionID == "claude-unknown")?.LimitAccount is null
+                && current.Any(row => row.SessionID == "codex-unknown") && current.Any(row => row.SessionID == "claude-unknown"),
+                "Account switches: unpinned pre-switch Claude or Codex logs were attributed to the new login");
+            check(current.FirstOrDefault(row => row.SessionID == "codex-b")?.LimitAccount?.Id == "account-b"
+                && current.FirstOrDefault(row => row.SessionID == "codex-b")?.RateLimit?.Account?.Id == "account-b"
+                && current.FirstOrDefault(row => row.SessionID == "claude-b")?.LimitAccount?.Id == "account-b"
+                && current.FirstOrDefault(row => row.SessionID == "codex-hybrid")?.LimitAccount?.Id == "account-b"
+                && current.FirstOrDefault(row => row.SessionID == "codex-hybrid")?.RateLimit?.Account is null,
+                "Account switches: post-switch sessions or their cached pre-switch Codex limits were misattributed");
+            var repeated = tracker.Sample();
+            check(repeated.FirstOrDefault(row => row.SessionID == "codex-hybrid")?.RateLimit?.Account is null
+                && repeated.FirstOrDefault(row => row.SessionID == "codex-a")?.RateLimit?.Account?.Id == "account-a"
+                && tracker.AccountReader.ObservedAccount(TokenSource.Codex, oldCodex)?.SwitchedAt == switchedAt,
+                "Account switches: resampling promoted an unattributed cached limit or reset the observed switch time");
+            var accountB = new LimitAccount("account-b");
+            var liveB = new TokenRateLimit(7, 300, start.AddSeconds(2_000), now) { Live = true, Account = accountB };
+            var defaults = new Dictionary<TokenSource, LimitAccount> { [TokenSource.Codex] = accountB };
+            var emptyClaude = new Dictionary<string, ClaudeUsageLimits>();
+            var emptyKnown = new Dictionary<TokenSource, IReadOnlyList<LimitAccount>>();
+            var rows = SessionPresentation.UsageLimits(repeated, [liveB], emptyClaude, defaults, emptyKnown, now);
+            check(rows.FirstOrDefault(row => row.Account == accountB)?.UsedPercent == 7
+                && rows.Where(row => row.Source == TokenSource.Codex).All(row => row.Account is not null),
+                "Account switches: account B displayed account A or unattributed Codex numbers with a later reset");
+            if (repeated.FirstOrDefault(row => row.SessionID == "codex-unknown") is { } unknown)
+            {
+                unknown = unknown with { Active = false, ActivityState = TokenActivityState.Complete };
+                var defaultRows = SessionPresentation.UsageLimits([unknown], [liveB], emptyClaude, defaults, emptyKnown, now);
+                var legacyRows = SessionPresentation.UsageLimits([unknown], [], emptyClaude, new Dictionary<TokenSource, LimitAccount>(), emptyKnown, now);
+                check(defaultRows.FirstOrDefault()?.Account == accountB && defaultRows.FirstOrDefault()?.UsedPercent == 7
+                    && legacyRows.FirstOrDefault()?.Account is null && legacyRows.FirstOrDefault()?.UsedPercent == 99,
+                    "Account switches: unattributed Codex limits appeared before the final legacy fallback");
+            }
+            else check(false, "Account switches: historical Codex fixture was not discovered");
+        }
+        catch (Exception error) { check(false, $"Account switches fixture error: {error.Message}"); }
     }
 }

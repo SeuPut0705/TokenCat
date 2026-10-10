@@ -20,6 +20,9 @@ public sealed class TokenTracker
     readonly double discoveryInterval;
     DateTimeOffset? lastDiscovery;
     Dictionary<string, (TokenSource Source, ITokenLogReader Reader)> files = new(StringComparer.Ordinal);
+    readonly record struct LogAccountKey(string Id, string? SessionID);
+    sealed record PinnedLogAccount(LimitAccount Account, DateTimeOffset? LimitsNotBefore);
+    readonly Dictionary<LogAccountKey, PinnedLogAccount> pinnedLogAccounts = [];
     /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out opens its reader
     /// directly (it is now the newest), instead of rerunning discovery on each file event.
     HashSet<string> known = new(StringComparer.Ordinal);
@@ -98,7 +101,7 @@ public sealed class TokenTracker
             Discover(now);
             lastDiscovery = now;
         }
-        AccountReader.Refresh();
+        AccountReader.Refresh(now);
         // One reader that throws (a corrupt or hostile log) keeps its previous state and rows; the others still report.
         foreach (var file in files.Values)
             try { file.Reader.Read(initialTailBytes, now); }
@@ -116,8 +119,28 @@ public sealed class TokenTracker
             foreach (var original in rows)
             {
                 var row = client is null ? original : original with { ClientName = original.ClientName ?? client, RateLimit = null };
-                var account = AccountReader.Account(path, row.Source, row.Model, row.CredentialPins);
-                readings.Add(row with { LimitAccount = account, RateLimit = row.RateLimit is { } limit ? limit with { Account = account } : null });
+                LimitAccount? account = null, limitAccount = null;
+                if (row.Source == TokenSource.Omp)
+                {
+                    account = AccountReader.Account(path, row.Source, row.Model, row.CredentialPins);
+                    limitAccount = account;
+                }
+                else if (row.Source is TokenSource.Claude or TokenSource.Codex)
+                {
+                    var key = new LogAccountKey(row.Id, row.SessionID);
+                    if (!pinnedLogAccounts.TryGetValue(key, out var pinned)
+                        && AccountReader.ObservedAccount(row.Source, path) is { Account: { } observedAccount } root
+                        && (root.SwitchedAt is not { } switchedAt || (row.LastActivity ?? DateTimeOffset.MinValue) >= switchedAt))
+                    {
+                        pinned = new PinnedLogAccount(observedAccount, root.SwitchedAt);
+                        pinnedLogAccounts[key] = pinned;
+                    }
+                    account = pinned?.Account;
+                    if (row.RateLimit is { } limit && pinned is not null
+                        && (pinned.LimitsNotBefore is not { } cutoff || limit.RecordedAt >= cutoff))
+                        limitAccount = pinned.Account;
+                }
+                readings.Add(row with { LimitAccount = account, RateLimit = row.RateLimit is { } rateLimit ? rateLimit with { Account = limitAccount } : null });
             }
         }
         readings.Sort((a, b) =>
