@@ -26,7 +26,7 @@ enum SnapshotFixtures {
         var detail: String?
         var update = UpdateState()
         /// Claude usage-limit windows as the status line bridge would have delivered them.
-        var claudeLimits = ClaudeUsageLimits()
+        var claudeLimits: ClaudeLimitsByAccount = [:]
     }
 
     /// Thursday 15:00:03 local time, so 오늘/어제/이번 주/이전 all have members.
@@ -277,7 +277,7 @@ enum SnapshotFixtures {
         generated(&docsMeasured, interval: 18, ago: -12)
         // omp recorded the Claude windows a minute ago (its own usage check); the quiet row keeps its project as the title.
         let input = Fixture(name: "input-needed", tokens: [question, docsMeasured, plan, idle("idle01", project: "notes-app", ago: -1_800)],
-                            claudeLimits: claudeLimits(fiveHour: (42, 2 * 3_600 + 13 * 60), weekly: (31, 3 * 86_400 + 4 * 3_600), recorded: -60, by: "omp"))
+                            claudeLimits: ["legacy": claudeLimits(fiveHour: (42, 2 * 3_600 + 13 * 60), weekly: (31, 3 * 86_400 + 4 * 3_600), recorded: -60, by: "omp")])
 
         // 2. API retries: countdown and network-down.
         var retrying = reading("retry01", .claude, project: "api-server", model: "claude-opus-5-5", state: .working, last: -3,
@@ -429,14 +429,24 @@ enum SnapshotFixtures {
         claudeTool.toolName = "Bash"
         measured(&claudeTool, tokens: 380, milliseconds: 5_100, ago: -40)
         let claudeOnly = Fixture(name: "claude-only", tokens: [claudeRun, claudeTool, idle("cl03", project: "notes-app", ago: -2_400)],
-                                 claudeLimits: claudeLimits(fiveHour: (87, 3_600 + 20 * 60), weekly: (46, 4 * 86_400 + 2 * 3_600), recorded: -40))
+                                 claudeLimits: ["legacy": claudeLimits(fiveHour: (87, 3_600 + 20 * 60), weekly: (46, 4 * 86_400 + 2 * 3_600), recorded: -40)])
 
         // 18–20. The footer's update line: a new version, the download, and a failure beside a telemetry problem (the longest pair is under restart-needed).
         let working = [waitingSpeed, idle("u1", project: "notes-app", ago: -400)]
         let available = Fixture(name: "update-available", tokens: working, lag: 12, update: update())
         let downloading = Fixture(name: "update-downloading", tokens: working, update: update(.downloading(0.45)))
         let failed = Fixture(name: "update-failed", tokens: working, telemetry: .busyOtherApp, update: update(.failed(.network)))
+        let firstAccount = LimitAccount(id: "workspace-1234", email: "alex@example.com")
+        let secondAccount = LimitAccount(id: "workspace-1234", email: "sam@example.com")
+        var firstMember = docsMeasured
+        firstMember.limitAccount = firstAccount
+        firstMember.rateLimit?.usedPercent = 82
+        var secondMember = docsMeasured
+        secondMember.id = "second-member"
+        secondMember.limitAccount = secondAccount
+        secondMember.rateLimit?.usedPercent = 34
+        let multipleAccounts = Fixture(name: "multiple-accounts", tokens: [firstMember, secondMember])
         return [input, retry, tools, context, grouped, dates, empty, noFolders, loading, restart, port, busy, contrast,
-                logWait, rest, detail, selected, claudeOnly, available, downloading, failed]
+                logWait, rest, detail, selected, claudeOnly, available, downloading, failed, multipleAccounts]
     }
 }

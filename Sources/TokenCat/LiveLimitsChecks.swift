@@ -68,36 +68,84 @@ func runLiveLimitChecks() -> [String] {
         soon.expiresAt = at(30)
         unknown.expiresAt = nil
         other.token = "new-token"
-        check(LiveLimits.claudeUsable(credential, rejected: nil, now: now) && !LiveLimits.claudeUsable(soon, rejected: nil, now: now)
-              && !LiveLimits.claudeUsable(unknown, rejected: nil, now: now),
+        check(LiveLimits.claudeUsable(credential, rejected: [], now: now) && !LiveLimits.claudeUsable(soon, rejected: [], now: now)
+              && !LiveLimits.claudeUsable(unknown, rejected: [], now: now),
               "an expired (or nearly expired) Claude token would be sent")
         check(LiveLimits.claudeAnswer(status: 401, body: Data(), at: now) == .rejected && LiveLimits.claudeAnswer(status: 403, body: Data(), at: now) == .rejected
-              && !LiveLimits.claudeUsable(credential, rejected: credential.token.hashValue, now: now)
-              && LiveLimits.claudeUsable(other, rejected: credential.token.hashValue, now: now),
+              && !LiveLimits.claudeUsable(credential, rejected: [credential.token.hashValue], now: now)
+              && LiveLimits.claudeUsable(other, rejected: [credential.token.hashValue], now: now),
               "a 401 token is sent again, or a changed token stays blocked")
     }
-    // omp's and Pi's saved Anthropic sign-in: read from agent.db, offered after Claude Code's, only for Claude Code's account.
+    // The live token path binds credentials to exact identities; missing email does not match either workspace member.
     let agentDB = folder.appendingPathComponent("agent.db")
     var handle: OpaquePointer?
     if sqlite3_open(agentDB.path, &handle) == SQLITE_OK {
         sqlite3_exec(handle, """
             CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT);
             INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause) VALUES
-              ('anthropic', 'oauth', '{"access":"omp-token","refresh":"r","expires":1790000600000,"accountId":"acct-a","email":"PRIVATE"}', NULL),
-              ('anthropic', 'oauth', '{"access":"disabled-token","expires":1790000600000,"accountId":"acct-a"}', 'revoked'),
+              ('anthropic', 'oauth', '{"access":"omp-token","refresh":"r","expires":1790000600000,"accountId":"acct-a","email":"person@example.com"}', NULL),
+              ('anthropic', 'oauth', '{"access":"disabled-token","expires":1790000600000,"accountId":"acct-a","email":"person@example.com"}', 'revoked'),
+              ('anthropic', 'oauth', '{"access":"member-one","expires":1790000600000,"accountId":"workspace","email":"one@example.com"}', NULL),
+              ('anthropic', 'oauth', '{"access":"member-two","expires":1790000600000,"accountId":"workspace","email":"two@example.com"}', NULL),
+              ('anthropic', 'oauth', '{"access":"member-nil","expires":1790000600000,"accountId":"workspace"}', NULL),
+              ('anthropic', 'oauth', '{"access":"legacy-token","expires":1790000600000}', NULL),
               ('openai-codex', 'oauth', '{"access":"codex-token","expires":1790000600000}', NULL);
             """, nil, nil, nil)
     }
     sqlite3_close(handle)
-    let agents = LiveLimits.agentCredentials([agentDB, folder.appendingPathComponent("missing/agent.db")])
+    let accounts = LimitAccountReader(home: folder, environment: ["PI_CODING_AGENT_DIR": folder.path])
+    accounts.refresh()
+    let agents = LiveLimits.agentCredentials([agentDB, folder.appendingPathComponent("missing/agent.db")], accounts: accounts)
     let expired = LiveLimits.ClaudeCredential(token: "claude-code-token", expiresAt: at(-10))
-    let picked = LiveLimits.claudeCandidates(claudeCode: expired, agents: agents, claudeAccount: "acct-a")
-        .first { LiveLimits.claudeUsable($0, rejected: nil, now: now) }
-    check(agents.map(\.credential.token) == ["omp-token"] && agents.first?.account == "acct-a" && agents.first?.credential.expiresAt == at(600)
+    let codeAccount = LimitAccount(id: "acct-a", email: "person@example.com")
+    let picked = LiveLimits.claudeCandidates(claudeCode: expired, claudeAccount: codeAccount, agents: agents, target: codeAccount)
+        .first { LiveLimits.claudeUsable($0, rejected: [], now: now) }
+    check(agents.first?.account == codeAccount && agents.first?.credential.expiresAt == at(600)
+          && !agents.contains { $0.credential.token == "disabled-token" || $0.credential.token == "codex-token" }
           && picked?.token == "omp-token"
-          && LiveLimits.claudeCandidates(claudeCode: expired, agents: agents, claudeAccount: "acct-b").map(\.token) == ["claude-code-token"]
-          && LiveLimits.claudeCandidates(claudeCode: nil, agents: agents, claudeAccount: nil).map(\.token) == ["omp-token"],
-          "omp's or Pi's Anthropic sign-in is not used when Claude Code's has expired, or is used for another account")
+          && LiveLimits.claudeCandidates(claudeCode: expired, claudeAccount: codeAccount, agents: agents,
+                                       target: LimitAccount(id: "acct-b")).isEmpty,
+          "Claude candidates do not use the matching agent token after expiry or include another account's token")
+    let memberOne = LimitAccount(id: " WORKSPACE ", email: " ONE@EXAMPLE.COM ")
+    let memberTwo = LimitAccount(id: "workspace", email: "two@example.com")
+    let memberNil = LimitAccount(id: "workspace")
+    check(LiveLimits.claudeCandidates(claudeCode: expired, claudeAccount: codeAccount, agents: agents, target: memberOne).map(\.token) == ["member-one"]
+          && LiveLimits.claudeCandidates(claudeCode: expired, claudeAccount: codeAccount, agents: agents, target: memberTwo).map(\.token) == ["member-two"]
+          && LiveLimits.claudeCandidates(claudeCode: expired, claudeAccount: codeAccount, agents: agents, target: memberNil).map(\.token) == ["member-nil"]
+          && LiveLimits.claudeCandidates(claudeCode: expired, claudeAccount: codeAccount, agents: agents, target: nil).map(\.token) == ["legacy-token"],
+          "Claude candidates mix shared-workspace members, nil email, or legacy tokens")
+    let customConfig = folder.appendingPathComponent("custom-claude", isDirectory: true)
+    try? FileManager.default.createDirectory(at: customConfig, withIntermediateDirectories: true)
+    try? Data(#"{"claudeAiOauth":{"accessToken":"custom-token","expiresAt":1790000600000}}"#.utf8)
+        .write(to: customConfig.appendingPathComponent(".credentials.json"))
+    let custom = LiveLimits.readClaudeCredential(keychain: false, configDirectory: customConfig)
+    check(custom.credential?.token == "custom-token" && !custom.refused,
+          "the live credential path does not read a config-specific Claude credential file")
+    try? Data(#"{"oauthAccount":{"accountUuid":"workspace","emailAddress":"one@example.com"}}"#.utf8)
+        .write(to: customConfig.appendingPathComponent(".claude.json"))
+    try? Data(#"{"oauthAccount":{"accountUuid":"acct-a","emailAddress":"person@example.com"}}"#.utf8)
+        .write(to: folder.appendingPathComponent(".claude.json"))
+    let configuredAccounts = LimitAccountReader(home: folder, environment: [
+        "CLAUDE_CONFIG_DIR": customConfig.path, "PI_CODING_AGENT_DIR": folder.path])
+    configuredAccounts.refresh()
+    check(configuredAccounts.defaultAccount(.claude) == memberOne
+          && configuredAccounts.claudeAccount(configDirectory: folder.appendingPathComponent(".claude")) == codeAccount
+          && configuredAccounts.claudeAccount(configDirectory: customConfig) == memberOne
+          && custom.credential.map {
+              LiveLimits.claudeCandidates(claudeCode: expired, claudeAccount: codeAccount,
+                                         agents: [($0, memberOne)], target: memberOne).map(\.token) == ["custom-token"]
+          } == true,
+          "a configured Claude account is paired with the default home credential instead of its own token")
+    let validCode = LiveLimits.ClaudeCredential(token: "code-current", expiresAt: at(600))
+    let matching = LiveLimits.claudeCandidates(claudeCode: validCode, claudeAccount: codeAccount, agents: agents, target: codeAccount)
+    check(matching.filter { LiveLimits.claudeUsable($0, rejected: [validCode.token.hashValue], now: now) }.map(\.token) == ["omp-token"]
+          && matching.filter { LiveLimits.claudeUsable($0, rejected: [validCode.token.hashValue, "omp-token".hashValue], now: now) }.isEmpty,
+          "Claude candidate selection forgets individual token rejections within the same account")
+    let otherCodex = LimitSlot(provider: .codex, account: LimitAccount(id: "fixture-not-the-cli-account", email: "fixture@example.com"))
+    let refusedCodex = LiveLimits.read(otherCodex, rejected: [], keychain: false)
+    check(refusedCodex.slot == otherCodex && refusedCodex.codex == nil
+          && refusedCodex.note == "live Codex limits are available only for the default CLI account",
+          "Codex live polling is not restricted to the default CLI account")
     let current = Data(#"{"limits":[{"kind":"session","group":"session","percent":42,"resets_at":"2026-09-21T14:13:20.000000+00:00","scope":null,"severity":"normal","is_active":true},{"kind":"weekly_scoped","group":"weekly","percent":90,"resets_at":"2026-09-24T00:00:00Z","scope":{"model":{"display_name":"Opus"}}},{"kind":"weekly_all","group":"weekly","percent":31,"resets_at":null,"scope":null}],"extra_usage":{"is_enabled":false}}"#.utf8)
     let legacy = Data(#"{"five_hour":{"utilization":17.0,"resets_at":"2026-09-21T14:13:20Z"},"seven_day":{"utilization":5,"resets_at":"2026-09-24T00:00:00.5+00:00"},"seven_day_opus":null}"#.utf8)
     let reset = Date(timeIntervalSince1970: 1_790_000_000)
@@ -121,27 +169,52 @@ func runLiveLimitChecks() -> [String] {
     check(due(nil) && !due(300) && due(601) && !due(59, live: true) && due(61, live: true) && due(61, open: true)
           && due(16, open: true, opened: true) && !due(14, open: true, opened: true) && !due(nil, opened: true, retry: 30) && due(-5),
           "live limit cadence")
-    // The poller: one read per provider in flight, a failure backs off, a 401'd token and a refused keychain carry over.
+    // Independent account slots: in-flight exclusion, backoff, token rejections and a globally refused keychain.
     let lock = NSLock()
-    var calls: [String] = []
-    // Codex always fails; Claude's first read is refused (401, keychain denied), later ones return limits.
-    let poller = LiveLimitPoller { source, rejected, keychain in
+    var calls: [LimitSlot: [(Set<Int>, Bool)]] = [:]
+    let codeSlot = LimitSlot(provider: .codex, account: codeAccount)
+    let oneSlot = LimitSlot(provider: .claude, account: memberOne)
+    let twoSlot = LimitSlot(provider: .claude, account: memberTwo)
+    let nilSlot = LimitSlot(provider: .claude, account: memberNil)
+    let pollSlots: Set<LimitSlot> = [codeSlot, oneSlot, twoSlot, nilSlot]
+    let poller = LiveLimitPoller { slot, rejected, keychain in
         var outcome = LiveLimits.Outcome()
-        lock.withLock { calls.append("\(source.rawValue) \(rejected.map(String.init) ?? "-") \(keychain)") }
-        if source == .codex { outcome.failed = true } else if keychain { outcome.rejected = 7; outcome.keychainRefused = true } else { outcome.claude = ClaudeUsageLimits() }
+        let count = lock.withLock {
+            calls[slot, default: []].append((rejected, keychain))
+            return calls[slot]?.count ?? 0
+        }
+        if slot == codeSlot {
+            outcome.failed = true
+        } else if slot == oneSlot && count == 1 {
+            outcome.rejected = [7, 8]
+            outcome.keychainRefused = true
+        } else {
+            outcome.claude = ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(
+                usedPercent: slot == oneSlot ? 11 : slot == twoSlot ? 22 : 33, resetsAt: at(300), receivedAt: now, live: true))
+        }
         return outcome
     }
-    var delivered = 0
+    var delivered: [LimitSlot: Double] = [:]
+    var deliveryCount = 0
     func tick(_ offset: TimeInterval, live: Bool = false, open: Bool = false, wait: Bool = true) {
-        poller.tick(now: at(offset), open: open, live: { _ in live }) { _ in delivered += 1 }
+        poller.tick(now: at(offset), open: open, slots: pollSlots, live: { _ in live }) { outcome in
+            if let slot = outcome.slot { delivered[slot] = outcome.claude?.fiveHour?.usedPercent }
+            deliveryCount += 1
+        }
         if wait { RunLoop.main.run(until: Date().addingTimeInterval(0.3)) }
     }
     tick(0, wait: false)
-    tick(16, open: true)          // due on opening, but both reads are still in flight
-    tick(61, live: true)          // Codex's first backoff (1 min) is over; Claude sends nothing refused
-    tick(122, live: true)         // Codex waits out its second backoff (2 min)
-    check(lock.withLock { calls.sorted() } == ["claude - true", "claude 7 false", "claude 7 false", "codex - true", "codex 7 false"] && delivered == 2,
-          "live limit poller in-flight, backoff or 401 carry-over (\(lock.withLock { calls }), delivered \(delivered))")
+    tick(16, open: true)          // Opening cannot duplicate an in-flight read.
+    tick(61, live: true)
+    tick(122, live: true)         // Codex's second backoff has not elapsed.
+    let snapshot = lock.withLock { calls }
+    check(snapshot[codeSlot]?.count == 2 && snapshot[oneSlot]?.count == 3
+          && snapshot[twoSlot]?.count == 3 && snapshot[nilSlot]?.count == 3 && deliveryCount == 8
+          && snapshot[codeSlot]?.allSatisfy { $0.0.isEmpty } == true
+          && snapshot[twoSlot]?.allSatisfy { $0.0.isEmpty } == true && snapshot[nilSlot]?.allSatisfy { $0.0.isEmpty } == true
+          && snapshot[oneSlot]?.dropFirst().allSatisfy { $0.0 == [7, 8] && !$0.1 } == true
+          && delivered[oneSlot] == 11 && delivered[twoSlot] == 22 && delivered[nilSlot] == 33,
+          "live poller mixes account slots, per-token rejection sets, attributed numbers, or per-slot backoff")
 
     // Codex merge: a live read overrides older records of its window and keeps "실시간" against a later equal record.
     let reset5d = at(5 * 86_400 + 2 * 3_600 + 30)

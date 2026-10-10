@@ -2,6 +2,13 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.19.0
+
+**macOS and Windows**
+
+- Usage limits now stay separate for every subscription account in use. Running sessions pick the accounts shown; otherwise the card uses the most recently active account, then the client's default. When multiple accounts are known, e-mail labels distinguish them. · 사용 중인 구독 계정마다 한도를 따로 보여 줍니다. 진행 중인 세션의 계정을 우선하고, 없으면 가장 최근 활동 계정, 클라이언트 기본 계정 순으로 고릅니다. 알려진 계정이 여럿이면 이메일로 구별합니다.
+- Claude live checks use each account's own Claude Code, omp or Pi sign-in, and omp/Pi records cover all accounts. Codex live checks stay with the Codex CLI account; other accounts use their recorded limits. Account IDs and e-mails stay in memory, and saved Claude limits use one-way hashed keys. · Claude 실시간 확인은 계정마다 그 계정의 Claude Code·omp·Pi 로그인을 쓰고, omp·Pi 기록도 모든 계정을 다룹니다. Codex 실시간 확인은 Codex CLI 계정에만 적용하며 다른 계정은 기록된 한도를 씁니다. 계정 ID·이메일은 메모리에만 두고 저장하는 Claude 한도는 단방향 해시 키를 씁니다.
+
 ## 0.18.2
 
 **macOS and Windows**

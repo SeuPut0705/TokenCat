@@ -894,7 +894,8 @@ sealed class SettingsView : Grid
             rows.Add(Labeled(Label(source.Title), trailing));
         }
         // Whether the bridge delivers: the newer of the two windows' receipts (no reset time: the desktop app).
-        var newest = new[] { state.ClaudeLimits.FiveHour, state.ClaudeLimits.SevenDay }.OfType<ClaudeLimitWindow>().MaxBy(window => window.ReceivedAt);
+        var shownLimits = state.ShownClaudeLimits;
+        var newest = new[] { shownLimits.FiveHour, shownLimits.SevenDay }.OfType<ClaudeLimitWindow>().MaxBy(window => window.ReceivedAt);
         var limits = ClaudeLimitsStatus(dashboard.ConnectNotes, dashboard.ClaudeBridged, newest?.ReceivedAt, newest is { ResetsAt: null }, now, newest is { Live: true },
             newest?.RecordedBy);
         rows.Add(Labeled(Label(Loc("Claude 한도", "Claude limits")), StatusLine(limits.Row, limits.Text, limits.Detail)));

@@ -97,12 +97,17 @@ public static class LiveLimitChecks
         var status = HttpStatusCode.OK;
         var stub = new Stub(() => new HttpResponseMessage(status)
             { Content = new StringContent("""{"limits":[{"kind":"session","percent":55,"resets_at":"2026-10-06T18:00:00Z"}]}""") });
-        var reader = new LiveLimits(folder, "0.0.0", stub);
+        var reader = new LiveLimits(folder, "0.0.0", stub, env: _ => null);
         var credentials = Path.Combine(folder, ".claude", ".credentials.json");
         Directory.CreateDirectory(Path.GetDirectoryName(credentials)!);
         void Store(string token, double expiresIn) => File.WriteAllText(credentials,
             $$$"""{"claudeAiOauth":{"accessToken":"{{{token}}}","refreshToken":"r","expiresAt":{{{DateTimeOffset.UtcNow.AddSeconds(expiresIn).ToUnixTimeMilliseconds()}}}}}""");
-        LiveLimitResult Claude() => reader.ReadClaude(CancellationToken.None).GetAwaiter().GetResult();
+        var identities = new LimitAccountReader(folder, _ => null);
+        LiveLimitResult Claude()
+        {
+            identities.Refresh();
+            return reader.Read(new LimitSlot(TokenSource.Claude, identities.ClaudeAccount(Path.Combine(folder, ".claude"))), CancellationToken.None).GetAwaiter().GetResult();
+        }
         Store("t1", 30);
         var expiring = Claude();
         Store("t1", 3_600);
@@ -142,35 +147,121 @@ public static class LiveLimitChecks
             database?.Query("CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT)", [], _ => { });
             foreach (var (data, cause) in new (string, string?)[]
             {
-                ($$"""{"access":"omp-token","refresh":"r","expires":{{expiry}},"accountId":"acct-a","email":"PRIVATE"}""", null),
-                ($$"""{"access":"disabled-token","expires":{{expiry}},"accountId":"acct-a"}""", "revoked"),
+                ($$"""{"access":"omp-token","refresh":"r","expires":{{expiry}},"accountId":"acct-a","email":"person@example.com"}""", null),
+                ($$"""{"access":"disabled-token","expires":{{expiry}},"accountId":"acct-a","email":"person@example.com"}""", "revoked"),
+                ($$"""{"access":"member-one","expires":{{expiry}},"accountId":"workspace","email":"one@example.com"}""", null),
+                ($$"""{"access":"member-two","expires":{{expiry}},"accountId":"workspace","email":"two@example.com"}""", null),
+                ($$"""{"access":"member-nil","expires":{{expiry}},"accountId":"workspace"}""", null),
+                ($$"""{"access":"legacy-token","expires":{{expiry}}}""", null),
             })
                 database?.Query("INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause) VALUES ('anthropic', 'oauth', ?, ?)", [data, cause], _ => { });
         }
-        var agents = LiveLimits.AgentCredentials([agentDb, Path.Combine(folder, "missing", "agent.db")]);
-        File.WriteAllText(Path.Combine(folder, ".claude.json"), """{"oauthAccount":{"accountUuid":"acct-a"}}""");
+        identities.Refresh();
+        var agents = LiveLimits.AgentCredentials([agentDb, Path.Combine(folder, "missing", "agent.db")], identities);
+        var codeAccount = new LimitAccount("acct-a", "person@example.com");
+        File.WriteAllText(Path.Combine(folder, ".claude.json"), """{"oauthAccount":{"accountUuid":"acct-a","emailAddress":"person@example.com"}}""");
         Store("cc-expired", -10);
         status = HttpStatusCode.OK;
         var fallback = Claude();
-        check(agents.Select(agent => agent.Access).SequenceEqual(["omp-token"]) && agents[0].Account == "acct-a"
+        check(agents[0].Account == codeAccount && !agents.Any(agent => agent.Access == "disabled-token")
               && fallback.Claude is not null && stub.Requests[^1].Headers.Authorization?.ToString() == "Bearer omp-token"
-              && LiveLimits.ClaudeCandidates(("cc", 1), agents, "acct-b").Select(candidate => candidate.Access).SequenceEqual(["cc"])
-              && LiveLimits.ClaudeCandidates(null, agents, null).Select(candidate => candidate.Access).SequenceEqual(["omp-token"]),
-              "omp's or Pi's Anthropic sign-in is not used when Claude Code's has expired, or is used for another account");
+              && LiveLimits.ClaudeCandidates(("cc", 1), codeAccount, agents, new LimitAccount("acct-b")).Count == 0,
+              "Claude candidates do not use the matching agent token after expiry or include another account's token");
+        var one = new LimitAccount(" WORKSPACE ", " ONE@EXAMPLE.COM ");
+        var two = new LimitAccount("workspace", "two@example.com");
+        var unspecified = new LimitAccount("workspace");
+        check(LiveLimits.ClaudeCandidates(("cc", 1), codeAccount, agents, one).Select(value => value.Access).SequenceEqual(["member-one"])
+              && LiveLimits.ClaudeCandidates(("cc", 1), codeAccount, agents, two).Select(value => value.Access).SequenceEqual(["member-two"])
+              && LiveLimits.ClaudeCandidates(("cc", 1), codeAccount, agents, unspecified).Select(value => value.Access).SequenceEqual(["member-nil"])
+              && LiveLimits.ClaudeCandidates(("cc", 1), codeAccount, agents, null).Select(value => value.Access).SequenceEqual(["legacy-token"]),
+              "Claude candidates mix shared-workspace members, nil email, or legacy tokens");
+        var customConfig = Path.Combine(folder, "custom-claude");
+        Directory.CreateDirectory(customConfig);
+        File.WriteAllBytes(Path.Combine(customConfig, ".credentials.json"),
+            Json.Serialize(new { claudeAiOauth = new { accessToken = "custom-token", expiresAt = expiry } }));
+        File.WriteAllText(Path.Combine(customConfig, ".claude.json"), """{"oauthAccount":{"accountUuid":"workspace","emailAddress":"one@example.com"}}""");
+        var custom = LiveLimits.ClaudeCodeCredential(customConfig, CancellationToken.None).GetAwaiter().GetResult();
+        check(custom?.Access == "custom-token", "the live credential path does not read a config-specific Claude credential file");
+        string? Env(string key) => key == "CLAUDE_CONFIG_DIR" ? customConfig : null;
+        var configured = new LimitAccountReader(folder, Env);
+        configured.Refresh();
+        var customStub = new Stub(() => new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("""{"five_hour":{"utilization":11}}""") });
+        var customReader = new LiveLimits(folder, "0.0.0", customStub, configured, Env);
+        var customRead = customReader.Read(new(TokenSource.Claude, one), CancellationToken.None).GetAwaiter().GetResult();
+        check(configured.DefaultAccount(TokenSource.Claude) == one
+              && configured.ClaudeAccount(Path.Combine(folder, ".claude")) == codeAccount
+              && customRead.Claude?.FiveHour?.UsedPercent == 11
+              && customStub.Requests[0].Headers.Authorization?.Parameter == "custom-token",
+              "a configured Claude account is paired with the default home credential instead of its own token");
+        Store("code-current", 3_600);
+        var rejecting = new Stub(() => new HttpResponseMessage(HttpStatusCode.Unauthorized));
+        var rejectionReader = new LiveLimits(folder, "0.0.0", rejecting, env: _ => null);
+        var rejectionSlot = new LimitSlot(TokenSource.Claude, codeAccount);
+        var firstReject = rejectionReader.Read(rejectionSlot, CancellationToken.None).GetAwaiter().GetResult();
+        rejectionReader.Read(rejectionSlot, CancellationToken.None).GetAwaiter().GetResult();
+        rejectionReader.Read(new(TokenSource.Claude, two), CancellationToken.None).GetAwaiter().GetResult();
+        check(firstReject.Rejected.SetEquals([LiveLimits.TokenHash("code-current"), LiveLimits.TokenHash("omp-token")])
+              && rejecting.Requests.Select(request => request.Headers.Authorization?.Parameter).SequenceEqual(["code-current", "omp-token", "member-two"]),
+              "Claude candidate selection forgets individual token rejections within the same account");
+        var otherCodex = new LimitSlot(TokenSource.Codex, new LimitAccount("fixture-not-the-cli-account", "fixture@example.com"));
+        var refusedCodex = reader.Read(otherCodex, CancellationToken.None).GetAwaiter().GetResult();
+        check(refusedCodex.Slot == otherCodex && refusedCodex.Codex is null && !refusedCodex.Failed,
+              "Codex live polling is not restricted to the default CLI account");
+        Poller(one, two, unspecified, check);
+    }
+
+    static void Poller(LimitAccount one, LimitAccount two, LimitAccount unspecified, Action<bool, string> check)
+    {
+        var now = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
+        var code = new LimitSlot(TokenSource.Codex, one);
+        var first = new LimitSlot(TokenSource.Claude, one);
+        var second = new LimitSlot(TokenSource.Claude, two);
+        var missing = new LimitSlot(TokenSource.Claude, unspecified);
+        HashSet<LimitSlot> slots = [code, first, second, missing];
+        var calls = new Dictionary<LimitSlot, int>();
+        var deliveries = new Dictionary<LimitSlot, double>();
+        var deliveryCount = 0;
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var gate = new object();
+        var poller = new LiveLimitPoller(async (slot, token) =>
+        {
+            int count;
+            lock (gate) calls[slot] = count = calls.GetValueOrDefault(slot) + 1;
+            await pending.Task.WaitAsync(token);
+            if (slot == code) return new(Failed: true);
+            if (slot == first && count == 1) return new();
+            return new(Claude: new ClaudeUsageLimits(new ClaudeLimitWindow(slot == first ? 11 : slot == second ? 22 : 33, now.AddSeconds(300), now)));
+        });
+        void Deliver(LiveLimitResult value)
+        {
+            lock (gate)
+            {
+                deliveries[value.Slot!] = value.Claude!.FiveHour!.UsedPercent;
+                deliveryCount++;
+            }
+        }
+        var initial = poller.Tick(now, false, slots, _ => false, Deliver);
+        poller.Tick(now.AddSeconds(16), true, slots, _ => false, Deliver).GetAwaiter().GetResult();
+        pending.SetResult();
+        initial.GetAwaiter().GetResult();
+        poller.Tick(now.AddSeconds(61), false, slots, _ => true, Deliver).GetAwaiter().GetResult();
+        poller.Tick(now.AddSeconds(122), false, slots, _ => true, Deliver).GetAwaiter().GetResult();
+        check(calls[code] == 2 && calls[first] == 3 && calls[second] == 3 && calls[missing] == 3
+              && deliveryCount == 8 && deliveries[first] == 11 && deliveries[second] == 22 && deliveries[missing] == 33,
+              "live poller mixes account slots, per-token rejection sets, attributed numbers, or per-slot backoff");
     }
 
     static void Rows(Action<bool, string> check)
     {
-        // Cadence: 60 s while active, 10 min idle, a dashboard that opens after 15 s, failures doubling to 30 min.
-        check(LiveLimits.Due(null, 0, false, false) && !LiveLimits.Due(59, 0, true, false) && LiveLimits.Due(60, 0, true, false)
-              && !LiveLimits.Due(599, 0, false, false) && LiveLimits.Due(600, 0, false, false)
-              && !LiveLimits.Due(14, 0, false, true) && LiveLimits.Due(15, 0, false, true) && !LiveLimits.Due(15, 1, false, true)
-              && !LiveLimits.Due(119, 1, true, false) && LiveLimits.Due(120, 1, true, false)
-              && !LiveLimits.Due(1_799, 9, true, false) && LiveLimits.Due(1_800, 30, false, false),
-              "live limit polls don't follow 60 s active / 10 min idle / 15 s on open / doubling backoff");
-
         var now = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
         DateTimeOffset at(double seconds) => now.AddSeconds(seconds);
+        bool Due(double? age, bool live = false, bool open = false, bool opened = false, double? retry = null) =>
+            LiveLimits.Due(age is { } seconds ? at(-seconds) : null, retry is { } delay ? at(delay) : null, now, live, open, opened);
+        check(Due(null) && !Due(300) && Due(601) && !Due(59, live: true) && Due(61, live: true) && Due(61, open: true)
+              && Due(16, open: true, opened: true) && !Due(14, open: true, opened: true)
+              && !Due(null, opened: true, retry: 30) && Due(-5),
+              "live limit cadence");
         var reset = at(2 * 3_600 + 13 * 60 + 30);
         // Codex: the poll overrides older log records of its window (even higher ones); a later record of the same value keeps
         // "실시간", a higher one wins with its age.

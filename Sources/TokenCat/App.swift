@@ -247,13 +247,21 @@ final class DashboardModel: ObservableObject {
     @Published private(set) var telemetryLastReceived: [TokenSource: Date] = [:]
     /// Newest batch per client seen by this process, decoded or not ("기록 수신 중 · 속도 형식 없음").
     @Published private(set) var telemetryBatches: [TokenSource: Date] = [:]
-    /// Claude usage-limit windows from the status line bridge, kept across launches (numbers and times only). Fixtures pin it.
-    @Published var claudeLimits = ClaudeUsageLimits()
+    /// Numeric windows keyed by a one-way account hash; display identities remain memory-only.
+    @Published var claudeLimits: ClaudeLimitsByAccount = [:] { didSet { if claudeLimits != oldValue { rebuildPresentation() } } }
+    @Published var defaultLimitAccounts: [TokenSource: LimitAccount] = [:]
+    @Published var knownLimitAccounts: [TokenSource: [LimitAccount]] = [:]
+    @Published private(set) var usageLimits: [UsageLimitSummary] = []
+    var shownClaudeLimits: ClaudeUsageLimits {
+        guard let first = usageLimits.first(where: { $0.source == .claude }) else { return ClaudeUsageLimits() }
+        return claudeLimits[first.account?.storageKey ?? ClaudeLimitsByAccount.legacyKey] ?? ClaudeUsageLimits()
+    }
     /// Codex windows of the newest live read (실시간 한도 확인), weighed with the log records; empty until one arrives.
     @Published var codexLiveLimits: [TokenRateLimit] = [] { didSet { if codexLiveLimits != oldValue { rebuildPresentation() } } }
     /// Codex windows omp or Pi recorded from their own usage checks (`AgentUsageHistory`), weighed like log records.
     private(set) var codexRecordedLimits: [TokenRateLimit] = []
     private let agentUsage = AgentUsageHistoryReader()
+    private let limitAccounts = LimitAccountReader()
     /// Set by the app shell: whether the popover or panel is on screen, and whether the screens or the Mac sleep.
     var dashboardVisible: () -> Bool = { false }
     var livePaused = false
@@ -324,7 +332,14 @@ final class DashboardModel: ObservableObject {
         let stored = restoresRestartState
             ? UserDefaults.standard.dictionary(forKey: Self.pendingRestartKey) as? [String: Double] ?? [:] : [:]
         for (key, seconds) in stored { if let source = TokenSource(rawValue: key) { pendingRestart[source] = Date(timeIntervalSince1970: seconds) } }
-        if restoresRestartState { claudeLimits = ClaudeUsageLimits.load(from: .standard) }
+        if restoresRestartState {
+            limitAccounts.refresh()
+            for provider in TokenSource.defaultClients {
+                defaultLimitAccounts[provider] = limitAccounts.defaultAccount(provider)
+                knownLimitAccounts[provider] = limitAccounts.knownAccounts(provider)
+            }
+            claudeLimits = ClaudeLimitsByAccount.load(from: .standard, defaultAccount: defaultLimitAccounts[.claude])
+        }
         updateRestartState(now: Date())
     }
     /// Only the app's own model persists restart notices; verification commands read them.
@@ -457,11 +472,21 @@ final class DashboardModel: ObservableObject {
     private func pollLiveLimits() {
         guard ownsTelemetryState, preferences.liveUsageLimits, !livePaused else { return }
         let active = sessions.counts.limitSources
-        liveLimits.tick(now: Date(), open: dashboardVisible(), live: { active.contains($0) }) { [weak self] outcome in
+        var slots = Set(active.filter { $0.provider == .claude && $0.account != nil })
+        for row in usageLimits where row.source == .claude && row.account != nil {
+            slots.insert(LimitSlot(provider: .claude, account: row.account))
+        }
+        // Bootstrap the default account when no attributed session or receipt has made a row yet.
+        if !slots.contains(where: { $0.provider == .claude }), let account = defaultLimitAccounts[.claude] {
+            slots.insert(LimitSlot(provider: .claude, account: account))
+        }
+        if let account = defaultLimitAccounts[.codex] { slots.insert(LimitSlot(provider: .codex, account: account)) }
+        liveLimits.tick(now: Date(), open: dashboardVisible(), slots: slots, live: { active.contains($0) }) { [weak self] outcome in
             guard let self, self.running else { return }
             if let codex = outcome.codex { self.codexLiveLimits = codex }
             if let claude = outcome.claude {
-                let limits = self.claudeLimits.merged(claude)
+                let key = outcome.slot?.account?.storageKey ?? ClaudeLimitsByAccount.legacyKey
+                let limits = self.claudeLimits.merged([key: claude])
                 guard limits != self.claudeLimits else { return }
                 self.claudeLimits = limits
                 limits.save(to: .standard)
@@ -493,14 +518,26 @@ final class DashboardModel: ObservableObject {
             self.tracker.noteChanged(paths: paths)
             let logs = self.tracker.sample()
             let measurements = self.telemetryProvider?() ?? self.telemetry.snapshot()
+            self.limitAccounts.refresh()
+            var defaults: [TokenSource: LimitAccount] = [:]
+            var known: [TokenSource: [LimitAccount]] = [:]
+            for provider in TokenSource.defaultClients {
+                defaults[provider] = self.limitAccounts.defaultAccount(provider)
+                known[provider] = self.limitAccounts.knownAccounts(provider)
+            }
             let tokens = TokenSpeed.apply(logs, measurements: measurements)
             var received: [TokenSource: Date] = [:]
             for measurement in measurements { received[measurement.provider] = max(received[measurement.provider] ?? measurement.at, measurement.at) }
             // Any batch from a restarted client clears its notice, even one TokenCat cannot decode yet.
             let batches = self.telemetryProvider == nil ? self.telemetry.lastBatchAt : [:]
-            let agent = self.telemetryProvider == nil ? self.agentUsage.read() : AgentUsageHistory.Limits()
-            let claudeLimits = self.telemetryProvider == nil
-                ? self.telemetry.claudeLimits.merged(self.desktopLimits()).merged(agent.claude) : ClaudeUsageLimits()
+            // Passive records are safe on verification paths too; only live reads and collector ownership stay off.
+            let agent = self.agentUsage.read()
+            for (provider, accounts) in agent.accounts {
+                known[provider] = Array(Set((known[provider] ?? []) + accounts)).sorted { $0.key < $1.key }
+            }
+            let statusLimits = self.telemetryProvider == nil
+                ? self.telemetry.claudeLimits(tokens: tokens) : [:]
+            let claudeLimits = statusLimits.merged(self.desktopLimits(defaultAccount: defaults[.claude])).merged(agent.claude)
             // Verification commands read the running app's collector, never this unstarted one.
             let probed = self.telemetryProbe?()
             let telemetryState = probed.map { $0 ? (measurements.isEmpty ? .waiting : .receiving) : .stopped } ?? self.telemetry.state
@@ -512,6 +549,8 @@ final class DashboardModel: ObservableObject {
                 self.tokensInFlight = false
                 guard self.running, self.generation == currentGeneration else { return }
                 self.tokens = tokens
+                self.defaultLimitAccounts = defaults
+                self.knownLimitAccounts = known
                 self.tokensSampledAt = measuredAt
                 self.telemetryStatus = telemetryStatus
                 if self.telemetryState != telemetryState { self.telemetryState = telemetryState }
@@ -542,16 +581,20 @@ final class DashboardModel: ObservableObject {
         .appendingPathComponent("Library/Application Support/Claude/plan-usage-history.json").path
     private var desktopHistoryStamp: [Int] = []
     private var desktopHistoryLimits = ClaudeUsageLimits()
-    private func desktopLimits() -> ClaudeUsageLimits {
+    private var desktopHistoryOrganization: String?
+    private func desktopLimits(defaultAccount: LimitAccount?) -> ClaudeLimitsByAccount {
         var info = stat()
-        guard stat(Self.desktopHistoryPath, &info) == 0, Int(info.st_size) <= LocalTelemetryCollector.maximumBodyBytes else { return ClaudeUsageLimits() }
+        guard stat(Self.desktopHistoryPath, &info) == 0, Int(info.st_size) <= LocalTelemetryCollector.maximumBodyBytes else { return [:] }
         let stamp = [Int(info.st_size), info.st_mtimespec.tv_sec, info.st_mtimespec.tv_nsec]
-        if stamp != desktopHistoryStamp {
+        let organization = limitAccounts.defaultClaudeOrganizationID
+        if stamp != desktopHistoryStamp || organization != desktopHistoryOrganization {
             desktopHistoryStamp = stamp
+            desktopHistoryOrganization = organization
             desktopHistoryLimits = (try? Data(contentsOf: URL(fileURLWithPath: Self.desktopHistoryPath)))
-                .flatMap(ClaudeUsageLimits.decodeDesktopHistory) ?? ClaudeUsageLimits()
+                .flatMap { ClaudeUsageLimits.decodeDesktopHistory($0, defaultOrganization: organization) } ?? ClaudeUsageLimits()
         }
-        return desktopHistoryLimits
+        guard !desktopHistoryLimits.isEmpty else { return [:] }
+        return [defaultAccount?.storageKey ?? ClaudeLimitsByAccount.legacyKey: desktopHistoryLimits]
     }
     private func refreshSystem() {
         let currentGeneration = generation
@@ -586,8 +629,11 @@ final class DashboardModel: ObservableObject {
         let flow = FlowSeries.make(tokens, now: now)
         if flow != self.flow { self.flow = flow }
         groups = SessionPresentation.groups(tokens, now: now)
-        sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow, restart: telemetryRestartNeeded,
-                                         codexReads: codexLiveLimits + codexRecordedLimits)
+        sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow, restart: telemetryRestartNeeded)
+        let limits = SessionPresentation.usageLimits(tokens: tokens, codexReads: codexLiveLimits + codexRecordedLimits,
+                                                    claudeLimits: claudeLimits, defaults: defaultLimitAccounts,
+                                                    known: knownLimitAccounts, now: now)
+        if limits != usageLimits { usageLimits = limits }
         let newest = tokens.filter { !SessionPresentation.isTelemetry($0) }.compactMap(\.lastOutputAt).max()
         if newest != newestOutputAt { newestOutputAt = newest }
     }

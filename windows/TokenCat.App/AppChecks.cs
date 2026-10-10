@@ -416,6 +416,29 @@ static class AppChecks
                         && !telemetry.OfType<Button>().Any(button => AutomationProperties.GetName(button).Contains("설정 파일") || AutomationProperties.GetName(button) == "백업 폴더 보기");
             check(collectorAlone && connected && reconnect && busy && placed && quiet,
                   $"the Telemetry page's collector, connection and file rows (collector {collectorAlone}, connected {connected}, reconnect {reconnect}, busy {busy}, placed {placed}, quiet {quiet})");
+            var shownAccount = new LimitAccount("shown-claude", "shown@example.com");
+            var otherAccount = new LimitAccount("other-claude", "other@example.com");
+            var settingsNow = fixture.Dashboard.State.Now;
+            var shownUsage = new ClaudeUsageLimits(FiveHour: new ClaudeLimitWindow(22, settingsNow.AddHours(1), settingsNow.AddSeconds(-240)) { RecordedBy = "Pi" });
+            var otherUsage = new ClaudeUsageLimits(FiveHour: new ClaudeLimitWindow(99, settingsNow.AddHours(1), settingsNow.AddSeconds(-10)) { Live = true });
+            var accountSettings = fixture with
+            {
+                Dashboard = fixture.Dashboard with
+                {
+                    State = fixture.Dashboard.State with
+                    {
+                        ClaudeLimits = new Dictionary<string, ClaudeUsageLimits>
+                        { [shownAccount.StorageKey] = shownUsage, [otherAccount.StorageKey] = otherUsage },
+                        UsageLimits = new[]
+                        {
+                            SessionPresentation.ClaudeUsageLimit(shownUsage, settingsNow)! with { Account = shownAccount },
+                            SessionPresentation.ClaudeUsageLimit(otherUsage, settingsNow)! with { Account = otherAccount },
+                        },
+                    },
+                },
+            };
+            check(TelemetryPage(actions, accountSettings).OfType<TextBlock>().Any(text => text.Text.Replace("⁠", "") == "Pi 기록 · 4분 전"),
+                  "Telemetry Claude limits use the first shown account, not another account's newest receipt");
 
             // About: three privacy bullets; an installable update offers only 업데이트 as the default button; while installing, 지금 확인.
             var about = Descendants(new SettingsView(fixture, actions, SettingsPage.About, _ => { }, snapshot: true)).ToList();
@@ -489,6 +512,21 @@ static class AppChecks
         check(Tree(claudeLimit).OfType<LimitWindow>().Count(window => window.Visibility == Visibility.Visible) == 2
               && Tree(claudeLimit).OfType<TextBlock>().Any(text => text.Text == "Claude · 5시간") && Tree(claudeLimit).OfType<TextBlock>().Any(text => text.Text == "Claude · 주간"),
               "a limit with another live window draws both, titled provider · window");
+        var multi = Fixtures.All().Single(fixture => fixture.Name == "multiple-accounts");
+        var multiInput = Fixtures.Input(multi);
+        var multiView = new Dashboard(DashboardActions.None, snapshot: true);
+        multiView.Show(multiInput);
+        var accountRows = Tree(multiView).OfType<LimitRow>().ToList();
+        check(accountRows.Count == 2 && multiInput.State.UsageLimits.Select(row => row.UsedPercent).SequenceEqual([82d, 34d])
+              && accountRows.All(row => Peer(row)?.GetName().Contains("@example.com", StringComparison.Ordinal) == true),
+              "multiple-account dashboard rows retain separate values and account accessibility names");
+        multiView.Show(multiInput with { State = multiInput.State with { UsageLimits = multiInput.State.UsageLimits.Reverse().ToList() } });
+        check(Tree(multiView).OfType<LimitRow>().SequenceEqual(accountRows.AsEnumerable().Reverse()),
+              "account row reuse is keyed by provider and account, not provider or position");
+        var detached = new Dashboard(DashboardActions.None, panel: true, snapshot: true);
+        detached.Show(multiInput);
+        check(Tree(detached).OfType<LimitRow>().Select(row => Peer(row)?.GetName()).SequenceEqual(accountRows.Select(row => Peer(row)?.GetName())),
+              "secondary windows preserve every account row and accessibility label");
 
         static ToggleState? Toggle(UIElement element) => (Peer(element)?.GetPattern(PatternInterface.Toggle) as IToggleProvider)?.ToggleState;
         var on = SettingsView.Switch(true, _ => { }, "턴 완료");

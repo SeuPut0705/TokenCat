@@ -86,7 +86,7 @@ struct SessionCounts: Equatable {
     var running: [TokenSource: Int] = [:]
     /// Subscriptions a running session uses (`TokenSource.limitProvider`): a Codex or Claude Code session, or any client's
     /// running member on a Claude or OpenAI model. `LiveLimitPoller` reads these every minute.
-    var limitSources: Set<TokenSource> = []
+    var limitSources: Set<LimitSlot> = []
     /// Newest record among waiting rows, for "N분째 새 기록 없음".
     var waitingSince: Date?
     /// Newest activity of any session group (telemetry rows excluded), for "마지막 활동 2시간 전".
@@ -115,9 +115,10 @@ struct SessionCounts: Equatable {
             }
             if group.state.isRunning {
                 running[group.lead.reading.source, default: 0] += 1
-                if TokenSource.defaultClients.contains(group.lead.reading.source) { limitSources.insert(group.lead.reading.source) }
                 for member in group.members where member.state.isRunning {
-                    if let provider = TokenSource.limitProvider(model: member.reading.model) { limitSources.insert(provider) }
+                    if let provider = member.reading.limitProvider {
+                        limitSources.insert(LimitSlot(provider: provider, account: member.reading.limitAccount))
+                    }
                 }
             }
             if group.state != .measurement, group.lastActivity != .distantPast {
@@ -219,6 +220,8 @@ struct UsageLimitSummary: Equatable {
     var live = false
     /// "omp" or "Pi" when that client's own usage check recorded the value; named beside the record age.
     var recordedBy: String? = nil
+    var account: LimitAccount? = nil
+    var accountLabel: String? = nil
     struct OtherWindow: Equatable {
         var usedPercent: Double
         var windowMinutes: Int
@@ -250,7 +253,7 @@ struct UsageLimitSummary: Equatable {
         guard let other, other.resetsAt > now else { return nil }
         return UsageLimitSummary(usedPercent: other.usedPercent, windowMinutes: other.windowMinutes, resetsAt: other.resetsAt,
                                  recordedAt: other.recordedAt ?? recordedAt, source: source, live: other.live ?? live,
-                                 recordedBy: other.recordedBy ?? recordedBy)
+                                 recordedBy: other.recordedBy ?? recordedBy, account: account, accountLabel: accountLabel)
     }
     /// The number alone ("28"); "%" and " 사용" are drawn smaller beside it. "사용" because Codex's own UI counts what is left.
     var percentText: String { "\(Int(usedPercent.rounded()))" }
@@ -300,12 +303,12 @@ struct UsageLimitSummary: Equatable {
     func spoken(now: Date) -> String {
         let main = expired(now: now) ? waitingText.replacingOccurrences(of: " · ", with: ", ")
             : loc("\(percentText)퍼센트 사용", "\(percentText) percent used") + ", " + detail(now: now, spoken: true).replacingOccurrences(of: " · ", with: ", ")
-        return main + (otherText(now: now, spoken: true).map { ", " + $0.replacingOccurrences(of: "%", with: loc("퍼센트", " percent")).replacingOccurrences(of: " · ", with: ", ") } ?? "")
+        return (accountLabel.map { $0 + ", " } ?? "") + main + (otherText(now: now, spoken: true).map { ", " + $0.replacingOccurrences(of: "%", with: loc("퍼센트", " percent")).replacingOccurrences(of: " · ", with: ", ") } ?? "")
     }
     func help(now: Date) -> String {
         let basis = live ? (source == .codex
             ? loc("Codex에 저장된 로그인으로 OpenAI에서 확인한 계정 사용량입니다.", "Account usage checked with OpenAI using Codex's saved sign-in.")
-            : loc("Claude Code에 저장된 로그인으로 Anthropic에서 확인한 계정 사용량입니다.", "Account usage checked with Anthropic using Claude Code's saved sign-in."))
+            : loc("이 계정에 해당하는 Claude Code, omp 또는 Pi의 로그인으로 Anthropic에서 확인한 계정 사용량입니다.", "Account usage checked with Anthropic using this account's Claude Code, omp or Pi sign-in."))
             + loc(" 이 계정의 모델을 쓰는 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
                   " It's checked every minute while a session on its models runs or this window is open, otherwise every 10 minutes.")
             : recordedBy.map { by in
@@ -316,7 +319,7 @@ struct UsageLimitSummary: Equatable {
                                        "The last account usage recorded in the Codex logs. It isn't a live balance and updates only while you use Codex.")
             : loc("Claude Code가 상태 표시줄로 보냈거나 Claude 데스크톱 앱이 기록한 마지막 Claude 계정 사용량입니다. 실시간 잔여량이 아니며 Claude를 사용할 때만 갱신됩니다.",
                   "The last Claude account usage sent by Claude Code to its status line or recorded by the Claude desktop app. It isn't a live balance and updates only while you use Claude."))
-        return basis + loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.") + (otherText(now: now).map { "\n" + $0 } ?? "")
+        return (accountLabel.map { $0 + "\n" } ?? "") + basis + loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.") + (otherText(now: now).map { "\n" + $0 } ?? "")
     }
 }
 
@@ -714,6 +717,74 @@ enum SessionPresentation {
         return UsageLimitSummary(usedPercent: top.0.usedPercent, windowMinutes: top.1, resetsAt: top.0.resetsAt,
                                  recordedAt: top.0.receivedAt, source: .claude, other: other, live: top.0.live == true,
                                  recordedBy: top.0.live == true ? nil : top.0.recordedBy)
+    }
+
+    /// Select accounts first, then reduce only their windows. Unattributed data never fills an identified account.
+    static func usageLimits(tokens: [TokenReading], codexReads: [TokenRateLimit], claudeLimits: ClaudeLimitsByAccount,
+                            defaults: [TokenSource: LimitAccount], known: [TokenSource: [LimitAccount]], now: Date) -> [UsageLimitSummary] {
+        var result: [UsageLimitSummary] = []
+        for provider in [TokenSource.codex, .claude] {
+            let sessions = tokens.filter { $0.limitProvider == provider && !isTelemetry($0) }
+            var accounts = Set(known[provider] ?? [])
+            accounts.formUnion(sessions.compactMap(\.limitAccount))
+            if let account = defaults[provider] { accounts.insert(account) }
+            if provider == .codex { accounts.formUnion(codexReads.compactMap(\.account)) }
+            let orderedAccounts = accounts.sorted { $0.key < $1.key }
+            var hashes = Set(orderedAccounts.map(\.storageKey))
+            if provider == .claude { hashes.formUnion(claudeLimits.keys.filter { $0 != "legacy" }) }
+            let showLabels = hashes.count >= 2
+            func summary(_ account: LimitAccount?) -> UsageLimitSummary? {
+                var value: UsageLimitSummary?
+                if provider == .codex {
+                    value = usageLimit(sessions.filter { $0.limitAccount == account },
+                                       reads: codexReads.filter { $0.account == account }, now: now)
+                } else {
+                    value = claudeLimits[account?.storageKey ?? "legacy"].flatMap { claudeUsageLimit($0, now: now) }
+                }
+                guard var value, value.isShown(now: now) else { return nil }
+                value.account = account
+                if showLabels, let account {
+                    let duplicates = orderedAccounts.filter { $0.label == account.label }
+                    var label = account.label
+                    if duplicates.count > 1 {
+                        if let organization = account.organizationName ?? orderedAccounts.first(where: { $0 == account })?.organizationName,
+                           duplicates.filter({ $0.organizationName == organization }).count == 1 {
+                            label += " · " + organization
+                        } else {
+                            label += " · …" + account.id.suffix(4)
+                            if duplicates.filter({ $0.id.suffix(4) == account.id.suffix(4) }).count > 1 {
+                                label += " · " + account.storageKey.prefix(6)
+                            }
+                        }
+                    }
+                    value.accountLabel = label
+                } else if showLabels {
+                    value.accountLabel = loc("계정 미확인", "Unknown account")
+                }
+                return value
+            }
+            let running = sessions.filter { displayState($0, now: now).isRunning }
+            if !running.isEmpty {
+                let slots = Set(running.map { LimitSlot(provider: provider, account: $0.limitAccount) })
+                result += slots.compactMap { summary($0.account) }.sorted {
+                    $0.usedPercent != $1.usedPercent ? $0.usedPercent > $1.usedPercent
+                        : ($0.account?.key ?? "") < ($1.account?.key ?? "")
+                }
+            } else {
+                let recent = sessions.max {
+                    let a = $0.lastActivity ?? .distantPast, b = $1.lastActivity ?? .distantPast
+                    return a != b ? a < b : $0.id > $1.id
+                }
+                if let recent, let value = summary(recent.limitAccount) {
+                    result.append(value)
+                } else if let account = defaults[provider], let value = summary(account) {
+                    result.append(value)
+                } else if let value = summary(nil) {
+                    result.append(value)
+                }
+            }
+        }
+        return result
     }
 
     /// The flow card's "지금 속도": the newest measurement under 2 minutes old among visible live rows (leads and
@@ -1230,8 +1301,6 @@ struct SessionListModel {
     /// a speed cell. Child rows (S-5) have no speed cell, so their measurements stay in the detail and VoiceOver and never
     /// open a column of "—". The column never adds a third line of its own (`SessionPresentation.speedCell`).
     var showsSpeedColumn = false
-    /// Codex usage limit from the same publish.
-    var usageLimit: UsageLimitSummary?
     private var viewports: (folded: CGFloat, open: CGFloat) = (0, 0)
 
     static let empty = SessionListModel()
@@ -1359,7 +1428,7 @@ struct SessionListModel {
     /// `flow` is no longer read (row bars were removed, S-2); the shell still passes it. `restart`: clients waiting for a
     /// relaunch, whose rows show no speed cell.
     static func make(tokens: [TokenReading], now: Date, expanded: Bool, flow: FlowSeries = .empty,
-                     restart: Set<TokenSource> = [], codexReads: [TokenRateLimit] = [], calendar: Calendar = .current) -> SessionListModel {
+                     restart: Set<TokenSource> = [], calendar: Calendar = .current) -> SessionListModel {
         let groups = SessionPresentation.groups(tokens, now: now)
         func stable(_ a: SessionGroup, _ b: SessionGroup) -> Bool {
             let order = (a.lead.reading.project ?? "").localizedStandardCompare(b.lead.reading.project ?? "")
@@ -1388,7 +1457,6 @@ struct SessionListModel {
         var model = SessionListModel()
         model.expanded = expanded
         model.counts = SessionCounts(groups)
-        model.usageLimit = SessionPresentation.usageLimit(tokens, reads: codexReads, now: now)
         model.hiddenGroups = ordered.count - shown.count
         func measuredSpeed(_ reading: TokenReading) -> Bool {
             reading.speedMeasurement?.tokensPerSecond != nil && !restart.contains(reading.source)

@@ -3,7 +3,7 @@ import Foundation
 /// "실시간 한도 확인": account usage read live instead of waiting for a log or status line record.
 /// Codex through its own `codex app-server` (TokenCat never reads OpenAI tokens); Claude through Anthropic's OAuth usage
 /// endpoint with the sign-in Claude Code saved, or, when that is missing or expired, omp's or Pi's saved Anthropic sign-in
-/// (`agent.db` `auth_credentials`) for the same account. A token lives in memory for one request only: never logged, stored,
+/// (`agent.db` `auth_credentials`) for the same account. Tokens live in memory for one read only: never logged, stored,
 /// put in process arguments or refreshed (refresh tokens rotate, so a refresh would sign the owning client out).
 enum LiveLimits {
     /// While a provider's session runs or the dashboard is open; otherwise the idle interval.
@@ -132,17 +132,18 @@ enum LiveLimits {
     }
 
     /// Sent only before its expiry (60 s margin; none known counts as expired) and if Anthropic has not refused it (401/403).
-    static func claudeUsable(_ credential: ClaudeCredential, rejected: Int?, now: Date) -> Bool {
+    static func claudeUsable(_ credential: ClaudeCredential, rejected: Set<Int>, now: Date) -> Bool {
         guard let expiresAt = credential.expiresAt, expiresAt.timeIntervalSince(now) > 60 else { return false }
-        return credential.token.hashValue != rejected
+        return !rejected.contains(credential.token.hashValue)
     }
 
     /// The saved sign-in: macOS keychain through /usr/bin/security (so one "Always Allow" covers every TokenCat build),
-    /// then ~/.claude/.credentials.json. `refused`: the keychain read was denied, cancelled or left unanswered for 60 s;
+    /// then ~/.claude/.credentials.json. A config-specific directory reads only its own file, never the generic keychain.
+    /// `refused`: the keychain read was denied, cancelled or left unanswered for 60 s;
     /// exit 44 is only "not found", and an unreadable value is read again next time.
-    static func readClaudeCredential(keychain: Bool) -> (credential: ClaudeCredential?, refused: Bool) {
+    static func readClaudeCredential(keychain: Bool, configDirectory: URL? = nil) -> (credential: ClaudeCredential?, refused: Bool) {
         var refused = false
-        if keychain {
+        if keychain && configDirectory == nil {
             let process = Process(), output = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/security")
             process.arguments = ["find-generic-password", "-s", "Claude Code-credentials", "-w"]
@@ -160,44 +161,37 @@ enum LiveLimits {
                 refused = !(exited && [0, 44].contains(process.terminationStatus))
             }
         }
-        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude/.credentials.json")
+        let file = (configDirectory ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude"))
+            .appendingPathComponent(".credentials.json")
         return ((try? Data(contentsOf: file)).flatMap(claudeCredential), refused)
     }
 
-    /// omp's and Pi's saved Anthropic sign-in (`auth_credentials` in their `agent.db`, an `oauth` row not disabled): only the
-    /// access token, its expiry (ms) and account id leave SQLite. These clients refresh their own token while they run, so it
-    /// stays usable when Claude Code's has expired. Used only for Claude Code's own account (or when that is unknown), and never
-    /// refreshed, stored or logged, like Claude Code's.
+    /// The existing live path is the only reader of saved tokens. Metadata binds each token to its canonical account.
     static let agentCredentialQuery = """
-        SELECT json_extract(data, '$.access'), json_extract(data, '$.expires'), json_extract(data, '$.accountId') FROM auth_credentials
+        SELECT json_extract(data, '$.access'), json_extract(data, '$.expires'), json_extract(data, '$.accountId'),
+               json_extract(data, '$.email'), json_extract(data, '$.orgName') FROM auth_credentials
         WHERE provider = 'anthropic' AND credential_type = 'oauth' AND disabled_cause IS NULL
         """
 
-    static func agentCredentials(_ databases: [URL]) -> [(credential: ClaudeCredential, account: String?)] {
-        databases.flatMap { database -> [(credential: ClaudeCredential, account: String?)] in
+    static func agentCredentials(_ databases: [URL], accounts: LimitAccountReader) -> [(credential: ClaudeCredential, account: LimitAccount?)] {
+        databases.flatMap { database -> [(credential: ClaudeCredential, account: LimitAccount?)] in
             guard FileManager.default.fileExists(atPath: database.path), let connection = OpenCodeDatabase(path: database.path) else { return [] }
-            var found: [(credential: ClaudeCredential, account: String?)] = []
+            var found: [(credential: ClaudeCredential, account: LimitAccount?)] = []
             _ = connection.query(agentCredentialQuery) { row in
                 guard let token = row.text(0), !token.isEmpty else { return }
-                found.append((ClaudeCredential(token: token, expiresAt: row.double(1).map { Date(timeIntervalSince1970: $0 / 1_000) }), row.text(2)))
+                let account = accounts.resolve(provider: .claude, id: row.text(2), email: row.text(3), organizationName: row.text(4))
+                found.append((ClaudeCredential(token: token, expiresAt: row.double(1).map { Date(timeIntervalSince1970: $0 / 1_000) }), account))
             }
             return found
         }
     }
 
-    /// Claude Code's sign-in first; then omp's or Pi's for the same account (any account when Claude Code's is unknown).
-    /// The first one still usable is sent.
-    static func claudeCandidates(claudeCode: ClaudeCredential?, agents: [(credential: ClaudeCredential, account: String?)],
-                                 claudeAccount: String?) -> [ClaudeCredential] {
-        [claudeCode].compactMap { $0 }
-            + agents.filter { claudeAccount == nil || $0.account == nil || $0.account == claudeAccount }.map(\.credential)
-    }
-
-    static func claudeCodeAccount(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
-        let config = home.appendingPathComponent(".claude.json")
-        var info = stat()
-        guard stat(config.path, &info) == 0, Int(info.st_size) <= AgentUsageHistoryReader.maximumConfigBytes else { return nil }
-        return (try? Data(contentsOf: config)).flatMap(AgentUsageHistory.claudeAccount)
+    /// Claude Code's token is eligible only for its account, as are the agent tokens. Nil is a distinct legacy slot.
+    static func claudeCandidates(claudeCode: ClaudeCredential?, claudeAccount: LimitAccount?,
+                                 agents: [(credential: ClaudeCredential, account: LimitAccount?)], target: LimitAccount?) -> [ClaudeCredential] {
+        var seen = Set<String>()
+        let code = claudeAccount == target ? [claudeCode].compactMap { $0 } : []
+        return (code + agents.filter { $0.account == target }.map(\.credential)).filter { seen.insert($0.token).inserted }
     }
 
     /// `GET /api/oauth/usage`: `limits[]` (`kind` "session" → 5-hour, "weekly_all" → 7-day; model-scoped weeks are left out)
@@ -267,134 +261,192 @@ enum LiveLimits {
     // MARK: One read
 
     struct Outcome {
+        var slot: LimitSlot?
         var codex: [TokenRateLimit]?
         var claude: ClaudeUsageLimits?
         var failed = false
-        /// In memory only: the refused token's per-process hash.
-        var rejected: Int?
+        /// In memory only: refused tokens' per-process hashes, retained independently for each account slot.
+        var rejected: Set<Int> = []
         var keychainRefused = false
         /// Why nothing was read, for `--live-limits` only.
         var note: String?
     }
 
-    static func read(_ source: TokenSource, rejected: Int?, keychain: Bool) -> Outcome {
-        var outcome = Outcome()
-        if source == .codex {
+    static func read(_ slot: LimitSlot, rejected: Set<Int>, keychain: Bool) -> Outcome {
+        let accounts = LimitAccountReader()
+        accounts.refresh()
+        var outcome = Outcome(slot: slot)
+        if slot.provider == .codex {
+            guard slot.account == accounts.defaultAccount(.codex) else {
+                outcome.note = "live Codex limits are available only for the default CLI account"
+                return outcome
+            }
             guard let executable = codexExecutable() else { outcome.note = "codex not found"; return outcome }
-            outcome.codex = readCodex(executable: executable)
+            outcome.codex = readCodex(executable: executable)?.map {
+                var limit = $0
+                limit.account = slot.account
+                return limit
+            }
             outcome.failed = outcome.codex == nil
             if outcome.failed { outcome.note = "codex app-server gave no limits" }
             return outcome
         }
-        guard source == .claude else { outcome.note = "no live limits for \(source.title)"; return outcome }
-        let saved = readClaudeCredential(keychain: keychain)
+        guard slot.provider == .claude else { outcome.note = "no live limits for \(slot.provider.title)"; return outcome }
+        let environment = ProcessInfo.processInfo.environment
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let defaultDirectory = home.appendingPathComponent(".claude")
+        let codeAccount = accounts.claudeAccount(configDirectory: defaultDirectory)
+        let saved: (credential: ClaudeCredential?, refused: Bool) = slot.account == codeAccount
+            ? readClaudeCredential(keychain: keychain) : (nil, false)
         outcome.keychainRefused = saved.refused
-        let agents = agentCredentials(AgentUsageHistory.databases(home: FileManager.default.homeDirectoryForCurrentUser,
-                                                                  environment: ProcessInfo.processInfo.environment))
-        let candidates = claudeCandidates(claudeCode: saved.credential, agents: agents, claudeAccount: claudeCodeAccount())
-        guard !candidates.isEmpty else { outcome.note = "no Claude Code, omp or Pi sign-in found"; return outcome }
-        guard let credential = candidates.first(where: { claudeUsable($0, rejected: rejected, now: Date()) }) else {
-            outcome.note = candidates.contains { $0.token.hashValue == rejected } ? "token refused before"
+        var agents = agentCredentials(AgentUsageHistory.databases(home: FileManager.default.homeDirectoryForCurrentUser,
+                                                                  environment: environment), accounts: accounts)
+        for config in TokenProvider.claudeConfigDirectories(home, environment)
+            where config.standardizedFileURL != defaultDirectory.standardizedFileURL {
+            let account = accounts.claudeAccount(configDirectory: config)
+            if slot.account == account, let credential = readClaudeCredential(keychain: false, configDirectory: config).credential {
+                agents.insert((credential, account), at: 0)
+            }
+        }
+        let candidates = claudeCandidates(claudeCode: saved.credential, claudeAccount: codeAccount, agents: agents, target: slot.account)
+        guard !candidates.isEmpty else { outcome.note = "no Claude Code, omp or Pi sign-in found for this account"; return outcome }
+        let usable = candidates.filter { claudeUsable($0, rejected: rejected, now: Date()) }
+        guard !usable.isEmpty else {
+            outcome.note = candidates.contains { rejected.contains($0.token.hashValue) } ? "token refused before"
                 : "token expired · Claude Code, omp or Pi refresh it when they run"
             return outcome
         }
-        let fetched = fetchClaude(token: credential.token)
-        switch fetched.answer {
-        case .limits(let limits): outcome.claude = limits
-        case .rejected: outcome.rejected = credential.token.hashValue
-        case .retry: outcome.failed = true
+        for credential in usable {
+            let fetched = fetchClaude(token: credential.token)
+            switch fetched.answer {
+            case .limits(let limits):
+                outcome.claude = limits
+                outcome.note = nil
+                return outcome
+            case .rejected:
+                outcome.rejected.insert(credential.token.hashValue)
+            case .retry:
+                outcome.failed = true
+            }
+            outcome.note = "HTTP \(fetched.status.map(String.init) ?? "no response")"
+            if outcome.failed { return outcome }
         }
-        if outcome.claude == nil { outcome.note = "HTTP \(fetched.status.map(String.init) ?? "no response")" }
         return outcome
     }
 
-    /// `--live-limits`: one read per provider, printed as numbers only; a token is never printed. omp's and Pi's own usage
-    /// records follow with their age, then the limit rows both give the dashboard (status line and log records aside).
-    /// Exit 1 when neither reads nor any record exists.
+    /// `--live-limits`: one combined live/record row per account. Only the last four id characters are printed.
+    /// Codex live reads are restricted to the default CLI account; other accounts use their own agent records.
     static func commandLineCheck() -> Int32 {
-        var read = 0
-        func describe(_ windows: [(Double, Int?, Date?)]) -> String {
-            windows.map { "\(Int($0.0.rounded()))% of \($0.1.map { "\($0) min" } ?? "?") · resets \($0.2.map { ISO8601DateFormatter().string(from: $0) } ?? "—")" }
-                .joined(separator: ", ")
+        let accounts = LimitAccountReader()
+        accounts.refresh()
+        var combined = AgentUsageHistoryReader().read()
+        var received = !combined.claude.isEmpty || !combined.codex.isEmpty
+        let providers: [TokenSource] = [.codex, .claude]
+        var known = Dictionary(uniqueKeysWithValues: providers.map { ($0, accounts.knownAccounts($0)) })
+        var defaults: [TokenSource: LimitAccount] = [:]
+        var slots = Set<LimitSlot>()
+        for provider in providers {
+            if let account = accounts.defaultAccount(provider) { defaults[provider] = account }
+            for account in known[provider] ?? [] { slots.insert(LimitSlot(provider: provider, account: account)) }
+            slots.insert(LimitSlot(provider: provider, account: defaults[provider]))
         }
-        func claudeWindows(_ limits: ClaudeUsageLimits?) -> [(Double, Int?, Date?)] {
-            [(limits?.fiveHour, 300), (limits?.sevenDay, 10_080)].compactMap { window, minutes in window.map { ($0.usedPercent, minutes, $0.resetsAt) } }
-        }
-        var live = Outcome()
-        for source in TokenSource.defaultClients {
-            let started = Date()
-            let outcome = Self.read(source, rejected: nil, keychain: true)
-            live.codex = live.codex ?? outcome.codex
-            live.claude = live.claude ?? outcome.claude
-            let text = describe(outcome.codex?.map { ($0.usedPercent, $0.windowMinutes, $0.resetsAt) } ?? claudeWindows(outcome.claude))
-            if outcome.codex != nil || outcome.claude != nil { read += 1 }
-            print("\(source.title): " + (text.isEmpty ? "no window" : text)
-                  + (outcome.note.map { " · \($0)" } ?? "") + String(format: " (%.1f s)", Date().timeIntervalSince(started)))
-        }
-        let recorded = AgentUsageHistoryReader().read(), now = Date()
-        func age(_ dates: [Date]) -> String { dates.max().map { " · recorded \(Int(now.timeIntervalSince($0)) / 60) min ago" } ?? "" }
-        let claude = claudeWindows(recorded.claude), codex = recorded.codex.map { ($0.usedPercent, $0.windowMinutes, $0.resetsAt) }
-        print("omp/Pi records, Claude: " + (claude.isEmpty ? "none" : describe(claude))
-              + age([recorded.claude.fiveHour?.receivedAt, recorded.claude.sevenDay?.receivedAt].compactMap { $0 }))
-        print("omp/Pi records, Codex: " + (codex.isEmpty ? "none" : describe(codex)) + age(recorded.codex.map(\.recordedAt)))
-        if !claude.isEmpty || !codex.isEmpty { read += 1 }
-        let rows = [SessionPresentation.usageLimit([], reads: (live.codex ?? []) + recorded.codex, now: now),
-                    SessionPresentation.claudeUsageLimit((live.claude ?? ClaudeUsageLimits()).merged(recorded.claude), now: now)]
-        AppLanguage.with(.en) {
-            for row in rows.compactMap({ $0 }) {
-                print("Dashboard row, \(row.title): \(row.value(now: now)) · \(row.details(now: now).first ?? "")"
-                      + (row.otherText(now: now).map { " (\($0))" } ?? ""))
+        for (provider, historyAccounts) in combined.accounts {
+            for account in historyAccounts {
+                slots.insert(LimitSlot(provider: provider, account: account))
+                if !(known[provider] ?? []).contains(account) { known[provider, default: []].append(account) }
             }
         }
-        return read > 0 ? 0 : 1
+        if combined.claude["legacy"] != nil { slots.insert(LimitSlot(provider: .claude, account: nil)) }
+        if combined.codex.contains(where: { $0.account == nil }) { slots.insert(LimitSlot(provider: .codex, account: nil)) }
+        var notes: [LimitSlot: String] = [:]
+        var keychain = true
+        for slot in slots.sorted(by: {
+            $0.provider.rawValue == $1.provider.rawValue ? ($0.account?.key ?? "") < ($1.account?.key ?? "") : $0.provider.rawValue < $1.provider.rawValue
+        }) {
+            guard slot.provider == .claude || slot.account == defaults[.codex] else { continue }
+            let outcome = Self.read(slot, rejected: [], keychain: keychain)
+            if outcome.codex != nil || outcome.claude != nil { received = true }
+            if outcome.keychainRefused { keychain = false }
+            if let codex = outcome.codex { combined.codex += codex }
+            if let claude = outcome.claude {
+                let key = slot.account?.storageKey ?? "legacy"
+                combined.claude[key] = (combined.claude[key] ?? ClaudeUsageLimits()).merged(claude)
+            }
+            notes[slot] = outcome.note
+        }
+        let now = Date()
+        // Preserve a successful empty live response's exit status even when it has no dashboard window.
+        AppLanguage.with(.en) {
+            for slot in slots.sorted(by: {
+                $0.provider.rawValue == $1.provider.rawValue ? ($0.account?.key ?? "") < ($1.account?.key ?? "") : $0.provider.rawValue < $1.provider.rawValue
+            }) {
+                let key = slot.account?.storageKey ?? "legacy"
+                let claude: ClaudeLimitsByAccount = slot.provider == .claude ? combined.claude[key].map { [key: $0] } ?? [:] : [:]
+                let codex = slot.provider == .codex ? combined.codex.filter { $0.account == slot.account } : []
+                let rowDefaults = slot.account.map { [slot.provider: $0] } ?? [:]
+                let rows = SessionPresentation.usageLimits(tokens: [], codexReads: codex, claudeLimits: claude,
+                                                         defaults: rowDefaults, known: known, now: now)
+                let label = slot.account.map { "account …\($0.id.suffix(4))" } ?? "legacy account"
+                let text = rows.first.map {
+                    return "\($0.value(now: now)) · \($0.details(now: now).first ?? "")"
+                        + ($0.otherText(now: now).map { " (\($0))" } ?? "")
+                } ?? "no window"
+                print("\(slot.provider.title), \(label): \(text)" + (notes[slot].map { " · \($0)" } ?? ""))
+            }
+        }
+        return received ? 0 : 1
     }
 }
 
-/// Reads each provider on its own cadence, one read per provider at a time, with error backoff. Main thread only.
+/// Reads each account slot on its own cadence, one read per slot at a time, with error backoff. Main thread only.
 final class LiveLimitPoller {
-    private struct Slot {
+    private struct State {
         var last: Date?
         var retryAt: Date?
         var failures = 0
         var inFlight = false
+        var rejected: Set<Int> = []
     }
-    private var slots: [TokenSource: Slot] = [:]
+    private var states: [LimitSlot: State] = [:]
     private var wasOpen = false
-    private var rejected: Int?
     private var keychainRefused = false
-    private let read: (TokenSource, Int?, Bool) -> LiveLimits.Outcome
+    private let read: (LimitSlot, Set<Int>, Bool) -> LiveLimits.Outcome
 
     /// `read` is replaced only by the self-test.
-    init(read: @escaping (TokenSource, Int?, Bool) -> LiveLimits.Outcome = LiveLimits.read) { self.read = read }
+    init(read: @escaping (LimitSlot, Set<Int>, Bool) -> LiveLimits.Outcome = LiveLimits.read) { self.read = read }
 
-    /// `live`: whether the provider has a running session. `deliver` gets each successful read on the main thread.
-    func tick(now: Date, open: Bool, live: (TokenSource) -> Bool, deliver: @escaping (LiveLimits.Outcome) -> Void) {
+    /// `live`: whether the account has a running session. `deliver` gets each successful read on the main thread.
+    func tick(now: Date, open: Bool, slots: Set<LimitSlot>, live: (LimitSlot) -> Bool, deliver: @escaping (LiveLimits.Outcome) -> Void) {
         let opened = open && !wasOpen
         wasOpen = open
-        for source in TokenSource.defaultClients {
-            var slot = slots[source] ?? Slot()
-            guard !slot.inFlight, LiveLimits.due(last: slot.last, retryAt: slot.retryAt, now: now, live: live(source), open: open, opened: opened)
+        for accountSlot in slots {
+            var state = states[accountSlot] ?? State()
+            guard !state.inFlight, LiveLimits.due(last: state.last, retryAt: state.retryAt, now: now, live: live(accountSlot), open: open, opened: opened)
             else { continue }
-            slot.last = now
-            slot.inFlight = true
-            slots[source] = slot
-            let rejected = rejected, keychain = !keychainRefused, read = read
+            state.last = now
+            state.inFlight = true
+            states[accountSlot] = state
+            let rejected = state.rejected, keychain = !keychainRefused, read = read
             DispatchQueue.global(qos: .utility).async { [weak self] in
-                let outcome = read(source, rejected, keychain)
-                DispatchQueue.main.async { self?.finish(source, outcome, deliver) }
+                let outcome = read(accountSlot, rejected, keychain)
+                DispatchQueue.main.async { self?.finish(accountSlot, outcome, deliver) }
             }
         }
     }
 
-    private func finish(_ source: TokenSource, _ outcome: LiveLimits.Outcome, _ deliver: (LiveLimits.Outcome) -> Void) {
-        var slot = slots[source] ?? Slot()
-        slot.inFlight = false
-        slot.failures = outcome.failed ? slot.failures + 1 : 0
+    private func finish(_ accountSlot: LimitSlot, _ result: LiveLimits.Outcome, _ deliver: (LiveLimits.Outcome) -> Void) {
+        var state = states[accountSlot] ?? State()
+        state.inFlight = false
+        state.failures = result.failed ? state.failures + 1 : 0
         // Counted from the read's start, on the clock `tick` was given.
-        slot.retryAt = outcome.failed ? (slot.last ?? Date()).addingTimeInterval(UpdateThrottle.backoff(slot.failures)) : nil
-        slots[source] = slot
-        if let token = outcome.rejected { rejected = token }
-        if outcome.keychainRefused { keychainRefused = true }
-        if outcome.codex != nil || outcome.claude != nil { deliver(outcome) }
+        state.retryAt = result.failed ? (state.last ?? Date()).addingTimeInterval(UpdateThrottle.backoff(state.failures)) : nil
+        state.rejected.formUnion(result.rejected)
+        states[accountSlot] = state
+        if result.keychainRefused { keychainRefused = true }
+        if result.codex != nil || result.claude != nil {
+            var outcome = result
+            outcome.slot = accountSlot
+            deliver(outcome)
+        }
     }
 }

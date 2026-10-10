@@ -80,7 +80,12 @@ static class Fixtures
             SessionPresentation.Groups(fixture.Tokens, now), SessionListModel.Make(fixture.Tokens, now, false, fixture.Restart), flow,
             fixture.Tokens.Where(reading => !SessionPresentation.IsTelemetry(reading)).Select(reading => reading.LastOutputAt).Max(),
             fixture.Telemetry, fixture.Telemetry.Status, null, fixture.Restart, new HashSet<TokenSource>(),
-            new Dictionary<TokenSource, DateTimeOffset>(), fixture.ClaudeLimits, fixture.FoldersFound, new HashSet<TokenSource>());
+            new Dictionary<TokenSource, DateTimeOffset>(), new Dictionary<string, ClaudeUsageLimits> { ["legacy"] = fixture.ClaudeLimits },
+            fixture.FoldersFound, new HashSet<TokenSource>())
+        {
+            UsageLimits = SessionPresentation.UsageLimits(fixture.Tokens, [], new Dictionary<string, ClaudeUsageLimits> { ["legacy"] = fixture.ClaudeLimits },
+                new Dictionary<TokenSource, LimitAccount>(), new Dictionary<TokenSource, IReadOnlyList<LimitAccount>>(), now),
+        };
         return new DashboardInput(state, fixture.Update is { } install ? Update(install, now) : new UpdateState(),
             null, null, fixture.Note, fixture.Failure, [], null, OnboardingSeen: true, OptedOut: false);
     }
@@ -300,8 +305,19 @@ static class Fixtures
         var available = new Fixture("update-available") { Tokens = working, Lag = 12, Update = "available" };
         var downloading = new Fixture("update-downloading") { Tokens = working, Update = "downloading" };
         var failed = new Fixture("update-failed") { Tokens = working, Telemetry = TelemetryCollectorState.BusyOtherApp, Update = "failed" };
+        var firstAccount = new LimitAccount("workspace-1234", "alex@example.com");
+        var secondAccount = new LimitAccount("workspace-1234", "sam@example.com");
+        var firstMember = Generated(docs, 18, -12) with
+        {
+            LimitAccount = firstAccount, RateLimit = docs.RateLimit! with { UsedPercent = 82, Account = firstAccount },
+        };
+        var secondMember = Generated(Reading("member02", TokenSource.Codex, "docs-site", "gpt-6.1-sol", TokenActivityState.Working), 18, -12) with
+        {
+            LimitAccount = secondAccount, RateLimit = docs.RateLimit! with { UsedPercent = 34, Account = secondAccount },
+        };
+        var multipleAccounts = new Fixture("multiple-accounts") { Tokens = [firstMember, secondMember] };
         return [input, retry, tools, context, grouped, dates, empty, noFolders, loading, restart, port, busy, logWait, rest, detail, selected,
-            claudeOnly, available, downloading, failed];
+            claudeOnly, available, downloading, failed, multipleAccounts];
     }
 
     /// The five first-run outcomes (never part of a dashboard snapshot).
@@ -342,7 +358,12 @@ static class Fixtures
         var state = input.State with
         {
             TelemetryNextRetryAt = input.State.Now.AddSeconds(25),
-            ClaudeLimits = new ClaudeUsageLimits(new ClaudeLimitWindow(42, input.State.Now.AddSeconds(7_980), received), new ClaudeLimitWindow(31, input.State.Now.AddSeconds(273_600), received)),
+            ClaudeLimits = new Dictionary<string, ClaudeUsageLimits>
+            {
+                ["legacy"] = new(new ClaudeLimitWindow(42, input.State.Now.AddSeconds(7_980), received), new ClaudeLimitWindow(31, input.State.Now.AddSeconds(273_600), received)),
+            },
+            UsageLimits = new[] { SessionPresentation.ClaudeUsageLimit(
+                new(new ClaudeLimitWindow(42, input.State.Now.AddSeconds(7_980), received), new ClaudeLimitWindow(31, input.State.Now.AddSeconds(273_600), received)), input.State.Now)! },
         };
         return new SettingsInput(input with { State = state, Update = Update("available", input.State.Now), ClaudeBridged = true }, new Dictionary<TokenSource, DateTimeOffset>(),
             LoginItem.State.NotRegistered);

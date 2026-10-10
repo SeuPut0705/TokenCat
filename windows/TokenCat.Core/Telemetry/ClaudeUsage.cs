@@ -42,13 +42,14 @@ public static class ClaudeUsage
     /// The Claude desktop app runs no statusLine; it records its own usage about every 15 min in plan-usage-history.json
     /// (`{"version":2,"samples":[{"t":ms,"org":…,"u":{"fh":%,"sd":%}}]}`). Only the last sample's time and the 5-hour (`fh`)
     /// and 7-day (`sd`) percentages are kept, with no reset time; null for any other shape.
-    public static ClaudeUsageLimits? DecodeDesktopHistory(ReadOnlySpan<byte> json)
+    public static ClaudeUsageLimits? DecodeDesktopHistory(ReadOnlySpan<byte> json, string? defaultOrganization = null)
     {
         if (Json.Parse(json) is not { ValueKind: JsonValueKind.Object } root || root.Field("version")?.Number != 2
             || root.Field("samples") is not { ValueKind: JsonValueKind.Array } samples || samples.GetArrayLength() == 0
             || samples[samples.GetArrayLength() - 1] is not { ValueKind: JsonValueKind.Object } sample
             || sample.Field("u") is not { ValueKind: JsonValueKind.Object } usage
             || sample.Field("t")?.Number is not double time || time is < 1e12 or > 1e13) return null;
+        if (sample.Field("org")?.Text is { } organization && organization != defaultOrganization) return null;
         var recorded = DateTimeOffset.UnixEpoch.AddMilliseconds(time);
         ClaudeLimitWindow? Window(string key) =>
             usage.Field(key)?.Number is double used && used is >= 0 and <= 100 ? new(used, null, recorded) : null;
@@ -60,22 +61,24 @@ public static class ClaudeUsage
     public sealed class DesktopReader(IReadOnlyList<string> candidates)
     {
         (string Path, long Length, DateTime Written)? stamp;
+        string? organization;
         ClaudeUsageLimits limits = ClaudeUsageLimits.Empty;
 
-        public ClaudeUsageLimits Read()
+        public ClaudeUsageLimits Read(string? defaultOrganization = null)
         {
             var file = candidates.Select(path => new FileInfo(path)).FirstOrDefault(info => info.Exists);
             if (file is null || file.Length > TelemetryHttp.MaximumBodyBytes) return ClaudeUsageLimits.Empty;
             var current = (file.FullName, file.Length, file.LastWriteTimeUtc);
-            if (stamp == current) return limits;
+            if (stamp == current && organization == defaultOrganization) return limits;
             stamp = current;
+            organization = defaultOrganization;
             try
             {
                 // Electron writes it while we read: share everything.
                 using var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
                 using var bytes = new MemoryStream();
                 stream.CopyTo(bytes);
-                limits = DecodeDesktopHistory(bytes.ToArray()) ?? ClaudeUsageLimits.Empty;
+                limits = DecodeDesktopHistory(bytes.ToArray(), defaultOrganization) ?? ClaudeUsageLimits.Empty;
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { limits = ClaudeUsageLimits.Empty; }
             return limits;

@@ -15,6 +15,7 @@ public sealed class TokenTracker
     readonly Func<string, string?> environment;
     readonly IReadOnlyList<TokenProvider> providers;
     readonly Func<DateTimeOffset> clock;
+    public LimitAccountReader AccountReader { get; }
     readonly int initialTailBytes;
     readonly double discoveryInterval;
     DateTimeOffset? lastDiscovery;
@@ -33,16 +34,19 @@ public sealed class TokenTracker
         this.home = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
         this.environment = environment ?? Environment.GetEnvironmentVariable;
         this.providers = providers ?? TokenProvider.All;
+        AccountReader = new LimitAccountReader(this.home, this.environment);
         clock = now ?? (() => DateTimeOffset.UtcNow);
         this.initialTailBytes = Math.Max(128, initialTailBytes);
         discoveryInterval = discoveryIntervalSeconds;
-        string[] Prefixes(IEnumerable<string> roots) =>
-            [.. roots.Select(root => Path.TrimEndingDirectorySeparator(root).Replace('\\', '/') + "/").Distinct()];
+        var realHome = LimitAccountReader.RealPath(this.home);
+        string[] Prefixes(Func<string, Func<string, string?>, IReadOnlyList<string>> roots) =>
+            [.. roots(this.home, this.environment).Concat(roots(realHome, this.environment))
+                .SelectMany(LimitAccountReader.Prefixes).Distinct(LimitAccountReader.PathComparer)];
         logRoots = [.. this.providers.Where(provider => provider.Format is not null).Select(provider => (
-            Prefixes(provider.Roots(this.home, this.environment)), provider.Source, provider.Format!))];
+            Prefixes(provider.Roots), provider.Source, provider.Format!))];
         var read = this.providers.Where(provider => provider.Format is not null).Select(provider => provider.Source).ToHashSet();
         clientRoots = [.. TokenClientRoots.All.Where(clone => read.Contains(clone.Source))
-            .Select(clone => (Prefixes(clone.Roots(this.home, this.environment)), clone.ClientName))];
+            .Select(clone => (Prefixes(clone.Roots), clone.ClientName))];
     }
 
     /// Candidate roots of every client with a parser, for `LogWatcher`; the watcher and the folder check keep the existing ones.
@@ -94,6 +98,7 @@ public sealed class TokenTracker
             Discover(now);
             lastDiscovery = now;
         }
+        AccountReader.Refresh();
         // One reader that throws (a corrupt or hostile log) keeps its previous state and rows; the others still report.
         foreach (var file in files.Values)
             try { file.Reader.Read(initialTailBytes, now); }
@@ -108,7 +113,12 @@ public sealed class TokenTracker
             catch (Exception) { continue; }
             var normalized = path.Replace('\\', '/');
             var client = clientRoots.FirstOrDefault(root => root.Prefixes.Any(prefix => normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))).Name;
-            readings.AddRange(client is null ? rows : rows.Select(row => row with { ClientName = row.ClientName ?? client, RateLimit = null }));
+            foreach (var original in rows)
+            {
+                var row = client is null ? original : original with { ClientName = original.ClientName ?? client, RateLimit = null };
+                var account = AccountReader.Account(path, row.Source, row.Model, row.CredentialPins);
+                readings.Add(row with { LimitAccount = account, RateLimit = row.RateLimit is { } limit ? limit with { Account = account } : null });
+            }
         }
         readings.Sort((a, b) =>
             a.Active != b.Active ? (a.Active ? -1 : 1)

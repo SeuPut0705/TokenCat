@@ -153,6 +153,63 @@ func runClineOmpChecks(root: URL, check: (Bool, String) -> Void) {
     }
 
     do {
+        let home = root.appendingPathComponent("omp-account-pins")
+        let project = home.appendingPathComponent(".omp/agent/sessions/project")
+        let stem = "2026-10-04T05-00-00-000Z_pin-parent"
+        let parent = project.appendingPathComponent(stem + ".jsonl")
+        let child = project.appendingPathComponent(stem + "/Scout.jsonl")
+        let nested = project.appendingPathComponent(stem + "/Scout/Scout.Helper.jsonl")
+        try FileManager.default.createDirectory(at: nested.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let accountA = LimitAccount(id: "shared-workspace", email: "member-a@example.com")
+        let accountB = LimitAccount(id: "shared-workspace", email: "member-b@example.com")
+        func pin(_ provider: String, _ id: String, _ email: String) -> String {
+            LimitAccount.credentialPinHash(provider: provider, accountID: id, email: email, organizationID: nil, projectID: nil)
+        }
+        let pinA = pin("openai-codex", accountA.id, accountA.email!)
+        let pinB = pin("openai-codex", accountB.id, accountB.email!)
+        let claudePin = pin("anthropic", "claude-account", "claude@example.com")
+        check(try writeLimitCredentialFixture(home.appendingPathComponent(".omp/agent/agent.db"), rows: [
+            ("openai-codex", ["accountId": accountA.id, "email": accountA.email!, "access": ["invalid": true]], true),
+            ("openai-codex", ["accountId": accountB.id, "email": accountB.email!, "refresh": ["invalid": true]], false),
+            ("anthropic", ["accountId": "claude-account", "email": "claude@example.com"], false)]),
+            "omp account pins fixture: metadata credentials database could not be created")
+        try append(parent, [
+            ["type": "session", "id": "pin-parent", "timestamp": iso(0)],
+            ["type": "credential_pin", "provider": "openai-codex", "hash": pinB, "timestamp": iso(0)],
+            ["type": "credential_pin", "provider": "anthropic", "hash": claudePin, "timestamp": iso(0)],
+            ["type": "credential_pin", "provider": "openai-codex", "hash": pinA, "timestamp": iso(1)],
+            ["type": "message", "timestamp": iso(2), "message": ["role": "user", "content": String(repeating: "PRIVATE", count: 4_000)]]])
+        try FileManager.default.setAttributes([.modificationDate: start], ofItemAtPath: parent.path)
+        try append(child, [["type": "session", "id": "pin-child", "parentSession": parent.path, "timestamp": iso(2)],
+                           ["type": "message", "timestamp": iso(3), "message": ["role": "assistant", "model": "gpt-fixture",
+                              "timestamp": ms(3), "usage": ["output": 4], "stopReason": "stop"]]])
+        try append(nested, [["type": "session", "id": "pin-nested", "parentSession": child.path, "timestamp": iso(2)],
+                            ["type": "message", "timestamp": iso(3), "message": ["role": "assistant", "model": "claude-fixture",
+                               "timestamp": ms(3), "usage": ["output": 4], "stopReason": "stop"]]])
+        // Newer empty main logs deliberately push the parent beyond the discovery cap.
+        for index in 0..<40 { try Data().write(to: project.appendingPathComponent("newer-\(index).jsonl")) }
+        now = start.addingTimeInterval(4)
+        let tracker = TokenTracker(homeDirectory: home, environment: [:], now: { now }, initialTailBytes: 512, discoveryInterval: 0)
+        let rows = tracker.sample()
+        let childRow = rows.first { $0.sessionID == "pin-child" }
+        let nestedRow = rows.first { $0.sessionID == "pin-nested" }
+        check(childRow?.limitAccount == accountA && childRow?.credentialPins[.codex] == pinA
+              && nestedRow?.limitAccount?.id == "claude-account" && nestedRow?.credentialPins[.claude] == claudePin,
+              "omp account pins: newest provider pin or parent inheritance outside discovery/tail was lost")
+        try append(child, [["type": "credential_pin", "provider": "openai-codex", "hash": pinB, "timestamp": iso(4)]])
+        let changed = tracker.sample()
+        check(changed.first { $0.sessionID == "pin-child" }?.limitAccount == accountB
+              && changed.first { $0.sessionID == "pin-nested" }?.credentialPins[.codex] == pinB,
+              "omp account pins: a child's newest pin did not override its parent or flow to descendants")
+        let encoded = String(decoding: try JSONEncoder().encode(changed), as: UTF8.self)
+        check(!encoded.contains("example.com") && !encoded.contains("shared-workspace") && !encoded.contains(pinA)
+              && !encoded.contains(pinB) && !encoded.contains(claudePin),
+              "omp account pins privacy: inherited credential identity leaked into encoded readings")
+    } catch {
+        check(false, "omp account pins fixture error: \(error.localizedDescription)")
+    }
+
+    do {
         // Cline in VS Code, Roo Code in Cursor, and the Cline CLI.
         let home = root.appendingPathComponent("cline-home")
         let storage = home.appendingPathComponent("Library/Application Support")

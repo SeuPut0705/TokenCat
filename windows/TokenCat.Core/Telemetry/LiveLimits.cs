@@ -11,7 +11,11 @@ namespace TokenCat;
 
 /// One live poll: Codex's windows, Claude's windows, or neither. `Failed` (no answer, an error status, an unknown shape) backs
 /// the next poll off; nothing to ask with (no codex, no sign-in, an expiring or refused token) is not a failure.
-public sealed record LiveLimitResult(IReadOnlyList<TokenRateLimit>? Codex = null, ClaudeUsageLimits? Claude = null, bool Failed = false);
+public sealed record LiveLimitResult(IReadOnlyList<TokenRateLimit>? Codex = null, ClaudeUsageLimits? Claude = null, bool Failed = false)
+{
+    public LimitSlot? Slot { get; init; }
+    public IReadOnlySet<string> Rejected { get; init; } = new HashSet<string>(StringComparer.Ordinal);
+}
 
 /// "실시간 한도 확인" (on by default): account usage limits read as they are, instead of the last value a log, the status line
 /// or the Claude desktop app recorded. Codex: a short-lived `codex app-server` (JSON-RPC 2.0, one JSON object per line on
@@ -20,19 +24,21 @@ public sealed record LiveLimitResult(IReadOnlyList<TokenRateLimit>? Codex = null
 /// Anthropic sign-in (`agent.db` `auth_credentials`) for the same account. That access token lives only for its one request: never
 /// stored, logged, passed as a process argument or refreshed (a refresh rotates the owning client's refresh token and signs it out).
 /// Requests go only to the codex executable and api.anthropic.com.
-public sealed class LiveLimits(string home, string version, HttpMessageHandler? handler = null)
+public sealed class LiveLimits(string home, string version, HttpMessageHandler? handler = null,
+    LimitAccountReader? accounts = null, Func<string, string?>? env = null)
 {
     /// Seconds: the poll interval while a session of the provider runs or a dashboard shows, otherwise; a dashboard that opens
     /// polls at once when the last poll is this old; a value this recent reads "실시간"; the longest failure backoff.
-    public const double ActiveInterval = 60, IdleInterval = 600, OpenedAfter = 15, LiveFor = 120, MaximumBackoff = 1_800;
+    public const double ActiveInterval = 60, IdleInterval = 600, OpenedAfter = 15, LiveFor = 120;
     static readonly TimeSpan Timeout = TimeSpan.FromSeconds(10);
     public static readonly Uri ClaudeEndpoint = new("https://api.anthropic.com/api/oauth/usage");
 
-    readonly string credentials = Path.Combine(home, ".claude", ".credentials.json");
+    readonly Func<string, string?> environment = env ?? Environment.GetEnvironmentVariable;
+    readonly LimitAccountReader accountReader = accounts ?? new(home, env ?? Environment.GetEnvironmentVariable);
+    readonly object accountGate = new();
     // No cookies, credentials or redirects: the bearer token goes to api.anthropic.com only.
     readonly HttpClient http = new(handler ?? Handler()) { Timeout = Timeout, MaxResponseContentBufferSize = 1 << 20 };
-    /// SHA-256 of the access token refused with 401/403; that token is not sent again until Claude Code stores another.
-    string? rejected;
+    readonly Dictionary<LimitSlot, HashSet<string>> rejectedBySlot = [];
 
     static SocketsHttpHandler Handler()
     {
@@ -41,31 +47,31 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
         return value;
     }
 
-    /// Per provider, guarded by its owner (LiveMonitor): one poll in flight, when the last one started (Stopwatch), failures since
-    /// the last answer.
-    public sealed class Poll
+    /// Clock rollback polls immediately; dashboard opening never skips an outstanding retry deadline.
+    public static bool Due(DateTimeOffset? last, DateTimeOffset? retryAt, DateTimeOffset now, bool live, bool open, bool opened)
     {
-        public bool Running;
-        public long? Started;
-        public int Failures;
+        if (retryAt is { } retry && now < retry) return false;
+        if (last is not { } previous) return true;
+        var age = (now - previous).TotalSeconds;
+        return age < 0 || age >= (opened ? OpenedAfter : live || open ? ActiveInterval : IdleInterval);
     }
 
-    /// Every minute while one of the provider's sessions runs or a dashboard shows, else every 10 minutes; a dashboard that just
-    /// opened polls when the last poll is 15 s old. Each failure doubles the wait, up to 30 minutes, and opening doesn't skip it.
-    public static bool Due(double? sinceLast, int failures, bool active, bool opened)
+    /// One read per account slot at a time, as guarded by the monitor or LiveLimitPoller.
+    public async Task<LiveLimitResult> Read(LimitSlot slot, CancellationToken token)
     {
-        if (sinceLast is not { } elapsed) return true;
-        var wait = Math.Min(MaximumBackoff, (active ? ActiveInterval : IdleInterval) * Math.Pow(2, failures));
-        return elapsed >= wait || (opened && failures == 0 && elapsed >= OpenedAfter);
+        if (slot.Provider == TokenSource.Claude) return await ReadClaude(slot, token).ConfigureAwait(false);
+        if (slot.Provider != TokenSource.Codex) return new() { Slot = slot };
+        LimitAccount? defaultCodex;
+        lock (accountGate)
+        {
+            accountReader.Refresh();
+            defaultCodex = accountReader.DefaultAccount(TokenSource.Codex);
+        }
+        if (slot.Account != defaultCodex || FindCodex() is not { } executable)
+            return new() { Slot = slot };
+        var result = await ReadCodex(executable, version, Timeout, token).ConfigureAwait(false);
+        return result with { Slot = slot, Codex = result.Codex?.Select(value => value with { Account = slot.Account }).ToArray() };
     }
-
-    /// The monitor's reader; one call per provider at a time. Only the telemetry clients (Codex, Claude Code) have live limits.
-    public Task<LiveLimitResult> Read(TokenSource source, CancellationToken token) => source switch
-    {
-        TokenSource.Claude => ReadClaude(token),
-        TokenSource.Codex when FindCodex() is { } codex => ReadCodex(codex, version, Timeout, token),
-        _ => Task.FromResult(new LiveLimitResult()),
-    };
 
     // MARK: Codex
 
@@ -164,50 +170,73 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
 
     // MARK: Claude
 
-    /// Claude Code's sign-in first, then omp's or Pi's for the same account (any account when Claude Code's is unknown). Skipped
-    /// without a request when there is none, every token expires within a minute (or has no expiry), or each was refused before.
-    public async Task<LiveLimitResult> ReadClaude(CancellationToken token)
+    /// Only tokens matching this exact canonical identity are eligible; nil is a distinct legacy slot.
+    async Task<LiveLimitResult> ReadClaude(LimitSlot slot, CancellationToken token)
     {
-        var candidates = ClaudeCandidates(await ClaudeCodeCredential(token).ConfigureAwait(false),
-            AgentCredentials(AgentUsageHistory.Databases(home, Environment.GetEnvironmentVariable)), ClaudeCodeAccount());
-        var now = DateTimeOffset.UtcNow.AddSeconds(60).ToUnixTimeMilliseconds();
-        string? access = null, fingerprint = null;
-        foreach (var (candidate, expires) in candidates)
+        LimitAccount? codeAccount;
+        IReadOnlyList<(string Access, double? Expires, LimitAccount? Account)> agents;
+        IReadOnlyList<(string Directory, LimitAccount? Account)> configurations;
+        HashSet<string> rejected;
+        lock (accountGate)
         {
-            if (expires is not { } at || at <= now) continue;
-            var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(candidate)));
-            if (hash == rejected) continue;
-            (access, fingerprint) = (candidate, hash);
-            break;
+            accountReader.Refresh();
+            codeAccount = accountReader.ClaudeAccount(Path.Combine(home, ".claude"));
+            agents = AgentCredentials(AgentUsageHistory.Databases(home, environment), accountReader);
+            configurations = TokenProvider.ClaudeConfigDirectories(home, environment)
+                .Select(directory => (directory, accountReader.ClaudeAccount(directory))).ToArray();
+            if (!rejectedBySlot.TryGetValue(slot, out rejected!)) rejectedBySlot[slot] = rejected = new(StringComparer.Ordinal);
         }
-        if (access is null) return new();
-        using var request = new HttpRequestMessage(HttpMethod.Get, ClaudeEndpoint);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", access);
-        request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
-        request.Headers.TryAddWithoutValidation("User-Agent", UpdateClient.UserAgent(version));
-        try
+        var saved = slot.Account == codeAccount
+            ? await ClaudeCodeCredential(Path.Combine(home, ".claude"), token).ConfigureAwait(false) : null;
+        var candidatesFromConfigs = new List<(string Access, double? Expires, LimitAccount? Account)>();
+        foreach (var (directory, account) in configurations)
         {
-            using var response = await http.SendAsync(request, token).ConfigureAwait(false);
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            if (Path.GetFullPath(directory) == Path.GetFullPath(Path.Combine(home, ".claude")) || account != slot.Account) continue;
+            if (await ClaudeCodeCredential(directory, token).ConfigureAwait(false) is { } credential)
+                candidatesFromConfigs.Add((credential.Access, credential.Expires, account));
+        }
+        candidatesFromConfigs.AddRange(agents);
+        var candidates = ClaudeCandidates(saved, codeAccount, candidatesFromConfigs, slot.Account);
+        var refused = new HashSet<string>(StringComparer.Ordinal);
+        var usableAfter = DateTimeOffset.UtcNow.AddSeconds(60).ToUnixTimeMilliseconds();
+        foreach (var (access, expires) in candidates)
+        {
+            if (expires is not { } expiry || expiry <= usableAfter) continue;
+            var fingerprint = TokenHash(access);
+            if (rejected.Contains(fingerprint)) continue;
+            using var request = new HttpRequestMessage(HttpMethod.Get, ClaudeEndpoint);
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", access);
+            request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
+            request.Headers.TryAddWithoutValidation("User-Agent", UpdateClient.UserAgent(version));
+            try
             {
-                rejected = fingerprint;
-                return new();
+                using var response = await http.SendAsync(request, token).ConfigureAwait(false);
+                if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+                {
+                    rejected.Add(fingerprint);
+                    refused.Add(fingerprint);
+                    continue;
+                }
+                if (response.StatusCode != HttpStatusCode.OK) return new(Failed: true) { Slot = slot, Rejected = refused };
+                var body = await response.Content.ReadAsByteArrayAsync(token).ConfigureAwait(false);
+                return DecodeClaude(body, DateTimeOffset.UtcNow) is { } limits
+                    ? new(Claude: limits) { Slot = slot, Rejected = refused } : new(Failed: true) { Slot = slot, Rejected = refused };
             }
-            // 429, 5xx and anything unexpected back off.
-            if (response.StatusCode != HttpStatusCode.OK) return new(Failed: true);
-            var body = await response.Content.ReadAsByteArrayAsync(token).ConfigureAwait(false);
-            return DecodeClaude(body, DateTimeOffset.UtcNow) is { } limits ? new(Claude: limits) : new(Failed: true);
+            catch (Exception error) when (error is HttpRequestException or OperationCanceledException or IOException)
+            { return new(Failed: true) { Slot = slot, Rejected = refused }; }
         }
-        catch (Exception error) when (error is HttpRequestException or OperationCanceledException or IOException) { return new(Failed: true); }
+        return new() { Slot = slot, Rejected = refused };
     }
 
+    public static string TokenHash(string access) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(access)));
+
     /// `{"claudeAiOauth":{"accessToken":…,"expiresAt":ms}}` from ~\.claude\.credentials.json; other fields are not read.
-    async Task<(string Access, double? Expires)?> ClaudeCodeCredential(CancellationToken token)
+    public static async Task<(string Access, double? Expires)?> ClaudeCodeCredential(string configDirectory, CancellationToken token)
     {
         try
         {
             // Claude Code rewrites the file when it refreshes: share everything, as the desktop history reader does.
-            using var stream = new FileStream(credentials, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            using var stream = new FileStream(Path.Combine(configDirectory, ".credentials.json"), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             if (stream.Length > TelemetryHttp.MaximumBodyBytes) return null;
             using var bytes = new MemoryStream();
             await stream.CopyToAsync(bytes, token).ConfigureAwait(false);
@@ -221,40 +250,34 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
     /// access token, its expiry (ms) and account id leave SQLite. These clients refresh their own token while they run, so it
     /// stays usable when Claude Code's has expired. Never refreshed, stored or logged, like Claude Code's.
     public const string AgentCredentialQuery = """
-        SELECT json_extract(data, '$.access'), json_extract(data, '$.expires'), json_extract(data, '$.accountId') FROM auth_credentials
+        SELECT json_extract(data, '$.access'), json_extract(data, '$.expires'), json_extract(data, '$.accountId'),
+               json_extract(data, '$.email'), json_extract(data, '$.orgName') FROM auth_credentials
         WHERE provider = 'anthropic' AND credential_type = 'oauth' AND disabled_cause IS NULL
         """;
 
-    public static IReadOnlyList<(string Access, double? Expires, string? Account)> AgentCredentials(IEnumerable<string> databases)
+    public static IReadOnlyList<(string Access, double? Expires, LimitAccount? Account)> AgentCredentials(IEnumerable<string> databases, LimitAccountReader accounts)
     {
-        var found = new List<(string, double?, string?)>();
+        var found = new List<(string, double?, LimitAccount?)>();
         foreach (var database in databases)
         {
             if (!File.Exists(database)) continue;
             using var connection = OpenCodeDatabase.Open(database);
             connection?.Query(AgentCredentialQuery, [], row =>
             {
-                if (row.Text(0) is { Length: > 0 } access) found.Add((access, row.Double(1), row.Text(2)));
+                if (row.Text(0) is { Length: > 0 } access)
+                    found.Add((access, row.Double(1), accounts.Resolve(TokenSource.Claude, row.Text(2), row.Text(3), row.Text(4))));
             });
         }
         return found;
     }
 
-    /// Claude Code's sign-in, then omp's or Pi's whose account is Claude Code's (all of them when that account is unknown).
     public static IReadOnlyList<(string Access, double? Expires)> ClaudeCandidates((string Access, double? Expires)? claudeCode,
-        IEnumerable<(string Access, double? Expires, string? Account)> agents, string? claudeAccount) =>
-        [.. claudeCode is { } own ? [own] : Array.Empty<(string, double?)>(),
-         .. agents.Where(agent => claudeAccount is null || agent.Account is null || agent.Account == claudeAccount).Select(agent => (agent.Access, agent.Expires))];
-
-    string? ClaudeCodeAccount()
+        LimitAccount? claudeAccount, IEnumerable<(string Access, double? Expires, LimitAccount? Account)> agents, LimitAccount? target)
     {
-        var config = Path.Combine(home, ".claude.json");
-        try
-        {
-            var info = new FileInfo(config);
-            return info.Exists && info.Length <= AgentUsageHistoryReader.MaximumConfigBytes ? AgentUsageHistory.ClaudeAccount(File.ReadAllBytes(config)) : null;
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        IEnumerable<(string Access, double? Expires)> own = claudeAccount == target && claudeCode is { } code ? [code] : [];
+        return [.. own.Concat(agents.Where(agent => agent.Account == target).Select(agent => (agent.Access, agent.Expires)))
+            .Where(candidate => seen.Add(candidate.Access))];
     }
 
     /// Claude Code's usage schema: `limits[]` with `kind` "session" (the 5-hour window) and "weekly_all" (7-day), `percent` and

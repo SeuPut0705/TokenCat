@@ -7,41 +7,53 @@ CultureInfo.DefaultThreadCurrentCulture = CultureInfo.CurrentCulture = CultureIn
 
 // dotnet run --project windows/TokenCat.Checks -c Release [-- --diagnose-tokens [home] | -- --telemetry-lifecycle-checks [port] | -- --live-limits]
 if (args is ["--diagnose-tokens", .. var home]) return TokenDiagnostics.Run(home is [var path, ..] ? path : AppPaths.Home);
-// Read-only: the real live limit sources (codex on PATH, Claude Code's credentials file) through LiveMonitor with a dashboard
-// "open", for up to 15 s. Prints the limit rows only; nothing is written outside a temp folder.
+// Read-only: account-scoped live sources and omp/Pi records. Only redacted account suffixes and numeric windows are printed.
 if (args is ["--live-limits"])
 {
-    var support = Directory.CreateTempSubdirectory("tokencat-live-limits-");
-    var monitor = new LiveMonitor(new MonitorOptions(AppPaths.Home, support.FullName, () => new SystemSnapshot { SampledAt = DateTimeOffset.UtcNow },
-        ReadLimits: new LiveLimits(AppPaths.Home, Updater.CurrentVersion).Read));
-    try
+    var accounts = new LimitAccountReader(AppPaths.Home, Environment.GetEnvironmentVariable);
+    accounts.Refresh();
+    var records = new AgentUsageHistoryReader(AppPaths.Home, Environment.GetEnvironmentVariable).Read();
+    var claude = records.Claude;
+    var codex = records.Codex.ToList();
+    var known = TokenSource.DefaultClients.ToDictionary(provider => provider,
+        provider => (IReadOnlyList<LimitAccount>)accounts.KnownAccounts(provider)
+            .Concat(records.Accounts.GetValueOrDefault(provider, [])).Distinct().OrderBy(account => account.Key, StringComparer.Ordinal).ToArray());
+    var slots = known.SelectMany(pair => pair.Value.Select(account => new LimitSlot(pair.Key, account))).ToHashSet();
+    foreach (var provider in TokenSource.DefaultClients)
+        if (accounts.DefaultAccount(provider) is { } account) slots.Add(new LimitSlot(provider, account));
+    if (claude.ContainsKey(ClaudeLimitsByAccount.LegacyKey)) slots.Add(new LimitSlot(TokenSource.Claude, null));
+    if (codex.Any(window => window.Account is null)) slots.Add(new LimitSlot(TokenSource.Codex, null));
+    var reader = new LiveLimits(AppPaths.Home, Updater.CurrentVersion, accounts: accounts);
+    var received = claude.Count > 0 || codex.Count > 0;
+    foreach (var slot in slots.Where(slot => slot.Provider == TokenSource.Claude || slot.Account == accounts.DefaultAccount(TokenSource.Codex)))
     {
-        monitor.Start();
-        monitor.WatchLimits(true, true);
-        static bool Answered(MonitorState state) => state.Sessions.UsageLimit?.Live == true && SessionPresentation.ClaudeUsageLimit(state.ClaudeLimits, state.Now)?.Live == true;
-        for (var waited = 0; waited < 30 && !Answered(monitor.Current); waited++) Thread.Sleep(500);
-        var state = monitor.Current;
-        foreach (var limit in new[] { state.Sessions.UsageLimit, SessionPresentation.ClaudeUsageLimit(state.ClaudeLimits, state.Now) })
-            Console.WriteLine(limit is null ? "—" : $"{limit.Title}: {limit.Value(state.Now)} · {limit.Details(state.Now)[0]} · live={limit.Live}");
-        // omp's and Pi's own usage records, with their age (the monitor reads them only with telemetry).
-        static string Describe(IEnumerable<(double Percent, int? Minutes, DateTimeOffset? Reset)> windows) => string.Join(", ", windows.Select(window =>
-            $"{Math.Round(window.Percent, MidpointRounding.AwayFromZero)}% of {(window.Minutes is { } minutes ? $"{minutes} min" : "?")} · resets {window.Reset?.ToString("O") ?? "—"}"));
-        var recorded = new AgentUsageHistoryReader(AppPaths.Home, Environment.GetEnvironmentVariable).Read();
-        string Age(IEnumerable<DateTimeOffset> dates) =>
-            dates.Any() ? $" · recorded {(DateTimeOffset.UtcNow - dates.Max()).TotalMinutes:F0} min ago" : "";
-        var claudeWindows = new[] { (recorded.Claude.FiveHour, 300), (recorded.Claude.SevenDay, 10_080) }
-            .Where(pair => pair.Item1 is not null).Select(pair => (pair.Item1!.UsedPercent, (int?)pair.Item2, pair.Item1.ResetsAt)).ToList();
-        Console.WriteLine("omp/Pi records, Claude: " + (claudeWindows.Count == 0 ? "none" : Describe(claudeWindows))
-            + Age(new[] { recorded.Claude.FiveHour, recorded.Claude.SevenDay }.OfType<ClaudeLimitWindow>().Select(window => window.ReceivedAt)));
-        Console.WriteLine("omp/Pi records, Codex: " + (recorded.Codex.Count == 0 ? "none" : Describe(recorded.Codex.Select(limit => (limit.UsedPercent, limit.WindowMinutes, limit.ResetsAt))))
-            + Age(recorded.Codex.Select(limit => limit.RecordedAt)));
-        return 0;
+        var outcome = await reader.Read(slot, CancellationToken.None);
+        received |= outcome.Claude is not null || outcome.Codex is not null;
+        if (outcome.Claude is { } limits) claude = ClaudeLimitsByAccount.Merge(claude, limits, slot.Account);
+        if (outcome.Codex is { } windows) codex.AddRange(windows);
     }
-    finally
+    foreach (var slot in slots.OrderBy(slot => slot.Provider.Id, StringComparer.Ordinal).ThenBy(slot => slot.Account?.Key, StringComparer.Ordinal))
     {
-        monitor.Stop();
-        support.Delete(true);
+        var key = slot.Account?.StorageKey ?? ClaudeLimitsByAccount.LegacyKey;
+        IReadOnlyDictionary<string, ClaudeUsageLimits> selectedClaude = slot.Provider == TokenSource.Claude && claude.TryGetValue(key, out var limits)
+            ? new Dictionary<string, ClaudeUsageLimits> { [key] = limits } : new Dictionary<string, ClaudeUsageLimits>();
+        IReadOnlyDictionary<TokenSource, LimitAccount> defaults = slot.Account is { } account
+            ? new Dictionary<TokenSource, LimitAccount> { [slot.Provider] = account } : new Dictionary<TokenSource, LimitAccount>();
+        var rows = SessionPresentation.UsageLimits([], codex.Where(window => window.Account == slot.Account).ToArray(),
+            selectedClaude, defaults, known, DateTimeOffset.UtcNow);
+        var label = slot.Account is { } identity ? $"account …{identity.Id[^Math.Min(4, identity.Id.Length)..]}" : "legacy account";
+        if (slot.Account is { } member)
+        {
+            var sameId = known[slot.Provider].Where(account => account.Id == member.Id).ToArray();
+            if (sameId.Length > 1) label += $" (member {Array.IndexOf(sameId, member) + 1})";
+        }
+        static string Window(UsageLimitSummary row) =>
+            $"{row.WindowMinutes?.ToString(CultureInfo.InvariantCulture) ?? "?"} min {row.PercentText}% {(row.Live ? "live" : row.RecordedBy is { } by ? by + " record" : "record")}";
+        var text = rows.FirstOrDefault() is { } row
+            ? Window(row) + (row.OtherSummary(DateTimeOffset.UtcNow) is { } other ? $" ({Window(other)})" : "") : "no window";
+        Console.WriteLine($"{slot.Provider.ShortTitle}, {label}: {text}");
     }
+    return received ? 0 : 1;
 }
 if (args is ["--telemetry-lifecycle-checks", .. var port])
     return Suites.Report(TelemetryLifecycleChecks.Run(port is [var text, ..] && int.TryParse(text, out var value) ? value : null));

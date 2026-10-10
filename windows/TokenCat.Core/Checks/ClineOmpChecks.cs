@@ -148,6 +148,63 @@ public static class ClineOmpChecks
 
         try
         {
+            var home = Path.Combine(root, "omp-account-pins");
+            var project = Path.Combine(home, ".omp", "agent", "sessions", "project");
+            const string stem = "2026-10-04T05-00-00-000Z_pin-parent";
+            var parent = Path.Combine(project, stem + ".jsonl");
+            var child = Path.Combine(project, stem, "Scout.jsonl");
+            var nested = Path.Combine(project, stem, "Scout", "Scout.Helper.jsonl");
+            Directory.CreateDirectory(Path.GetDirectoryName(nested)!);
+            var accountA = new LimitAccount("shared-workspace", "member-a@example.com");
+            var accountB = new LimitAccount("shared-workspace", "member-b@example.com");
+            var pinA = LimitAccount.CredentialPinHash("openai-codex", accountA.Id, accountA.Email, null, null);
+            var pinB = LimitAccount.CredentialPinHash("openai-codex", accountB.Id, accountB.Email, null, null);
+            var claudePin = LimitAccount.CredentialPinHash("anthropic", "claude-account", "claude@example.com", null, null);
+            check(TrackerChecks.WriteLimitCredentialFixture(Path.Combine(home, ".omp", "agent", "agent.db"),
+                ("openai-codex", new JsonObject { ["accountId"] = accountA.Id, ["email"] = accountA.Email, ["access"] = N("""{"invalid":true}""") }, true),
+                ("openai-codex", new JsonObject { ["accountId"] = accountB.Id, ["email"] = accountB.Email, ["refresh"] = N("""{"invalid":true}""") }, false),
+                ("anthropic", N("""{"accountId":"claude-account","email":"claude@example.com"}"""), false)),
+                "omp account pins fixture: metadata credentials database could not be created");
+            JsonNode Pin(string provider, string hash, double seconds) =>
+                new JsonObject { ["type"] = "credential_pin", ["provider"] = provider, ["hash"] = hash, ["timestamp"] = Iso(seconds) };
+            JsonNode Session(string id, string? parentPath, double seconds) =>
+                new JsonObject { ["type"] = "session", ["id"] = id, ["parentSession"] = parentPath, ["timestamp"] = Iso(seconds) };
+            JsonNode Assistant(string model) => new JsonObject
+            {
+                ["type"] = "message", ["timestamp"] = Iso(3),
+                ["message"] = new JsonObject { ["role"] = "assistant", ["model"] = model, ["timestamp"] = Ms(3),
+                    ["usage"] = new JsonObject { ["output"] = 4 }, ["stopReason"] = "stop" },
+            };
+            Append(parent, Session("pin-parent", null, 0), Pin("openai-codex", pinB, 0), Pin("anthropic", claudePin, 0),
+                Pin("openai-codex", pinA, 1), new JsonObject { ["type"] = "message", ["timestamp"] = Iso(2),
+                    ["message"] = new JsonObject { ["role"] = "user", ["content"] = string.Concat(Enumerable.Repeat("PRIVATE", 4_000)) } });
+            File.SetLastWriteTimeUtc(parent, Start.UtcDateTime);
+            Append(child, Session("pin-child", parent, 2), Assistant("gpt-fixture"));
+            Append(nested, Session("pin-nested", child, 2), Assistant("claude-fixture"));
+            // Newer empty logs deliberately exclude the parent from main-session discovery.
+            for (var index = 0; index < 40; index++) File.WriteAllBytes(Path.Combine(project, $"newer-{index}.jsonl"), []);
+            now = Start.AddSeconds(4);
+            var tracker = new TokenTracker(home, () => now, initialTailBytes: 512, discoveryIntervalSeconds: 0, environment: _ => null);
+            var rows = tracker.Sample();
+            var childRow = rows.FirstOrDefault(row => row.SessionID == "pin-child");
+            var nestedRow = rows.FirstOrDefault(row => row.SessionID == "pin-nested");
+            check(childRow?.LimitAccount == accountA && childRow.CredentialPins.GetValueOrDefault(TokenSource.Codex) == pinA
+                && nestedRow?.LimitAccount?.Id == "claude-account" && nestedRow.CredentialPins.GetValueOrDefault(TokenSource.Claude) == claudePin,
+                "omp account pins: newest provider pin or parent inheritance outside discovery/tail was lost");
+            Append(child, Pin("openai-codex", pinB, 4));
+            var changed = tracker.Sample();
+            check(changed.FirstOrDefault(row => row.SessionID == "pin-child")?.LimitAccount == accountB
+                && changed.FirstOrDefault(row => row.SessionID == "pin-nested")?.CredentialPins.GetValueOrDefault(TokenSource.Codex) == pinB,
+                "omp account pins: a child's newest pin did not override its parent or flow to descendants");
+            var encoded = Encoding.UTF8.GetString(Json.Serialize(changed));
+            check(!encoded.Contains("example.com", StringComparison.Ordinal) && !encoded.Contains("shared-workspace", StringComparison.Ordinal)
+                && !encoded.Contains(pinA, StringComparison.Ordinal) && !encoded.Contains(pinB, StringComparison.Ordinal) && !encoded.Contains(claudePin, StringComparison.Ordinal),
+                "omp account pins privacy: inherited credential identity leaked into encoded readings");
+        }
+        catch (Exception error) { check(false, $"omp account pins fixture error: {error.Message}"); }
+
+        try
+        {
             // Cline in VS Code, Roo Code in Cursor, and the Cline CLI.
             var home = Path.Combine(root, "cline-home");
             var storage = Path.Combine(home, "AppData", "Roaming");

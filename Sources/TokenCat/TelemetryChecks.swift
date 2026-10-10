@@ -436,8 +436,11 @@ func runTelemetryChecks() -> [String] {
               && TelemetryCollectorState.busyOtherApp.status == "Telemetry off · another app is using port \(LocalTelemetryCollector.port)",
               "English collector states changed")
     }
-    // Claude Code status line JSON from the bridge: only rate_limits survive; nothing else is kept or counted as an export.
+    // Status-line session IDs route windows in memory only, without posing as an OTLP export.
     let status = LocalTelemetryCollector()
+    func statusLimits() -> ClaudeUsageLimits {
+        status.claudeLimits(tokens: [])[ClaudeLimitsByAccount.legacyKey] ?? ClaudeUsageLimits()
+    }
     let statusBody = json(["session_id": "status-session", "cwd": "/Users/example/private-project", "transcript_path": "/Users/example/t.jsonl",
                            "model": ["id": "claude-opus-5-5", "display_name": "Opus"], "cost": ["total_cost_usd": 1.25],
                            "rate_limits": ["five_hour": ["used_percentage": 42, "resets_at": 1_790_007_980],
@@ -445,11 +448,11 @@ func runTelemetryChecks() -> [String] {
                                            "spend_limit": ["used_percentage": 99, "resets_at": 1_790_300_000]]])
     let before = Date()
     check(status.ingest(statusBody, path: LocalTelemetryCollector.claudeStatusPath)
-          && status.claudeLimits.fiveHour?.usedPercent == 42 && status.claudeLimits.sevenDay?.usedPercent == 31.5
-          && status.claudeLimits.fiveHour?.resetsAt == Date(timeIntervalSince1970: 1_790_007_980)
-          && (status.claudeLimits.fiveHour?.receivedAt ?? .distantPast) >= before,
+          && statusLimits().fiveHour?.usedPercent == 42 && statusLimits().sevenDay?.usedPercent == 31.5
+          && statusLimits().fiveHour?.resetsAt == Date(timeIntervalSince1970: 1_790_007_980)
+          && (statusLimits().fiveHour?.receivedAt ?? .distantPast) >= before,
           "Claude status line limits were not decoded")
-    let kept = String(decoding: (try? JSONEncoder().encode(status.claudeLimits)) ?? Data(), as: UTF8.self)
+    let kept = String(decoding: (try? JSONEncoder().encode(status.claudeLimits(tokens: []))) ?? Data(), as: UTF8.self)
     check(!["private-project", "status-session", "claude-opus", "cost", "transcript", "spend"].contains(where: kept.contains)
           && status.snapshot().isEmpty && status.lastBatchAt.isEmpty && status.lastReceivedAt == nil && status.state == .waiting
           && status.diagnostics().entries.isEmpty, "The status line copy kept more than the limits or posed as an OTLP export")
@@ -457,12 +460,36 @@ func runTelemetryChecks() -> [String] {
                                                "seven_day": ["used_percentage": true, "resets_at": 1_790_300_000_000]]])
     check(status.ingest(json(["cwd": "/tmp"]), path: LocalTelemetryCollector.claudeStatusPath)
           && status.ingest(invalidWindows, path: LocalTelemetryCollector.claudeStatusPath)
-          && status.claudeLimits.fiveHour?.usedPercent == 42 && status.claudeLimits.sevenDay?.usedPercent == 31.5,
+          && statusLimits().fiveHour?.usedPercent == 42 && statusLimits().sevenDay?.usedPercent == 31.5,
           "A status line without valid limits replaced the kept windows")
     check(!status.ingest(Data("not json".utf8), path: LocalTelemetryCollector.claudeStatusPath)
           && !status.ingest(Data("[1]".utf8), path: LocalTelemetryCollector.claudeStatusPath)
           && !status.ingest(Data(repeating: 32, count: LocalTelemetryCollector.maximumStatusBodyBytes + 1), path: LocalTelemetryCollector.claudeStatusPath),
           "Garbage or oversized status line bodies were accepted")
+    let accountA = LimitAccount(id: "account-a", email: "a@example.test")
+    let accountB = LimitAccount(id: "account-b", email: "b@example.test")
+    var readingA = TokenReading(source: .claude, sessionID: "status-session")
+    readingA.limitAccount = accountA
+    let routed = status.claudeLimits(tokens: [readingA])
+    check(routed[accountA.storageKey]?.fiveHour?.usedPercent == 42 && routed[accountB.storageKey] == nil,
+          "Claude status line session attribution used the default account instead of its session")
+    let unknown = LocalTelemetryCollector()
+    var otherSession = TokenReading(source: .claude, sessionID: "other-session")
+    otherSession.limitAccount = accountB
+    let unmatched = unknown.ingest(statusBody, path: LocalTelemetryCollector.claudeStatusPath) ? unknown.claudeLimits(tokens: [otherSession]) : [:]
+    check(unmatched[accountB.storageKey] == nil && unmatched[ClaudeLimitsByAccount.legacyKey]?.fiveHour?.usedPercent == 42
+          && unknown.claudeLimits(tokens: [readingA])[accountA.storageKey]?.fiveHour?.usedPercent == 42,
+          "An unmatched Claude status line receipt was attributed to another account instead of staying unattributed until its session is read")
+    let secondBody = json(["session_id": "second-session", "rate_limits": ["five_hour": ["used_percentage": 11, "resets_at": 1_790_007_980]]])
+    var readingB = TokenReading(source: .claude, sessionID: "second-session")
+    readingB.limitAccount = accountB
+    check(status.ingest(secondBody, path: LocalTelemetryCollector.claudeStatusPath)
+          && status.claudeLimits(tokens: [readingA, readingB])[accountA.storageKey]?.fiveHour?.usedPercent == 42
+          && status.claudeLimits(tokens: [readingA, readingB])[accountB.storageKey]?.fiveHour?.usedPercent == 11,
+          "Claude status line receipts mixed windows from two session accounts")
+    let routedJSON = String(decoding: (try? JSONEncoder().encode(routed)) ?? Data(), as: UTF8.self)
+    check(!["account-a", "account-b", "example.test", "status-session"].contains(where: routedJSON.contains),
+          "Encoded Claude status line limits exposed account or session identity")
     let statusWire = "POST /v1/claude/status HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
     if case .request(let path, let body) = TelemetryHTTP.parse(wire(statusWire)) {
         check(path == LocalTelemetryCollector.claudeStatusPath && body == wire("{}"), "Status line route altered its body")
@@ -527,8 +554,10 @@ func runTelemetryLifecycleChecks(port: UInt16) -> [String] {
         return reply.code
     }
     let limited: [String: Any] = ["cwd": "/tmp/project", "rate_limits": ["five_hour": ["used_percentage": 12, "resets_at": 1_790_007_980]]]
-    check(postStatus(limited, origin: "null") == 403 && collector.claudeLimits.isEmpty
-          && postStatus(limited) == 200 && until { collector.claudeLimits.fiveHour?.usedPercent == 12 },
+    check(postStatus(limited, origin: "null") == 403 && collector.claudeLimits(tokens: []).isEmpty
+          && postStatus(limited) == 200 && until {
+              collector.claudeLimits(tokens: [])[ClaudeLimitsByAccount.legacyKey]?.fiveHour?.usedPercent == 12
+          },
           "The status line route did not keep limits over loopback or accepted a browser Origin")
     // A streamed body goes out chunked, as Gemini CLI's and Qwen Code's Node exporters send it.
     func postChunked(_ path: String, _ body: Data) -> Int? {

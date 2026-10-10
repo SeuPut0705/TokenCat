@@ -253,7 +253,7 @@ struct DashboardView: View {
                     .padding(.top, DashboardLayout.block)
             }
             // Limits first: whether a cap is near is the most actionable number here, so it is not filed under output.
-            let limits = usageLimits
+            let limits = model.usageLimits
             if !limits.isEmpty {
                 UsageLimitsCard(limits: limits, now: model.now).padding(.top, DashboardLayout.block)
             }
@@ -288,11 +288,6 @@ struct DashboardView: View {
         .onChange(of: model.popoverShownAt) { _ in flowOpened = !flowEmpty }
     }
 
-    /// Codex, then Claude; each with the limit windows it has not reset.
-    private var usageLimits: [UsageLimitSummary] {
-        [model.sessions.usageLimit, SessionPresentation.claudeUsageLimit(model.claudeLimits, now: model.now)]
-            .compactMap { $0 }.filter { $0.isShown(now: model.now) }
-    }
 
     private var telemetryNotice: TelemetryNotice? {
         SessionPresentation.telemetryNotice(state: model.telemetryState, status: model.telemetryStatus, note: model.telemetrySetupNote,
@@ -909,6 +904,9 @@ struct UsageLimitRow: View {
                 }
             }
             .frame(height: 16)
+            if let label = limit.accountLabel {
+                Text(label).font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.middle).padding(.top, 3)
+            }
             if !expired {
                 Meter(fraction: limit.usedPercent / 100, color: Meter.color(limit.usedPercent)).frame(height: 4).padding(.top, 4)
             }

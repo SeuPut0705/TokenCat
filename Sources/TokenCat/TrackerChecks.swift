@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 
 /// Synthetic metadata-only regressions. No network calls, accounts, or actual transcript text.
 func runTrackerChecks() -> [String] {
@@ -1296,6 +1297,7 @@ func runTrackerChecks() -> [String] {
     }
     check(mismatched.isEmpty, "Timestamp fast path differs from ISO8601DateFormatter: \(mismatched.prefix(3))")
     copilotAmpDroidChecks { check($0, $1) }
+    runLimitAccountChecks(root: root, check: { check($0, $1) })
     providerRootChecks { check($0, $1) }
     grokChecks { check($0, $1) }
     cursorChecks { check($0, $1) }
@@ -1304,4 +1306,144 @@ func runTrackerChecks() -> [String] {
     sessionTitleChecks { check($0, $1) }
     print("Tracker checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
+}
+
+/// Synthetic credentials only; the metadata reader must work even when access/refresh values cannot be decoded as strings.
+func writeLimitCredentialFixture(_ url: URL, rows: [(String, [String: Any], Bool)]) throws -> Bool {
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    var database: OpaquePointer?
+    guard sqlite3_open(url.path, &database) == SQLITE_OK else { sqlite3_close(database); return false }
+    defer { sqlite3_close(database) }
+    guard sqlite3_exec(database, "CREATE TABLE auth_credentials(provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT)", nil, nil, nil) == SQLITE_OK else { return false }
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(database, "INSERT INTO auth_credentials VALUES (?, 'oauth', ?, ?)", -1, &statement, nil) == SQLITE_OK else { return false }
+    defer { sqlite3_finalize(statement) }
+    let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    for (provider, metadata, disabled) in rows {
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
+        sqlite3_bind_text(statement, 1, provider, -1, transient)
+        let data = String(decoding: try JSONSerialization.data(withJSONObject: metadata), as: UTF8.self)
+        sqlite3_bind_text(statement, 2, data, -1, transient)
+        if disabled { sqlite3_bind_text(statement, 3, "fixture disabled", -1, transient) }
+        if sqlite3_step(statement) != SQLITE_DONE { return false }
+    }
+    return true
+}
+
+private func runLimitAccountChecks(root: URL, check: (Bool, String) -> Void) {
+    let member = LimitAccount(id: " WORKSPACE ", email: " Member@Example.com ", organizationName: "Org")
+    let same = LimitAccount(id: "workspace", email: "member@example.com", organizationName: "Renamed")
+    let other = LimitAccount(id: "workspace", email: "other@example.com")
+    let unidentified = LimitAccount(id: "workspace")
+    check(member == same && member.key == "workspace|member@example.com" && member.storageKey == same.storageKey,
+          "Limit accounts: normalized identity or organization-independent equality/hash changed")
+    check(Set([member, same, other, unidentified]).count == 3
+          && Set([LimitSlot(provider: .codex, account: member), LimitSlot(provider: .codex, account: other),
+                  LimitSlot(provider: .codex, account: unidentified)]).count == 3,
+          "Limit accounts: workspace members or an unknown-email identity were merged")
+    check(LimitAccount.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+          && member.storageKey.count == 16 && unidentified.label.hasSuffix("…pace"),
+          "Limit accounts: storage hashing or anonymous account label changed")
+    do {
+        let home = root.appendingPathComponent("limit-accounts")
+        let config = home.appendingPathComponent("claude-config")
+        let codexHome = home.appendingPathComponent("codex-config")
+        let legacy = home.appendingPathComponent(".config/claude/projects")
+        let codexLogs = codexHome.appendingPathComponent("sessions/2026/10/04")
+        for directory in [config.appendingPathComponent("projects"), codexLogs, legacy] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        func json(_ value: Any, to url: URL) throws { try JSONSerialization.data(withJSONObject: value).write(to: url) }
+        try json(["oauthAccount": ["accountUuid": " DEFAULT ", "emailAddress": "Default@Example.com", "organizationUuid": "default-org"]],
+                 to: home.appendingPathComponent(".claude.json"))
+        try json(["oauthAccount": ["accountUuid": " CONFIG ", "emailAddress": "Config@Example.com", "organizationName": "Config org",
+                                  "organizationUuid": "config-org"], "unrelated": ["access": "PRIVATE_CLAUDE_TOKEN"]],
+                 to: config.appendingPathComponent(".claude.json"))
+        try json(["tokens": ["account_id": " SINGLE ", "id_token": ["invalid": true], "access_token": ["invalid": true],
+                             "refresh_token": ["invalid": true]]], to: codexHome.appendingPathComponent("auth.json"))
+        let credentials = home.appendingPathComponent(".omp/agent/agent.db")
+        let metadata: [String: Any] = ["accountId": " SINGLE ", "email": "Single@Example.com", "orgId": " RAW_ORG ",
+                                       "projectId": "RawProject", "orgName": "Workspace", "access": ["invalid": true], "refresh": ["invalid": true]]
+        let workspace: [String: Any] = ["accountId": "workspace", "email": "member@example.com", "access": ["invalid": true]]
+        check(try writeLimitCredentialFixture(credentials, rows: [("openai-codex", metadata, true),
+                                                                 ("openai-codex", workspace, false),
+                                                                 ("openai-codex", ["accountId": "workspace", "email": "other@example.com"], false),
+                                                                 ("anthropic", ["accountId": "UPDATED", "email": "new@example.com"], false)]),
+              "Limit accounts fixture: metadata credentials database could not be created")
+        let environment = ["CLAUDE_CONFIG_DIR": config.path, "CODEX_HOME": codexHome.path]
+        let reader = LimitAccountReader(home: home, environment: environment)
+        reader.refresh()
+        check(reader.defaultAccount(.claude)?.id == "config" && reader.defaultClaudeOrganizationID == "config-org"
+              && reader.defaultAccount(.codex)?.email == "single@example.com",
+              "Limit accounts: environment defaults or unique credential email resolution failed")
+        let legacyReader = LimitAccountReader(home: home, environment: ["CLAUDE_CONFIG_DIR": legacy.deletingLastPathComponent().path])
+        legacyReader.refresh()
+        check(legacyReader.defaultAccount(.claude)?.id == "default" && legacyReader.defaultClaudeOrganizationID == "default-org",
+              "Limit accounts: default legacy Claude account and organization did not use the same config fallback")
+        check(reader.resolve(provider: .codex, id: " WORKSPACE ", email: nil) == unidentified
+              && reader.resolve(provider: .codex, id: "workspace", email: "MEMBER@EXAMPLE.COM") == member
+              && reader.resolve(provider: .codex, id: nil, email: "member@example.com") == nil,
+              "Limit accounts: missing email selected an ambiguous workspace member or missing id was invented")
+        let pin = LimitAccount.credentialPinHash(provider: "openai-codex", accountID: " SINGLE ", email: "Single@Example.com",
+                                                 organizationID: " RAW_ORG ", projectID: "RawProject")
+        let session = home.appendingPathComponent(".omp/agent/sessions/project/main.jsonl").path
+        check(reader.pinnedAccount(provider: .codex, hash: pin, path: session)?.email == "single@example.com"
+              && pin != LimitAccount.credentialPinHash(provider: "openai-codex", accountID: "single", email: "single@example.com",
+                                                       organizationID: "raw_org", projectID: "rawproject"),
+              "Limit accounts: disabled credential metadata was filtered or pin strings were normalized")
+        let linked = home.appendingPathComponent("linked-claude")
+        try FileManager.default.createSymbolicLink(at: linked, withDestinationURL: config)
+        // Foundation resolves symlinks only for existing paths; a discovered log always exists in production.
+        let linkedLog = config.appendingPathComponent("projects/a/log.jsonl")
+        try FileManager.default.createDirectory(at: linkedLog.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data().write(to: linkedLog)
+        check(reader.account(source: .claude, path: linked.appendingPathComponent("projects/a/log.jsonl").path)?.id == "config"
+              && reader.account(source: .claude, path: legacy.appendingPathComponent("a/log.jsonl").path)?.id == "default"
+              && reader.account(source: .claude, path: home.appendingPathComponent(".openclaude/projects/a/log.jsonl").path) == nil
+              && reader.account(source: .codex, path: home.appendingPathComponent(".trae/cli/sessions/a.jsonl").path) == nil,
+              "Limit accounts: real-path roots, legacy Claude fallback or clone isolation failed")
+        let log = codexLogs.appendingPathComponent("account.jsonl")
+        var body = Data()
+        let records: [[String: Any]] = [
+            ["type": "session_meta", "payload": ["id": "account-session"]],
+            ["type": "turn_context", "payload": ["model": "gpt-fixture"]],
+            ["type": "event_msg", "timestamp": "2026-10-04T05:00:00Z", "payload": ["type": "task_started", "turn_id": "account-turn"]],
+            ["type": "event_msg", "timestamp": "2026-10-04T05:00:01Z", "payload": ["type": "token_count",
+                "rate_limits": ["limit_id": "codex", "primary": ["used_percent": 20, "window_minutes": 300]]]]
+        ]
+        for record in records { body.append(try JSONSerialization.data(withJSONObject: record)); body.append(10) }
+        try body.write(to: log)
+        let now = ISO8601DateFormatter().date(from: "2026-10-04T05:00:02Z")!
+        let rows = TokenTracker(homeDirectory: home, environment: environment, now: { now }).sample()
+        check(rows.first?.limitAccount == reader.defaultAccount(.codex) && rows.first?.rateLimit?.account == rows.first?.limitAccount
+              && rows.first?.rateLimit != nil,
+              "Limit accounts: Codex log limits did not inherit the reading account")
+        var reading = TokenReading(source: .omp, model: "claude-fixture")
+        reading.limitAccount = member
+        reading.credentialPins = [.codex: pin]
+        reading.rateLimit = TokenRateLimit(usedPercent: 20, windowMinutes: 300, resetsAt: nil, recordedAt: now, account: member)
+        let encoded = try JSONEncoder().encode(reading)
+        let decoded = try JSONDecoder().decode(TokenReading.self, from: encoded)
+        let text = String(decoding: encoded, as: UTF8.self)
+        check(!text.contains("example.com") && !text.contains("workspace") && !text.contains(pin) && !text.contains("limitAccount")
+              && !text.contains("credentialPins") && decoded.limitAccount == nil && decoded.rateLimit?.account == nil
+              && decoded.credentialPins.isEmpty && decoded.limitProvider == .claude,
+              "Limit accounts privacy: encoded readings or rate limits retained account identity or credential pins")
+        try json(["oauthAccount": ["accountUuid": "UPDATED"]],
+                 to: config.appendingPathComponent(".claude.json"))
+        reader.refresh()
+        check(reader.defaultAccount(.claude)?.id == "updated" && reader.defaultAccount(.claude)?.email == "new@example.com"
+              && reader.account(source: .claude, path: config.appendingPathComponent("projects/a/log.jsonl").path)?.email == "new@example.com"
+              && reader.knownAccounts(.claude).filter { $0.id == "updated" }.count == 1 && reader.defaultClaudeOrganizationID == nil,
+              "Limit accounts: changed config metadata did not invalidate its cache")
+        try Data(repeating: 32, count: LimitAccountReader.maximumConfigBytes + 1).write(to: config.appendingPathComponent(".claude.json"))
+        reader.refresh()
+        check(reader.defaultAccount(.claude) == nil, "Limit accounts: oversized config retained stale identity")
+        try json(["tokens": ["id_token": "PRIVATE_ID_TOKEN"], "account_id": "not-a-token-account"], to: codexHome.appendingPathComponent("auth.json"))
+        reader.refresh()
+        check(reader.defaultAccount(.codex) == nil, "Limit accounts privacy: Codex identity was taken from a token or non-metadata field")
+    } catch {
+        check(false, "Limit accounts fixture error: \(error.localizedDescription)")
+    }
 }

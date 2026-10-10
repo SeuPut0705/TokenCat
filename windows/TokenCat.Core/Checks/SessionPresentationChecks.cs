@@ -448,7 +448,7 @@ public static class SessionPresentationChecks
         // The Claude desktop app's usage history: the last sample only, no reset time (none is shown), reset one window after it.
         var desktopAt = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
         ClaudeUsageLimits? desktop(int version, double recorded) => ClaudeUsage.DecodeDesktopHistory(Encoding.UTF8.GetBytes(
-            $$$"""{"version":{{{version}}},"samples":[{"t":1789000000000,"org":"x","u":{"fh":90,"sd":90}},{"t":{{{desktopAt.AddSeconds(recorded).ToUnixTimeMilliseconds()}}},"org":"x","u":{"fh":17,"sd":5}}]}"""));
+            $$$"""{"version":{{{version}}},"samples":[{"t":1789000000000,"org":"x","u":{"fh":90,"sd":90}},{"t":{{{desktopAt.AddSeconds(recorded).ToUnixTimeMilliseconds()}}},"org":"x","u":{"fh":17,"sd":5}}]}"""), defaultOrganization: "x");
         var desktopLive = desktop(2, -720);
         var desktopSummary = desktopLive is null ? null : ClaudeUsageLimit(desktopLive, desktopAt);
         var desktopOld = desktop(2, -6 * 3_600) is { } stale ? ClaudeUsageLimit(stale, desktopAt) : null;
@@ -456,6 +456,12 @@ public static class SessionPresentationChecks
               && desktopSummary?.Value(desktopAt) == "17% 사용" && desktopSummary?.Details(desktopAt).SequenceEqual(["12분 전 기록"]) == true
               && desktopSummary?.Other == null && desktopOld?.Title == "Claude 주간 한도" && desktopOld?.UsedPercent == 5,
               "Claude desktop usage: last sample only, no invented reset time, a 5-hour value gone after five hours");
+        var mismatchedDesktop = Encoding.UTF8.GetBytes("""{"version":2,"samples":[{"t":1790000000000,"org":"other","u":{"fh":99,"sd":99}}]}""");
+        var absentDesktopOrg = Encoding.UTF8.GetBytes("""{"version":2,"samples":[{"t":1790000000000,"u":{"fh":17,"sd":5}}]}""");
+        check(ClaudeUsage.DecodeDesktopHistory(mismatchedDesktop, defaultOrganization: "x") is null
+              && ClaudeUsage.DecodeDesktopHistory(mismatchedDesktop) is null
+              && ClaudeUsage.DecodeDesktopHistory(absentDesktopOrg)?.FiveHour?.UsedPercent == 17,
+              "Claude desktop organization mismatches are dropped and absent organizations use the default");
         // Receipts merge per window (newer wins, a missing window is kept) and persist as numbers and times only.
         var newer = new ClaudeUsageLimits(claudeWindow(44, 7_000, received: -5));
         var merged = ClaudeUsage.Merged(ClaudeUsage.Merged(bothLive, newer), new ClaudeUsageLimits(claudeWindow(10, 7_000, received: -500)));
@@ -465,16 +471,118 @@ public static class SessionPresentationChecks
         {
             var file = Path.Combine(folder.FullName, "settings.json");
             var store = new SettingsStore(file);
-            LiveMonitor.SaveClaudeLimits(store, merged);
-            var stored = Json.Parse(File.ReadAllBytes(file))?.Field(ClaudeUsageLimits.DefaultsKey)?.Field("fiveHour");
-            check(LiveMonitor.LoadClaudeLimits(store) == merged
+            var persistedAccount = new LimitAccount("claude-persist", "private@example.com");
+            var persisted = new Dictionary<string, ClaudeUsageLimits> { [persistedAccount.StorageKey] = merged };
+            ClaudeLimitsByAccount.Save(store, persisted);
+            var root = Json.Parse(File.ReadAllBytes(file))?.Field(ClaudeUsageLimits.DefaultsKey);
+            var stored = root?.Field(persistedAccount.StorageKey)?.Field("fiveHour");
+            check(ClaudeLimitsByAccount.Load(store, persistedAccount).GetValueOrDefault(persistedAccount.StorageKey) == merged
                   && stored?.EnumerateObject().Select(property => property.Name).ToHashSet().SetEquals(["usedPercent", "resetsAt", "receivedAt"]) == true,
                   "Claude limits persist as numbers and times only and survive a restart");
-            LiveMonitor.SaveClaudeLimits(store, new ClaudeUsageLimits());
-            check(store.Get<ClaudeUsageLimits>(ClaudeUsageLimits.DefaultsKey) == null && LiveMonitor.LoadClaudeLimits(store).IsEmpty,
+            var text = File.ReadAllText(file);
+            check(!text.Contains(persistedAccount.Email!, StringComparison.Ordinal) && !text.Contains(persistedAccount.Id, StringComparison.Ordinal)
+                  && root?.EnumerateObject().Select(property => property.Name).ToHashSet().SetEquals([persistedAccount.StorageKey]) == true,
+                  "Claude account persistence contains hashes only and no identity metadata");
+            store.Set(ClaudeUsageLimits.DefaultsKey, merged);
+            check(ClaudeLimitsByAccount.Load(store, persistedAccount).GetValueOrDefault(persistedAccount.StorageKey) == merged
+                  && ClaudeLimitsByAccount.Load(store, null).GetValueOrDefault("legacy") == merged,
+                  "legacy Claude limits migrate to the default account or unattributed storage");
+            ClaudeLimitsByAccount.Save(store, new Dictionary<string, ClaudeUsageLimits>());
+            check(store.Get<ClaudeUsageLimits>(ClaudeUsageLimits.DefaultsKey) == null && ClaudeLimitsByAccount.Load(store, null).Count == 0,
                   "empty Claude limits clear the stored value");
         }
         finally { folder.Delete(true); }
+
+        var memberA = new LimitAccount(" WORKSPACE-1234 ", " A@EXAMPLE.COM ");
+        var memberB = new LimitAccount("workspace-1234", "b@example.com");
+        var workspaceOnly = new LimitAccount("workspace-1234", null);
+        check(memberA == new LimitAccount("workspace-1234", "a@example.com") && memberA != memberB
+              && workspaceOnly != memberA && workspaceOnly != memberB,
+              "canonical accounts normalize identity and keep workspace members and missing emails distinct");
+        TokenReading accountToken(string id, LimitAccount? account, double used, bool running = true, double last = -10) =>
+            reading(id, TokenSource.Codex, active: running, state: running ? A.Working : A.Complete, last: last) with
+            {
+                LimitAccount = account,
+                RateLimit = new TokenRateLimit(used, 300, at(3_600), at(-20)) { Account = account },
+            };
+        IReadOnlyList<UsageLimitSummary> accountRows(IReadOnlyList<TokenReading> tokens, IReadOnlyList<TokenRateLimit>? reads = null,
+            IReadOnlyDictionary<string, ClaudeUsageLimits>? store = null, IReadOnlyDictionary<TokenSource, LimitAccount>? defaults = null,
+            IReadOnlyDictionary<TokenSource, IReadOnlyList<LimitAccount>>? known = null) =>
+            UsageLimits(tokens, reads ?? [], store ?? new Dictionary<string, ClaudeUsageLimits>(),
+                defaults ?? new Dictionary<TokenSource, LimitAccount>(), known ?? new Dictionary<TokenSource, IReadOnlyList<LimitAccount>>(), now);
+        var tokenA = accountToken("member-a", memberA, 20);
+        var tokenB = accountToken("member-b", memberB, 80);
+        var tokenNilEmail = accountToken("workspace-only", workspaceOnly, 45);
+        var readA = tokenA.RateLimit! with { UsedPercent = 30 };
+        var memberRows = accountRows([tokenA, tokenB, tokenNilEmail, tokenA], [readA]);
+        check(memberRows.Select(row => row.Account).SequenceEqual([memberB, workspaceOnly, memberA])
+              && memberRows.Select(row => row.UsedPercent).SequenceEqual([80d, 45d, 30d]),
+              "running workspace members reduce only their own windows once per account in descending usage order");
+        check(make([tokenA, tokenB, tokenNilEmail]).Counts.LimitSources.SetEquals([
+            new LimitSlot(TokenSource.Codex, memberA), new LimitSlot(TokenSource.Codex, memberB), new LimitSlot(TokenSource.Codex, workspaceOnly)]),
+              "live limit cadence uses distinct provider account slots including missing email");
+        var recentA = accountToken("recent-a", memberA, 20, false, -5);
+        var olderB = accountToken("older-b", memberB, 80, false, -100);
+        var codexDefault = new Dictionary<TokenSource, LimitAccount> { [TokenSource.Codex] = memberB };
+        check(accountRows([olderB, recentA], defaults: codexDefault).FirstOrDefault()?.Account == memberA,
+              "idle limits select the most recent session account rather than the fullest or default account");
+        check(accountRows([olderB with { LastLogAt = at(-1) }, recentA]).FirstOrDefault()?.Account == memberA,
+              "metadata-only log receipts do not outrank the most recently active account");
+        var noData = recentA with { LimitAccount = new LimitAccount("no-data", null), RateLimit = null };
+        check(accountRows([olderB, noData], defaults: codexDefault).FirstOrDefault()?.Account == memberB
+              && accountRows([olderB, noData]).Count == 0,
+              "a most recent account without data falls back to default not an older session account");
+        var legacyToken = accountToken("legacy", null, 61, false, -200);
+        check(accountRows([noData, legacyToken]).FirstOrDefault() is { Account: null, UsedPercent: 61 },
+              "unattributed limits remain the final backward compatible fallback");
+        check(accountRows([noData with { Active = true, ActivityState = A.Working }, legacyToken], defaults: codexDefault).Count == 0,
+              "running accounts without limits never borrow default or legacy numbers");
+        var knownCodex = new Dictionary<TokenSource, IReadOnlyList<LimitAccount>> { [TokenSource.Codex] = new[] { memberA, memberB } };
+        check(accountRows([tokenA]).FirstOrDefault()?.AccountLabel is null
+              && accountRows([tokenA], known: knownCodex).FirstOrDefault()?.AccountLabel == memberA.Label
+              && memberRows.All(row => row.AccountLabel is not null),
+              "account labels appear only when sessions stores or known identities contain multiple accounts");
+        var orgA = new LimitAccount("org-a-1234", "same@example.com", "Alpha");
+        var orgB = new LimitAccount("org-b-5678", "same@example.com", "Beta");
+        check(accountRows([accountToken("org-a", orgA, 40), accountToken("org-b", orgB, 30)])
+              .Select(row => row.AccountLabel).SequenceEqual(["same@example.com · Alpha", "same@example.com · Beta"]),
+              "duplicate email labels use distinguishing organization names");
+        var noEmailOther = new LimitAccount("different-1234", null);
+        check(accountRows([tokenNilEmail, accountToken("other-no-email", noEmailOther, 30)])
+              .Select(row => row.AccountLabel).Distinct().Count() == 2,
+              "duplicate fallback labels remain distinct even when account id suffixes match");
+        var claudeAccountA = new LimitAccount("claude-a", "claude-a@example.com");
+        var claudeAccountB = new LimitAccount("claude-b", "claude-b@example.com");
+        var claudeA = reading("claude-account-a", active: true, state: A.Working) with { LimitAccount = claudeAccountA };
+        var claudeB = reading("claude-account-b", active: true, state: A.Working) with { LimitAccount = claudeAccountB };
+        var claudeAccountRows = accountRows([claudeA, claudeB], store: new Dictionary<string, ClaudeUsageLimits>
+        {
+            [claudeAccountA.StorageKey] = new(FiveHour: claudeWindow(22, 3_600, -10)),
+            [claudeAccountB.StorageKey] = new(SevenDay: claudeWindow(73, day, -20)), ["legacy"] = bothLive,
+        });
+        check(claudeAccountRows.Select(row => row.Account).SequenceEqual([claudeAccountB, claudeAccountA])
+              && claudeAccountRows.Select(row => row.UsedPercent).SequenceEqual([73d, 22d]) && claudeAccountRows.All(row => row.Other is null),
+              "Claude account stores isolate primary and other windows and never merge legacy data");
+        check(accountRows([claudeA], store: new Dictionary<string, ClaudeUsageLimits>
+              { [claudeAccountA.StorageKey] = bothLive, [claudeAccountB.StorageKey] = bothLive }).FirstOrDefault()?.AccountLabel == claudeAccountA.Label,
+              "hashed Claude stores count toward account label visibility");
+        var labeled = accountRows([tokenA], known: knownCodex).First();
+        check(labeled.Help(now).Contains(memberA.Label, StringComparison.Ordinal) && labeled.Spoken(now).Contains(memberA.Label, StringComparison.Ordinal),
+              "usage limit help and VoiceOver name the selected account");
+        var sameEmailA = new LimitAccount("email-a-1234", "shared@example.com");
+        var sameEmailB = new LimitAccount("email-b-5678", "shared@example.com");
+        check(accountRows([accountToken("email-a", sameEmailA, 40), accountToken("email-b", sameEmailB, 30)])
+              .Select(row => row.AccountLabel).SequenceEqual(["shared@example.com · …1234", "shared@example.com · …5678"]),
+              "duplicate email labels without distinguishing organizations append account id suffixes");
+        var labeledClaude = accountRows([claudeA], store: new Dictionary<string, ClaudeUsageLimits> { [claudeAccountA.StorageKey] = bothLive },
+            known: new Dictionary<TokenSource, IReadOnlyList<LimitAccount>> { [TokenSource.Claude] = new[] { claudeAccountA, claudeAccountB } }).First();
+        check(labeledClaude.OtherSummary(now)?.Account == claudeAccountA && labeledClaude.OtherSummary(now)?.AccountLabel == claudeAccountA.Label,
+              "secondary limit windows preserve their account identity and accessibility label");
+        var agentMember = reading("agent-member", TokenSource.Omp, session: "agent-parent", subagent: true, active: true, state: A.Working)
+            with { Model = "gpt-6.1-sol", LimitAccount = memberB };
+        check(make([agentMember]).Counts.LimitSources.SetEquals([new LimitSlot(TokenSource.Codex, memberB)])
+              && accountRows([agentMember], [tokenB.RateLimit!]).FirstOrDefault()?.Account == memberB,
+              "running agent members contribute their model provider and pinned account to limits");
 
         // Effort, last turn and help ages.
         check(EffortLabel(command with { Effort = "XHigh" }) == "xhigh" && EffortLabel(command) == null, "effort is raw lowercase");

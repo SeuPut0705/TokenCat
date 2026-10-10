@@ -126,7 +126,7 @@ public sealed record SessionCounts
     public IReadOnlyDictionary<TokenSource, int> Running { get; init; } = new Dictionary<TokenSource, int>();
     /// Subscriptions a running session uses (`TokenSource.LimitProvider`): a Codex or Claude Code session, or any client's
     /// running member on a Claude or OpenAI model. LiveMonitor polls these every minute.
-    public IReadOnlySet<TokenSource> LimitSources { get; init; } = new HashSet<TokenSource>();
+    public IReadOnlySet<LimitSlot> LimitSources { get; init; } = new HashSet<LimitSlot>();
     /// Newest record among waiting rows, for "N분째 새 기록 없음".
     public DateTimeOffset? WaitingSince { get; init; }
     /// Newest activity of any session group (telemetry rows excluded), for "마지막 활동 2시간 전".
@@ -145,7 +145,7 @@ public sealed record SessionCounts
         var memberStates = new HashSet<SessionDisplayState>();
         var tools = new Dictionary<ToolCategory, int>();
         var running = new Dictionary<TokenSource, int>();
-        var limitSources = new HashSet<TokenSource>();
+        var limitSources = new HashSet<LimitSlot>();
         int inputMembers = 0, planMembers = 0;
         foreach (var group in groups)
         {
@@ -161,7 +161,6 @@ public sealed record SessionCounts
             if (group.State.IsRunning)
             {
                 running[group.Lead.Reading.Source] = running.GetValueOrDefault(group.Lead.Reading.Source) + 1;
-                if (TokenSource.DefaultClients.Contains(group.Lead.Reading.Source)) limitSources.Add(group.Lead.Reading.Source);
             }
             if (group.State != SessionDisplayState.Measurement && group.LastActivity != DateTimeOffset.MinValue
                 && (NewestActivity is not { } newest || group.LastActivity > newest)) NewestActivity = group.LastActivity;
@@ -169,8 +168,8 @@ public sealed record SessionCounts
             {
                 memberStates.Add(member.State);
                 if (member.Reading.IsSubagent && member.State.IsRunning) RunningSubagents++;
-                if (group.State.IsRunning && member.State.IsRunning && TokenSource.LimitProvider(member.Reading.Model) is { } provider)
-                    limitSources.Add(provider);
+                if (group.State.IsRunning && member.State.IsRunning && member.Reading.LimitProvider is { } provider)
+                    limitSources.Add(new LimitSlot(provider, member.Reading.LimitAccount));
                 if (member.State == SessionDisplayState.Tool)
                 {
                     ToolMembers++;
@@ -242,6 +241,8 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
     public bool Live { get; init; }
     /// "omp" or "Pi" when that client's own usage check recorded the value; named beside the record age.
     public string? RecordedBy { get; init; }
+    public LimitAccount? Account { get; init; }
+    public string? AccountLabel { get; init; }
 
     /// A live poll in the last 2 minutes: "실시간" takes the place of the record age.
     public bool IsLive(DateTimeOffset now) => Live && (now - RecordedAt).TotalSeconds < LiveLimits.LiveFor;
@@ -261,7 +262,8 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
         if (Other is not { } other || other.ResetsAt <= now) return null;
         var own = other.RecordedAt is not null;
         return new UsageLimitSummary(other.UsedPercent, other.WindowMinutes, other.ResetsAt, other.RecordedAt ?? RecordedAt)
-            { Source = Source, Live = own ? other.Live : Live, RecordedBy = own ? other.RecordedBy : RecordedBy };
+            { Source = Source, Live = own ? other.Live : Live, RecordedBy = own ? other.RecordedBy : RecordedBy,
+                Account = Account, AccountLabel = AccountLabel };
     }
 
     /// When the window resets; without a logged reset time, one full window after the record.
@@ -332,7 +334,7 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
     {
         var main = Expired(now) ? WaitingText.Replace(" · ", ", ")
             : Loc($"{PercentText}퍼센트 사용", $"{PercentText} percent used") + ", " + Detail(now, spoken: true).Replace(" · ", ", ");
-        return main + (OtherText(now, spoken: true) is { } other
+        return (AccountLabel is { } label ? label + ", " : "") + main + (OtherText(now, spoken: true) is { } other
             ? ", " + other.Replace("%", Loc("퍼센트", " percent")).Replace(" · ", ", ") : "");
     }
 
@@ -352,7 +354,7 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
             _ => "",
         } + (Live ? Loc(" 이 계정의 모델을 쓰는 세션이 실행 중이거나 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인합니다.",
                         " It's checked every minute while a session on its models runs or this window is open, otherwise every 10 minutes.") : "");
-        return basis + Loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.")
+        return (AccountLabel is { } label ? label + "\n" : "") + basis + Loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.")
             + (OtherText(now) is { } other ? "\n" + other : "");
     }
 }
@@ -834,6 +836,73 @@ public static class SessionPresentation
             .FirstOrDefault();
         return new UsageLimitSummary(top.Window.UsedPercent, top.Minutes, top.Window.ResetsAt, top.Window.ReceivedAt)
         { Source = TokenSource.Claude, Other = other, Live = top.Window.Live, RecordedBy = top.Window.Live ? null : top.Window.RecordedBy };
+    }
+
+    /// Select accounts before reducing windows; unidentified data never fills an identified account.
+    public static IReadOnlyList<UsageLimitSummary> UsageLimits(IReadOnlyList<TokenReading> tokens,
+        IReadOnlyList<TokenRateLimit> codexReads, IReadOnlyDictionary<string, ClaudeUsageLimits> claudeLimits,
+        IReadOnlyDictionary<TokenSource, LimitAccount> defaults,
+        IReadOnlyDictionary<TokenSource, IReadOnlyList<LimitAccount>> known, DateTimeOffset now)
+    {
+        List<UsageLimitSummary> result = [];
+        foreach (var provider in new[] { TokenSource.Codex, TokenSource.Claude })
+        {
+            var sessions = tokens.Where(token => token.LimitProvider == provider && !IsTelemetry(token)).ToList();
+            var accounts = new HashSet<LimitAccount>(known.GetValueOrDefault(provider) ?? []);
+            accounts.UnionWith(sessions.Select(token => token.LimitAccount).OfType<LimitAccount>());
+            if (defaults.TryGetValue(provider, out var defaultAccount)) accounts.Add(defaultAccount);
+            if (provider == TokenSource.Codex) accounts.UnionWith(codexReads.Select(read => read.Account).OfType<LimitAccount>());
+            var orderedAccounts = accounts.OrderBy(account => account.Key, StringComparer.Ordinal).ToList();
+            var hashes = orderedAccounts.Select(account => account.StorageKey).ToHashSet(StringComparer.Ordinal);
+            if (provider == TokenSource.Claude) hashes.UnionWith(claudeLimits.Keys.Where(key => key != "legacy"));
+            var showLabels = hashes.Count >= 2;
+            UsageLimitSummary? Summary(LimitAccount? account)
+            {
+                var value = provider == TokenSource.Codex
+                    ? UsageLimit(sessions.Where(token => token.LimitAccount == account).ToList(), now,
+                        codexReads.Where(read => read.Account == account).ToList())
+                    : claudeLimits.TryGetValue(account?.StorageKey ?? "legacy", out var limits) ? ClaudeUsageLimit(limits, now) : null;
+                if (value is null || !value.IsShown(now)) return null;
+                string? label = null;
+                if (showLabels && account is not null)
+                {
+                    label = account.Label;
+                    var duplicates = orderedAccounts.Where(other => other.Label == account.Label).ToList();
+                    if (duplicates.Count > 1)
+                    {
+                        var organization = account.OrganizationName ?? orderedAccounts.FirstOrDefault(other => other == account)?.OrganizationName;
+                        if (organization is not null && duplicates.Count(other => other.OrganizationName == organization) == 1)
+                            label += " · " + organization;
+                        else
+                        {
+                            static string Suffix(string id) => id.Length > 4 ? id[^4..] : id;
+                            label += " · …" + Suffix(account.Id);
+                            if (duplicates.Count(other => Suffix(other.Id) == Suffix(account.Id)) > 1)
+                                label += " · " + account.StorageKey[..6];
+                        }
+                    }
+                }
+                else if (showLabels) label = Loc("계정 미확인", "Unknown account");
+                return value with { Account = account, AccountLabel = label };
+            }
+            var running = sessions.Where(token => DisplayState(token, now).IsRunning).ToList();
+            if (running.Count > 0)
+            {
+                result.AddRange(running.Select(token => new LimitSlot(provider, token.LimitAccount)).Distinct()
+                    .Select(slot => Summary(slot.Account)).OfType<UsageLimitSummary>()
+                    .OrderByDescending(value => value.UsedPercent).ThenBy(value => value.Account?.Key ?? "", StringComparer.Ordinal));
+            }
+            else
+            {
+                var recent = sessions.OrderByDescending(token => token.LastActivity ?? DateTimeOffset.MinValue)
+                    .ThenBy(token => token.Id, StringComparer.Ordinal).FirstOrDefault();
+                var value = recent is not null ? Summary(recent.LimitAccount) : null;
+                value ??= defaultAccount is not null ? Summary(defaultAccount) : null;
+                value ??= Summary(null);
+                if (value is not null) result.Add(value);
+            }
+        }
+        return result;
     }
 
     /// The flow card's "지금 속도": the newest measurement under 2 minutes old among visible live rows (leads and

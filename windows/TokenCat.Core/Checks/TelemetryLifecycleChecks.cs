@@ -12,6 +12,9 @@ namespace TokenCat;
 /// through Git Bash and Windows PowerShell (DESIGN §7.4), as Claude Code would.
 public static class TelemetryLifecycleChecks
 {
+    static ClaudeUsageLimits LegacyLimits(TelemetryCollector collector) =>
+        collector.ClaudeLimitsForSessions([]).GetValueOrDefault(ClaudeLimitsByAccount.LegacyKey) ?? ClaudeUsageLimits.Empty;
+
     public static List<string> Run(int? port)
     {
         if ((port ?? TestPort()) is not { } chosen || chosen is <= 0 or >= 65_535
@@ -36,8 +39,8 @@ public static class TelemetryLifecycleChecks
             check(callbacks.OnlyReadyCallbacks && collector.IsRunning, "The ready callback preceded listener readiness");
             // The status line bridge's route over a real loopback socket: limits are kept, a browser Origin is refused.
             const string limited = """{"cwd":"/tmp/project","rate_limits":{"five_hour":{"used_percentage":12,"resets_at":1790007980}}}""";
-            check(PostStatus(port, limited, origin: "null") == 403 && collector.ClaudeLimits.IsEmpty
-                  && PostStatus(port, limited) == 200 && Until(() => collector.ClaudeLimits.FiveHour?.UsedPercent == 12),
+            check(PostStatus(port, limited, origin: "null") == 403 && LegacyLimits(collector).IsEmpty
+                  && PostStatus(port, limited) == 200 && Until(() => LegacyLimits(collector).FiveHour?.UsedPercent == 12),
                   "The status line route did not keep limits over loopback or accepted a browser Origin");
             if (OperatingSystem.IsWindows()) BridgeChecks(port, collector, c);
             else { c.Skip(); c.Skip(); } // the Git Bash and PowerShell bridge runs
@@ -171,7 +174,7 @@ public static class TelemetryLifecycleChecks
                 var input = Encoding.UTF8.GetBytes("""{"cwd":"C:\\Users\\홍길동\\프로젝트","rate_limits":{"five_hour":{"used_percentage":"""
                     + percent + ""","resets_at":1790007980}}}""");
                 var output = RunProcess(file, arguments, input);
-                c.That(output == "" && Until(() => collector.ClaudeLimits.FiveHour?.UsedPercent == percent, timeout: 5),
+                c.That(output == "" && Until(() => LegacyLimits(collector).FiveHour?.UsedPercent == percent, timeout: 5),
                        $"The status line bridge command did not deliver the limits through {name}, or printed something");
             }
         }

@@ -38,6 +38,8 @@ public sealed partial record TokenLogFormat
 sealed class OmpLogReader(string path) : ITokenLogReader
 {
     readonly LogLineTail tail = new(path);
+    readonly OmpCredentialPinReader pinReader = new(path);
+    IReadOnlyDictionary<TokenSource, string> credentialPins = new Dictionary<TokenSource, string>();
     OmpLogState state = new(path);
     bool headerRead;
     /// Pi's own sessions (`~\.pi\agent\sessions`); null for omp.
@@ -50,6 +52,7 @@ sealed class OmpLogReader(string path) : ITokenLogReader
             state = new OmpLogState(path);
             headerRead = false;
         }, line => state.Consume(line, tail.SkippedHead));
+        credentialPins = pinReader.Read();
         // The header (a title line, then the session line) is lost when the first read starts mid-file.
         if (!tail.SkippedHead || headerRead) return;
         try
@@ -86,6 +89,7 @@ sealed class OmpLogReader(string path) : ITokenLogReader
             Title = s.Title,
             ProjectPath = s.Cwd,
             Model = s.Model,
+            CredentialPins = credentialPins,
             Effort = s.Effort,
             Context = s.Context,
             LastActivity = lastActivity,
@@ -477,5 +481,130 @@ sealed record OmpRecordHead(Dictionary<string, string> Fields, Dictionary<string
         if (open < TimestampKey.Length - 1 || line[open] != '"'
             || !line.AsSpan(open - TimestampKey.Length + 1, TimestampKey.Length).SequenceEqual(TimestampKey)) return new(top, message, null);
         return new(top, message, Encoding.UTF8.GetString(line, open + 1, last - 2 - open - 1));
+    }
+}
+
+/// Pin metadata is streamed independently of usage tails, including undiscovered ancestor logs.
+sealed class OmpCredentialPinReader(string path)
+{
+    sealed record Record
+    {
+        public string? Type { get; init; }
+        public string? Provider { get; init; }
+        public string? Hash { get; init; }
+        public string? ParentSession { get; init; }
+    }
+    sealed class FileState
+    {
+        public (long Identity, long Length, long Written)? Stamp;
+        public long Offset;
+        public readonly MemoryStream Pending = new();
+        public bool Dropping;
+        public readonly Dictionary<TokenSource, string> Pins = [];
+        public string? Parent;
+    }
+    readonly Dictionary<string, FileState> files = new(LimitAccountReader.PathComparer);
+    const int MaximumLineBytes = 1_048_576;
+
+    public IReadOnlyDictionary<TokenSource, string> Read() => Inherited(path, new HashSet<string>(LimitAccountReader.PathComparer));
+
+    Dictionary<TokenSource, string> Inherited(string path, HashSet<string> visited)
+    {
+        path = Path.GetFullPath(path);
+        if (!visited.Add(path)) return [];
+        var own = Metadata(path);
+        var directory = Path.GetDirectoryName(path);
+        string? parent = null;
+        while (directory is not null && Path.GetDirectoryName(directory) is not null
+            && !Path.GetFileName(directory).Equals("sessions", StringComparison.OrdinalIgnoreCase))
+        {
+            var name = Path.GetFileName(directory);
+            var candidate = directory + ".jsonl";
+            if (File.Exists(candidate) || (name.Length > 25 && name[..4].All(char.IsAsciiDigit) && name[10] == 'T' && name.Contains('_')))
+            {
+                parent = candidate;
+                break;
+            }
+            directory = Path.GetDirectoryName(directory);
+        }
+        if (parent is not null && !string.IsNullOrEmpty(own.Parent))
+            parent = Path.IsPathRooted(own.Parent) ? own.Parent : Path.Combine(Path.GetDirectoryName(path)!, own.Parent);
+        var pins = parent is null ? new Dictionary<TokenSource, string>() : Inherited(parent, visited);
+        foreach (var (provider, hash) in own.Pins) pins[provider] = hash;
+        return pins;
+    }
+
+    FileState Metadata(string path)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists) { files.Remove(path); return new FileState(); }
+            var stamp = (Identity: info.CreationTimeUtc.Ticks, Length: info.Length, Written: info.LastWriteTimeUtc.Ticks);
+            if (!files.TryGetValue(path, out var state)) state = new FileState();
+            if (state.Stamp == stamp) return state;
+            if (state.Stamp is { } old && (old.Identity != stamp.Identity || stamp.Length < state.Offset
+                || (stamp.Length == state.Offset && old != stamp)))
+            {
+                state.Pending.Dispose();
+                state = new FileState();
+            }
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 0);
+            stream.Position = state.Offset;
+            var chunk = new byte[65_536];
+            int count;
+            while ((count = stream.Read(chunk)) > 0)
+            {
+                state.Offset += count;
+                var start = 0;
+                for (var index = 0; index < count; index++)
+                {
+                    if (chunk[index] != 10) continue;
+                    Consume(chunk.AsSpan(start, index - start), true, state);
+                    start = index + 1;
+                }
+                Consume(chunk.AsSpan(start, count - start), false, state);
+            }
+            state.Stamp = stamp;
+            files[path] = state;
+            return state;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return files.GetValueOrDefault(path) ?? new FileState(); }
+    }
+
+    static void Consume(ReadOnlySpan<byte> bytes, bool complete, FileState state)
+    {
+        if (!state.Dropping)
+        {
+            if (state.Pending.Length + bytes.Length > MaximumLineBytes)
+            {
+                state.Pending.SetLength(0);
+                state.Dropping = true;
+            }
+            else state.Pending.Write(bytes);
+        }
+        if (!complete) return;
+        try
+        {
+            var line = state.Pending.GetBuffer().AsSpan(0, (int)state.Pending.Length);
+            if (state.Dropping || (line.IndexOf("credential_pin"u8) < 0
+                && line.IndexOf("parentSession"u8) < 0)) return;
+            var record = JsonSerializer.Deserialize<Record>(Json.StripBom(line), Json.Options);
+            if (record?.Type == "session") state.Parent = record.ParentSession;
+            if (record?.Type != "credential_pin" || record.Hash is not { Length: 64 } hash
+                || !hash.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f')) return;
+            switch (record.Provider)
+            {
+                case "anthropic": state.Pins[TokenSource.Claude] = hash; break;
+                case "openai-codex": state.Pins[TokenSource.Codex] = hash; break;
+            }
+        }
+        catch (JsonException) { }
+        finally
+        {
+            state.Pending.SetLength(0);
+            state.Pending.Position = 0;
+            state.Dropping = false;
+        }
     }
 }

@@ -122,6 +122,11 @@ struct TokenRateLimit: Codable, Equatable {
     var live: Bool? = nil
     /// "omp" or "Pi": another client's own usage check (`AgentUsageHistory`); `recordedAt` is then its record time.
     var recordedBy: String? = nil
+    /// Subscription identity is memory-only, never encoded with limit samples.
+    var account: LimitAccount? = nil
+    private enum CodingKeys: String, CodingKey {
+        case usedPercent, windowMinutes, resetsAt, recordedAt, live, recordedBy
+    }
 }
 
 /// Context occupied by the latest request. Codex reports the window size; Claude does not,
@@ -153,6 +158,12 @@ struct TokenReading: Codable, Identifiable {
     /// Full working directory, used only for the "Finder에서 보기" action; never displayed.
     var projectPath: String? = nil
     var model: String? = nil
+    /// Account and credential selection metadata never enters persisted readings or diagnostics.
+    var limitAccount: LimitAccount? = nil
+    var credentialPins: [TokenSource: String] = [:]
+    var limitProvider: TokenSource? {
+        TokenSource.limitProvider(model: model) ?? ((source == .claude || source == .codex) ? source : nil)
+    }
     var isSubagent: Bool = false
     /// Duration of the last completed turn as reported by the client (never divided into a rate).
     var lastTurnDurationSeconds: Double? = nil
@@ -185,6 +196,12 @@ struct TokenReading: Codable, Identifiable {
     var measurementAt: Date? = nil
     /// Claude: request IDs of the responses in this log (at most 256), matched against telemetry; never shown.
     var requestIDs: Set<String> = []
+    private enum CodingKeys: String, CodingKey {
+        case id, source, sessionID, parentSessionID, agentID, project, title, projectPath, model, isSubagent
+        case lastTurnDurationSeconds, toolCategory, toolName, retry, rateLimit, context, effort, agentRole, clientName
+        case speedMeasurement, lastOutputTokens, active, activityState, currentTurnStartedAt, currentTurnOutputTokens
+        case lastOutputAt, lastOutputDelta, recentOutputs, sampledAt, lastActivity, lastLogAt, measurementAt, requestIDs
+    }
 
     init(source: TokenSource, id: String? = nil,
          sessionID: String? = nil, agentID: String? = nil, project: String? = nil,

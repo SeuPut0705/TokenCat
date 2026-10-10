@@ -365,22 +365,43 @@ public static class TelemetryChecks
              "rate_limits":{"five_hour":{"used_percentage":42,"resets_at":1790007980},"seven_day":{"used_percentage":31.5,"resets_at":1790300000},
                             "spend_limit":{"used_percentage":99,"resets_at":1790300000}}}
             """);
+        ClaudeUsageLimits StatusLimits() => status.ClaudeLimitsForSessions([]).GetValueOrDefault(ClaudeLimitsByAccount.LegacyKey) ?? ClaudeUsageLimits.Empty;
         var before = DateTimeOffset.UtcNow;
-        check(status.Ingest(statusBody, TelemetryHttp.ClaudeStatusPath) && status.ClaudeLimits.FiveHour?.UsedPercent == 42
-              && status.ClaudeLimits.SevenDay?.UsedPercent == 31.5 && status.ClaudeLimits.FiveHour?.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_790_007_980)
-              && status.ClaudeLimits.FiveHour?.ReceivedAt >= before,
+        check(status.Ingest(statusBody, TelemetryHttp.ClaudeStatusPath) && StatusLimits().FiveHour?.UsedPercent == 42
+              && StatusLimits().SevenDay?.UsedPercent == 31.5 && StatusLimits().FiveHour?.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_790_007_980)
+              && StatusLimits().FiveHour?.ReceivedAt >= before,
               "Claude status line limits were not decoded");
-        var kept = Json(status.ClaudeLimits);
+        var kept = Json(status.ClaudeLimitsForSessions([]));
         check(!new[] { "private-project", "status-session", "claude-opus", "cost", "transcript", "spend" }.Any(kept.Contains)
               && status.Snapshot().Count == 0 && status.LastBatchAt.Count == 0 && status.State == TelemetryCollectorState.Waiting
               && status.Diagnostics().Entries.Count == 0, "The status line copy kept more than the limits or posed as an OTLP export");
         var invalidWindows = Bytes("""{"rate_limits":{"five_hour":{"used_percentage":142,"resets_at":1790007980},"seven_day":{"used_percentage":true,"resets_at":1790300000000}}}""");
         check(status.Ingest(Bytes("""{"cwd":"/tmp"}"""), TelemetryHttp.ClaudeStatusPath) && status.Ingest(invalidWindows, TelemetryHttp.ClaudeStatusPath)
-              && status.ClaudeLimits.FiveHour?.UsedPercent == 42 && status.ClaudeLimits.SevenDay?.UsedPercent == 31.5,
+              && StatusLimits().FiveHour?.UsedPercent == 42 && StatusLimits().SevenDay?.UsedPercent == 31.5,
               "A status line without valid limits replaced the kept windows");
         check(!status.Ingest("not json"u8, TelemetryHttp.ClaudeStatusPath) && !status.Ingest("[1]"u8, TelemetryHttp.ClaudeStatusPath)
               && !status.Ingest(Enumerable.Repeat((byte)32, TelemetryHttp.MaximumStatusBodyBytes + 1).ToArray(), TelemetryHttp.ClaudeStatusPath),
               "Garbage or oversized status line bodies were accepted");
+        var accountA = new LimitAccount("account-a", "a@example.test");
+        var accountB = new LimitAccount("account-b", "b@example.test");
+        var readingA = new TokenReading(TokenSource.Claude) { SessionID = "status-session", LimitAccount = accountA };
+        var routed = status.ClaudeLimitsForSessions([readingA]);
+        check(routed.GetValueOrDefault(accountA.StorageKey)?.FiveHour?.UsedPercent == 42 && !routed.ContainsKey(accountB.StorageKey),
+              "Claude status line session attribution used the default account instead of its session");
+        var unknown = new TelemetryCollector();
+        check(unknown.Ingest(statusBody, TelemetryHttp.ClaudeStatusPath)
+              && unknown.ClaudeLimitsForSessions([]).GetValueOrDefault(ClaudeLimitsByAccount.LegacyKey)?.FiveHour?.UsedPercent == 42
+              && !unknown.ClaudeLimitsForSessions([]).ContainsKey(accountB.StorageKey)
+              && unknown.ClaudeLimitsForSessions([readingA]).GetValueOrDefault(accountA.StorageKey)?.FiveHour?.UsedPercent == 42,
+              "An unmatched Claude status line receipt was attributed to another account instead of staying unattributed until its session is read");
+        var readingB = new TokenReading(TokenSource.Claude) { SessionID = "second-session", LimitAccount = accountB };
+        check(status.Ingest(Bytes("""{"session_id":"second-session","rate_limits":{"five_hour":{"used_percentage":11,"resets_at":1790007980}}}"""), TelemetryHttp.ClaudeStatusPath)
+              && status.ClaudeLimitsForSessions([readingA, readingB]).GetValueOrDefault(accountA.StorageKey)?.FiveHour?.UsedPercent == 42
+              && status.ClaudeLimitsForSessions([readingA, readingB]).GetValueOrDefault(accountB.StorageKey)?.FiveHour?.UsedPercent == 11,
+              "Claude status line receipts mixed windows from two session accounts");
+        var routedJson = Json(routed);
+        check(!new[] { "account-a", "account-b", "example.test", "status-session" }.Any(routedJson.Contains),
+              "Encoded Claude status line limits exposed account or session identity");
         if (Parse("POST /v1/claude/status HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}") is HttpDecision.Request { Path: var statusPath, Body: var statusRouteBody })
             check(statusPath == TelemetryHttp.ClaudeStatusPath && statusRouteBody.SequenceEqual("{}"u8.ToArray()), "Status line route altered its body");
         else check(false, "Status line route was rejected");
@@ -396,7 +417,7 @@ public static class TelemetryChecks
         // ClaudeUsage (Telemetry.swift statics; the merge/desktop presentation cases are SessionPresentationChecks').
         var at = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
         ClaudeUsageLimits? History(int version, double t) =>
-            ClaudeUsage.DecodeDesktopHistory(Bytes($$$"""{"version":{{{version}}},"samples":[{"t":1789000000000,"org":"x","u":{"fh":90,"sd":90}},{"t":{{{t}}},"org":"x","u":{"fh":17,"sd":5}}]}"""));
+            ClaudeUsage.DecodeDesktopHistory(Bytes($$$"""{"version":{{{version}}},"samples":[{"t":1789000000000,"org":"x","u":{"fh":90,"sd":90}},{"t":{{{t}}},"org":"x","u":{"fh":17,"sd":5}}]}"""), "x");
         var recordedAt = at.AddSeconds(-720);
         check(History(1, recordedAt.ToUnixTimeMilliseconds()) == null
               && History(2, recordedAt.ToUnixTimeMilliseconds()) == new ClaudeUsageLimits(new(17, null, recordedAt), new(5, null, recordedAt))

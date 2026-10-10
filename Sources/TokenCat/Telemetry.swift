@@ -37,7 +37,7 @@ struct ClaudeLimitWindow: Codable, Equatable {
 }
 
 /// `rate_limits.five_hour` and `.seven_day` from the status line JSON (Claude.ai subscribers, after the first response).
-/// Everything else in that JSON (paths, model, cost, session) is dropped on receipt and never stored or written.
+/// Account and session identity stay outside this Codable numeric payload.
 struct ClaudeUsageLimits: Codable, Equatable {
     var fiveHour: ClaudeLimitWindow?
     var sevenDay: ClaudeLimitWindow?
@@ -82,10 +82,11 @@ struct ClaudeUsageLimits: Codable, Equatable {
     /// The Claude desktop app runs no statusLine; it records its own usage about every 15 min in
     /// `~/Library/Application Support/Claude/plan-usage-history.json` (`{"version":2,"samples":[{"t":ms,"org":…,"u":{"fh":%,"sd":%}}]}`).
     /// Only the last sample's time and the 5-hour (`fh`) and 7-day (`sd`) percentages are kept; nil for any other shape.
-    static func decodeDesktopHistory(_ data: Data) -> ClaudeUsageLimits? {
+    static func decodeDesktopHistory(_ data: Data, defaultOrganization: String? = nil) -> ClaudeUsageLimits? {
         guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], number(root["version"]) == 2,
               let sample = (root["samples"] as? [Any])?.last as? [String: Any], let usage = sample["u"] as? [String: Any],
               let time = number(sample["t"]), (1e12...1e13).contains(time) else { return nil }
+        if let organization = sample["org"] as? String, organization != defaultOrganization { return nil }
         let recorded = Date(timeIntervalSince1970: time / 1_000)
         func window(_ key: String) -> ClaudeLimitWindow? {
             number(usage[key]).flatMap { (0...100).contains($0) ? ClaudeLimitWindow(usedPercent: $0, resetsAt: nil, receivedAt: recorded) : nil }
@@ -93,13 +94,39 @@ struct ClaudeUsageLimits: Codable, Equatable {
         return ClaudeUsageLimits(fiveHour: window("fh"), sevenDay: window("sd"))
     }
 
-    static func load(from defaults: UserDefaults) -> ClaudeUsageLimits {
-        defaults.data(forKey: defaultsKey).flatMap { try? JSONDecoder().decode(Self.self, from: $0) } ?? ClaudeUsageLimits()
+}
+
+/// Only one-way account keys and numeric windows are persisted; display identity never crosses this seam.
+typealias ClaudeLimitsByAccount = [String: ClaudeUsageLimits]
+
+extension Dictionary where Key == String, Value == ClaudeUsageLimits {
+    static var legacyKey: String { "legacy" }
+    private static func persistedKey(_ key: String) -> Bool {
+        key == legacyKey || (key.utf8.count == 16 && key.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) })
+    }
+
+    func merged(_ other: Self) -> Self {
+        merging(other) { $0.merged($1) }
+    }
+
+    static func load(from defaults: UserDefaults, defaultAccount: LimitAccount?) -> Self {
+        guard let data = defaults.data(forKey: ClaudeUsageLimits.defaultsKey) else { return [:] }
+        // Window objects can decode as empty ClaudeUsageLimits too; distinguish a real hashed store before legacy decoding.
+        if let limits = try? JSONDecoder().decode(Self.self, from: data), limits.keys.allSatisfy(Self.persistedKey) {
+            return limits.filter { Self.persistedKey($0.key) && !$0.value.isEmpty }
+        }
+        guard let legacy = try? JSONDecoder().decode(ClaudeUsageLimits.self, from: data), !legacy.isEmpty else { return [:] }
+        return [defaultAccount?.storageKey ?? legacyKey: legacy]
     }
 
     func save(to defaults: UserDefaults) {
-        guard !isEmpty, let data = try? JSONEncoder().encode(self) else { defaults.removeObject(forKey: Self.defaultsKey); return }
-        defaults.set(data, forKey: Self.defaultsKey)
+        // Reject arbitrary caller keys too: no identity can accidentally reach UserDefaults.
+        let safe = filter { Self.persistedKey($0.key) && !$0.value.isEmpty }
+        guard !safe.isEmpty, let data = try? JSONEncoder().encode(safe) else {
+            defaults.removeObject(forKey: ClaudeUsageLimits.defaultsKey)
+            return
+        }
+        defaults.set(data, forKey: ClaudeUsageLimits.defaultsKey)
     }
 }
 
@@ -187,7 +214,8 @@ final class LocalTelemetryCollector {
     private var retryAt: Date?
     private var receivedAt: Date?
     private var batches: [TokenSource: Date] = [:]
-    private var claudeStatus = ClaudeUsageLimits()
+    /// Session IDs are memory-only routing keys, never included in diagnostics or persisted windows.
+    private var claudeStatus: [String: ClaudeUsageLimits] = [:]
     private var ready = false
     private var attempt = 0
     private let listeningPort: UInt16
@@ -210,8 +238,22 @@ final class LocalTelemetryCollector {
     var lastReceivedAt: Date? { lock.withLock { receivedAt } }
     /// Newest batch per client, decoded or not: proof that a restarted client exports here.
     var lastBatchAt: [TokenSource: Date] { lock.withLock { batches } }
-    /// Newest Claude usage-limit windows received from the status line bridge in this process.
-    var claudeLimits: ClaudeUsageLimits { lock.withLock { claudeStatus } }
+    /// Status-line windows are routed by the session's account before any reduction occurs. A receipt whose session is not
+    /// (yet) a tracked reading stays unattributed (shown only when no account has data) instead of the default account's: it
+    /// may come from another config dir's subscription. It is attributed once that session's log is read.
+    func claudeLimits(tokens: [TokenReading]) -> ClaudeLimitsByAccount {
+        let receipts = lock.withLock { claudeStatus }
+        var accounts: [String: LimitAccount] = [:]
+        for reading in tokens where reading.limitProvider == .claude {
+            if let session = reading.sessionID, let account = reading.limitAccount { accounts[session] = account }
+        }
+        var result: ClaudeLimitsByAccount = [:]
+        for (session, limits) in receipts {
+            let key = accounts[session]?.storageKey ?? ClaudeLimitsByAccount.legacyKey
+            result[key] = (result[key] ?? ClaudeUsageLimits()).merged(limits)
+        }
+        return result
+    }
     var isRunning: Bool { lock.withLock { ready } }
     func snapshot() -> [TelemetryReading] {
         lock.withLock {
@@ -406,8 +448,18 @@ final class LocalTelemetryCollector {
     func ingest(_ data: Data, path: String) -> Bool {
         // The status line copy is not an OTLP batch: it proves neither an export nor a restart, so only the limits change.
         if path == Self.claudeStatusPath {
-            guard data.count <= Self.maximumStatusBodyBytes, let limits = ClaudeUsageLimits.decode(data, receivedAt: Date()) else { return false }
-            lock.withLock { claudeStatus = claudeStatus.merged(limits) }
+            guard data.count <= Self.maximumStatusBodyBytes, let limits = ClaudeUsageLimits.decode(data, receivedAt: Date()),
+                  let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
+            let session = (root["session_id"] as? String).flatMap { $0.count <= 256 ? $0 : nil } ?? ""
+            lock.withLock {
+                guard !limits.isEmpty else { return }
+                claudeStatus[session] = (claudeStatus[session] ?? ClaudeUsageLimits()).merged(limits)
+                if claudeStatus.count > Self.maximumLatest,
+                   let oldest = claudeStatus.min(by: {
+                       max($0.value.fiveHour?.receivedAt ?? .distantPast, $0.value.sevenDay?.receivedAt ?? .distantPast)
+                           < max($1.value.fiveHour?.receivedAt ?? .distantPast, $1.value.sevenDay?.receivedAt ?? .distantPast)
+                   })?.key { claudeStatus[oldest] = nil }
+            }
             return true
         }
         guard let signal = ["/v1/logs": "logs", "/v1/metrics": "metrics", "/v1/traces": "traces"][path] else { return false }

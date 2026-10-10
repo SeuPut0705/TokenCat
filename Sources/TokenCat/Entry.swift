@@ -449,8 +449,8 @@ enum TokenCatMain {
                                                      "no-digest": .noDigest, "invalid-bundle": .invalidBundle(loc("코드 서명을 확인하지 못했습니다", "couldn't verify the code signature"))]
             model.update = SnapshotFixtures.update(option("--update-failure", failures).map { .failed($0) } ?? .none, now: model.now)
             let received = model.now.addingTimeInterval(-50)
-            model.claudeLimits = ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: 42, resetsAt: model.now.addingTimeInterval(7_980), receivedAt: received),
-                                                   sevenDay: ClaudeLimitWindow(usedPercent: 31, resetsAt: model.now.addingTimeInterval(273_600), receivedAt: received))
+            model.claudeLimits = ["legacy": ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: 42, resetsAt: model.now.addingTimeInterval(7_980), receivedAt: received),
+                                                             sevenDay: ClaudeLimitWindow(usedPercent: 31, resetsAt: model.now.addingTimeInterval(273_600), receivedAt: received))]
             let note = option("--setup-note", ["unknown": TelemetrySetupNote.originalUnknown, "skipped": .statusLineSkipped, "recreated": .originalRecreated])
             model.telemetryConnectNotes = note.map { [$0] } ?? []
             model.claudeBridged = note != .statusLineSkipped

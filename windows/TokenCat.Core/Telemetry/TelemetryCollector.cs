@@ -44,7 +44,8 @@ public sealed class TelemetryCollector : IDisposable
     readonly Dictionary<string, int> readingCounts = new() { ["logs"] = 0, ["metrics"] = 0, ["traces"] = 0 };
     readonly List<TelemetryDiagnosticEntry> diagnosticEntries = [];
     readonly Dictionary<TokenSource, DateTimeOffset> batches = [];
-    ClaudeUsageLimits claudeStatus = ClaudeUsageLimits.Empty;
+    // Session routing receipts are memory-only and are reduced only after account attribution.
+    readonly Dictionary<string, ClaudeUsageLimits> claudeStatus = new(StringComparer.Ordinal);
 
     public TelemetryCollector(int port = DefaultPort, double[]? retryDelays = null)
     {
@@ -72,8 +73,18 @@ public sealed class TelemetryCollector : IDisposable
     public DateTimeOffset? NextRetryAt { get { lock (gate) return retryAt; } }
     /// Newest batch per client, decoded or not: proof that a restarted client exports here.
     public IReadOnlyDictionary<TokenSource, DateTimeOffset> LastBatchAt { get { lock (gate) return new Dictionary<TokenSource, DateTimeOffset>(batches); } }
-    /// Newest Claude usage-limit windows received from the status line bridge in this process.
-    public ClaudeUsageLimits ClaudeLimits { get { lock (gate) return claudeStatus; } }
+    public IReadOnlyDictionary<string, ClaudeUsageLimits> ClaudeLimitsForSessions(IReadOnlyList<TokenReading> tokens)
+    {
+        var accounts = new Dictionary<string, LimitAccount>(StringComparer.Ordinal);
+        foreach (var reading in tokens)
+            if (reading.LimitProvider == TokenSource.Claude && reading.SessionID is { } session && reading.LimitAccount is { } account)
+                accounts[session] = account;
+        IReadOnlyDictionary<string, ClaudeUsageLimits> result = new Dictionary<string, ClaudeUsageLimits>();
+        lock (gate)
+            foreach (var (session, limits) in claudeStatus)
+                result = ClaudeLimitsByAccount.Merge(result, limits, accounts.GetValueOrDefault(session));
+        return result;
+    }
     public bool IsRunning { get { lock (gate) return ready; } }
 
     public List<TelemetryReading> Snapshot()
@@ -349,8 +360,26 @@ public sealed class TelemetryCollector : IDisposable
     {
         if (path == TelemetryHttp.ClaudeStatusPath)
         {
-            if (data.Length > TelemetryHttp.MaximumStatusBodyBytes || ClaudeUsage.Decode(data, DateTimeOffset.UtcNow) is not { } limits) return false;
-            lock (gate) claudeStatus = ClaudeUsage.Merged(claudeStatus, limits);
+            if (data.Length > TelemetryHttp.MaximumStatusBodyBytes || ClaudeUsage.Decode(data, DateTimeOffset.UtcNow) is not { } limits
+                || Json.Parse(data) is not { ValueKind: JsonValueKind.Object } statusRoot) return false;
+            var session = statusRoot.Field("session_id")?.Text is { Length: <= 256 } id ? id : "";
+            lock (gate)
+            {
+                if (!limits.IsEmpty)
+                {
+                    claudeStatus[session] = claudeStatus.TryGetValue(session, out var old) ? ClaudeUsage.Merged(old, limits) : limits;
+                    if (claudeStatus.Count > MaximumLatest)
+                    {
+                        var oldest = claudeStatus.MinBy(pair =>
+                        {
+                            var five = pair.Value.FiveHour?.ReceivedAt ?? DateTimeOffset.MinValue;
+                            var seven = pair.Value.SevenDay?.ReceivedAt ?? DateTimeOffset.MinValue;
+                            return five > seven ? five : seven;
+                        }).Key;
+                        claudeStatus.Remove(oldest);
+                    }
+                }
+            }
             return true;
         }
         var signal = path switch { "/v1/logs" => "logs", "/v1/metrics" => "metrics", "/v1/traces" => "traces", _ => null };

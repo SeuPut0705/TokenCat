@@ -8,12 +8,11 @@ namespace TokenCat;
 // loops over one CancellationToken: the system loop owns the single 1 s PeriodicTimer and wakes the token loop each tick;
 // log-watcher paths wake it too, at most every 0.25 s. Named LiveMonitor because System.Threading.Monitor is an implicit using.
 
-/// `SampleSystem` is the App's Windows sampler (called on a worker thread, at most once at a time). Without `Telemetry` (checks)
-/// the collector reads as stopped and no Claude desktop or omp/Pi usage history is read, as on the mac's verification path. `ReadLimits` is
-/// `LiveLimits.Read`; without it nothing is polled.
+/// `SampleSystem` is the App's Windows sampler (called on a worker thread, at most once at a time). Without `Telemetry`
+/// the collector reads as stopped; passive desktop and omp/Pi records still work. Without `ReadLimits` nothing goes online.
 public sealed record MonitorOptions(string Home, string SupportDirectory, Func<SystemSnapshot> SampleSystem,
     TelemetryCollector? Telemetry = null, Func<DateTimeOffset>? Clock = null,
-    Func<TokenSource, CancellationToken, Task<LiveLimitResult>>? ReadLimits = null);
+    Func<LimitSlot, CancellationToken, Task<LiveLimitResult>>? ReadLimits = null);
 
 /// DashboardModel's published state, immutable per publish. Fixtures construct it directly (WP5 snapshots).
 /// `DetectedSources`: clients whose data folder exists (`TokenTracker.DetectedSources`), refreshed with the folder check.
@@ -23,11 +22,17 @@ public sealed record MonitorState(
     SessionListModel Sessions, FlowSeries Flow, DateTimeOffset? NewestOutputAt,
     TelemetryCollectorState TelemetryState, string TelemetryStatus, DateTimeOffset? TelemetryNextRetryAt,
     IReadOnlySet<TokenSource> TelemetryRestartNeeded, IReadOnlySet<TokenSource> TelemetryRestartExpired,
-    IReadOnlyDictionary<TokenSource, DateTimeOffset> TelemetryLastReceived, ClaudeUsageLimits ClaudeLimits, bool LogFoldersFound,
+    IReadOnlyDictionary<TokenSource, DateTimeOffset> TelemetryLastReceived, IReadOnlyDictionary<string, ClaudeUsageLimits> ClaudeLimits, bool LogFoldersFound,
     IReadOnlySet<TokenSource> DetectedSources)
 {
     /// Sources UI lists name: the telemetry clients, detected clients and any a reading carries (`TokenSource.Listed`).
     public IReadOnlyList<TokenSource> ListedSources => TokenSource.Listed(DetectedSources, Tokens);
+    public IReadOnlyList<UsageLimitSummary> UsageLimits { get; init; } = [];
+    public IReadOnlyDictionary<TokenSource, LimitAccount> DefaultLimitAccounts { get; init; } = new Dictionary<TokenSource, LimitAccount>();
+    public IReadOnlyDictionary<TokenSource, IReadOnlyList<LimitAccount>> KnownLimitAccounts { get; init; } = new Dictionary<TokenSource, IReadOnlyList<LimitAccount>>();
+    public ClaudeUsageLimits ShownClaudeLimits => UsageLimits.FirstOrDefault(row => row.Source == TokenSource.Claude) is { } first
+        ? ClaudeLimits.GetValueOrDefault(first.Account?.StorageKey ?? ClaudeLimitsByAccount.LegacyKey) ?? ClaudeUsageLimits.Empty
+        : ClaudeUsageLimits.Empty;
 }
 
 /// Clients whose config TokenCat changed and that have not sent a reading since.
@@ -68,8 +73,9 @@ public sealed class LiveMonitor : IDisposable
     readonly Func<DateTimeOffset> clock;
     readonly SettingsStore store;
     readonly TokenTracker tracker;
-    readonly ClaudeUsage.DesktopReader? desktop;
-    readonly AgentUsageHistoryReader? agentUsage;
+    readonly ClaudeUsage.DesktopReader desktop;
+    readonly AgentUsageHistoryReader agentUsage;
+    readonly LimitAccountReader limitAccounts;
     readonly object gate = new();
 
     // Everything below is guarded by `gate`.
@@ -84,14 +90,17 @@ public sealed class LiveMonitor : IDisposable
     Dictionary<TokenSource, DateTimeOffset> pendingRestart = [];
     readonly Dictionary<TokenSource, DateTimeOffset> lastReceived = [], batches = [];
     TelemetryRestartState restart = new();
-    ClaudeUsageLimits claudeLimits;
+    IReadOnlyDictionary<string, ClaudeUsageLimits> claudeLimits;
+    IReadOnlyDictionary<TokenSource, LimitAccount> defaultLimitAccounts = new Dictionary<TokenSource, LimitAccount>();
+    IReadOnlyDictionary<TokenSource, IReadOnlyList<LimitAccount>> knownLimitAccounts = new Dictionary<TokenSource, IReadOnlyList<LimitAccount>>();
     // Live usage limits: the setting, a dashboard on screen, one that just opened, each provider's poll, Codex's last answer
     // (Claude's merges into `claudeLimits`).
-    bool limitsEnabled, limitsWatched, limitsOpened;
-    readonly Dictionary<TokenSource, LiveLimits.Poll> polls = TokenSource.DefaultClients.ToDictionary(source => source, _ => new LiveLimits.Poll());
+    bool limitsEnabled, limitsWatched;
+    readonly LiveLimitPoller? livePoller;
     IReadOnlyList<TokenRateLimit> codexLive = [];
     /// Codex windows omp or Pi recorded from their own usage checks (`AgentUsageHistory`), weighed like log records.
     IReadOnlyList<TokenRateLimit> codexRecorded = [];
+    IReadOnlyList<UsageLimitSummary> usageLimits = [];
     MonitorState current;
     CancellationTokenSource? running;
     Channel<string[]>? wake;
@@ -100,18 +109,20 @@ public sealed class LiveMonitor : IDisposable
     public LiveMonitor(MonitorOptions options)
     {
         this.options = options;
+        if (options.ReadLimits is { } read) livePoller = new LiveLimitPoller(read);
         clock = options.Clock ?? (() => DateTimeOffset.UtcNow);
         store = new SettingsStore(Path.Combine(options.SupportDirectory, "settings.json"));
         tracker = new TokenTracker(options.Home, clock);
-        if (options.Telemetry is not null)
-        {
-            desktop = new ClaudeUsage.DesktopReader(AppPaths.ClaudeDesktopHistory());
-            agentUsage = new AgentUsageHistoryReader(options.Home, Environment.GetEnvironmentVariable);
-        }
+        limitAccounts = new LimitAccountReader(options.Home, Environment.GetEnvironmentVariable);
+        limitAccounts.Refresh();
+        defaultLimitAccounts = DefaultAccounts();
+        knownLimitAccounts = KnownAccounts();
+        desktop = new ClaudeUsage.DesktopReader(AppPaths.ClaudeDesktopHistory());
+        agentUsage = new AgentUsageHistoryReader(options.Home, Environment.GetEnvironmentVariable);
         foreach (var (id, seconds) in store.Get<Dictionary<string, double>>(PendingRestartKey) ?? new Dictionary<string, double>())
             foreach (var source in TokenSource.TelemetryClients.Where(value => value.Id == id))
                 pendingRestart[source] = DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1_000));
-        claudeLimits = LoadClaudeLimits(store);
+        claudeLimits = ClaudeLimitsByAccount.Load(store, defaultLimitAccounts.GetValueOrDefault(TokenSource.Claude));
         UpdateRestartState(clock());
         // The mac model's initial published values: nothing sampled, an empty flow and list.
         current = State(clock(), FlowSeries.Empty, [], SessionListModel.Empty);
@@ -211,20 +222,15 @@ public sealed class LiveMonitor : IDisposable
     {
         lock (gate)
         {
-            limitsOpened |= watched && !limitsWatched;
             (limitsEnabled, limitsWatched) = (enabled, watched);
         }
     }
+    IReadOnlyDictionary<TokenSource, LimitAccount> DefaultAccounts() =>
+        TokenSource.DefaultClients.Where(source => limitAccounts.DefaultAccount(source) is not null)
+            .ToDictionary(source => source, source => limitAccounts.DefaultAccount(source)!);
 
-    public static ClaudeUsageLimits LoadClaudeLimits(SettingsStore store) =>
-        store.Get<ClaudeUsageLimits>(ClaudeUsageLimits.DefaultsKey) ?? ClaudeUsageLimits.Empty;
-
-    /// Numbers and times only; empty limits clear the stored value.
-    public static void SaveClaudeLimits(SettingsStore store, ClaudeUsageLimits limits)
-    {
-        if (limits.IsEmpty) store.Remove(ClaudeUsageLimits.DefaultsKey);
-        else store.Set(ClaudeUsageLimits.DefaultsKey, limits);
-    }
+    IReadOnlyDictionary<TokenSource, IReadOnlyList<LimitAccount>> KnownAccounts() =>
+        TokenSource.DefaultClients.ToDictionary(source => source, source => limitAccounts.KnownAccounts(source));
 
     async Task SystemLoop(ChannelWriter<string[]> wakeTokens, CancellationToken token)
     {
@@ -304,6 +310,9 @@ public sealed class LiveMonitor : IDisposable
     {
         tracker.NoteChanged(paths);
         var logs = tracker.Sample();
+        limitAccounts.Refresh();
+        var defaults = DefaultAccounts();
+        var known = new Dictionary<TokenSource, IReadOnlyList<LimitAccount>>(KnownAccounts());
         var telemetry = options.Telemetry;
         var measurements = telemetry?.Snapshot() ?? [];
         var readings = TokenSpeed.Apply(logs, measurements);
@@ -311,8 +320,16 @@ public sealed class LiveMonitor : IDisposable
         foreach (var measurement in measurements) Later(received, measurement.Provider, measurement.At);
         // Any batch from a restarted client clears its notice, even one TokenCat cannot decode yet.
         var batchAt = telemetry?.LastBatchAt ?? new Dictionary<TokenSource, DateTimeOffset>();
-        var agent = telemetry is null ? AgentUsageHistory.Limits.Empty : agentUsage!.Read();
-        var limits = telemetry is null ? ClaudeUsageLimits.Empty : ClaudeUsage.Merged(ClaudeUsage.Merged(telemetry.ClaudeLimits, desktop!.Read()), agent.Claude);
+        var agent = agentUsage.Read();
+        foreach (var (provider, accounts) in agent.Accounts)
+            known[provider] = known.GetValueOrDefault(provider, []).Concat(accounts).Distinct().OrderBy(account => account.Key, StringComparer.Ordinal).ToArray();
+        var defaultClaude = defaults.GetValueOrDefault(TokenSource.Claude);
+        var desktopLimits = desktop.Read(limitAccounts.DefaultClaudeOrganizationID);
+        IReadOnlyDictionary<string, ClaudeUsageLimits> desktopStore = desktopLimits.IsEmpty
+            ? new Dictionary<string, ClaudeUsageLimits>()
+            : new Dictionary<string, ClaudeUsageLimits> { [defaultClaude?.StorageKey ?? ClaudeLimitsByAccount.LegacyKey] = desktopLimits };
+        var statusLimits = telemetry?.ClaudeLimitsForSessions(readings) ?? new Dictionary<string, ClaudeUsageLimits>();
+        var limits = ClaudeLimitsByAccount.Merged(ClaudeLimitsByAccount.Merged(statusLimits, desktopStore), agent.Claude);
         var state = telemetry?.State ?? TelemetryCollectorState.Stopped;
         var status = telemetry?.Status ?? Loc("실측 꺼짐 · 실행 중인 TokenCat 수집기 없음", "Telemetry off · no TokenCat collector running");
         var retryAt = telemetry?.NextRetryAt;
@@ -321,6 +338,8 @@ public sealed class LiveMonitor : IDisposable
         {
             if (token.IsCancellationRequested) return;
             tokens = readings;
+            defaultLimitAccounts = defaults;
+            knownLimitAccounts = known;
             tokensSampledAt = measuredAt;
             (telemetryState, telemetryStatus, nextRetryAt) = (state, status, retryAt);
             if (foldersFound is { } found) logFoldersFound = found;
@@ -328,51 +347,43 @@ public sealed class LiveMonitor : IDisposable
             foreach (var (source, at) in received) Later(lastReceived, source, at);
             foreach (var (source, at) in batchAt) Later(batches, source, at);
             codexRecorded = agent.Codex;
-            var merged = limits.IsEmpty ? claudeLimits : ClaudeUsage.Merged(claudeLimits, limits);
-            if (merged != claudeLimits)
+            var merged = ClaudeLimitsByAccount.Merged(claudeLimits, limits);
+            if (!merged.Count.Equals(claudeLimits.Count) || merged.Any(pair => claudeLimits.GetValueOrDefault(pair.Key) != pair.Value))
             {
                 claudeLimits = merged;
-                SaveClaudeLimits(store, merged);
+                ClaudeLimitsByAccount.Save(store, merged);
             }
             UpdateRestartState(measuredAt);
             Publish();
         }
     }
 
-    /// Starts each provider's live limit poll that is due (LiveLimits.Due): "active" while a session uses it (any client running
-    /// its models, `SessionCounts.LimitSources`) or a dashboard shows. An answer replaces Codex's live windows or merges into
-    /// Claude's (newer per window) and publishes. Caller holds `gate`.
+    /// Polls the shown and running Claude accounts and only the default Codex CLI account. Caller holds `gate`.
     void PollLimits(CancellationToken token)
     {
-        var opened = limitsOpened;
-        limitsOpened = false;
-        if (options.ReadLimits is not { } read || !limitsEnabled || token.IsCancellationRequested) return;
-        foreach (var (source, poll) in polls)
+        if (livePoller is not { } poller || !limitsEnabled || token.IsCancellationRequested) return;
+        var active = current.Sessions.Counts.LimitSources;
+        var slots = active.Where(slot => slot.Provider == TokenSource.Claude && slot.Account is not null).ToHashSet();
+        foreach (var row in current.UsageLimits.Where(row => row.Source == TokenSource.Claude && row.Account is not null))
+            slots.Add(new LimitSlot(TokenSource.Claude, row.Account));
+        if (!slots.Any(slot => slot.Provider == TokenSource.Claude) && defaultLimitAccounts.GetValueOrDefault(TokenSource.Claude) is { } claudeAccount)
+            slots.Add(new LimitSlot(TokenSource.Claude, claudeAccount));
+        if (defaultLimitAccounts.GetValueOrDefault(TokenSource.Codex) is { } codexAccount)
+            slots.Add(new LimitSlot(TokenSource.Codex, codexAccount));
+        _ = poller.Tick(clock(), limitsWatched, slots, active.Contains, result =>
         {
-            var running = current.Sessions.Counts.LimitSources.Contains(source);
-            var since = poll.Started is { } started ? Stopwatch.GetElapsedTime(started).TotalSeconds : (double?)null;
-            if (poll.Running || !LiveLimits.Due(since, poll.Failures, running || limitsWatched, opened)) continue;
-            (poll.Running, poll.Started) = (true, Stopwatch.GetTimestamp());
-            _ = Task.Run(async () =>
+            lock (gate)
             {
-                LiveLimitResult result;
-                try { result = await read(source, token).ConfigureAwait(false); }
-                catch (Exception) { result = new(Failed: true); }
-                lock (gate)
+                if (token.IsCancellationRequested) return;
+                if (result.Codex is { } codex) codexLive = codex;
+                if (result.Claude is { } claude)
                 {
-                    poll.Running = false;
-                    poll.Failures = result.Failed ? poll.Failures + 1 : 0;
-                    if (token.IsCancellationRequested || (result.Codex is null && result.Claude is null)) return;
-                    if (result.Codex is { } codex) codexLive = codex;
-                    if (result.Claude is { } claude)
-                    {
-                        claudeLimits = ClaudeUsage.Merged(claudeLimits, claude);
-                        SaveClaudeLimits(store, claudeLimits);
-                    }
-                    Publish();
+                    claudeLimits = ClaudeLimitsByAccount.Merge(claudeLimits, claude, result.Slot?.Account);
+                    ClaudeLimitsByAccount.Save(store, claudeLimits);
                 }
-            }, CancellationToken.None);
-        }
+                Publish();
+            }
+        }, token);
     }
 
     static void Later(Dictionary<TokenSource, DateTimeOffset> times, TokenSource source, DateTimeOffset at)
@@ -403,14 +414,20 @@ public sealed class LiveMonitor : IDisposable
         now, system, hasSample, cpuHistory.ToArray(), tokens, tokensSampledAt, groups, sessions, flow,
         tokens.Where(reading => !SessionPresentation.IsTelemetry(reading)).Select(reading => reading.LastOutputAt).Max(),
         telemetryState, telemetryStatus, nextRetryAt, restart.Needed, restart.Expired,
-        new Dictionary<TokenSource, DateTimeOffset>(lastReceived), claudeLimits, logFoldersFound, detectedSources);
+        new Dictionary<TokenSource, DateTimeOffset>(lastReceived), claudeLimits, logFoldersFound, detectedSources)
+        {
+            DefaultLimitAccounts = defaultLimitAccounts,
+            KnownLimitAccounts = knownLimitAccounts,
+            UsageLimits = usageLimits,
+        };
 
     /// Rebuilds the presentation on the shared clock and raises Updated while running. Caller holds `gate`.
     void Publish()
     {
         var now = tokensSampledAt is { } sampled && sampled > system.SampledAt ? sampled : system.SampledAt;
+        usageLimits = SessionPresentation.UsageLimits(tokens, [.. codexLive, .. codexRecorded], claudeLimits, defaultLimitAccounts, knownLimitAccounts, now);
         current = State(now, FlowSeries.Make(tokens, now), SessionPresentation.Groups(tokens, now),
-                        SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed, codexReads: [.. codexLive, .. codexRecorded]));
+                        SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed));
         if (running is { IsCancellationRequested: false }) Updated?.Invoke(current);
     }
 

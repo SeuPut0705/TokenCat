@@ -175,6 +175,7 @@ public sealed record TokenRateLimit(double UsedPercent, int? WindowMinutes, Date
     public bool Live { get; init; }
     /// "omp" or "Pi": another client's own usage check (`AgentUsageHistory`); `RecordedAt` is then its record time.
     public string? RecordedBy { get; init; }
+    [JsonIgnore] public LimitAccount? Account { get; init; }
 }
 
 /// Context occupied by the latest request. Claude reports no window size, so `WindowTokens` stays null there.
@@ -218,6 +219,10 @@ public sealed record TokenReading
     public string? AgentRole { get; init; }
     /// The product that wrote the log when one source covers several ("Roo Code", "Kilo Code", "Pi"); null means `Source`.
     public string? ClientName { get; init; }
+    /// Subscription identity and credential routing never survive JSON encoding.
+    [JsonIgnore] public LimitAccount? LimitAccount { get; init; }
+    [JsonIgnore] public IReadOnlyDictionary<TokenSource, string> CredentialPins { get; init; } = ImmutableDictionary<TokenSource, string>.Empty;
+    [JsonIgnore] public TokenSource? LimitProvider => TokenSource.LimitProvider(Model) ?? (Source is TokenSource.Claude or TokenSource.Codex ? Source : null);
     [JsonIgnore] public string ClientTitle => ClientName ?? Source.Title;
     public TokenSpeedMeasurement? SpeedMeasurement { get; init; }
     public int? LastOutputTokens { get; init; }

@@ -1134,6 +1134,7 @@ public static class TrackerChecks
             OpenCodeLogChecks.Run(root, check);
             // Cline, Roo Code, Cline CLI, omp and Pi: fixture files (ClineOmpChecks.cs).
             ClineOmpChecks.Run(root, check);
+            RunLimitAccountChecks(root, check);
             // Hermes Agent: fixture stores and agent.log (HermesLogChecks.cs).
             HermesLogChecks.Run(root, check);
             // OpenClaw: JSONL and SQLite fixtures (OpenClawLogChecks.cs).
@@ -1156,5 +1157,130 @@ public static class TrackerChecks
         GooseLogChecks.Run(check);
         SessionTitleChecks.Run(check);
         return c.Done();
+    }
+
+    internal static bool WriteLimitCredentialFixture(string path, params (string Provider, JsonNode Data, bool Disabled)[] rows)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var database = OpenCodeDatabase.Open(path, create: true);
+        if (database is null || !database.Query("CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY, provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT)", [], _ => { })) return false;
+        foreach (var row in rows)
+            if (!database.Query("INSERT INTO auth_credentials (provider,credential_type,data,disabled_cause) VALUES (?, 'oauth', ?, ?)",
+                [row.Provider, row.Data.ToJsonString(Json.Options), row.Disabled ? "refresh failed" : null], _ => { })) return false;
+        return true;
+    }
+
+    static void RunLimitAccountChecks(string root, Action<bool, string> check)
+    {
+        var member = new LimitAccount(" WORKSPACE ", " Member@Example.com ", "Org");
+        var same = new LimitAccount("workspace", "member@example.com", "Renamed");
+        var other = new LimitAccount("workspace", "other@example.com");
+        var unidentified = new LimitAccount("workspace");
+        check(member == same && member.Key == "workspace|member@example.com" && member.StorageKey == same.StorageKey
+            && member.GetHashCode() == same.GetHashCode(), "Limit accounts: normalized identity or organization-independent equality/hash changed");
+        check(new HashSet<LimitAccount> { member, same, other, unidentified }.Count == 3
+            && new HashSet<LimitSlot> { new(TokenSource.Codex, member), new(TokenSource.Codex, other), new(TokenSource.Codex, unidentified) }.Count == 3,
+            "Limit accounts: workspace members or an unknown-email identity were merged");
+        check(LimitAccount.Sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+            && member.StorageKey.Length == 16 && unidentified.Label.EndsWith("…pace", StringComparison.Ordinal),
+            "Limit accounts: storage hashing or anonymous account label changed");
+        try
+        {
+            var home = Path.Combine(root, "limit-accounts");
+            var config = Path.Combine(home, "claude-config");
+            var codexHome = Path.Combine(home, "codex-config");
+            var legacy = Path.Combine(home, ".config", "claude", "projects");
+            var codexLogs = Path.Combine(codexHome, "sessions", "2026", "10", "04");
+            foreach (var directory in new[] { Path.Combine(config, "projects"), codexLogs, legacy }) Directory.CreateDirectory(directory);
+            void Write(string path, string json) => File.WriteAllBytes(path, Json.Write(N(json)));
+            Write(Path.Combine(home, ".claude.json"), """{"oauthAccount":{"accountUuid":" DEFAULT ","emailAddress":"Default@Example.com","organizationUuid":"default-org"}}""");
+            Write(Path.Combine(config, ".claude.json"), """{"oauthAccount":{"accountUuid":" CONFIG ","emailAddress":"Config@Example.com","organizationName":"Config org","organizationUuid":"config-org"},"unrelated":{"access":"PRIVATE_CLAUDE_TOKEN"}}""");
+            Write(Path.Combine(codexHome, "auth.json"), """{"tokens":{"account_id":" SINGLE ","id_token":{"invalid":true},"access_token":{"invalid":true},"refresh_token":{"invalid":true}}}""");
+            check(WriteLimitCredentialFixture(Path.Combine(home, ".omp", "agent", "agent.db"),
+                ("openai-codex", N("""{"accountId":" SINGLE ","email":"Single@Example.com","orgId":" RAW_ORG ","projectId":"RawProject","orgName":"Workspace","access":{"invalid":true},"refresh":{"invalid":true}}"""), true),
+                ("openai-codex", N("""{"accountId":"workspace","email":"member@example.com","access":{"invalid":true}}"""), false),
+                ("openai-codex", N("""{"accountId":"workspace","email":"other@example.com"}"""), false),
+                ("anthropic", N("""{"accountId":"UPDATED","email":"new@example.com"}"""), false)),
+                "Limit accounts fixture: metadata credentials database could not be created");
+            string? Env(string key) => key switch { "CLAUDE_CONFIG_DIR" => config, "CODEX_HOME" => codexHome, _ => null };
+            var reader = new LimitAccountReader(home, Env);
+            reader.Refresh();
+            check(reader.DefaultAccount(TokenSource.Claude)?.Id == "config" && reader.DefaultClaudeOrganizationID == "config-org"
+                && reader.DefaultAccount(TokenSource.Codex)?.Email == "single@example.com",
+                "Limit accounts: environment defaults or unique credential email resolution failed");
+            var legacyReader = new LimitAccountReader(home, key => key == "CLAUDE_CONFIG_DIR" ? Path.GetDirectoryName(legacy) : null);
+            legacyReader.Refresh();
+            check(legacyReader.DefaultAccount(TokenSource.Claude)?.Id == "default" && legacyReader.DefaultClaudeOrganizationID == "default-org",
+                "Limit accounts: default legacy Claude account and organization did not use the same config fallback");
+            check(reader.Resolve(TokenSource.Codex, " WORKSPACE ") == unidentified
+                && reader.Resolve(TokenSource.Codex, "workspace", "MEMBER@EXAMPLE.COM") == member
+                && reader.Resolve(TokenSource.Codex, null, "member@example.com") is null,
+                "Limit accounts: missing email selected an ambiguous workspace member or missing id was invented");
+            var pin = LimitAccount.CredentialPinHash("openai-codex", " SINGLE ", "Single@Example.com", " RAW_ORG ", "RawProject");
+            var session = Path.Combine(home, ".omp", "agent", "sessions", "project", "main.jsonl");
+            check(reader.PinnedAccount(TokenSource.Codex, pin, session)?.Email == "single@example.com"
+                && pin != LimitAccount.CredentialPinHash("openai-codex", "single", "single@example.com", "raw_org", "rawproject"),
+                "Limit accounts: disabled credential metadata was filtered or pin strings were normalized");
+            var linked = Path.Combine(home, "linked-claude");
+            if (OperatingSystem.IsWindows())
+            {
+                // A junction exercises real-path attribution without requiring symbolic-link privileges.
+                var start = new System.Diagnostics.ProcessStartInfo("cmd.exe")
+                    { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+                foreach (var argument in new[] { "/c", "mklink", "/J", linked, config }) start.ArgumentList.Add(argument);
+                using var junction = System.Diagnostics.Process.Start(start) ?? throw new IOException("Could not create fixture junction");
+                junction.StandardOutput.ReadToEnd();
+                var error = junction.StandardError.ReadToEnd();
+                junction.WaitForExit();
+                if (junction.ExitCode != 0) throw new IOException(error);
+            }
+            else Directory.CreateSymbolicLink(linked, config);
+            var linkedLog = Path.Combine(config, "projects", "a", "log.jsonl");
+            Directory.CreateDirectory(Path.GetDirectoryName(linkedLog)!);
+            File.WriteAllBytes(linkedLog, []);
+            check(reader.Account(Path.Combine(linked, "projects", "a", "log.jsonl"), TokenSource.Claude)?.Id == "config"
+                && reader.Account(Path.Combine(legacy, "a", "log.jsonl"), TokenSource.Claude)?.Id == "default"
+                && reader.Account(Path.Combine(home, ".openclaude", "projects", "a", "log.jsonl"), TokenSource.Claude) is null
+                && reader.Account(Path.Combine(home, ".trae", "cli", "sessions", "a.jsonl"), TokenSource.Codex) is null,
+                "Limit accounts: real-path roots, legacy Claude fallback or clone isolation failed");
+            var log = Path.Combine(codexLogs, "account.jsonl");
+            File.WriteAllBytes(log, Lines(N("""{"type":"session_meta","payload":{"id":"account-session"}}"""),
+                N("""{"type":"turn_context","payload":{"model":"gpt-fixture"}}"""),
+                N("""{"type":"event_msg","timestamp":"2026-10-04T05:00:00Z","payload":{"type":"task_started","turn_id":"account-turn"}}"""),
+                N("""{"type":"event_msg","timestamp":"2026-10-04T05:00:01Z","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":20,"window_minutes":300}}}}""")));
+            var now = At("2026-10-04T05:00:02Z");
+            var rows = new TokenTracker(home, () => now, environment: Env).Sample();
+            var row = rows.FirstOrDefault();
+            check(row is not null && row.LimitAccount == reader.DefaultAccount(TokenSource.Codex)
+                && row.RateLimit is not null && row.RateLimit.Account == row.LimitAccount,
+                "Limit accounts: Codex log limits did not inherit the reading account");
+            var reading = new TokenReading(TokenSource.Omp)
+            {
+                Model = "claude-fixture", LimitAccount = member, CredentialPins = new Dictionary<TokenSource, string> { [TokenSource.Codex] = pin },
+                RateLimit = new TokenRateLimit(20, 300, null, now) { Account = member },
+            };
+            var encoded = Json.Serialize(reading);
+            var decoded = System.Text.Json.JsonSerializer.Deserialize<TokenReading>(encoded, Json.Options);
+            var text = Encoding.UTF8.GetString(encoded);
+            check(!text.Contains("example.com", StringComparison.Ordinal) && !text.Contains("workspace", StringComparison.Ordinal)
+                && !text.Contains(pin, StringComparison.Ordinal) && !text.Contains("limitAccount", StringComparison.Ordinal)
+                && !text.Contains("credentialPins", StringComparison.Ordinal) && decoded is { LimitAccount: null, RateLimit.Account: null }
+                && decoded.CredentialPins.Count == 0 && decoded.LimitProvider == TokenSource.Claude,
+                "Limit accounts privacy: encoded readings or rate limits retained account identity or credential pins");
+            Write(Path.Combine(config, ".claude.json"), """{"oauthAccount":{"accountUuid":"UPDATED"}}""");
+            reader.Refresh();
+            check(reader.DefaultAccount(TokenSource.Claude) is { Id: "updated", Email: "new@example.com" }
+                && reader.Account(Path.Combine(config, "projects", "a", "log.jsonl"), TokenSource.Claude)?.Email == "new@example.com"
+                && reader.KnownAccounts(TokenSource.Claude).Count(account => account.Id == "updated") == 1 && reader.DefaultClaudeOrganizationID is null,
+                "Limit accounts: changed config metadata did not invalidate its cache");
+            using (var oversized = new FileStream(Path.Combine(config, ".claude.json"), FileMode.Create, FileAccess.Write))
+                oversized.SetLength(LimitAccountReader.MaximumConfigBytes + 1);
+            reader.Refresh();
+            check(reader.DefaultAccount(TokenSource.Claude) is null, "Limit accounts: oversized config retained stale identity");
+            Write(Path.Combine(codexHome, "auth.json"), """{"tokens":{"id_token":"PRIVATE_ID_TOKEN"},"account_id":"not-a-token-account"}""");
+            reader.Refresh();
+            check(reader.DefaultAccount(TokenSource.Codex) is null, "Limit accounts privacy: Codex identity was taken from a token or non-metadata field");
+        }
+        catch (Exception error) { check(false, $"Limit accounts fixture error: {error.Message}"); }
     }
 }

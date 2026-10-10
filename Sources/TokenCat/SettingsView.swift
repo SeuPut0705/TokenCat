@@ -762,7 +762,7 @@ private struct TelemetryPane: View {
                     }
                 }
                 // Whether the status line bridge delivers; the newer of the two windows' receipts (no reset time: the desktop app).
-                let newest = [model.claudeLimits.fiveHour, model.claudeLimits.sevenDay].compactMap { $0 }.max { $0.receivedAt < $1.receivedAt }
+                let newest = [model.shownClaudeLimits.fiveHour, model.shownClaudeLimits.sevenDay].compactMap { $0 }.max { $0.receivedAt < $1.receivedAt }
                 let live = newest?.live == true
                 let limits = TelemetryStatusRow.claudeLimits(notes: model.telemetryConnectNotes, bridged: model.claudeBridged, received: newest?.receivedAt,
                                                              desktop: newest?.resetsAt == nil && !live, live: live, recordedBy: newest?.recordedBy,

@@ -8,6 +8,7 @@ final class TokenTracker {
     private let environment: [String: String]
     private let providers: [TokenProvider]
     private let clock: () -> Date
+    let accountReader: LimitAccountReader
     private let initialTailBytes: Int
     private let discoveryInterval: TimeInterval
     private var lastDiscovery: Date?
@@ -34,6 +35,7 @@ final class TokenTracker {
         home = homeDirectory
         self.environment = environment
         self.providers = providers
+        accountReader = LimitAccountReader(home: homeDirectory, environment: environment)
         func real(_ path: String) -> String? {
             guard let resolved = realpath(path, nil) else { return nil }
             defer { free(resolved) }
@@ -96,16 +98,25 @@ final class TokenTracker {
             lastDiscovery = now
         }
         // One pool per file: a cold start parses MBs of tails, and without it every temporary lives until the sample ends.
+        accountReader.refresh()
         for file in files.values { autoreleasepool { file.reader.read(tailLimit: initialTailBytes, now: now) } }
         let prefix = home.path + "/"
         return files.flatMap { path, file -> [TokenReading] in
             let relative = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
             let readings = file.reader.readings(id: "\(file.source.rawValue):\(relative)", now: now)
-            guard let client = clientRoots.first(where: { $0.prefixes.contains(where: path.hasPrefix) })?.name else { return readings }
+            let client = clientRoots.first(where: { $0.prefixes.contains(where: path.hasPrefix) })?.name
             return readings.map {
                 var reading = $0
-                reading.clientName = reading.clientName ?? client
-                reading.rateLimit = nil
+                if let client {
+                    reading.clientName = reading.clientName ?? client
+                    if reading.source != .omp { reading.rateLimit = nil }
+                }
+                if reading.source == .omp, let provider = reading.limitProvider, let hash = reading.credentialPins[provider] {
+                    reading.limitAccount = accountReader.pinnedAccount(provider: provider, hash: hash, path: path)
+                } else {
+                    reading.limitAccount = accountReader.account(source: reading.source, path: path)
+                }
+                reading.rateLimit?.account = reading.limitAccount
                 return reading
             }
         }.sorted {

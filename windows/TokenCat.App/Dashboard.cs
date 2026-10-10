@@ -129,11 +129,9 @@ sealed class Dashboard : UserControl
         var lists = list.Model(input);
         flow.Update(state, loading, FlowEmpty(input) && !flowOpened,
             loading ? null : SessionPresentation.Headline(lists, state.Now, state.TelemetryRestartNeeded));
-        var limitRows = new List<UsageLimitSummary>();
-        if (state.Sessions.UsageLimit is { } codex && codex.IsShown(state.Now)) limitRows.Add(codex);
-        if (SessionPresentation.ClaudeUsageLimit(state.ClaudeLimits, state.Now) is { } claude && claude.IsShown(state.Now)) limitRows.Add(claude);
+        var limitRows = state.UsageLimits;
         limitsBox.Visibility = limitRows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
-        Reconcile.Panel(limits, limitCache, limitRows.Select((limit, index) => Reconcile.Item(limit.Source.ToString(),
+        Reconcile.Panel(limits, limitCache, limitRows.Select((limit, index) => Reconcile.Item($"{limit.Source}:{limit.Account?.Key ?? "legacy"}",
             () => new LimitRow(), (LimitRow row) => row.Update(limit, state.Now, first: index == 0))));
 
         sessionsHeader.Update(lists);
@@ -681,12 +679,14 @@ sealed class LimitRow : StackPanel
 {
     readonly Border rule = Ui.Hairline();
     readonly LimitWindow main = new(), other = new() { Margin = new Thickness(0, 6, 0, 0) };
+    readonly TextBlock account = Ui.Text("", Font.Meta, Theme.Secondary);
 
     public LimitRow()
     {
         rule.Margin = new Thickness(0, 0, 0, 8);
         Children.Add(rule);
         Children.Add(main);
+        Children.Add(account);
         Children.Add(other);
     }
 
@@ -698,6 +698,8 @@ sealed class LimitRow : StackPanel
     {
         Margin = new Thickness(0, first ? 0 : 8, 0, 0);
         rule.Visibility = first ? Visibility.Collapsed : Visibility.Visible;
+        account.Text = limit.AccountLabel ?? "";
+        account.Visibility = limit.AccountLabel is null ? Visibility.Collapsed : Visibility.Visible;
         main.Update(limit, now);
         var second = limit.OtherSummary(now);
         other.Visibility = second is null ? Visibility.Collapsed : Visibility.Visible;

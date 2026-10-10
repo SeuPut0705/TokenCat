@@ -33,10 +33,13 @@ private final class OmpLogReader: TokenLogReader {
     private var headerRead = false
     /// Pi's own sessions (`~/.pi/agent/sessions`); nil for omp.
     private let clientName: String?
+    private let pinReader: OmpCredentialPinReader
+    private var credentialPins: [TokenSource: String] = [:]
 
     init(url: URL) {
         self.url = url
         tail = LogLineTail(url: url)
+        pinReader = OmpCredentialPinReader(url: url)
         state = OmpLogState(url: url)
         clientName = url.path.contains("/.pi/agent/") ? "Pi" : nil
     }
@@ -46,6 +49,7 @@ private final class OmpLogReader: TokenLogReader {
             state = OmpLogState(url: url)
             headerRead = false
         }, line: { state.consume($0, headSkipped: tail.skippedHead) })
+        credentialPins = pinReader.read()
         // The header (a title line, then the session line) is lost when the first read starts mid-file.
         guard tail.skippedHead, !headerRead, let handle = try? FileHandle(forReadingFrom: url) else { return }
         headerRead = true
@@ -67,6 +71,7 @@ private final class OmpLogReader: TokenLogReader {
         reading.title = state.title
         reading.projectPath = state.cwd
         reading.model = state.model
+        reading.credentialPins = credentialPins
         reading.effort = state.effort
         reading.context = state.context
         reading.lastActivity = lastActivity
@@ -414,5 +419,122 @@ private struct OmpRecordHead {
         guard open >= key.count - 1, bytes[open] == 34,
               bytes[(open - key.count + 1)...open].elementsEqual(key) else { return (top.fields, message, nil) }
         return (top.fields, message, text((open + 1)..<(last - 2)))
+    }
+}
+
+/// Pin metadata must survive bounded tails and discovery caps. Stream only new bytes, and decode no message bodies.
+private final class OmpCredentialPinReader {
+    private struct Record: Decodable {
+        var type: String
+        var provider: String?
+        var hash: String?
+        var parentSession: String?
+    }
+    private struct FileState {
+        var stamp: [Int64] = []
+        var offset: UInt64 = 0
+        var pending = Data()
+        var dropping = false
+        var pins: [TokenSource: String] = [:]
+        var parent: String?
+    }
+    private let url: URL
+    private var files: [String: FileState] = [:]
+    private let pinMarker = Data("credential_pin".utf8)
+    private let parentMarker = Data("parentSession".utf8)
+    private let maximumLineBytes = 1_048_576
+
+    init(url: URL) { self.url = url }
+
+    func read() -> [TokenSource: String] {
+        var visited = Set<String>()
+        return inherited(url, visited: &visited)
+    }
+
+    private func inherited(_ url: URL, visited: inout Set<String>) -> [TokenSource: String] {
+        let path = url.standardizedFileURL.path
+        guard visited.insert(path).inserted else { return [:] }
+        let own = metadata(url)
+        // Nested subagents inherit their immediate parent's log even when that parent was not discovered.
+        var directory = url.deletingLastPathComponent()
+        var parent: URL?
+        while directory.path != "/", directory.lastPathComponent != "sessions" {
+            let name = directory.lastPathComponent
+            let candidate = directory.appendingPathExtension("jsonl")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                parent = candidate
+                break
+            }
+            // The root session directory itself names a log, even when its file has gone away.
+            if name.count > 25, name.prefix(4).allSatisfy(\.isNumber), name.dropFirst(10).first == "T", name.contains("_") {
+                parent = candidate
+                break
+            }
+            directory.deleteLastPathComponent()
+        }
+        if parent != nil, let explicit = own.parent, !explicit.isEmpty {
+            parent = explicit.hasPrefix("/") ? URL(fileURLWithPath: explicit)
+                : url.deletingLastPathComponent().appendingPathComponent(explicit)
+        }
+        guard let parent else { return own.pins }
+        var pins = inherited(parent, visited: &visited)
+        pins.merge(own.pins) { _, newest in newest }
+        return pins
+    }
+
+    private func metadata(_ url: URL) -> FileState {
+        let path = url.standardizedFileURL.path
+        guard let stamp = OpenCodeDatabase.signature(path), stamp[2] >= 0 else { files[path] = nil; return FileState() }
+        var state = files[path] ?? FileState()
+        guard state.stamp != stamp else { return state }
+        if !state.stamp.isEmpty,
+           state.stamp[0...1] != stamp[0...1] || stamp[2] < Int64(state.offset)
+            || (stamp[2] == Int64(state.offset) && state.stamp != stamp) {
+            state = FileState()
+        }
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return state }
+        defer { try? handle.close() }
+        do {
+            try handle.seek(toOffset: state.offset)
+            while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+                state.offset += UInt64(chunk.count)
+                var start = chunk.startIndex
+                for newline in chunk.indices where chunk[newline] == 10 {
+                    consume(chunk[start..<newline], complete: true, state: &state)
+                    start = chunk.index(after: newline)
+                }
+                consume(chunk[start..<chunk.endIndex], complete: false, state: &state)
+            }
+            state.stamp = stamp
+            files[path] = state
+        } catch { return files[path] ?? FileState() }
+        return state
+    }
+
+    private func consume(_ bytes: Data.SubSequence, complete: Bool, state: inout FileState) {
+        if !state.dropping {
+            if state.pending.count + bytes.count > maximumLineBytes {
+                state.pending.removeAll(keepingCapacity: true)
+                state.dropping = true
+            } else {
+                state.pending.append(contentsOf: bytes)
+            }
+        }
+        guard complete else { return }
+        defer {
+            state.pending.removeAll(keepingCapacity: true)
+            state.dropping = false
+        }
+        guard !state.dropping,
+              state.pending.range(of: pinMarker) != nil || state.pending.range(of: parentMarker) != nil,
+              let record = try? JSONDecoder().decode(Record.self, from: state.pending) else { return }
+        if record.type == "session" { state.parent = record.parentSession }
+        guard record.type == "credential_pin", let hash = record.hash, hash.count == 64,
+              hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return }
+        switch record.provider {
+        case "anthropic": state.pins[.claude] = hash
+        case "openai-codex": state.pins[.codex] = hash
+        default: break
+        }
     }
 }

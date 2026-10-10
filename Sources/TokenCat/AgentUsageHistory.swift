@@ -1,17 +1,16 @@
 import Foundation
 
 /// omp and Pi save every subscription usage check they make (their own Claude and ChatGPT sign-ins) as rows of
-/// `usage_history` in `<agent folder>/agent.db`: `recorded_at` ms, `provider`, `account_key`, `account_id`, `limit_id`,
-/// `window_label`, `used_fraction` 0–1, `resets_at` ms. The newest row per window is read as a record, never as live:
-/// `anthropic:5h`/`anthropic:7d` → Claude's 5-hour and 7-day windows, `openai-codex:primary`/`:secondary` → Codex's windows
-/// (length from `window_label`). Model-scoped weeks (`anthropic:7d:<model>`) and extra Codex meters (`openai-codex:<slug>:…`)
-/// are left out. Only numbers and times leave the read; e-mail, account ids and labels are never kept.
+/// `usage_history` in `<agent folder>/agent.db`: numeric windows plus account id and e-mail metadata. Identity stays in
+/// memory only; Claude's store uses one-way account hashes. The newest row per account and window is a record, never live.
+/// Model-scoped weeks (`anthropic:7d:<model>`) and extra Codex meters (`openai-codex:<slug>:…`) are left out.
 enum AgentUsageHistory {
     struct Row: Equatable {
         var provider: String
         /// `account_key`, for grouping one account's windows only.
         var account: String
         var accountID: String?
+        var email: String? = nil
         var limitID: String
         var windowLabel: String?
         var usedFraction: Double
@@ -20,8 +19,9 @@ enum AgentUsageHistory {
     }
 
     struct Limits: Equatable {
-        var claude = ClaudeUsageLimits()
+        var claude: ClaudeLimitsByAccount = [:]
         var codex: [TokenRateLimit] = []
+        var accounts: [TokenSource: [LimitAccount]] = [:]
     }
 
     /// The same agent folders the omp provider reads: `$PI_CODING_AGENT_DIR`, ~/.omp/agent and ~/.pi/agent.
@@ -47,8 +47,8 @@ enum AgentUsageHistory {
     }
 
     static let query = """
-        SELECT provider, account_key, account_id, limit_id, window_label, used_fraction, max(recorded_at), resets_at FROM usage_history
-        WHERE provider IN ('anthropic', 'openai-codex') AND used_fraction IS NOT NULL GROUP BY provider, account_key, limit_id
+        SELECT provider, account_key, account_id, limit_id, window_label, used_fraction, max(recorded_at), resets_at, email FROM usage_history
+        WHERE provider IN ('anthropic', 'openai-codex') AND used_fraction IS NOT NULL GROUP BY provider, account_key, account_id, email, limit_id
         """
 
     /// The newest row per account and window; nil when the database or table cannot be read.
@@ -58,62 +58,53 @@ enum AgentUsageHistory {
         let read = connection.query(query) { row in
             guard let provider = row.text(0), let account = row.text(1), let limit = row.text(3), let used = row.double(5),
                   let recorded = row.date(6) else { return }
-            rows.append(Row(provider: provider, account: account, accountID: row.text(2), limitID: limit, windowLabel: row.text(4),
-                            usedFraction: used, recordedAt: recorded, resetsAt: row.date(7)))
+            rows.append(Row(provider: provider, account: account, accountID: row.text(2), email: row.text(8),
+                            limitID: limit, windowLabel: row.text(4), usedFraction: used, recordedAt: recorded, resetsAt: row.date(7)))
         }
         return read ? rows : nil
     }
 
-    /// One account per provider, the one checked last. omp's Anthropic rows are left out when they name an account other than
-    /// Claude Code's (`claudeAccount`, its signed-in `accountUuid`): those limits belong to another subscription.
-    static func limits(_ rows: [Row], claudeAccount: String?, recorder: String) -> Limits {
-        func newestAccount(_ provider: String, _ ids: Set<String>, _ accepts: (Row) -> Bool = { _ in true }) -> [Row] {
-            let usable = rows.filter { $0.provider == provider && ids.contains($0.limitID) && $0.usedFraction.isFinite
-                && (0...10).contains($0.usedFraction) && accepts($0) }
-            guard let account = usable.max(by: { $0.recordedAt < $1.recordedAt })?.account else { return [] }
-            return usable.filter { $0.account == account }
-        }
-        let claudeRows = newestAccount("anthropic", ["anthropic:5h", "anthropic:7d"]) { row in
-            claudeAccount == nil || row.accountID == nil || row.accountID == claudeAccount
-        }
-        func claude(_ id: String) -> ClaudeLimitWindow? {
-            claudeRows.first { $0.limitID == id }.map {
-                ClaudeLimitWindow(usedPercent: $0.usedFraction * 100, resetsAt: $0.resetsAt, receivedAt: $0.recordedAt, recordedBy: recorder)
+    /// Every account's valid windows are reduced independently. A row without an id is legacy data only.
+    static func limits(_ rows: [Row], accounts: LimitAccountReader, recorder: String) -> Limits {
+        var result = Limits()
+        for row in rows {
+            guard row.usedFraction.isFinite, (0...10).contains(row.usedFraction) else { continue }
+            if row.provider == "anthropic", ["anthropic:5h", "anthropic:7d"].contains(row.limitID) {
+                let account = accounts.resolve(provider: .claude, id: row.accountID, email: row.email)
+                if let account, !(result.accounts[.claude] ?? []).contains(account) { result.accounts[.claude, default: []].append(account) }
+                let key = account?.storageKey ?? "legacy"
+                let window = ClaudeLimitWindow(usedPercent: row.usedFraction * 100, resetsAt: row.resetsAt,
+                                               receivedAt: row.recordedAt, recordedBy: recorder)
+                let limits = row.limitID == "anthropic:5h" ? ClaudeUsageLimits(fiveHour: window) : ClaudeUsageLimits(sevenDay: window)
+                result.claude[key] = (result.claude[key] ?? ClaudeUsageLimits()).merged(limits)
+            } else if row.provider == "openai-codex", ["openai-codex:primary", "openai-codex:secondary"].contains(row.limitID) {
+                var limit = TokenRateLimit(usedPercent: row.usedFraction * 100, windowMinutes: windowMinutes(row.windowLabel),
+                                           resetsAt: row.resetsAt, recordedAt: row.recordedAt, recordedBy: recorder)
+                limit.account = accounts.resolve(provider: .codex, id: row.accountID, email: row.email)
+                if let account = limit.account, !(result.accounts[.codex] ?? []).contains(account) { result.accounts[.codex, default: []].append(account) }
+                result.codex.append(limit)
             }
         }
-        let codex = newestAccount("openai-codex", ["openai-codex:primary", "openai-codex:secondary"]).map {
-            TokenRateLimit(usedPercent: $0.usedFraction * 100, windowMinutes: windowMinutes($0.windowLabel), resetsAt: $0.resetsAt,
-                           recordedAt: $0.recordedAt, recordedBy: recorder)
-        }.sorted { ($0.windowMinutes ?? 0) < ($1.windowMinutes ?? 0) }
-        return Limits(claude: ClaudeUsageLimits(fiveHour: claude("anthropic:5h"), sevenDay: claude("anthropic:7d")), codex: codex)
-    }
-
-    /// Claude Code's signed-in account (`oauthAccount.accountUuid` in ~/.claude.json); nothing else in that file is kept.
-    static func claudeAccount(_ data: Data) -> String? {
-        guard let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              let account = (root["oauthAccount"] as? [String: Any])?["accountUuid"] as? String, !account.isEmpty else { return nil }
-        return account
+        result.codex.sort { ($0.windowMinutes ?? 0) < ($1.windowMinutes ?? 0) }
+        return result
     }
 }
 
-/// Reads the agent databases on the token queue only: each is queried again only when it or its WAL changes, and
-/// ~/.claude.json only when its size or modification time changes.
+/// Reads metadata on the token queue; each database is queried again only when it or its WAL changes.
 final class AgentUsageHistoryReader {
     private let databases: [URL]
-    private let claudeConfig: URL
+    private let accounts: LimitAccountReader
     private var cache: [URL: (stamp: [Int64], rows: [AgentUsageHistory.Row])] = [:]
-    private var configStamp: [Int64]?
-    private var account: String?
-    /// Above this ~/.claude.json is not parsed (it holds per-project history too); the account then counts as unknown.
+    /// Shared cap for account config metadata.
     static let maximumConfigBytes = 16 << 20
 
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser, environment: [String: String] = ProcessInfo.processInfo.environment) {
         databases = AgentUsageHistory.databases(home: home, environment: environment)
-        claudeConfig = home.appendingPathComponent(".claude.json")
+        accounts = LimitAccountReader(home: home, environment: environment)
     }
 
     func read() -> AgentUsageHistory.Limits {
-        let account = claudeAccount()
+        accounts.refresh()
         var merged = AgentUsageHistory.Limits()
         for database in databases {
             guard let stamp = OpenCodeDatabase.signature(database.path) else { cache[database] = nil; continue }
@@ -122,21 +113,16 @@ final class AgentUsageHistoryReader {
                 guard let rows = AgentUsageHistory.rows(database) else { continue }
                 cache[database] = (stamp, rows)
             }
-            let limits = AgentUsageHistory.limits(cache[database]?.rows ?? [], claudeAccount: account, recorder: AgentUsageHistory.recorder(database))
+            let limits = AgentUsageHistory.limits(cache[database]?.rows ?? [], accounts: accounts, recorder: AgentUsageHistory.recorder(database))
             merged.claude = merged.claude.merged(limits.claude)
             merged.codex += limits.codex
+            for (provider, accounts) in limits.accounts {
+                for account in accounts where !(merged.accounts[provider] ?? []).contains(account) {
+                    merged.accounts[provider, default: []].append(account)
+                }
+            }
         }
         return merged
     }
 
-    private func claudeAccount() -> String? {
-        var info = stat()
-        guard stat(claudeConfig.path, &info) == 0, Int(info.st_size) <= Self.maximumConfigBytes else { configStamp = nil; account = nil; return nil }
-        let stamp = [Int64(info.st_size), Int64(info.st_mtimespec.tv_sec), Int64(info.st_mtimespec.tv_nsec)]
-        if stamp != configStamp {
-            configStamp = stamp
-            account = (try? Data(contentsOf: claudeConfig)).flatMap(AgentUsageHistory.claudeAccount)
-        }
-        return account
-    }
 }

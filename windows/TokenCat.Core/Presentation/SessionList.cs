@@ -121,8 +121,6 @@ public sealed record SessionListModel
     /// Some visible live lead row has a measured speed from a client not waiting for a restart (S-3); otherwise no row has
     /// a speed cell. Child rows have no speed cell, so their measurements never open a column of "—".
     public bool ShowsSpeedColumn { get; init; }
-    /// Codex usage limit from the same publish.
-    public UsageLimitSummary? UsageLimit { get; init; }
     double FoldedViewport { get; init; }
     double OpenViewport { get; init; }
 
@@ -254,10 +252,8 @@ public sealed record SessionListModel
     }
 
     /// `restart`: clients waiting for a relaunch, whose rows show no speed cell. `calendar` defaults to `DayCalendar.Current`.
-    /// `codexReads`: the newest live Codex poll (LiveLimits) and omp's or Pi's recorded Codex windows, weighed into the usage limit.
     public static SessionListModel Make(IReadOnlyList<TokenReading> readings, DateTimeOffset now, bool expanded,
-                                        IReadOnlySet<TokenSource>? restart = null, DayCalendar? calendar = null,
-                                        IReadOnlyList<TokenRateLimit>? codexReads = null)
+                                        IReadOnlySet<TokenSource>? restart = null, DayCalendar? calendar = null)
     {
         var restarting = restart ?? new HashSet<TokenSource>();
         var groups = SessionPresentation.Groups(readings, now);
@@ -338,7 +334,7 @@ public sealed record SessionListModel
         }
         return new SessionListModel
         {
-            Blocks = blocks, Counts = new SessionCounts(groups), UsageLimit = SessionPresentation.UsageLimit(readings, now, codexReads), Expanded = expanded,
+            Blocks = blocks, Counts = new SessionCounts(groups), Expanded = expanded,
             HiddenGroups = ordered.Count - shown.Count, HiddenChildren = hiddenChildren, OlderCount = olderCount,
             ShowsSpeedColumn = showsSpeedColumn,
         }.Measured();

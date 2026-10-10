@@ -518,7 +518,7 @@ func runSessionPresentationChecks() -> [String] {
     let desktopAt = Date(timeIntervalSince1970: 1_790_000_000)
     func desktop(_ version: Int, recorded: TimeInterval) -> ClaudeUsageLimits? {
         let t = Int(desktopAt.addingTimeInterval(recorded).timeIntervalSince1970 * 1_000)
-        return ClaudeUsageLimits.decodeDesktopHistory(Data(#"{"version":\#(version),"samples":[{"t":1789000000000,"org":"x","u":{"fh":90,"sd":90}},{"t":\#(t),"org":"x","u":{"fh":17,"sd":5}}]}"#.utf8))
+        return ClaudeUsageLimits.decodeDesktopHistory(Data(#"{"version":\#(version),"samples":[{"t":1789000000000,"org":"x","u":{"fh":90,"sd":90}},{"t":\#(t),"org":"x","u":{"fh":17,"sd":5}}]}"#.utf8), defaultOrganization: "x")
     }
     let desktopLive = desktop(2, recorded: -720)
     let desktopSummary = desktopLive.flatMap { SessionPresentation.claudeUsageLimit($0, now: desktopAt) }
@@ -527,22 +527,143 @@ func runSessionPresentationChecks() -> [String] {
           && desktopSummary?.value(now: desktopAt) == "17% 사용" && desktopSummary?.details(now: desktopAt) == ["12분 전 기록"]
           && desktopSummary?.other == nil && desktopOld?.title == "Claude 주간 한도" && desktopOld?.usedPercent == 5,
           "Claude desktop usage: last sample only, no invented reset time, a 5-hour value gone after five hours")
+    let mismatchedDesktop = Data(#"{"version":2,"samples":[{"t":1790000000000,"org":"other","u":{"fh":17,"sd":5}}]}"#.utf8)
+    let absentDesktopOrg = Data(#"{"version":2,"samples":[{"t":1790000000000,"u":{"fh":17,"sd":5}}]}"#.utf8)
+    check(ClaudeUsageLimits.decodeDesktopHistory(mismatchedDesktop, defaultOrganization: "x") == nil
+          && ClaudeUsageLimits.decodeDesktopHistory(mismatchedDesktop) == nil
+          && ClaudeUsageLimits.decodeDesktopHistory(absentDesktopOrg)?.fiveHour?.usedPercent == 17,
+          "Claude desktop organization mismatches are dropped and absent organizations use the default")
     // Receipts merge per window (newer wins, a missing window is kept) and persist as numbers and times only.
     let newer = ClaudeUsageLimits(fiveHour: claudeWindow(44, resetsIn: 7_000, received: -5))
     let merged = bothLive.merged(newer).merged(ClaudeUsageLimits(fiveHour: claudeWindow(10, resetsIn: 7_000, received: -500)))
     check(merged.fiveHour?.usedPercent == 44 && merged.sevenDay == bothLive.sevenDay, "newer receipts win per window")
     if let scratch = ScratchDefaults("TokenCat-check") {
         let defaults = scratch.defaults
-        merged.save(to: defaults)
-        let stored = defaults.data(forKey: ClaudeUsageLimits.defaultsKey).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-        let keys = Set(((stored?["fiveHour"] as? [String: Any]) ?? [:]).keys)
-        check(ClaudeUsageLimits.load(from: defaults) == merged && keys == ["usedPercent", "resetsAt", "receivedAt"],
+        let persistedAccount = LimitAccount(id: "claude-persist", email: "private@example.com")
+        let persisted: ClaudeLimitsByAccount = [persistedAccount.storageKey: merged]
+        persisted.save(to: defaults)
+        let data = defaults.data(forKey: ClaudeUsageLimits.defaultsKey)
+        let stored = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let accountStore = stored?[persistedAccount.storageKey] as? [String: Any]
+        let keys = Set(((accountStore?["fiveHour"] as? [String: Any]) ?? [:]).keys)
+        check(ClaudeLimitsByAccount.load(from: defaults, defaultAccount: persistedAccount) == persisted && keys == ["usedPercent", "resetsAt", "receivedAt"],
               "Claude limits persist as numbers and times only and survive a restart")
-        ClaudeUsageLimits().save(to: defaults)
-        check(defaults.data(forKey: ClaudeUsageLimits.defaultsKey) == nil && ClaudeUsageLimits.load(from: defaults).isEmpty,
+        let text = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        check(!text.contains(persistedAccount.email!) && !text.contains(persistedAccount.id)
+              && Set(stored?.keys.map { $0 } ?? []) == [persistedAccount.storageKey],
+              "Claude account persistence contains hashes only and no identity metadata")
+        defaults.set(try? JSONEncoder().encode(merged), forKey: ClaudeUsageLimits.defaultsKey)
+        check(ClaudeLimitsByAccount.load(from: defaults, defaultAccount: persistedAccount) == persisted
+              && ClaudeLimitsByAccount.load(from: defaults, defaultAccount: nil) == ["legacy": merged],
+              "legacy Claude limits migrate to the default account or unattributed storage")
+        ClaudeLimitsByAccount().save(to: defaults)
+        check(defaults.data(forKey: ClaudeUsageLimits.defaultsKey) == nil && ClaudeLimitsByAccount.load(from: defaults, defaultAccount: nil).isEmpty,
               "empty Claude limits clear the stored value")
         scratch.discard()
     } else { check(false, "temporary defaults suite unavailable") }
+
+    let memberA = LimitAccount(id: " WORKSPACE-1234 ", email: " A@EXAMPLE.COM ")
+    let memberB = LimitAccount(id: "workspace-1234", email: "b@example.com")
+    let workspaceOnly = LimitAccount(id: "workspace-1234", email: nil)
+    check(memberA == LimitAccount(id: "workspace-1234", email: "a@example.com")
+          && memberA != memberB && workspaceOnly != memberA && workspaceOnly != memberB,
+          "canonical accounts normalize identity and keep workspace members and missing emails distinct")
+    func accountToken(_ id: String, _ account: LimitAccount?, used: Double, running: Bool = true, last: TimeInterval = -10) -> TokenReading {
+        var token = reading(id, .codex, active: running, state: running ? .working : .complete, last: last)
+        token.limitAccount = account
+        token.rateLimit = TokenRateLimit(usedPercent: used, windowMinutes: 300, resetsAt: at(3_600), recordedAt: at(-20))
+        token.rateLimit?.account = account
+        return token
+    }
+    let tokenA = accountToken("member-a", memberA, used: 20)
+    let tokenB = accountToken("member-b", memberB, used: 80)
+    let tokenNilEmail = accountToken("workspace-only", workspaceOnly, used: 45)
+    var readA = tokenA.rateLimit!
+    readA.usedPercent = 30
+    func accountRows(_ tokens: [TokenReading], reads: [TokenRateLimit] = [], store: ClaudeLimitsByAccount = [:],
+                     defaults: [TokenSource: LimitAccount] = [:], known: [TokenSource: [LimitAccount]] = [:]) -> [UsageLimitSummary] {
+        SessionPresentation.usageLimits(tokens: tokens, codexReads: reads, claudeLimits: store, defaults: defaults, known: known, now: now)
+    }
+    let memberRows = accountRows([tokenA, tokenB, tokenNilEmail, tokenA], reads: [readA])
+    check(memberRows.map(\.account) == [memberB, workspaceOnly, memberA]
+          && memberRows.map(\.usedPercent) == [80, 45, 30],
+          "running workspace members reduce only their own windows once per account in descending usage order")
+    check(make([tokenA, tokenB, tokenNilEmail]).counts.limitSources == [
+        LimitSlot(provider: .codex, account: memberA), LimitSlot(provider: .codex, account: memberB),
+        LimitSlot(provider: .codex, account: workspaceOnly)],
+          "live limit cadence uses distinct provider account slots including missing email")
+    let recentA = accountToken("recent-a", memberA, used: 20, running: false, last: -5)
+    let olderB = accountToken("older-b", memberB, used: 80, running: false, last: -100)
+    check(accountRows([olderB, recentA], defaults: [.codex: memberB]).first?.account == memberA,
+          "idle limits select the most recent session account rather than the fullest or default account")
+    var metadataOnlyNewer = olderB
+    metadataOnlyNewer.lastLogAt = at(-1)
+    check(accountRows([metadataOnlyNewer, recentA]).first?.account == memberA,
+          "metadata-only log receipts do not outrank the most recently active account")
+    var noData = recentA
+    noData.limitAccount = LimitAccount(id: "no-data", email: nil)
+    noData.rateLimit = nil
+    check(accountRows([olderB, noData], defaults: [.codex: memberB]).first?.account == memberB
+          && accountRows([olderB, noData]).isEmpty,
+          "a most recent account without data falls back to default not an older session account")
+    let legacyToken = accountToken("legacy", nil, used: 61, running: false, last: -200)
+    check(accountRows([noData, legacyToken]).first?.account == nil
+          && accountRows([noData, legacyToken]).first?.usedPercent == 61,
+          "unattributed limits remain the final backward compatible fallback")
+    var runningNoData = noData
+    runningNoData.active = true
+    runningNoData.activityState = .working
+    check(accountRows([runningNoData, legacyToken], defaults: [.codex: memberB]).isEmpty,
+          "running accounts without limits never borrow default or legacy numbers")
+    check(accountRows([tokenA]).first?.accountLabel == nil
+          && accountRows([tokenA], known: [.codex: [memberA, memberB]]).first?.accountLabel == memberA.label
+          && memberRows.allSatisfy { $0.accountLabel != nil },
+          "account labels appear only when sessions stores or known identities contain multiple accounts")
+    let orgA = LimitAccount(id: "org-a-1234", email: "same@example.com", organizationName: "Alpha")
+    let orgB = LimitAccount(id: "org-b-5678", email: "same@example.com", organizationName: "Beta")
+    let orgRows = accountRows([accountToken("org-a", orgA, used: 40), accountToken("org-b", orgB, used: 30)])
+    check(orgRows.map(\.accountLabel) == ["same@example.com · Alpha", "same@example.com · Beta"],
+          "duplicate email labels use distinguishing organization names")
+    let noEmailOther = LimitAccount(id: "different-1234", email: nil)
+    let suffixRows = accountRows([tokenNilEmail, accountToken("other-no-email", noEmailOther, used: 30)])
+    check(Set(suffixRows.compactMap(\.accountLabel)).count == 2,
+          "duplicate fallback labels remain distinct even when account id suffixes match")
+    let claudeAccountA = LimitAccount(id: "claude-a", email: "claude-a@example.com")
+    let claudeAccountB = LimitAccount(id: "claude-b", email: "claude-b@example.com")
+    var claudeA = reading("claude-account-a", active: true, state: .working)
+    claudeA.limitAccount = claudeAccountA
+    var claudeB = reading("claude-account-b", active: true, state: .working)
+    claudeB.limitAccount = claudeAccountB
+    let claudeAccountRows = accountRows([claudeA, claudeB], store: [
+        claudeAccountA.storageKey: ClaudeUsageLimits(fiveHour: claudeWindow(22, resetsIn: 3_600, received: -10)),
+        claudeAccountB.storageKey: ClaudeUsageLimits(sevenDay: claudeWindow(73, resetsIn: day, received: -20)),
+        "legacy": bothLive])
+    check(claudeAccountRows.map(\.account) == [claudeAccountB, claudeAccountA]
+          && claudeAccountRows.map(\.usedPercent) == [73, 22]
+          && claudeAccountRows.allSatisfy { $0.other == nil },
+          "Claude account stores isolate primary and other windows and never merge legacy data")
+    check(accountRows([claudeA], store: [
+        claudeAccountA.storageKey: bothLive, claudeAccountB.storageKey: bothLive]).first?.accountLabel == claudeAccountA.label,
+          "hashed Claude stores count toward account label visibility")
+    let labeled = accountRows([tokenA], known: [.codex: [memberA, memberB]]).first!
+    check(labeled.help(now: now).contains(memberA.label) && labeled.spoken(now: now).contains(memberA.label),
+          "usage limit help and VoiceOver name the selected account")
+    let sameEmailA = LimitAccount(id: "email-a-1234", email: "shared@example.com")
+    let sameEmailB = LimitAccount(id: "email-b-5678", email: "shared@example.com")
+    let emailRows = accountRows([accountToken("email-a", sameEmailA, used: 40), accountToken("email-b", sameEmailB, used: 30)])
+    check(emailRows.map(\.accountLabel) == ["shared@example.com · …1234", "shared@example.com · …5678"],
+          "duplicate email labels without distinguishing organizations append account id suffixes")
+    let labeledClaude = accountRows([claudeA], store: [claudeAccountA.storageKey: bothLive],
+                                    known: [.claude: [claudeAccountA, claudeAccountB]]).first!
+    check(labeledClaude.otherSummary(now: now)?.account == claudeAccountA
+          && labeledClaude.otherSummary(now: now)?.accountLabel == claudeAccountA.label,
+          "secondary limit windows preserve their account identity and accessibility label")
+    var agentMember = reading("agent-member", .omp, session: "agent-parent", subagent: true, active: true, state: .working)
+    agentMember.model = "gpt-6.1-sol"
+    agentMember.limitAccount = memberB
+    check(make([agentMember]).counts.limitSources == [LimitSlot(provider: .codex, account: memberB)]
+          && accountRows([agentMember], reads: [tokenB.rateLimit!]).first?.account == memberB,
+          "running agent members contribute their model provider and pinned account to limits")
 
     // Effort, last turn and help ages.
     var effort = command
