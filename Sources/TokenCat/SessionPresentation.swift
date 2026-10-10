@@ -358,11 +358,16 @@ struct UsageLimitSummary: Equatable {
         guard let second else { return [main] }
         return minutes[0] <= minutes[1] ? [main, second] : [second, main]
     }
-    /// Where the numbers come from, said once per account: "실시간", "omp · 5분 전", "5분 전".
+    /// Every displayed window is a fresh live read: only then the card says "실시간" with its dot.
+    func allLive(now: Date) -> Bool { isLive(now: now) && (otherSummary(now: now)?.isLive(now: now) ?? true) }
+    /// Where the numbers come from, said once per account: "실시간" only when every displayed window is live, otherwise the
+    /// oldest non-live window's age and recorder ("omp · 5분 전", "5분 전"), so a fresh window never vouches for a stale one.
     func provenance(now: Date) -> String {
-        if isLive(now: now) { return loc("실시간", "Live") }
-        let age = SessionPresentation.helpAge(recordedAt, now: now)
-        return recordedBy.map { "\($0) · \(age)" } ?? age
+        if allLive(now: now) { return loc("실시간", "Live") }
+        let stale = ([self] + [otherSummary(now: now)].compactMap { $0 }).filter { !$0.isLive(now: now) }
+            .min { $0.recordedAt < $1.recordedAt } ?? self
+        let age = SessionPresentation.helpAge(stale.recordedAt, now: now)
+        return stale.recordedBy.map { "\($0) · \(age)" } ?? age
     }
     /// The account named on screen: an e-mail by its local part ("seuput · team"), the full label wherever two would read
     /// alike. Help and VoiceOver keep the full label.

@@ -246,6 +246,7 @@ enum TokenCatMain {
     }
 
     private static func snapshotMenuBar(path: String) {
+        // --weekly-limit opts this render in through a throwaway domain, never the person's saved preferences.
         let arguments = CommandLine.arguments
         let character = characterFlag()
         let light = arguments.contains("--light")
@@ -263,6 +264,10 @@ enum TokenCatMain {
                                    telemetryProbe: { LocalTelemetryCollector.isOwnCollectorRunning(timeout: 0.5) })
         Runner.character = character ?? model.preferences.character
         model.start()
+        guard let scratch = ScratchDefaults("dev.seuput.TokenCat.MenuSnapshot") else { print("Menu snapshot failed"); exit(1) }
+        let preferences = Preferences(defaults: scratch.defaults)
+        preferences.restore(model.preferences.snapshot)
+        if arguments.contains("--weekly-limit") { preferences.visible.insert(.weeklyLimit) }
         DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
             let view = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 1, height: 22))
             view.appearance = NSAppearance(named: light ? .aqua : .darkAqua)
@@ -271,13 +276,15 @@ enum TokenCatMain {
             view.update(metrics: StatusBarContent.metrics(system: model.system, counts: counts,
                 ai: StatusAISummary(groups: model.groups, counts: counts), recorded: model.flow.total,
                 speed: SessionPresentation.averageSpeed(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
-                preferences: model.preferences, layout: layout, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil),
-                layout: layout, showRunner: model.preferences.showRunner && !arguments.contains("--no-runner"))
+                usageLimits: model.usageLimits, now: model.now,
+                preferences: preferences, layout: layout, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil),
+                layout: layout, showRunner: preferences.showRunner && !arguments.contains("--no-runner"))
             view.frame.size.width = view.requiredWidth
             view.updateRunner(pose: .walk, frame: 2)
             guard let strip = view.snapshotImage(scale: 2) else { print("Menu snapshot failed"); exit(1) }
             writePNG(MenuBarStrip.backdrop(strip, dark: !light, highlighted: highlighted, inset: 12), to: path, label: "Menu snapshot")
             model.stop()
+            scratch.discard()
             app.terminate(nil)
         }
         app.run()
@@ -340,14 +347,31 @@ enum TokenCatMain {
                                              measured(2, .gemini, interval: 10), measured(3, .opencode, interval: 40)]),
             (loc("속도 측정 없음", "No speed measured"), [reading(1, .working), reading(0, .working)])
         ]
+        func weekly(_ used: Double, source: TokenSource = .codex) -> UsageLimitSummary {
+            UsageLimitSummary(usedPercent: used, windowMinutes: 10_080, resetsAt: at.addingTimeInterval(5 * 86_400 + 3 * 3_600),
+                              recordedAt: at, source: source, accountLabel: source == .codex ? "seuput · team" : "aisa")
+        }
+        let weeklyRows: [(String, [UsageLimitSummary])] = [
+            (loc("주간 · 100%", "Week · 100%"), [weekly(0)]),
+            (loc("주간 · 22%", "Week · 22%"), [weekly(78), weekly(40, source: .claude)]),
+            (loc("주간 · 15%", "Week · 15%"), [weekly(85, source: .claude)]),
+            (loc("주간 · 5%", "Week · 5%"), [weekly(95)]),
+            (loc("주간 기록 없음", "No weekly record"), [])
+        ]
         var strips: [(String, [NSImage])] = []
-        for (index, (title, tokens)) in (rows + speedRows).enumerated() {
+        let fixtureRows = (rows + speedRows).map { ($0.0, $0.1, [UsageLimitSummary]()) }
+            + weeklyRows.map { ($0.0, [TokenReading](), $0.1) }
+        for (index, (title, tokens, limits)) in fixtureRows.enumerated() {
             if index == rows.count { preferences.visible.insert(.averageSpeed) }
+            if index == rows.count + speedRows.count {
+                preferences.visible.remove(.averageSpeed)
+                preferences.visible.insert(.weeklyLimit)
+            }
             let groups = SessionPresentation.groups(tokens, now: at)
             let counts = SessionCounts(groups)
             let speed = SessionPresentation.averageSpeed(SessionListModel.make(tokens: tokens, now: at, expanded: false), now: at, restart: [])
             let metrics = StatusBarContent.metrics(system: system, counts: counts, ai: StatusAISummary(groups: groups, counts: counts),
-                                                   recorded: 0, speed: speed, preferences: preferences, hasSample: true, hasTokenSample: true)
+                                                   recorded: 0, speed: speed, usageLimits: limits, now: at, preferences: preferences, hasSample: true, hasTokenSample: true)
             var director = RunnerDirector()
             let activity = RunnerActivity(groups: groups, cpu: system.cpuPercent, now: at)
             director.observe(activity, now: at)

@@ -4,7 +4,7 @@ import Foundation
 /// write the emptied domain back a moment later, so `sweepLeftovers()` removes those at the next launch of any command.
 struct ScratchDefaults {
     /// Every scratch domain is `<prefix>.<UUID>`; the sweep matches these prefixes only.
-    static let prefixes = ["dev.seuput.TokenCat.MenuFixtures", "dev.seuput.TokenCat.SettingsSnapshot", "dev.seuput.TokenCat.StatusBarChecks",
+    static let prefixes = ["dev.seuput.TokenCat.MenuFixtures", "dev.seuput.TokenCat.MenuSnapshot", "dev.seuput.TokenCat.SettingsSnapshot", "dev.seuput.TokenCat.StatusBarChecks",
                            "dev.seuput.TokenCat.UpdaterCheck", "dev.seuput.TokenCat.check", "TokenCat-check", "TokenCat-live"]
     let name: String
     let defaults: UserDefaults

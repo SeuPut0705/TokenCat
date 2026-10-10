@@ -18,14 +18,29 @@ func runPreferenceChecks() -> [String] {
           "A new install did not default to automatic update checks on and the new-version notification off")
     let fresh = Preferences(defaults: defaults)
     check(fresh.order == MetricID.allCases && fresh.visible == Set(MetricID.standard) && fresh.preset == .systemMonitor
-          && MetricID.allCases.last == .averageSpeed && MetricID.standard == [.cpu, .memory, .disk, .battery, .network, .ai]
+          && MetricID.allCases.suffix(2) == [.averageSpeed, .weeklyLimit] && MetricID.standard == [.cpu, .memory, .disk, .battery, .network, .ai]
           && DisplayPreset.allCases.map(\.items) == [nil, [.ai, .cpu, .memory], MetricID.standard, MetricID.standard],
-          "A new install did not start with the six standard items (the speed item off, last), or a preset's item set changed")
+          "A new install did not start with the six standard items and opt-in speed and weekly items last, or a preset's item set changed")
     defaults.set(["cpu", "memory", "disk", "battery", "network", "ai"], forKey: "metricOrder")
     defaults.set(["cpu", "memory", "disk", "battery", "network", "ai"], forKey: "visibleMetrics")
     let upgraded = Preferences(defaults: defaults)
     check(upgraded.order == MetricID.allCases && upgraded.visible == Set(MetricID.standard) && upgraded.preset == .systemMonitor,
           "An existing order and item set did not get the speed item appended and hidden, or left 시스템 모니터")
+    let oldWeeklyOrder = ["averageSpeed", "ai", "network", "battery", "disk", "memory", "cpu"]
+    defaults.set(oldWeeklyOrder, forKey: "metricOrder")
+    defaults.set(["averageSpeed", "ai"], forKey: "visibleMetrics")
+    let weeklyMigrated = Preferences(defaults: defaults)
+    check(upgraded.order.last == .weeklyLimit && !upgraded.visible.contains(.weeklyLimit)
+          && MetricID(rawValue: "weeklyLimit") == .weeklyLimit
+          && weeklyMigrated.order.map(\.rawValue) == oldWeeklyOrder + ["weeklyLimit"]
+          && weeklyMigrated.visible == [.averageSpeed, .ai]
+          && DisplayPreset.allCases.compactMap(\.items).allSatisfy { !$0.contains(.weeklyLimit) },
+          "weekly limit: migration appends the item hidden and leaves presets unchanged")
+    upgraded.setVisible(.weeklyLimit, true)
+    let weeklyOn = upgraded.preset == nil && upgraded.shownItems.last == .weeklyLimit
+    upgraded.apply(.systemMonitor)
+    check(weeklyOn && !upgraded.visible.contains(.weeklyLimit) && upgraded.preset == .systemMonitor,
+          "weekly limit: enabling custom visibility persists and the system preset hides it again")
     upgraded.setVisible(.averageSpeed, true)
     let speedOn = (upgraded.preset, upgraded.shownItems.last)
     upgraded.apply(.systemMonitor)
@@ -38,7 +53,7 @@ func runPreferenceChecks() -> [String] {
     defaults.set(false, forKey: "showRunner")
     defaults.set("tokens", forKey: "animationSource")
     let migrated = Preferences(defaults: defaults)
-    check(migrated.order == [.ai, .disk, .cpu, .memory, .battery, .network, .averageSpeed],
+    check(migrated.order == [.ai, .disk, .cpu, .memory, .battery, .network, .averageSpeed, .weeklyLimit],
           "Migration changed custom metric order or duplicated the AI item")
     check(migrated.visible == [.cpu, .ai, .network] && !migrated.showRunner && migrated.animationSource == .activity,
           "Migration lost a visible provider, unrelated preferences, or kept the legacy 'tokens' motion")
@@ -59,8 +74,8 @@ func runPreferenceChecks() -> [String] {
     defaults.set(["cpu", "codexSpeed", "claudeSpeed", "memory", "disk", "battery", "network", "ai"], forKey: "metricOrder")
     defaults.set(["cpu", "memory"], forKey: "visibleMetrics")
     let speedHidden = Preferences(defaults: defaults)
-    check(speedShown.order == [.cpu, .memory, .averageSpeed, .ai, .disk, .battery, .network] && speedShown.visible == [.cpu, .averageSpeed]
-          && speedHidden.order == [.cpu, .memory, .disk, .battery, .network, .ai, .averageSpeed] && speedHidden.visible == [.cpu, .memory],
+    check(speedShown.order == [.cpu, .memory, .averageSpeed, .ai, .disk, .battery, .network, .weeklyLimit] && speedShown.visible == [.cpu, .averageSpeed]
+          && speedHidden.order == [.cpu, .memory, .disk, .battery, .network, .ai, .averageSpeed, .weeklyLimit] && speedHidden.visible == [.cpu, .memory],
           "The old Codex/Claude speed items did not migrate to the average item (shown when either was), or kept their slots")
     check(reopened.statusBarLayout == .compact,
           "Existing preferences did not default to the compact menu layout")
@@ -93,6 +108,9 @@ func runPreferenceChecks() -> [String] {
           "The last visible item could be hidden while the cat was hidden")
     guarded.visible = [.averageSpeed]
     check(guarded.shownItems == [.averageSpeed] && !guarded.canHide(.averageSpeed), "The speed item was not drawn, or could be hidden as the last item")
+    guarded.visible = [.weeklyLimit]
+    check(guarded.shownItems == [.weeklyLimit] && !guarded.canHide(.weeklyLimit),
+          "weekly limit: the last visible item remains guarded")
     guarded.visible = [.cpu]
     guarded.setShowRunner(true)
     guarded.setVisible(.cpu, false)
@@ -114,8 +132,8 @@ func runPreferenceChecks() -> [String] {
     guarded.move(.network, onto: .memory)
     guarded.move(.ai, onto: .ai)
     guarded.move(.averageSpeed, onto: .ai)
-    check(down == [.memory, .disk, .battery, .cpu, .network, .ai, .averageSpeed]
-          && Preferences(defaults: defaults).order == [.network, .memory, .disk, .battery, .cpu, .averageSpeed, .ai],
+    check(down == [.memory, .disk, .battery, .cpu, .network, .ai, .averageSpeed, .weeklyLimit]
+          && Preferences(defaults: defaults).order == [.network, .memory, .disk, .battery, .cpu, .averageSpeed, .ai, .weeklyLimit],
           "Dropping a row onto another did not take its place in either direction, or did not persist")
     defaults.set(1_234.0, forKey: "unrelatedKey")
     guarded.notifyInput = true
@@ -149,7 +167,7 @@ func runPreferenceChecks() -> [String] {
     undo.undo()
     let undone = guarded.snapshot
     undo.redo()
-    check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .averageSpeed, .ai] && before.notifyInputSound && before.notifyUpdate
+    check(undone == before && before.order == [.network, .memory, .disk, .battery, .cpu, .averageSpeed, .ai, .weeklyLimit] && before.notifyInputSound && before.notifyUpdate
           && before.character == .penguin
           && guarded.snapshot == Preferences.defaultSnapshot && undo.undoActionName == "기본값으로 되돌리기",
           "⌘Z after reset did not restore the previous order and all four notification toggles, or ⇧⌘Z did not reapply")

@@ -526,6 +526,8 @@ sealed class SettingsView : Grid
         // The widget shows the contributing clients' icons in place of "AVG", so the row says what the number is.
         else if (id == MetricID.AverageSpeed)
             text.Children.Add(Caption(Loc("모든 클라이언트 세션의 실측 속도 평균", "Mean of measured session speeds, all clients")));
+        else if (id == MetricID.WeeklyLimit)
+            text.Children.Add(Caption(Loc("표시 중인 계정 가운데 가장 적게 남은 주간 한도", "The weekly limit with the least left among shown accounts")));
         var title = id.BarLabel is { } label ? $"{id.Title} · {label}" : id.Title;
         var lockedHelp = Loc("캐릭터나 다른 항목 중 하나는 표시해야 합니다", "The character or another item must stay visible");
         var minimalHelp = Loc("최소 표시에서는 캐릭터와 AI 상태만 보입니다.", "Minimal shows only the character and AI status.");

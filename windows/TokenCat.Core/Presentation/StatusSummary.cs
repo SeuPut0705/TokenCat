@@ -10,7 +10,7 @@ namespace TokenCat;
 public enum StatusBarLayout { Minimal, Compact, Inline }
 
 /// `MetricID`, the menu-bar items in their default order. Stored as the Swift raw values ("cpu", "averageSpeed").
-public enum MetricID { Cpu, Memory, Disk, Battery, Network, Ai, AverageSpeed }
+public enum MetricID { Cpu, Memory, Disk, Battery, Network, Ai, AverageSpeed, WeeklyLimit }
 
 /// `DisplayPreset`: one-pick widget setups. They set the layout and, except Minimal, the shown items with their order.
 public enum DisplayPreset { Minimal, AiFocus, SystemMonitor, EverythingInline }
@@ -39,7 +39,7 @@ public static class StatusBarLayouts
 
     extension(MetricID)
     {
-        /// Shown by default and by the full presets; the speed item is opt-in.
+        /// Shown by default and by the full presets; speed and weekly limit are opt-in.
         public static IReadOnlyList<MetricID> Standard => standard;
     }
 
@@ -54,6 +54,7 @@ public static class StatusBarLayouts
             MetricID.Battery => Loc("배터리", "Battery"),
             MetricID.Network => Loc("네트워크", "Network"),
             MetricID.Ai => Loc("AI 세션", "AI sessions"),
+            MetricID.WeeklyLimit => Loc("주간 한도", "Weekly limit"),
             _ => Loc("평균 속도", "Average speed"),
         };
 
@@ -66,6 +67,7 @@ public static class StatusBarLayouts
             MetricID.Network => "NET",
             MetricID.Ai => "AI",
             MetricID.AverageSpeed => "AVG",
+            MetricID.WeeklyLimit => "WK",
             _ => null,
         };
     }
@@ -98,11 +100,13 @@ public static class StatusBarLayouts
     }
 }
 
-/// One menu-bar item as drawn. The mac's SF Symbol name is left out, and its VoiceOver `Detail` is kept only for the speed item,
-/// whose glyphs have no words; the widget's help is the tray tooltip. `Sources` are the speed item's contributing clients,
-/// fastest first (`AverageSpeed.Sources`); their glyphs replace "AVG".
+public enum StatusBarValueTone { Label, Warning, Critical }
+
+/// One menu-bar item as drawn. Provider glyphs label measured speed and weekly remaining; their details supply spoken words.
+/// Weekly tooltip text includes every contributing account, while its single source is the least-left account's provider.
 public sealed record StatusBarMetric(MetricID Id, string Label, string Value, bool IsActive = false,
-    TokenActivityState ActivityState = TokenActivityState.Idle, string? Detail = null, IReadOnlyList<TokenSource>? Sources = null)
+    TokenActivityState ActivityState = TokenActivityState.Idle, string? Detail = null, IReadOnlyList<TokenSource>? Sources = null,
+    StatusBarValueTone ValueTone = StatusBarValueTone.Label, string? Tooltip = null)
 {
     /// What Narrator reads for the item: its detail, else the words drawn.
     public string Spoken => Detail ?? $"{Label} {Value.Replace('\n', ' ')}";
@@ -111,9 +115,10 @@ public sealed record StatusBarMetric(MetricID Id, string Label, string Value, bo
 
     /// By value, the contributors included, so an unchanged strip is not redrawn.
     public bool Equals(StatusBarMetric? other) => other is not null && Id == other.Id && Label == other.Label && Value == other.Value
-        && IsActive == other.IsActive && ActivityState == other.ActivityState && Detail == other.Detail && Contributors.SequenceEqual(other.Contributors);
+        && IsActive == other.IsActive && ActivityState == other.ActivityState && Detail == other.Detail && ValueTone == other.ValueTone
+        && Tooltip == other.Tooltip && Contributors.SequenceEqual(other.Contributors);
 
-    public override int GetHashCode() => HashCode.Combine(Id, Label, Value, IsActive, ActivityState, Detail, Contributors.Count);
+    public override int GetHashCode() => HashCode.Combine(Id, Label, Value, IsActive, ActivityState, Detail, ValueTone, Tooltip);
 }
 
 /// AI summary, derived once per publish from the shared session groups.
@@ -177,8 +182,8 @@ public static class StatusBarContent
     public static double CellWidth(StatusBarLayout layout, MetricID id, bool showRunner = true) => layout switch
     {
         StatusBarLayout.Minimal => showRunner ? 30 : 41,
-        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.AverageSpeed => 56, _ => 32 },
-        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.AverageSpeed => 91, _ => 52 },
+        StatusBarLayout.Compact => id switch { MetricID.Network => 66, MetricID.Ai => 36, MetricID.AverageSpeed => 56, MetricID.WeeklyLimit => 36, _ => 32 },
+        _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.AverageSpeed => 91, MetricID.WeeklyLimit => 56, _ => 52 },
     };
 
     /// Neither items nor the character: the 28 pt "TC" placeholder.
@@ -197,11 +202,55 @@ public static class StatusBarContent
         _ => 0,
     };
 
+    /// Weekly windows from the already-selected accounts, least remaining first; reset windows never contribute.
+    public static IReadOnlyList<UsageLimitSummary> WeeklyLimits(IReadOnlyList<UsageLimitSummary> limits, DateTimeOffset now)
+    {
+        var weekly = new List<UsageLimitSummary>();
+        foreach (var limit in limits)
+        {
+            if (limit.WindowMinutes == 10_080 && !limit.Expired(now)) weekly.Add(limit);
+            if (limit.OtherSummary(now) is { WindowMinutes: 10_080 } other && !other.Expired(now)) weekly.Add(other);
+        }
+        return [.. weekly.OrderBy(limit => Math.Clamp(100 - limit.UsedPercent, 0, 100))];
+    }
+
+    public static StatusBarMetric WeeklyMetric(IReadOnlyList<UsageLimitSummary> limits, DateTimeOffset now)
+    {
+        var weekly = WeeklyLimits(limits, now);
+        if (weekly.Count == 0)
+        {
+            var empty = Loc("주간 한도 기록 없음", "No weekly limit recorded");
+            return new(MetricID.WeeklyLimit, "WK", "—", Detail: empty, Tooltip: empty);
+        }
+        var labels = UsageLimitSummary.CompactAccountLabels([.. weekly.Select(limit => limit.AccountLabel is null && limit.Account is { } account
+            ? limit with { AccountLabel = account.Label + (account.OrganizationName is { } organization ? " · " + organization : "") }
+            : limit)]);
+        string Detail(int index)
+        {
+            var limit = weekly[index];
+            var percent = Format.Percent(Math.Clamp(100 - limit.UsedPercent, 0, 100));
+            var account = limit.Source.ShortTitle + (labels[index] is { } label ? " " + label : "");
+            var text = Loc($"주간 한도 {percent} 남음", $"Weekly limit {percent} left") + " · " + account;
+            if (limit.ResetDate is { } reset)
+            {
+                var countdown = SessionPresentation.Countdown(reset, now);
+                text += Loc($" · {countdown} 후 초기화", $" · resets in {countdown}");
+            }
+            return text;
+        }
+        var remaining = Math.Clamp(100 - weekly[0].UsedPercent, 0, 100);
+        var detail = string.Join("\n", Enumerable.Range(0, weekly.Count).Select(Detail));
+        return new(MetricID.WeeklyLimit, "WK", Format.Percent(remaining), Detail: detail, Sources: [weekly[0].Source],
+            ValueTone: remaining <= 5 ? StatusBarValueTone.Critical : remaining <= 15 ? StatusBarValueTone.Warning : StatusBarValueTone.Label,
+            Tooltip: detail);
+    }
+
     /// `StatusBarContent.metrics`: `items` are the shown items in order (the minimal layout draws only AI). An absent battery
     /// is omitted; values before the first sample are "—", and so is the speed item without a `speed`
     /// (`SessionPresentation.Average`).
     public static IReadOnlyList<StatusBarMetric> Metrics(SystemSnapshot system, StatusAISummary ai, StatusBarLayout layout,
-        IReadOnlyList<MetricID> items, bool hasSample, bool hasTokenSample, AverageSpeed? speed = null)
+        IReadOnlyList<MetricID> items, bool hasSample, bool hasTokenSample, AverageSpeed? speed = null,
+        IReadOnlyList<UsageLimitSummary>? usageLimits = null, DateTimeOffset now = default)
     {
         string Percentage(double? number) => hasSample && number is { } n && double.IsFinite(n) ? Format.Percent(n) : "—";
         var upload = NetworkRate(hasSample ? system.UploadBytesPerSecond : null);
@@ -234,6 +283,9 @@ public static class StatusBarContent
                         + (rate is null ? Loc("측정 없음", "no measurement") : Loc($"{rate} 토큰/초", $"{rate} tokens per second") + names),
                         Sources: speed?.Sources));
                     break;
+                case MetricID.WeeklyLimit:
+                    metrics.Add(WeeklyMetric(usageLimits ?? [], now));
+                    break;
             }
         }
         return metrics;
@@ -241,7 +293,7 @@ public static class StatusBarContent
 
     public static IReadOnlyList<StatusBarMetric> Metrics(MonitorState state, StatusBarLayout layout, IReadOnlyList<MetricID> items) =>
         Metrics(state.System, new StatusAISummary(state.Groups, state.Sessions.Counts), layout, items, state.HasSample, state.TokensSampledAt is not null,
-            SessionPresentation.Average(state.Sessions, state.Now, state.TelemetryRestartNeeded));
+            SessionPresentation.Average(state.Sessions, state.Now, state.TelemetryRestartNeeded), state.UsageLimits, state.Now);
 
     /// "1.5kB/s" → ("1.5", "kB/s"); units are drawn smaller but never dropped.
     public static (string Number, string Unit) SplitRate(string text)

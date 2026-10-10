@@ -525,6 +525,13 @@ func runSessionPresentationChecks() -> [String] {
           && allReset?.windowLines(now: now).first.map { $0.expired && $0.reset(now: now) == "초기화됨" } == true
           && claudeSummary?.provenance(now: now) == "1분 전" && ompRecord.provenance(now: now) == "omp · 4분 전",
           "limit card: windows are not one line each in window order, or the provenance is not said once per account")
+    var freshWeekly = UsageLimitSummary(usedPercent: 27, windowMinutes: 10_080, resetsAt: at(2 * day), recordedAt: at(-10), live: true)
+    freshWeekly.other = .init(usedPercent: 9, windowMinutes: 300, resetsAt: at(3_600), recordedAt: at(-1_800), live: false, recordedBy: .some("omp"))
+    var bothFresh = freshWeekly
+    bothFresh.other = .init(usedPercent: 9, windowMinutes: 300, resetsAt: at(3_600))
+    check(!freshWeekly.allLive(now: now) && freshWeekly.provenance(now: now) == "omp · 30분 전"
+          && bothFresh.allLive(now: now) && bothFresh.provenance(now: now) == "실시간",
+          "limit card: a fresh live window labelled a stale other window of the same account as live")
     func labelled(_ label: String?) -> UsageLimitSummary {
         var limit = ompRecord
         limit.accountLabel = label

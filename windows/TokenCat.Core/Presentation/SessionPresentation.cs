@@ -388,12 +388,18 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
         return (WindowMinutes ?? int.MaxValue) <= (other.WindowMinutes ?? int.MaxValue) ? [main, second] : [second, main];
     }
 
-    /// The source and record age are said once per account.
+    /// Every displayed window must be fresh before the account card claims live provenance.
+    public bool AllLive(DateTimeOffset now) => IsLive(now) && (OtherSummary(now)?.IsLive(now) ?? true);
+
+    /// Say the oldest non-live displayed window's recorder and age once per account.
     public string Provenance(DateTimeOffset now)
     {
-        if (IsLive(now)) return Loc("실시간", "Live");
-        var age = SessionPresentation.HelpAge(RecordedAt, now);
-        return RecordedBy is { } by ? $"{by} · {age}" : age;
+        if (AllLive(now)) return Loc("실시간", "Live");
+        var other = OtherSummary(now);
+        var stale = !IsLive(now) ? this : other ?? this;
+        if (other is not null && !other.IsLive(now) && other.RecordedAt < stale.RecordedAt) stale = other;
+        var age = SessionPresentation.HelpAge(stale.RecordedAt, now);
+        return stale.RecordedBy is { } by ? $"{by} · {age}" : age;
     }
 
     /// Shorten e-mail names only when distinct full labels will still read distinctly.

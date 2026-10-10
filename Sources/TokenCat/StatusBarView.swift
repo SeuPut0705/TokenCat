@@ -19,6 +19,10 @@ enum StatusBarLayout: String, CaseIterable, Identifiable {
     }
 }
 
+enum StatusBarValueTone: Equatable {
+    case label, warning, critical
+}
+
 struct StatusBarMetric: Equatable {
     var id: MetricID
     var label: String
@@ -27,8 +31,9 @@ struct StatusBarMetric: Equatable {
     var detail: String
     var isActive: Bool = false
     var activityState: TokenActivityState = .idle
-    /// The average speed item's contributing clients, fastest first (`AverageSpeed.sources`); their glyphs replace "AVG".
+    /// Contributing speed clients, or the account provider whose weekly limit has the least left.
     var sources: [TokenSource] = []
+    var valueTone: StatusBarValueTone = .label
 }
 
 /// Menu-bar AI summary, derived once per publish from the shared session groups.
@@ -95,11 +100,50 @@ enum StatusBarContent {
         return (String(text[..<index]), String(text[index...]))
     }
 
+    static func weeklyRemaining(_ limit: UsageLimitSummary) -> Double {
+        min(100, max(0, 100 - limit.usedPercent))
+    }
+
+    /// Only shown accounts' weekly windows participate; reset records never become a balance.
+    static func weeklyLimits(_ limits: [UsageLimitSummary], now: Date) -> [UsageLimitSummary] {
+        var weekly: [UsageLimitSummary] = []
+        func append(_ candidate: UsageLimitSummary) {
+            guard candidate.windowMinutes == 10_080, !candidate.expired(now: now) else { return }
+            var limit = candidate
+            if limit.accountLabel == nil, let account = limit.account {
+                limit.accountLabel = account.label + (account.organizationName.map { " · " + $0 } ?? "")
+            }
+            weekly.append(limit)
+        }
+        for limit in limits {
+            append(limit)
+            if let other = limit.otherSummary(now: now) { append(other) }
+        }
+        return weekly.enumerated().sorted {
+            let left = weeklyRemaining($0.element), right = weeklyRemaining($1.element)
+            return left == right ? $0.offset < $1.offset : left < right
+        }.map(\.element)
+    }
+
+    static func weeklyDetails(_ limits: [UsageLimitSummary], now: Date) -> String {
+        let labels = UsageLimitSummary.compactAccountLabels(limits)
+        return limits.enumerated().map { index, limit in
+            let value = String(format: "%.0f%%", weeklyRemaining(limit))
+            let account = limit.source.shortTitle + (labels[index].map { " " + $0 } ?? "")
+            let reset = limit.resetDate.map { date in
+                let time = SessionPresentation.countdown(to: date, now: now)
+                return loc(" · \(time) 후 초기화", " · resets in \(time)")
+            } ?? ""
+            return loc("주간 한도 \(value) 남음", "Weekly limit \(value) left") + " · " + account + reset
+        }.joined(separator: "\n")
+    }
+
     /// `counts`, `ai`, `recorded` and `speed` come from the popover's per-publish presentation so both show the same numbers.
     /// `speed` is `SessionPresentation.averageSpeed`. `sources` names the clients in the AI item's per-client counts
     /// (`DashboardModel.listedSources`).
     static func metrics(system: SystemSnapshot, counts: SessionCounts, ai: StatusAISummary, recorded: Int,
-                        speed: AverageSpeed?, preferences: Preferences, layout: StatusBarLayout? = nil,
+                        speed: AverageSpeed?, usageLimits: [UsageLimitSummary], now: Date,
+                        preferences: Preferences, layout: StatusBarLayout? = nil,
                         sources: [TokenSource] = TokenSource.defaultClients,
                         hasSample: Bool, hasTokenSample: Bool) -> [StatusBarMetric] {
         func percentage(_ number: Double?) -> String {
@@ -158,6 +202,16 @@ enum StatusBarContent {
                                        detail: id.title + " " + (rate.map { loc("\($0) 토큰/초", "\($0) tokens per second") + names }
                                                                  ?? loc("측정 없음", "no measurement")),
                                        sources: speed?.sources ?? [])
+            case .weeklyLimit:
+                let weekly = weeklyLimits(usageLimits, now: now)
+                guard let winner = weekly.first else {
+                    return StatusBarMetric(id: id, label: "WK", value: "—", symbol: "",
+                                           detail: loc("주간 한도 기록 없음", "No weekly limit recorded"))
+                }
+                let left = weeklyRemaining(winner)
+                return StatusBarMetric(id: id, label: "WK", value: String(format: "%.0f%%", left), symbol: "",
+                                       detail: weeklyDetails(weekly, now: now), sources: [winner.source],
+                                       valueTone: left <= 5 ? .critical : left <= 15 ? .warning : .label)
             }
         }
     }
@@ -367,9 +421,9 @@ final class StatusBarContentView: NSView {
         // rate never shrinks: on one line the row's 22 pt beyond one glyph (two more glyphs and their 1 pt gaps) widen the
         // cell from 69 to 91.
         case .compact:
-            switch id { case .network: return 66; case .ai: return 36; case .averageSpeed: return 56; default: return 32 }
+            switch id { case .network: return 66; case .ai: return 36; case .averageSpeed: return 56; case .weeklyLimit: return 36; default: return 32 }
         case .inline:
-            switch id { case .network: return 114; case .ai: return 46; case .averageSpeed: return 91; default: return 52 }
+            switch id { case .network: return 114; case .ai: return 46; case .averageSpeed: return 91; case .weeklyLimit: return 56; default: return 52 }
         }
     }
 
@@ -398,7 +452,7 @@ final class StatusBarContentView: NSView {
     }
 
     private func group(_ id: MetricID) -> Int {
-        switch id { case .network: return 1; case .ai, .averageSpeed: return 2; default: return 0 }
+        switch id { case .network: return 1; case .ai, .averageSpeed, .weeklyLimit: return 2; default: return 0 }
     }
 
     private struct Palette {
@@ -480,12 +534,15 @@ final class StatusBarContentView: NSView {
     private var labelFont: NSFont { .systemFont(ofSize: 8.5, weight: .semibold) }
 
     /// Digits in label colour; '%' or a letter unit ("tok/s", after a thin space) smaller and secondary. Unknown stays "—".
-    private func valueRuns(_ value: String, _ palette: Palette) -> [Run] {
+    private func valueRuns(_ value: String, _ palette: Palette, tone: StatusBarValueTone = .label) -> [Run] {
         if value == "—" { return [Run(text: value, font: valueFont, color: palette.secondary)] }
+        let color: NSColor = !palette.stateColours ? palette.label : tone == .critical ? TCColor.NS.critical
+            : tone == .warning ? TCColor.NS.warning : palette.label
         let parts = value.hasSuffix("%") ? (number: String(value.dropLast()), unit: "%") : StatusBarContent.splitRate(value)
-        guard !parts.unit.isEmpty else { return [Run(text: value, font: valueFont, color: palette.label)] }
-        return [Run(text: parts.number, font: valueFont, color: palette.label),
-                Run(text: (parts.unit == "%" ? "" : "\u{2009}") + parts.unit, font: .systemFont(ofSize: 8.5, weight: .medium), color: palette.secondary)]
+        guard !parts.unit.isEmpty else { return [Run(text: value, font: valueFont, color: color)] }
+        return [Run(text: parts.number, font: valueFont, color: color),
+                Run(text: (parts.unit == "%" ? "" : "\u{2009}") + parts.unit, font: .systemFont(ofSize: 8.5, weight: .medium),
+                    color: tone == .label || !palette.stateColours ? palette.secondary : color)]
     }
 
     /// The average speed item's client glyphs from `minX`, at most `glyphRow.limit`, fastest first, each whole and 1 pt
@@ -513,7 +570,7 @@ final class StatusBarContentView: NSView {
         if metric.id == .ai {
             drawAI(metric, centerY: top + 15.5, in: inner, font: valueFont, palette, centered: true)
         } else {
-            draw(valueRuns(metric.value, palette), centerY: top + 15.5, in: inner)
+            draw(valueRuns(metric.value, palette, tone: metric.valueTone), centerY: top + 15.5, in: inner)
         }
     }
 
@@ -534,8 +591,15 @@ final class StatusBarContentView: NSView {
             let side = Self.glyphSide.inline
             drawGlyphRow(metric.sources, side: side, minX: cell.minX + 4, centerY: cell.midY)
             let x = cell.minX + 4 + Self.glyphRowWidth(metric.sources.count, side: side) + 3
-            draw(valueRuns(metric.value, palette), centerY: cell.midY, in: NSRect(x: x, y: 0, width: cell.maxX - x, height: cell.height),
+            draw(valueRuns(metric.value, palette, tone: metric.valueTone), centerY: cell.midY, in: NSRect(x: x, y: 0, width: cell.maxX - x, height: cell.height),
                  alignment: .left)
+            return
+        }
+        if metric.id == .weeklyLimit {
+            draw([Run(text: "WK", font: .systemFont(ofSize: 8.5, weight: .semibold), color: palette.secondary)],
+                 centerY: cell.midY, in: NSRect(x: cell.minX + 4, y: 0, width: 16, height: cell.height), alignment: .left)
+            draw(valueRuns(metric.value, palette, tone: metric.valueTone), centerY: cell.midY,
+                 in: NSRect(x: cell.minX + 23, y: 0, width: cell.width - 23, height: cell.height), alignment: .left)
             return
         }
         // Natural aspect at an 11pt height, trailing-aligned in a 16pt slot so each icon hugs its own value.
@@ -551,7 +615,7 @@ final class StatusBarContentView: NSView {
                       from: .zero, operation: .sourceOver, fraction: Self.symbolFraction(contrast: palette.contrast),
                       respectFlipped: true, hints: nil)
         }
-        draw(valueRuns(metric.value, palette), centerY: cell.midY,
+        draw(valueRuns(metric.value, palette, tone: metric.valueTone), centerY: cell.midY,
              in: NSRect(x: slot.maxX + 3, y: 0, width: cell.maxX - slot.maxX - 3, height: cell.height), alignment: .left)
     }
 
@@ -813,6 +877,7 @@ final class MenuBarPreviewCache {
         let metrics = StatusBarContent.metrics(system: model.system, counts: counts, ai: StatusAISummary(groups: model.groups, counts: counts),
                                                recorded: model.flow.total,
                                                speed: SessionPresentation.averageSpeed(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
+                                               usageLimits: model.usageLimits, now: model.now,
                                                preferences: preferences, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         return preview(metrics: metrics, preferences: preferences, pose: pose, now: now)
     }
@@ -864,10 +929,12 @@ func runStatusBarChecks() -> [String] {
         return (counts, StatusAISummary(groups: groups, counts: counts))
     }
     func metrics(_ system: SystemSnapshot, _ tokens: [TokenReading], now: Date = at, layout: StatusBarLayout? = nil,
-                 hasSample: Bool = true, hasTokenSample: Bool = true, speed: AverageSpeed? = nil) -> [StatusBarMetric] {
+                 hasSample: Bool = true, hasTokenSample: Bool = true, speed: AverageSpeed? = nil,
+                 usageLimits: [UsageLimitSummary] = []) -> [StatusBarMetric] {
         let (counts, ai) = summary(tokens, now: now)
         let speed = speed ?? SessionPresentation.averageSpeed(SessionListModel.make(tokens: tokens, now: now, expanded: false), now: now, restart: [])
         return StatusBarContent.metrics(system: system, counts: counts, ai: ai, recorded: FlowSeries.make(tokens, now: now).total, speed: speed,
+                                        usageLimits: usageLimits, now: now,
                                         preferences: preferences, layout: layout, hasSample: hasSample, hasTokenSample: hasTokenSample)
     }
     let loading = metrics(system, [], hasSample: false, hasTokenSample: false)
@@ -995,6 +1062,60 @@ func runStatusBarChecks() -> [String] {
               metrics(system, pairTokens).first?.detail == "Average speed 50.0 tokens per second · Claude Code, Codex"
               && metrics(system, [untimed]).first?.detail == "Average speed no measurement")
     }
+    preferences.visible = [.weeklyLimit]
+    let weeklyAccount = LimitAccount(id: "weekly-a", email: "seuput@example.com", organizationName: "team")
+    let weeklyMain = UsageLimitSummary(usedPercent: 78, windowMinutes: 10_080,
+        resetsAt: at.addingTimeInterval(5 * 86_400 + 3 * 3_600), recordedAt: at, source: .codex,
+        account: weeklyAccount, accountLabel: "seuput@example.com · team")
+    var weeklyOther = UsageLimitSummary(usedPercent: 99, windowMinutes: 300,
+        resetsAt: at.addingTimeInterval(3_600), recordedAt: at, source: .claude, accountLabel: "other@example.com")
+    weeklyOther.other = UsageLimitSummary.OtherWindow(usedPercent: 90, windowMinutes: 10_080,
+        resetsAt: at.addingTimeInterval(86_400))
+    let weeklyWinner = metrics(system, [], usageLimits: [weeklyMain, weeklyOther]).first
+    var weeklyUnlabelled = weeklyMain
+    weeklyUnlabelled.accountLabel = nil
+    var weeklyClash = weeklyMain
+    weeklyClash.accountLabel = "seuput@another.com · team"
+    let clashDetail = metrics(system, [], usageLimits: [weeklyMain, weeklyClash]).first?.detail ?? ""
+    check("weekly limit: the least-left account wins across accounts and main or other windows",
+          weeklyWinner?.value == "10%" && weeklyWinner?.sources == [.claude]
+          && weeklyWinner?.detail.components(separatedBy: "\n") == [
+            "주간 한도 10% 남음 · Claude other · 1일 후 초기화",
+            "주간 한도 22% 남음 · Codex seuput · team · 5일 3시간 후 초기화"]
+          && metrics(system, [], usageLimits: [weeklyOther, weeklyMain]).first?.value == "10%"
+          && metrics(system, [], usageLimits: [weeklyUnlabelled]).first?.detail
+            == "주간 한도 22% 남음 · Codex seuput · team · 5일 3시간 후 초기화"
+          && clashDetail.contains("seuput@example.com") && clashDetail.contains("seuput@another.com"))
+    var resetMain = weeklyMain
+    resetMain.resetsAt = at
+    var resetOther = weeklyOther
+    resetOther.other?.resetsAt = at.addingTimeInterval(-1)
+    var inferredReset = weeklyMain
+    inferredReset.resetsAt = nil
+    inferredReset.recordedAt = at.addingTimeInterval(-10_080 * 60)
+    check("weekly limit: reset windows are ignored",
+          metrics(system, [], usageLimits: [resetMain, resetOther, inferredReset]).first?.value == "—"
+          && metrics(system, [], usageLimits: [resetMain, resetOther, weeklyMain]).first?.value == "22%")
+    let weeklyTones = [84.0, 85, 94, 95, 100].map { used -> StatusBarValueTone? in
+        var limit = weeklyMain
+        limit.usedPercent = used
+        return metrics(system, [], usageLimits: [limit]).first?.valueTone
+    }
+    check("weekly limit: remaining thresholds tint warning and critical",
+          weeklyTones == [.label, .warning, .warning, .critical, .critical])
+    let noWeekly = metrics(system, []).first
+    check("weekly limit: no data shows a dash and WK",
+          noWeekly?.value == "—" && noWeekly?.label == "WK" && noWeekly?.sources == []
+          && noWeekly?.detail == "주간 한도 기록 없음" && noWeekly?.valueTone == .label
+          && metrics(system, [], layout: .minimal, usageLimits: [weeklyMain]).map(\.id) == [.ai])
+    AppLanguage.with(.en) {
+        check("weekly limit: English details name the remaining account and reset",
+              metrics(system, [], usageLimits: [weeklyMain]).first?.detail
+                == "Weekly limit 22% left · Codex seuput · team · resets in 5d 3h"
+              && metrics(system, []).first?.detail == "No weekly limit recorded"
+              && MetricID.weeklyLimit.title == "Weekly limit"
+              && MetricID.weeklyLimitNote == "The weekly limit with the least left among shown accounts")
+    }
     check("rate split keeps the unit", StatusBarContent.splitRate("1.5kB/s") == ("1.5", "kB/s")
           && StatusBarContent.splitRate("≥999GB/s") == ("≥999", "GB/s") && StatusBarContent.splitRate("—") == ("—", ""))
     var busy = system
@@ -1046,7 +1167,7 @@ func runStatusBarChecks() -> [String] {
     // edge 4+4, runner 32+2; compact cells 32 / NET 66 / AI 36; inline 52 / 114 / 46; minimal AI 30 (41 without the cat);
     // the speed item 56 on two lines, 91 on one (three whole glyphs 1 pt apart beside "9999 tok/s").
     let expected: [String: CGFloat] = ["compact/true": 272, "inline/true": 410, "minimal/true": 72, "minimal/false": 49,
-                                       "compact/true/speed": 328, "inline/true/speed": 501, "minimal/true/speed": 72]
+                                       "compact/true/speed": 364, "inline/true/speed": 557, "minimal/true/speed": 72]
     check("cell widths match the layout contract", expected.allSatisfy { widths[$0.key] == $0.value })
     check("minimal layout fits beside a notch", (46...72).contains(widths["minimal/true"] ?? 0)
           && (widths["minimal/true"] ?? 0) < (widths["compact/true"] ?? 0))
@@ -1059,7 +1180,8 @@ func runStatusBarChecks() -> [String] {
     }
     let worst = [metric(.cpu, "100%"), metric(.memory, "100%"), metric(.disk, "100%"), metric(.battery, "100%"),
                  metric(.network, "↑999MB/s\n↓125MB/s"), metric(.ai, "99", .input),
-                 metric(.averageSpeed, "9999tok/s", sources: [.codex, .claude, .gemini, .opencode]), metric(.averageSpeed, "9999tok/s")]
+                 metric(.averageSpeed, "9999tok/s", sources: [.codex, .claude, .gemini, .opencode]), metric(.averageSpeed, "9999tok/s"),
+                 metric(.weeklyLimit, "100%", sources: [.codex]), metric(.weeklyLimit, "—")]
     var shrunk: [String] = []
     var drifting: [String] = []
     for layout in StatusBarLayout.allCases {
@@ -1078,6 +1200,16 @@ func runStatusBarChecks() -> [String] {
     }
     check("worst-case values fit their slots without shrinking: \(shrunk.joined(separator: ", "))", shrunk.isEmpty)
     check("AI count stays put when its state mark changes: \(drifting.joined(separator: ", "))", drifting.isEmpty)
+    var weeklyFits = true
+    for layout in [StatusBarLayout.compact, .inline] {
+        view.update(metrics: [metric(.weeklyLimit, "100%", sources: [.codex])], layout: layout, showRunner: false)
+        _ = view.snapshotImage()
+        weeklyFits = weeklyFits && view.drawnText.allSatisfy { $0.fit == 1 }
+            && view.drawnText.contains { $0.text == "100%" }
+            && view.cellWidth(.weeklyLimit) == (layout == .compact ? 36 : 56)
+            && StatusBarContentView.glyphRowWidth(1, side: layout == .compact ? 8 : 10) == (layout == .compact ? 8 : 10)
+    }
+    check("weekly limit: 100% and provider glyph fit compact and inline widths", weeklyFits)
 
     // Rendered pixels on a light menu-bar backdrop (0.94 white), 2× scale.
     func render(_ view: StatusBarContentView) -> (pixel: (Int, Int) -> (luma: Double, rgb: [Double]), width: Int, height: Int)? {

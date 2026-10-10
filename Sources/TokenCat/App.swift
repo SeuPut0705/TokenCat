@@ -3,8 +3,8 @@ import Combine
 import SwiftUI
 
 enum MetricID: String, CaseIterable, Codable, Identifiable {
-    case cpu, memory, disk, battery, network, ai, averageSpeed
-    /// Shown by default and by the full presets; the speed item is opt-in.
+    case cpu, memory, disk, battery, network, ai, averageSpeed, weeklyLimit
+    /// Shown by default and by the full presets; speed and weekly limit are opt-in.
     static let standard: [MetricID] = [.cpu, .memory, .disk, .battery, .network, .ai]
     var id: String { rawValue }
     var title: String {
@@ -16,6 +16,7 @@ enum MetricID: String, CaseIterable, Codable, Identifiable {
         case .network: return loc("네트워크", "Network")
         case .ai: return loc("AI 세션", "AI sessions")
         case .averageSpeed: return loc("평균 속도", "Average speed")
+        case .weeklyLimit: return loc("주간 한도", "Weekly limit")
         }
     }
 }
@@ -61,7 +62,7 @@ final class Preferences: ObservableObject {
         var ordered: [MetricID] = []
         for id in saved + MetricID.allCases where !ordered.contains(id) { ordered.append(id) }
         order = ordered
-        // Items added later (the speed item) append to a stored order and stay hidden until turned on.
+        // Items added later append to a stored order and stay hidden until turned on.
         visible = Set((defaults.stringArray(forKey: "visibleMetrics") ?? MetricID.standard.map(\.rawValue)).compactMap { migrated($0, visible: true) })
         // New installs, the legacy "tokens" value and an unconfirmed older "cpu" start on AI activity.
         animationSource = RunnerMotion.stored(defaults.string(forKey: "animationSource"),
@@ -958,6 +959,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         let preferences = model.preferences
         let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, ai: ai, recorded: model.flow.total,
             speed: SessionPresentation.averageSpeed(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
+            usageLimits: model.usageLimits, now: model.now,
             preferences: preferences, sources: model.listedSources, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         statusView.update(metrics: metrics, layout: preferences.statusBarLayout, showRunner: preferences.showRunner)
         if statusItem.length != statusView.requiredWidth { statusItem.length = statusView.requiredWidth }
@@ -1414,6 +1416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         guard let button = statusItem.button, let statusView else { return }
         let metrics = StatusBarContent.metrics(system: model.system, counts: model.sessions.counts, ai: ai, recorded: model.flow.total,
             speed: SessionPresentation.averageSpeed(model.sessions, now: model.now, restart: model.telemetryRestartNeeded),
+            usageLimits: model.usageLimits, now: model.now,
             preferences: model.preferences, sources: model.listedSources, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         let report: [String: Any] = [
             "version": AppInfo.version,

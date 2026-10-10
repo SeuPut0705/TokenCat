@@ -456,6 +456,16 @@ public static class SessionPresentationChecks
               && allReset!.WindowLines(now)[0] is { Expired: true } resetLine && resetLine.Reset(now) == "초기화됨"
               && claudeSummary.Provenance(now) == "1분 전" && ompRecord.Provenance(now) == "omp · 4분 전",
               "limit card: windows are not one line each in window order, or the provenance is not said once per account");
+        var freshWeekly = new UsageLimitSummary(27, 10_080, at(2 * day), at(-10))
+        {
+            Live = true,
+            Other = new UsageLimitSummary.OtherWindow(9, 300, at(3_600))
+                { RecordedAt = at(-1_800), Live = false, RecordedBy = "omp" },
+        };
+        var bothFresh = freshWeekly with { Other = new UsageLimitSummary.OtherWindow(9, 300, at(3_600)) };
+        check(!freshWeekly.AllLive(now) && freshWeekly.Provenance(now) == "omp · 30분 전"
+              && bothFresh.AllLive(now) && bothFresh.Provenance(now) == "실시간",
+              "limit card: a fresh live window labelled a stale other window of the same account as live");
         UsageLimitSummary labelled(string? label) => ompRecord with { AccountLabel = label };
         check(UsageLimitSummary.CompactAccountLabels([labelled("seuput@naver.com · team"), labelled("aisa@example.com"), labelled(null)])
                   .SequenceEqual(["seuput · team", "aisa", null])

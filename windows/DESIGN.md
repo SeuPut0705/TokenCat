@@ -486,7 +486,7 @@ The taskbar can't show text the way the mac menu bar does, so the menu-bar item 
   Core), 32 × 20 runner slot, fixed cells (minimal 30; two lines 32 / NET 66 / AI 36; one line 52 / 114 / 46), marks and label tones
   (labels and units at label 0.72, idle "0" at 0.45). Without the character (mac rules) the runner slot goes, the minimal AI cell is 41
   and a strip with nothing left is the 28 pt "TC"; `Preferences` never lets that happen outside the minimal layout. The one-line layout
-  shows the short names (CPU, RAM…) where the mac draws SF Symbols. The Average speed item (opt-in, last, after AI without a separator,
+  shows the short names (CPU, RAM…) where the mac draws SF Symbols. The Average speed item (opt-in, after AI without a separator,
   "평균 속도 · AVG" in the list; until 0.13 the per-client "codexSpeed"/"claudeSpeed" items, which `Preferences` folds into it: either
   shown shows it) draws the arithmetic mean of every client's fresh per-session rates (`SessionPresentation.Average`, `CurrentSpeed`'s
   own filter; measured rates only, nothing estimated; `Format.BarTps`, whole numbers from 100 up, + a smaller "tok/s") in 56 pt (two
@@ -497,6 +497,9 @@ The taskbar can't show text the way the mac menu bar does, so the menu-bar item 
   the strip as one text element (`StatusBarMetric.Spoken`, the speed item "평균 속도 55.6 토큰/초 · Codex, Claude Code"). Layout,
   items, order and the character come from Settings › Widget (§4.4); default **two
   lines** (like the mac bar), the six standard items, the character shown, 100 %.
+  The opt-in **Weekly limit** (`weeklyLimit`, 주간 한도 · WK) follows `averageSpeed` in new or migrated orders, hidden by default
+  and excluded from every preset. Its 36 pt compact / 56 pt inline cells fit 100% beside a single provider glyph.
+  Minimal still shows only AI.
 * **Size**: 100, 125, 150, 175, 200, 250 or 300 % (`widgetScale`, default 100; another stored value becomes the nearest). Device pixels
   per point `p = max(1, round(display scale)) × size`, so 100 % is exactly 0.12.0 (100–125 % → 1, 150–200 % → 2); `WidgetView.Scale`
   (DIP per point) is `p / display scale`, text is laid out at `p` pixels per DIP and separators stay one device pixel. The runner — the

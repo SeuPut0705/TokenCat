@@ -195,6 +195,44 @@ public static class StatusSummaryChecks
         With(AppLanguage.En, () => check("English speed item names its rate and clients",
             speedItem(pair).Spoken == "Average speed 50.0 tokens per second · Claude Code, Codex" && speedItem([untimed]).Spoken == "Average speed no measurement"
             && MetricID.AverageSpeed.Title == "Average speed"));
+        var weeklyMain = new UsageLimitSummary(40, 10_080, at.AddDays(4), at.AddSeconds(-10))
+            { Source = TokenSource.Claude, AccountLabel = "aisa@example.com" };
+        var weeklyOther = new UsageLimitSummary(92, 300, at.AddHours(1), at.AddSeconds(-10))
+        {
+            AccountLabel = "seuput@naver.com · team",
+            Other = new UsageLimitSummary.OtherWindow(78, 10_080, at.AddDays(5).AddHours(3)),
+        };
+        StatusBarMetric weeklyItem(params UsageLimitSummary[] limits) => StatusBarContent.WeeklyMetric(limits, at);
+        var leastLeft = weeklyItem(weeklyMain, weeklyOther);
+        check("weekly limit: the least-left account wins across accounts and main or other windows",
+            leastLeft.Value == "22%" && leastLeft.Contributors.SequenceEqual([TokenSource.Codex])
+            && leastLeft.Detail == "주간 한도 22% 남음 · Codex seuput · team · 5일 3시간 후 초기화\n주간 한도 60% 남음 · Claude aisa · 4일 후 초기화"
+            && leastLeft.Tooltip == leastLeft.Detail
+            && weeklyItem(weeklyMain with { UsedPercent = 90 }, weeklyOther).Contributors.SequenceEqual([TokenSource.Claude])
+            && weeklyItem(weeklyMain with { AccountLabel = null, Account = new LimitAccount("solo", "seuput@example.com", "team") }).Detail
+                == "주간 한도 60% 남음 · Claude seuput · team · 4일 후 초기화"
+            && weeklyItem(weeklyMain with { AccountLabel = "seuput@example.com" }, weeklyMain with { AccountLabel = "seuput@another.com" }).Tooltip
+                == "주간 한도 60% 남음 · Claude seuput@example.com · 4일 후 초기화\n주간 한도 60% 남음 · Claude seuput@another.com · 4일 후 초기화");
+        var resetMain = weeklyMain with { UsedPercent = 99, ResetsAt = at.AddSeconds(-1) };
+        var inferredReset = resetMain with { ResetsAt = null, RecordedAt = at.AddDays(-8) };
+        var resetOther = weeklyOther with { Other = weeklyOther.Other! with { ResetsAt = at } };
+        check("weekly limit: reset windows are ignored",
+            weeklyItem(resetMain, inferredReset, resetOther).Value == "—"
+            && weeklyItem(resetMain, weeklyOther).Value == "22%");
+        check("weekly limit: remaining thresholds tint warning and critical",
+            weeklyItem(weeklyMain with { UsedPercent = 84 }).ValueTone == StatusBarValueTone.Label
+            && weeklyItem(weeklyMain with { UsedPercent = 85 }).ValueTone == StatusBarValueTone.Warning
+            && weeklyItem(weeklyMain with { UsedPercent = 94 }).ValueTone == StatusBarValueTone.Warning
+            && weeklyItem(weeklyMain with { UsedPercent = 95 }).ValueTone == StatusBarValueTone.Critical
+            && weeklyItem(weeklyMain with { UsedPercent = 100 }).Value == "0%");
+        check("weekly limit: no data shows a dash and WK",
+            weeklyItem() is { Label: "WK", Value: "—", Detail: "주간 한도 기록 없음", ValueTone: StatusBarValueTone.Label } emptyWeekly
+            && emptyWeekly.Contributors.Count == 0
+            && StatusBarContent.Metrics(idleCpu, new StatusAISummary(), StatusBarLayout.Minimal, [MetricID.WeeklyLimit], true, true,
+                usageLimits: [weeklyMain], now: at)[0].Id == MetricID.Ai);
+        With(AppLanguage.En, () => check("weekly limit: English details name the remaining account and reset",
+            weeklyItem(weeklyOther).Detail == "Weekly limit 22% left · Codex seuput · team · resets in 5d 3h"
+            && weeklyItem().Detail == "No weekly limit recorded" && MetricID.WeeklyLimit.Title == "Weekly limit"));
         check("marks are 7 pt glyphs, the input disc 8 pt, in the unchanged 11 pt slot",
               StatusBarContent.MarkWidth(A.Tool) == 7 && StatusBarContent.MarkWidth(A.Working) == 7 && StatusBarContent.MarkWidth(A.Stale) == 7
               && StatusBarContent.MarkWidth(A.Input) == 8 && StatusBarContent.MarkWidth(A.Output) == 0 && StatusBarContent.MarkSlot == 11);
@@ -226,7 +264,7 @@ public static class StatusSummaryChecks
         // lines, 91 on one: three side-by-side glyphs 1 pt apart (3 × 10 + 2 = 32 pt) replaced the 22 pt overlapping stack, and only
         // the one-line cell widens by the difference (81 → 91); on two lines 3 × 8 + 2 = 26 pt still fits the 56 pt cell.
         check($"cell widths match the layout contract: {string.Join(", ", widths)}", widths["Compact"] == 272 && widths["Inline"] == 410 && widths["Minimal"] == 72
-              && widths["Compact/speed"] == 328 && widths["Inline/speed"] == 501 && widths["Minimal/speed"] == 72);
+              && widths["Compact/speed"] == 364 && widths["Inline/speed"] == 557 && widths["Minimal/speed"] == 72);
         // Without the character (mac StatusBarContentView): no runner slot, the minimal AI cell 41, nothing at all the 28 pt "TC".
         check("without the character the runner slot goes, the minimal cell widens and an empty strip is 28 pt",
               StatusBarContent.RequiredWidth(StatusBarLayout.Minimal, [MetricID.Ai], showRunner: false) == 49

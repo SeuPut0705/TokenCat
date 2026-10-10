@@ -938,7 +938,7 @@ struct UsageLimitAccount: View {
 
     private var provenance: some View {
         HStack(spacing: 4) {
-            if limit.isLive(now: now) { Circle().fill(TCColor.activity).frame(width: 5, height: 5) }
+            if limit.allLive(now: now) { Circle().fill(TCColor.activity).frame(width: 5, height: 5) }
             Text(limit.provenance(now: now)).font(TCFont.metaMono).foregroundColor(TCColor.textTertiary(contrast: high))
                 .lineLimit(1).truncationMode(.tail)
         }

@@ -2,6 +2,13 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.20.0
+
+**macOS and Windows**
+
+- New opt-in **Weekly limit** menu bar/widget item shows the least weekly percentage left among shown accounts, with that provider's icon, low-limit colors and account/reset details in help. Defaults and presets leave it off. · 새 **주간 한도** 메뉴 막대·위젯 항목을 켜면 표시 중인 계정 가운데 가장 적게 남은 주간 잔여율을 제공사 아이콘과 함께 보여 주고, 잔여량이 적으면 색으로 알리며 도움말에 계정·초기화 정보를 담습니다. 기본 항목과 프리셋에서는 꺼져 있습니다.
+- An account's usage limits say **Live** only when every displayed window is a fresh live check; otherwise provenance shows the oldest non-live window's recorder and age, so a fresh window no longer hides an older record. · 계정의 사용 한도는 표시된 모든 창이 최근 실시간 확인 값일 때만 **실시간**으로 보입니다. 그렇지 않으면 실시간이 아닌 창 가운데 가장 오래된 창의 기록자와 나이를 보여 주어 최근 창이 오래된 기록을 가리지 않습니다.
+
 ## 0.19.1
 
 **macOS and Windows**

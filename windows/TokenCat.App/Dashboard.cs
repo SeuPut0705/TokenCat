@@ -745,7 +745,7 @@ sealed class LimitRow : StackPanel
         Grid.SetColumn(basis, label is null ? 0 : 1);
         Grid.SetColumnSpan(basis, label is null ? 2 : 1);
         provenance.Text = limit.Provenance(now);
-        live.Visibility = limit.IsLive(now) ? Visibility.Visible : Visibility.Collapsed;
+        live.Visibility = limit.AllLive(now) ? Visibility.Visible : Visibility.Collapsed;
         var lines = limit.WindowLines(now);
         main.Update(lines[0], now);
         other.Visibility = lines.Count > 1 ? Visibility.Visible : Visibility.Collapsed;

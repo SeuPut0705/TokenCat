@@ -200,6 +200,7 @@ sealed class WidgetView : FrameworkElement
         (metrics, layout, showRunner, percent) = (next, nextLayout, nextRunner, nextPercent);
         // Narrator reads the items as one line of text (the mac status item's accessibility value).
         System.Windows.Automation.AutomationProperties.SetName(this, string.Join(", ", metrics.Select(metric => metric.Spoken)));
+        ToolTip = next.FirstOrDefault(metric => metric.Id == MetricID.WeeklyLimit)?.Tooltip;
         if (size != (PointSize, percent)) InvalidateMeasure();
         InvalidateVisual();
     }
@@ -245,7 +246,7 @@ sealed class WidgetView : FrameworkElement
     /// The label colour at the bar's alphas (NSColor.withAlphaComponent replaces the alpha).
     static Color Tone(double alpha) => Color.FromArgb((byte)Math.Round(255 * alpha), Theme.Label.R, Theme.Label.G, Theme.Label.B);
 
-    static int Group(MetricID id) => id switch { MetricID.Network => 1, MetricID.Ai or MetricID.AverageSpeed => 2, _ => 0 };
+    static int Group(MetricID id) => id switch { MetricID.Network => 1, MetricID.Ai or MetricID.AverageSpeed or MetricID.WeeklyLimit => 2, _ => 0 };
 
     /// Speed glyph sides: the two-line label row, and beside the value on one line.
     public const double GlyphCompact = 8, GlyphInline = 10;
@@ -316,7 +317,7 @@ sealed class WidgetView : FrameworkElement
             DrawGlyphs(context, metric.Contributors, GlyphCompact, inner.X + (inner.Width - SpeedGlyph.RowWidth(metric.Contributors.Count, GlyphCompact)) / 2, top + 4.5);
         else Draw(context, [new(metric.Label, 8.5, FontWeights.SemiBold, secondary)], top + 4.5, inner);
         if (metric.Id == MetricID.Ai) DrawAI(context, metric, top + 15.5, inner, 11, centered: true);
-        else Draw(context, ValueRuns(metric.Value), top + 15.5, inner);
+        else Draw(context, ValueRuns(metric.Value, metric.ValueTone), top + 15.5, inner);
     }
 
     void DrawInline(DrawingContext context, StatusBarMetric metric, Rect cell)
@@ -335,31 +336,33 @@ sealed class WidgetView : FrameworkElement
             // Like the "AI" caption: 4 pt clear of the cell's leading edge, then the value 3 pt after the glyphs.
             DrawGlyphs(context, metric.Contributors, GlyphInline, cell.X + 4, middle);
             var x = cell.X + 4 + SpeedGlyph.RowWidth(metric.Contributors.Count, GlyphInline) + 3;
-            Draw(context, ValueRuns(metric.Value), middle, new Rect(x, cell.Y, cell.Right - x, cell.Height), TextAlignment.Left);
+            Draw(context, ValueRuns(metric.Value, metric.ValueTone), middle, new Rect(x, cell.Y, cell.Right - x, cell.Height), TextAlignment.Left);
             return;
         }
-        if (metric.Id == MetricID.AverageSpeed)
+        if (metric.Id is MetricID.AverageSpeed or MetricID.WeeklyLimit)
         {
             // Without a measurement, "AVG" sized to itself (about 17 pt at 8.5 pt) from 1 pt in, the "—" 2 pt after it.
             TextRun[] caption = [new(metric.Label, 8.5, FontWeights.SemiBold, secondary)];
             var width = Format(caption, 1).WidthIncludingTrailingWhitespace;
             Draw(context, caption, middle, new Rect(cell.X + 1, cell.Y, width, cell.Height), TextAlignment.Left);
             var x = cell.X + 1 + width + 2;
-            Draw(context, ValueRuns(metric.Value), middle, new Rect(x, cell.Y, cell.Right - x, cell.Height), TextAlignment.Left);
+            Draw(context, ValueRuns(metric.Value, metric.ValueTone), middle, new Rect(x, cell.Y, cell.Right - x, cell.Height), TextAlignment.Left);
             return;
         }
         // The mac's 16 pt SF Symbol slot holds the short name here (19 pt), trailing-aligned so it hugs its value.
         Draw(context, [new(metric.Label, 8.5, FontWeights.SemiBold, secondary)], middle, new Rect(cell.X + 1, cell.Y, 19, cell.Height), TextAlignment.Right);
-        Draw(context, ValueRuns(metric.Value), middle, new Rect(cell.X + 23, cell.Y, cell.Width - 23, cell.Height), TextAlignment.Left);
+        Draw(context, ValueRuns(metric.Value, metric.ValueTone), middle, new Rect(cell.X + 23, cell.Y, cell.Width - 23, cell.Height), TextAlignment.Left);
     }
 
     /// Digits in the label tone, '%' or a letter unit ("tok/s", after a thin space) smaller and secondary; unknown stays "—".
-    TextRun[] ValueRuns(string value)
+    TextRun[] ValueRuns(string value, StatusBarValueTone tone = StatusBarValueTone.Label)
     {
         if (value == "—") return [new(value, 11, FontWeights.Medium, secondary)];
         var (number, unit) = value.EndsWith('%') ? (value[..^1], "%") : StatusBarContent.SplitRate(value);
-        return unit.Length == 0 ? [new(value, 11, FontWeights.Medium, label)]
-            : [new(number, 11, FontWeights.Medium, label), new((unit == "%" ? "" : "\u2009") + unit, 8.5, FontWeights.Medium, secondary)];
+        var color = tone switch { StatusBarValueTone.Warning => Theme.Warning, StatusBarValueTone.Critical => Theme.Critical, _ => label };
+        var unitColor = tone == StatusBarValueTone.Label ? secondary : color;
+        return unit.Length == 0 ? [new(value, 11, FontWeights.Medium, color)]
+            : [new(number, 11, FontWeights.Medium, color), new((unit == "%" ? "" : "\u2009") + unit, 8.5, FontWeights.Medium, unitColor)];
     }
 
     /// The speed item's contributing clients' glyphs from `minX` (`SpeedGlyph.Draw`), each on whole device pixels.

@@ -22,8 +22,8 @@ public sealed class Preferences : INotifyPropertyChanged
         public override int GetHashCode() => HashCode.Combine(AnimationSource, Character, Layout, ShowRunner, WidgetScale, Order.Count, Visible.Count);
     }
 
-    /// Like the mac bar, the widget starts on two lines with the standard items shown (the speed item off, last), the character
-    /// in it, at 100 %.
+    /// Like the mac bar, the widget starts on two lines with the standard items shown (speed and weekly limit off, last),
+    /// the character in it, at 100 %.
     public static Snapshot DefaultSnapshot { get; } = new(RunnerMotion.Activity, RunnerCharacter.Cat, false, false, false,
         StatusBarLayout.Compact, Enum.GetValues<MetricID>(), MetricID.Standard.ToHashSet(), true, 100);
 
@@ -53,8 +53,8 @@ public sealed class Preferences : INotifyPropertyChanged
         notifyUpdate = store.Get<bool?>("notifyUpdate") ?? false;
         liveUsageLimits = store.Get<bool?>("liveUsageLimits") ?? true;
         dismissedUpdateVersion = store.Get<string>("dismissedUpdateVersion");
-        // The widget starts on, on two lines like the mac bar; unknown item names are dropped. Items added later (the speed
-        // item) append to a stored order and stay hidden until turned on. The per-client speed items ("codexSpeed",
+        // The widget starts on, on two lines like the mac bar; unknown item names are dropped. Added opt-in items append
+        // to a stored order and stay hidden until turned on. The per-client speed items ("codexSpeed",
         // "claudeSpeed", until 0.13) became the one average item: either shown shows it, and their slots leave the order.
         showWidget = store.Get<bool?>("showWidget") ?? true;
         layout = RunnerCharacterText.Parse<StatusBarLayout>(store.Get<string>("statusBarLayout")) ?? StatusBarLayout.Compact;

@@ -937,6 +937,7 @@ extension MetricID {
         case .network: return "NET"
         case .ai: return "AI"
         case .averageSpeed: return "AVG"
+        case .weeklyLimit: return "WK"
         }
     }
 
@@ -945,6 +946,11 @@ extension MetricID {
     static var averageSpeedNote: String {
         loc("모든 클라이언트 세션의 실측 속도 평균",
             "Mean of measured session speeds, all clients")
+    }
+
+    static var weeklyLimitNote: String {
+        loc("표시 중인 계정 가운데 가장 적게 남은 주간 한도",
+            "The weekly limit with the least left among shown accounts")
     }
 }
 
@@ -995,6 +1001,7 @@ private struct MetricRows: View {
             }
             .help(minimal ? "" : locked ? loc("캐릭터나 다른 항목 중 하나는 표시해야 합니다", "The character or another item must stay visible")
                   : id == .averageSpeed ? MetricID.averageSpeedNote + loc(" · 끌어서 순서를 바꿉니다", " · Drag to reorder")
+                  : id == .weeklyLimit ? MetricID.weeklyLimitNote + loc(" · 끌어서 순서를 바꿉니다", " · Drag to reorder")
                   : loc("끌어서 순서를 바꿉니다", "Drag to reorder"))
             .contentShape(Rectangle())
             .modifier(MetricDrag(id: id, enabled: !minimal, preferences: preferences, dragging: $dragging))

@@ -128,6 +128,9 @@ static class AppChecks
             var items = Enum.GetValues<MetricID>();
             // The speed item's worst realistic rate, "9999 tok/s" on the bar (a sub-millisecond time between tokens), beside three glyphs.
             var speed = new AverageSpeed(9999.4, [TokenSource.Codex, TokenSource.Claude, TokenSource.Gemini, TokenSource.OpenCode]);
+            var weeklyAt = DateTimeOffset.FromUnixTimeSeconds(1_800_000_000);
+            UsageLimitSummary[] weekly = [new(0, 10_080, weeklyAt.AddDays(5).AddHours(3), weeklyAt)
+                { Source = TokenSource.Codex, AccountLabel = "seuput@naver.com · team" }];
             List<string> unstable = [], shrunk = [];
             foreach (var layout in Enum.GetValues<StatusBarLayout>())
             {
@@ -139,7 +142,7 @@ static class AppChecks
                     return view.DesiredSize.Width;
                 }
                 var unknown = Width(StatusBarContent.Metrics(new SystemSnapshot { BatteryPresent = true }, new StatusAISummary(), layout, items, false, false));
-                var full = StatusBarContent.Metrics(maximum, busy, layout, items, true, true, speed);
+                var full = StatusBarContent.Metrics(maximum, busy, layout, items, true, true, speed, weekly, weeklyAt);
                 var width = Width(full);
                 var contract = (StatusBarContent.RequiredWidth(layout, full.Select(metric => metric.Id)) + 2 * WidgetView.Inset) * view.Scale;
                 if (unknown != width || Math.Abs(width - contract) > 0.01) unstable.Add($"{layout} {unknown}/{width}/{contract}");
@@ -148,6 +151,19 @@ static class AppChecks
             }
             check(unstable.Count == 0, "the widget's width follows its layout, not its values: " + string.Join(", ", unstable));
             check(shrunk.Count == 0, "worst-case widget values fit their cells without shrinking: " + string.Join(", ", shrunk));
+            var weeklyFits = true;
+            foreach (var weeklyLayout in new[] { StatusBarLayout.Compact, StatusBarLayout.Inline })
+            {
+                var weeklyView = new WidgetView();
+                var weeklyMetrics = StatusBarContent.Metrics(maximum, busy, weeklyLayout, [MetricID.WeeklyLimit],
+                    true, true, usageLimits: weekly, now: weeklyAt);
+                weeklyView.Update(weeklyMetrics, weeklyLayout, nextRunner: false);
+                Snapshot.Render(() => weeklyView, dark: false);
+                weeklyFits &= weeklyMetrics[0].Value == "100%" && weeklyMetrics[0].Contributors.SequenceEqual([TokenSource.Codex])
+                    && weeklyView.Drawn.Any(text => text.Text == "100%" && text.Fit == 1)
+                    && weeklyView.Drawn.All(text => text.Fit == 1);
+            }
+            check(weeklyFits, "weekly limit: 100% and provider glyph fit compact and inline widths");
             // Narrator reads the items as one named text element; the speed item by its rate, unit and clients.
             var spoken = new WidgetView();
             spoken.Update(StatusBarContent.Metrics(maximum, busy, StatusBarLayout.Compact, [MetricID.Cpu, MetricID.AverageSpeed],
@@ -343,11 +359,12 @@ static class AppChecks
             List<CheckBox> rows() => [.. Descendants(settings).OfType<CheckBox>()];
             var shown = rows();
             var named = shown.Select(row => Peer(row)?.GetName()).SequenceEqual(["캐릭터", "CPU", "메모리 · RAM", "저장 공간 · DISK", "배터리 · BAT", "네트워크 · NET",
-                "AI 세션 · AI", "평균 속도 · AVG"]);
+                "AI 세션 · AI", "평균 속도 · AVG", "주간 한도 · WK"]);
             var states = shown.Select(row => (Toggled(row), row.IsEnabled)).SequenceEqual(
                 [(ToggleState.Off, true), (ToggleState.Off, true), (ToggleState.On, false), (ToggleState.Off, true), (ToggleState.Off, false), (ToggleState.Off, true),
-                 (ToggleState.Off, true), (ToggleState.Off, true)]);
-            var note = Descendants(settings).OfType<TextBlock>().Any(text => text.Text.Replace("⁠", "") == "이 PC에는 배터리가 없습니다");
+                 (ToggleState.Off, true), (ToggleState.Off, true), (ToggleState.Off, true)]);
+            var note = Descendants(settings).OfType<TextBlock>().Any(text => text.Text.Replace("⁠", "") == "이 PC에는 배터리가 없습니다")
+                && Descendants(settings).OfType<TextBlock>().Any(text => text.Text.Replace("⁠", "") == "표시 중인 계정 가운데 가장 적게 남은 주간 한도");
             check(named && states && note,
                 "the widget's item rows are check boxes named title · bar label in the stored order under the character row, locked and no-battery rows disabled with the note");
 
