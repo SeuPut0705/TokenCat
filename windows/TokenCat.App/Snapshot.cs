@@ -29,18 +29,27 @@ static class Snapshot
                     foreach (var fixture in Fixtures.All())
                         Save($"flyout-{fixture.Name}-{code}.png", () => Dashboard(fixture));
                     Save($"onboarding-{code}.png", () => Sheet(Fixtures.Outcomes().Select(outcome => OnboardingCard.Build(outcome, DashboardActions.None))));
-                    Save($"usage-limits-{code}.png", () => Sheet(Fixtures.Limits().Select(limit =>
-                    {
-                        var row = new LimitRow();
-                        row.Update(limit, Fixtures.Now);
-                        // Padded like the dashboard's limits container; the rows carry no inner margins of their own.
-                        return (FrameworkElement)Ui.Container(new System.Windows.Controls.Border
-                        {
-                            Child = row,
-                            Padding = new Thickness(TokenCat.Dashboard.Inset, TokenCat.Dashboard.InsetVertical,
-                                                    TokenCat.Dashboard.Inset, TokenCat.Dashboard.InsetVertical),
-                        });
-                    })));
+                    Save($"usage-limits-{code}.png", () => Sheet(
+                        new[] { Fixtures.LimitAccounts() }.Concat(Fixtures.Limits().Select(limit => (IReadOnlyList<UsageLimitSummary>)new[] { limit }))
+                            .Select(limits =>
+                            {
+                                var rows = new System.Windows.Controls.StackPanel();
+                                var labels = UsageLimitSummary.CompactAccountLabels(limits);
+                                for (var index = 0; index < limits.Count; index++)
+                                {
+                                    var row = new LimitRow();
+                                    row.Update(limits[index], Fixtures.Now, labels[index],
+                                        showsProvider: index == 0 || limits[index - 1].Source != limits[index].Source,
+                                        first: index == 0, last: index == limits.Count - 1);
+                                    rows.Children.Add(row);
+                                }
+                                return (FrameworkElement)Ui.Container(new System.Windows.Controls.Border
+                                {
+                                    Child = rows,
+                                    Padding = new Thickness(TokenCat.Dashboard.Inset, TokenCat.Dashboard.InsetVertical,
+                                                            TokenCat.Dashboard.Inset, TokenCat.Dashboard.InsetVertical),
+                                });
+                            })));
                     foreach (var page in Enum.GetValues<SettingsPage>())
                         Save($"settings-{page.ToString().ToLowerInvariant()}-{code}.png", () => new SettingsView(Fixtures.Settings(), actions, page, _ => { }, snapshot: true));
                     Save($"widget-{code}.png", Widgets);

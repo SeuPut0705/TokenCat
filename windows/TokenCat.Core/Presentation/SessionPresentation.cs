@@ -357,6 +357,55 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
         return (AccountLabel is { } label ? label + "\n" : "") + basis + Loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.")
             + (OtherText(now) is { } other ? "\n" + other : "");
     }
+
+    /// One compact window line; help and spoken text keep the longer wording.
+    public sealed record WindowLine(string WindowLabel, double UsedPercent, DateTimeOffset? ResetsAt, bool Expired, bool Old)
+    {
+        public static string Label(int? minutes)
+        {
+            if (Lang.Current != AppLanguage.En || minutes is not > 0) return SessionPresentation.WindowLabel(minutes);
+            return minutes.Value switch
+            {
+                10_080 => "Week",
+                43_200 or 43_800 => "Month",
+                var value when value % 1_440 == 0 => $"{value / 1_440}d",
+                var value when value % 60 == 0 => $"{value / 60}h",
+                var value => $"{value}m",
+            };
+        }
+
+        public string PercentText => SessionPresentation.Round(UsedPercent).ToString(CultureInfo.InvariantCulture);
+        public string? Reset(DateTimeOffset now) => Expired ? Loc("초기화됨", "Reset")
+            : ResetsAt is { } reset ? SessionPresentation.Countdown(reset, now) : null;
+    }
+
+    /// Shortest window first, retaining each window's own record age.
+    public IReadOnlyList<WindowLine> WindowLines(DateTimeOffset now)
+    {
+        var main = new WindowLine(WindowLine.Label(WindowMinutes), UsedPercent, ResetsAt, Expired(now), IsOld(now));
+        if (OtherSummary(now) is not { } other) return [main];
+        var second = new WindowLine(WindowLine.Label(other.WindowMinutes), other.UsedPercent, other.ResetsAt, false, other.IsOld(now));
+        return (WindowMinutes ?? int.MaxValue) <= (other.WindowMinutes ?? int.MaxValue) ? [main, second] : [second, main];
+    }
+
+    /// The source and record age are said once per account.
+    public string Provenance(DateTimeOffset now)
+    {
+        if (IsLive(now)) return Loc("실시간", "Live");
+        var age = SessionPresentation.HelpAge(RecordedAt, now);
+        return RecordedBy is { } by ? $"{by} · {age}" : age;
+    }
+
+    /// Shorten e-mail names only when distinct full labels will still read distinctly.
+    public static IReadOnlyList<string?> CompactAccountLabels(IReadOnlyList<UsageLimitSummary> limits)
+    {
+        var shortened = limits.Select(limit => limit.AccountLabel is { } label
+            ? string.Join(" ", label.Split(' ').Select(word => word.IndexOf('@') is var at && at > 0 ? word[..at] : word))
+            : null).ToArray();
+        return limits.Select((limit, index) => shortened[index] is { } label
+            && limits.Where((other, otherIndex) => other.AccountLabel != limit.AccountLabel && shortened[otherIndex] == label).Any()
+                ? limit.AccountLabel : shortened[index]).ToArray();
+    }
 }
 
 public enum TelemetryNoticeKind { PortBusy, Busy, Collector, Conflict, Failed, Off, Expired, Restart }

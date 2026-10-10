@@ -445,6 +445,26 @@ public static class SessionPresentationChecks
         check(claudeSummary?.IsOld(now) == false
               && ClaudeUsageLimit(new ClaudeUsageLimits(SevenDay: claudeWindow(31, day, received: -900)), now)?.IsOld(now) == true,
               "a Claude limit received over 10 minutes ago reads weaker");
+        // Compact card: window order, a single provenance line, unambiguous account names and narrow English labels.
+        var weeklyFirst = claudeSummary! with { WindowMinutes = 10_080, Other = claudeSummary!.Other! with { WindowMinutes = 300 } };
+        var lines = claudeSummary!.WindowLines(now);
+        var ompRecord = new UsageLimitSummary(35, 10_080, at(day), at(-240)) { RecordedBy = "omp" };
+        check(lines.Select(line => line.WindowLabel).SequenceEqual(["5시간", "주간"])
+              && lines.Select(line => line.PercentText).SequenceEqual(["42", "31"])
+              && lines[0].Reset(now) == "2시간 13분"
+              && weeklyFirst.WindowLines(now).Select(line => line.WindowLabel).SequenceEqual(["5시간", "주간"])
+              && allReset!.WindowLines(now)[0] is { Expired: true } resetLine && resetLine.Reset(now) == "초기화됨"
+              && claudeSummary.Provenance(now) == "1분 전" && ompRecord.Provenance(now) == "omp · 4분 전",
+              "limit card: windows are not one line each in window order, or the provenance is not said once per account");
+        UsageLimitSummary labelled(string? label) => ompRecord with { AccountLabel = label };
+        check(UsageLimitSummary.CompactAccountLabels([labelled("seuput@naver.com · team"), labelled("aisa@example.com"), labelled(null)])
+                  .SequenceEqual(["seuput · team", "aisa", null])
+              && UsageLimitSummary.CompactAccountLabels([labelled("same@a.com"), labelled("same@b.com")]).SequenceEqual(["same@a.com", "same@b.com"]),
+              "limit card: account labels are not shortened to the e-mail's name, or two shortened labels read alike");
+        With(AppLanguage.En, () => check(claudeSummary.WindowLines(now).Select(line => line.WindowLabel).SequenceEqual(["5h", "Week"])
+              && ompRecord.Provenance(now) == "omp · 4m ago"
+              && new int?[] { 43_200, 43_800, 2_880, 120 }.Select(UsageLimitSummary.WindowLine.Label).SequenceEqual(["Month", "Month", "2d", "2h"]),
+              "limit card: English window labels do not fit the narrow column"));
         // The Claude desktop app's usage history: the last sample only, no reset time (none is shown), reset one window after it.
         var desktopAt = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
         ClaudeUsageLimits? desktop(int version, double recorded) => ClaudeUsage.DecodeDesktopHistory(Encoding.UTF8.GetBytes(

@@ -94,7 +94,23 @@ enum SnapshotFixtures {
                       claudeLimits(fiveHour: (48, 2 * 3_600 + 5 * 60), weekly: (33, 3 * 86_400 + 4 * 3_600), recorded: -15, live: true)]
             .compactMap { SessionPresentation.claudeUsageLimit($0, now: now) }
         let limits = codex + claude
+        // Three accounts in one card: two Codex accounts (one omp record with both windows, one window only) under one
+        // provider name, then Claude live.
+        func account(_ summary: UsageLimitSummary?, _ label: String, by recorder: String? = nil) -> UsageLimitSummary? {
+            guard var summary else { return nil }
+            summary.accountLabel = label
+            summary.recordedBy = recorder
+            return summary
+        }
+        var team = UsageLimitSummary(usedPercent: 78, windowMinutes: 10_080, resetsAt: at(5 * 86_400 + 3 * 3_600), recordedAt: at(-60))
+        team.other = .init(usedPercent: 36, windowMinutes: 300, resetsAt: at(4 * 3_600 + 53 * 60))
+        let personal = UsageLimitSummary(usedPercent: 24, windowMinutes: 10_080, resetsAt: at(3 * 86_400 + 5 * 3_600), recordedAt: at(-300))
+        let accounts = [account(team, "dev@example.com · team", by: "omp"), account(personal, "dev.personal@example.com", by: "omp"),
+                        account(SessionPresentation.claudeUsageLimit(claudeLimits(fiveHour: (9, 2 * 3_600 + 22 * 60), weekly: (27, 2 * 86_400 + 3 * 3_600),
+                                                                                  recorded: -15, live: true), now: now), "dev@example.com")]
+            .compactMap { $0 }
         let rows = VStack(spacing: 12) {
+            UsageLimitsCard(limits: accounts, now: now)
             ForEach(Array(limits.enumerated()), id: \.offset) { UsageLimitsCard(limits: [$0.element], now: now) }
         }
         func sheet<V: View>(_ view: V) -> AnyView {

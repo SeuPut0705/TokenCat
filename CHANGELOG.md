@@ -2,6 +2,12 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.19.1
+
+**macOS and Windows**
+
+- Usage limits now group each account's provider, name and provenance on the left, with aligned window meters, percentages and reset countdowns on the right, 5-hour before weekly. Provider names and provenance are no longer repeated per window, and account names are shortened without hiding distinctions. · 사용 한도는 계정마다 왼쪽에 제공사·이름·출처를 모으고, 오른쪽에 창별 막대·사용률·초기화까지 남은 시간을 정렬하며 5시간을 주간보다 먼저 둡니다. 창마다 제공사와 출처를 되풀이하지 않고, 계정 이름은 구별을 유지하며 줄여 보입니다.
+
 ## 0.19.0
 
 **macOS and Windows**

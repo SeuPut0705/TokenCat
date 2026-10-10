@@ -480,11 +480,14 @@ static class AppChecks
               "session rows are named list items in UI Automation, and only the keyboard selection is outlined");
         var status = Tree(selection).OfType<TrimLine>().FirstOrDefault(line => AutomationProperties.GetName(line).Length > 0);
         var limit = new LimitRow();
-        limit.Update(Fixtures.Limits()[0], Fixtures.Now);
+        limit.Update(Fixtures.Limits()[0], Fixtures.Now, null);
         check(status is not null && Peer(status) is { } statusPeer && statusPeer.GetName() == "세션 상태" && statusPeer.GetHelpText().Length > 0
               && statusPeer.GetChildren()?.Any(child => child.GetAutomationControlType() == AutomationControlType.Text) == true
-              && Peer(limit) is { } limitPeer && limitPeer.GetAutomationControlType() == AutomationControlType.Text && limitPeer.GetName().StartsWith("Codex"),
-              "the header status and limit rows reach UI Automation by name");
+              && Peer(limit) is { } limitPeer && limitPeer.GetAutomationControlType() == AutomationControlType.Text
+              && limitPeer.GetName() == "Codex 사용 한도" && limitPeer.GetChildren() is null
+              && limitPeer.GetPattern(PatternInterface.Value) is IValueProvider { IsReadOnly: true } limitValue
+              && limitValue.Value == Fixtures.Limits()[0].Spoken(Fixtures.Now) && limit.ToolTip as string == Fixtures.Limits()[0].Help(Fixtures.Now),
+              "the header status and account limit blocks reach UI Automation by name, with a spoken value and no repeated children");
         // A flyout dragged out (§4.2) hands the window the top-level group of its selected child row or open detail.
         foreach (var name in new[] { "keyboard-selection", "detail-open" })
         {
@@ -508,25 +511,33 @@ static class AppChecks
               && Tree(Shown("restart-needed")).OfType<Footer>().Single().Visibility == Visibility.Visible,
               "the footer hides while it would only say 실시간, and shows for a notice or an update");
         var claudeLimit = new LimitRow();
-        claudeLimit.Update(Fixtures.Limits().First(limit => limit.Source == TokenSource.Claude && limit.Other is not null), Fixtures.Now);
-        check(Tree(claudeLimit).OfType<LimitWindow>().Count(window => window.Visibility == Visibility.Visible) == 2
-              && Tree(claudeLimit).OfType<TextBlock>().Any(text => text.Text == "Claude · 5시간") && Tree(claudeLimit).OfType<TextBlock>().Any(text => text.Text == "Claude · 주간"),
-              "a limit with another live window draws both, titled provider · window");
+        var claudeSummary = Fixtures.Limits().First(limit => limit.Source == TokenSource.Claude && limit.Other is not null);
+        claudeLimit.Update(claudeSummary, Fixtures.Now, null);
+        var windowRows = Tree(claudeLimit).OfType<LimitWindow>().Where(window => window.Visibility == Visibility.Visible).ToList();
+        check(windowRows.Count == 2 && windowRows.All(window => window.Height == 16)
+              && windowRows.SelectMany(window => Tree(window).OfType<TextBlock>()).Where(text => text.Text is "5시간" or "주간")
+                  .Select(text => text.Text).SequenceEqual(["5시간", "주간"])
+              && Tree(claudeLimit).OfType<TextBlock>().Count(text => text.Text == "Claude") == 1
+              && Tree(claudeLimit).OfType<TextBlock>().Count(text => text.Text == claudeSummary.Provenance(Fixtures.Now)) == 1
+              && !Tree(claudeLimit).OfType<TextBlock>().Any(text => text.Text.Contains("후 초기화", StringComparison.Ordinal) || text.Text.Contains(" 사용", StringComparison.Ordinal)),
+              "a compact account block has ordered 16 DIP windows and says provider and provenance once, without used or reset prose");
         var multi = Fixtures.All().Single(fixture => fixture.Name == "multiple-accounts");
         var multiInput = Fixtures.Input(multi);
         var multiView = new Dashboard(DashboardActions.None, snapshot: true);
         multiView.Show(multiInput);
         var accountRows = Tree(multiView).OfType<LimitRow>().ToList();
         check(accountRows.Count == 2 && multiInput.State.UsageLimits.Select(row => row.UsedPercent).SequenceEqual([82d, 34d])
-              && accountRows.All(row => Peer(row)?.GetName().Contains("@example.com", StringComparison.Ordinal) == true),
-              "multiple-account dashboard rows retain separate values and account accessibility names");
+              && accountRows.All(row => (Peer(row)?.GetPattern(PatternInterface.Value) as IValueProvider)?.Value.Contains("@example.com", StringComparison.Ordinal) == true)
+              && accountRows.SelectMany(row => Tree(row).OfType<TextBlock>()).Count(text => text.Text == "Codex" && text.Opacity == 1) == 1,
+              "multiple-account dashboard rows retain separate values and full spoken accounts, naming the provider only once");
         multiView.Show(multiInput with { State = multiInput.State with { UsageLimits = multiInput.State.UsageLimits.Reverse().ToList() } });
         check(Tree(multiView).OfType<LimitRow>().SequenceEqual(accountRows.AsEnumerable().Reverse()),
               "account row reuse is keyed by provider and account, not provider or position");
         var detached = new Dashboard(DashboardActions.None, panel: true, snapshot: true);
         detached.Show(multiInput);
-        check(Tree(detached).OfType<LimitRow>().Select(row => Peer(row)?.GetName()).SequenceEqual(accountRows.Select(row => Peer(row)?.GetName())),
-              "secondary windows preserve every account row and accessibility label");
+        check(Tree(detached).OfType<LimitRow>().Select(row => (Peer(row)?.GetPattern(PatternInterface.Value) as IValueProvider)?.Value)
+                  .SequenceEqual(accountRows.Select(row => (Peer(row)?.GetPattern(PatternInterface.Value) as IValueProvider)?.Value)),
+              "secondary windows preserve every account row and full spoken account label");
 
         static ToggleState? Toggle(UIElement element) => (Peer(element)?.GetPattern(PatternInterface.Toggle) as IToggleProvider)?.ToggleState;
         var on = SettingsView.Switch(true, _ => { }, "턴 완료");

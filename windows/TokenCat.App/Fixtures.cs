@@ -348,6 +348,20 @@ static class Fixtures
         SessionPresentation.ClaudeUsageLimit(Claude((42, 2 * 3_600 + 13 * 60), (31, 3 * 86_400 + 4 * 3_600), -20), Now)! with { Live = true },
     ];
 
+    /// Three accounts in one card: two Codex records under one provider, then Claude live.
+    public static IReadOnlyList<UsageLimitSummary> LimitAccounts() =>
+    [
+        new UsageLimitSummary(78, 10_080, At(5 * 86_400 + 3 * 3_600), At(-60))
+        {
+            AccountLabel = "dev@example.com · team", RecordedBy = "omp",
+            Other = new UsageLimitSummary.OtherWindow(36, 300, At(4 * 3_600 + 53 * 60)),
+        },
+        new UsageLimitSummary(24, 10_080, At(3 * 86_400 + 5 * 3_600), At(-300))
+            { AccountLabel = "dev.personal@example.com", RecordedBy = "omp" },
+        SessionPresentation.ClaudeUsageLimit(Claude((9, 2 * 3_600 + 22 * 60), (27, 2 * 86_400 + 3 * 3_600), -15), Now)!
+            with { AccountLabel = "dev@example.com", Live = true },
+    ];
+
     /// Settings › fixtures (mac `--snapshot-settings --fixtures`): the collector off with a retry in 25 s, Codex waiting for a
     /// relaunch, the Claude limit received 50 s ago, version 1.0.0 available (checked 3 min ago), default preferences,
     /// the startup app not registered.

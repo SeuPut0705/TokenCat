@@ -858,24 +858,35 @@ struct FlowChart: View {
 
 // MARK: - Usage limits
 
-/// The limits container under the header (Codex, then Claude): each provider's window, then its other live window as a
-/// compact row under it; a hairline between providers.
+/// The limits container under the header: one block per account, Codex before Claude. Each block is two columns: who
+/// (provider, account and where the numbers come from, each said once) and its windows, one line each, aligned across blocks:
+/// "5시간 ▬▬▬▬ 36% ↻ 4시간 53분". The provider is named on its first account only; its other accounts sit under it, split by a
+/// hairline inset to the account column, and a full hairline separates providers.
 struct UsageLimitsCard: View {
     var limits: [UsageLimitSummary]
     var now: Date
     @Environment(\.tokenCatHighContrast) private var high
 
+    /// Inner width 364: who 132 (provider 44, then the account), then window 34 · meter (flexible) · percent 38 · reset 78,
+    /// 8 pt apart.
+    enum Column {
+        static let who: CGFloat = 132, provider: CGFloat = 44, window: CGFloat = 34, percent: CGFloat = 38, reset: CGFloat = 78
+        static let gap: CGFloat = 8
+    }
+
     var body: some View {
+        let labels = UsageLimitSummary.compactAccountLabels(limits)
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(limits.enumerated()), id: \.offset) { index, limit in
-                VStack(alignment: .leading, spacing: 6) {
-                    UsageLimitRow(limit: limit, now: now)
-                    if let other = limit.otherSummary(now: now) { UsageLimitRow(limit: other, now: now) }
-                }
-                .padding(.top, index == 0 ? 0 : 8).padding(.bottom, index == limits.count - 1 ? 0 : 8)
-                .overlay(alignment: .top) {
-                    if index > 0 { Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5) }
-                }
+                let first = index == 0 || limits[index - 1].source != limit.source
+                UsageLimitAccount(limit: limit, label: labels[index], showsProvider: first, now: now)
+                    .padding(.top, index == 0 ? 0 : 7).padding(.bottom, index == limits.count - 1 ? 0 : 7)
+                    .overlay(alignment: .top) {
+                        if index > 0 {
+                            Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5)
+                                .padding(.leading, first ? 0 : Column.provider)
+                        }
+                    }
             }
         }
         .padding(.horizontal, DashboardLayout.inset).padding(.vertical, DashboardLayout.insetVertical)
@@ -883,46 +894,88 @@ struct UsageLimitsCard: View {
     }
 }
 
-/// One limit window: "Claude · 5시간  42% 사용 … 2시간 13분 후 초기화" over a 4 pt meter, always with its record age or
-/// "실시간"; no forecast.
-struct UsageLimitRow: View {
+/// One account: "Codex | seuput · team" over "omp · 5분 전" (a dot and "실시간" for a live read) in the account column,
+/// beside its window lines. No forecast.
+struct UsageLimitAccount: View {
     var limit: UsageLimitSummary
+    var label: String?
+    var showsProvider: Bool
     var now: Date
     @Environment(\.tokenCatHighContrast) private var high
 
     var body: some View {
-        let expired = limit.expired(now: now)
-        let details = limit.details(now: now)
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                Text(limit.shortTitle).font(TCFont.metaMedium).lineLimit(1).fixedSize()
-                value(expired: expired).padding(.leading, 6).fixedSize()
-                Spacer(minLength: 8)
-                // The reset countdown is never truncated; the record age drops first.
-                ViewThatFits(in: .horizontal) {
-                    ForEach(details, id: \.self) { Text($0).font(TCFont.metaMono).toneSecondary().lineLimit(1).fixedSize() }
+        HStack(alignment: .top, spacing: UsageLimitsCard.Column.gap) {
+            Group {
+                if let label {
+                    HStack(alignment: .top, spacing: 0) {
+                        provider.frame(width: UsageLimitsCard.Column.provider, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(label).font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.middle).frame(height: 16)
+                            provenance
+                        }
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 3) { provider; provenance }
                 }
             }
-            .frame(height: 16)
-            if let label = limit.accountLabel {
-                Text(label).font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.middle).padding(.top, 3)
-            }
-            if !expired {
-                Meter(fraction: limit.usedPercent / 100, color: Meter.color(limit.usedPercent)).frame(height: 4).padding(.top, 4)
+            .frame(width: UsageLimitsCard.Column.who, alignment: .leading)
+            VStack(spacing: 4) {
+                ForEach(Array(limit.windowLines(now: now).enumerated()), id: \.offset) { _, line in
+                    UsageLimitWindow(line: line, now: now)
+                }
             }
         }
         .help(limit.help(now: now))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(limit.title)
+        .accessibilityLabel(loc("\(limit.source.shortTitle) 사용 한도", "\(limit.source.shortTitle) usage limits"))
         .accessibilityValue(limit.spoken(now: now))
     }
 
-    private func value(expired: Bool) -> Text {
-        let secondary = TCColor.textSecondary(contrast: high)
-        if expired { return Text("—").font(TCFont.value).foregroundColor(TCColor.textTertiary(contrast: high)) }
-        return Text(limit.percentText).font(TCFont.value).foregroundColor(limit.isOld(now: now) ? secondary : nil)
-            + Text("%").font(TCFont.micro).foregroundColor(secondary)
-            + Text(loc(" 사용", " used")).font(TCFont.meta).foregroundColor(secondary)
+    /// Kept in layout under the first account, so every account of a provider starts at the same x.
+    private var provider: some View {
+        Text(limit.source.shortTitle).font(TCFont.metaMedium).lineLimit(1).fixedSize().frame(height: 16).opacity(showsProvider ? 1 : 0)
+    }
+
+    private var provenance: some View {
+        HStack(spacing: 4) {
+            if limit.isLive(now: now) { Circle().fill(TCColor.activity).frame(width: 5, height: 5) }
+            Text(limit.provenance(now: now)).font(TCFont.metaMono).foregroundColor(TCColor.textTertiary(contrast: high))
+                .lineLimit(1).truncationMode(.tail)
+        }
+        .frame(height: 13)
+    }
+}
+
+/// "주간 ▬▬▬▬▬ 78% ↻ 4일 19시간": the window, its meter, the use and the countdown to its reset.
+struct UsageLimitWindow: View {
+    var line: UsageLimitSummary.WindowLine
+    var now: Date
+    @Environment(\.tokenCatHighContrast) private var high
+
+    var body: some View {
+        let secondary = TCColor.textSecondary(contrast: high), tertiary = TCColor.textTertiary(contrast: high)
+        HStack(spacing: UsageLimitsCard.Column.gap) {
+            Text(line.label).font(TCFont.meta).foregroundColor(secondary).lineLimit(1)
+                .frame(width: UsageLimitsCard.Column.window, alignment: .leading)
+            Meter(fraction: line.expired ? 0 : line.usedPercent / 100, color: Meter.color(line.usedPercent)).frame(height: 4)
+            Group {
+                if line.expired {
+                    Text("—").font(TCFont.value).foregroundColor(tertiary)
+                } else {
+                    Text(line.percentText).font(TCFont.value).foregroundColor(line.old ? secondary : nil)
+                        + Text("%").font(TCFont.micro).foregroundColor(secondary)
+                }
+            }
+            .lineLimit(1).fixedSize().frame(width: UsageLimitsCard.Column.percent, alignment: .trailing)
+            HStack(spacing: 3) {
+                if let reset = line.reset(now: now) {
+                    if !line.expired { Image(systemName: "arrow.clockwise").font(.system(size: 8, weight: .semibold)).foregroundColor(tertiary) }
+                    Text(reset).font(TCFont.metaMono).foregroundColor(secondary).lineLimit(1).fixedSize()
+                }
+            }
+            .frame(width: UsageLimitsCard.Column.reset, alignment: .trailing)
+        }
+        .frame(height: 16)
     }
 }
 

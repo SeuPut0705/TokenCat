@@ -131,8 +131,11 @@ sealed class Dashboard : UserControl
             loading ? null : SessionPresentation.Headline(lists, state.Now, state.TelemetryRestartNeeded));
         var limitRows = state.UsageLimits;
         limitsBox.Visibility = limitRows.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+        var limitLabels = UsageLimitSummary.CompactAccountLabels(limitRows);
         Reconcile.Panel(limits, limitCache, limitRows.Select((limit, index) => Reconcile.Item($"{limit.Source}:{limit.Account?.Key ?? "legacy"}",
-            () => new LimitRow(), (LimitRow row) => row.Update(limit, state.Now, first: index == 0))));
+            () => new LimitRow(), (LimitRow row) => row.Update(limit, state.Now, limitLabels[index],
+                showsProvider: index == 0 || limitRows[index - 1].Source != limit.Source,
+                first: index == 0, last: index == limitRows.Count - 1))));
 
         sessionsHeader.Update(lists);
         list.Show(input, lists);
@@ -673,88 +676,131 @@ sealed class FlowChart : FrameworkElement
     }
 }
 
-/// One provider in the limits container (Codex, then Claude): its window, then its other live window as a compact row 6 DIP
-/// under it; 8 + hairline + 8 between providers. Always with the record age or "실시간"; no forecast.
+/// One account: provider and compact account name with provenance, beside its ordered window lines.
 sealed class LimitRow : StackPanel
 {
     readonly Border rule = Ui.Hairline();
-    readonly LimitWindow main = new(), other = new() { Margin = new Thickness(0, 6, 0, 0) };
-    readonly TextBlock account = Ui.Text("", Font.Meta, Theme.Secondary);
+    readonly Grid block = new(), who = new(), basis = new();
+    readonly TextBlock provider = Ui.Text("", Font.MetaMedium), account = Ui.Text("", Font.Meta, Theme.Secondary);
+    readonly TextBlock provenance = Ui.Text("", Font.MetaMono, Theme.Tertiary);
+    readonly Ellipse live = Dashboard.Dot(Theme.Activity, 5);
+    readonly LimitWindow main = new(), other = new() { Margin = new Thickness(0, 4, 0, 0) };
+    string spoken = "";
 
     public LimitRow()
     {
-        rule.Margin = new Thickness(0, 0, 0, 8);
+        block.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(132) });
+        block.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(8) });
+        block.ColumnDefinitions.Add(new ColumnDefinition());
+        who.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
+        who.ColumnDefinitions.Add(new ColumnDefinition());
+        who.RowDefinitions.Add(new RowDefinition { Height = new GridLength(16) });
+        who.RowDefinitions.Add(new RowDefinition { Height = new GridLength(3) });
+        who.RowDefinitions.Add(new RowDefinition { Height = new GridLength(13) });
+        who.VerticalAlignment = VerticalAlignment.Top;
+        provider.TextTrimming = TextTrimming.None;
+        who.Children.Add(provider);
+        Grid.SetColumn(account, 1);
+        who.Children.Add(account);
+        basis.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        basis.ColumnDefinitions.Add(new ColumnDefinition());
+        live.Margin = new Thickness(0, 0, 4, 0);
+        basis.Children.Add(live);
+        Grid.SetColumn(provenance, 1);
+        basis.Children.Add(provenance);
+        Grid.SetRow(basis, 2);
+        who.Children.Add(basis);
+        block.Children.Add(who);
+        var windows = new StackPanel { Children = { main, other } };
+        Grid.SetColumn(windows, 2);
+        block.Children.Add(windows);
         Children.Add(rule);
-        Children.Add(main);
-        Children.Add(account);
-        Children.Add(other);
+        Children.Add(block);
     }
 
-    protected override System.Windows.Automation.Peers.AutomationPeer OnCreateAutomationPeer() =>
-        new LeafPeer(this, System.Windows.Automation.Peers.AutomationControlType.Text);
-
-    /// `first`: no hairline above (the first provider in the container).
-    public void Update(UsageLimitSummary limit, DateTimeOffset now, bool first = true)
+    sealed class Peer(LimitRow owner) : System.Windows.Automation.Peers.FrameworkElementAutomationPeer(owner),
+        System.Windows.Automation.Provider.IValueProvider
     {
-        Margin = new Thickness(0, first ? 0 : 8, 0, 0);
+        protected override System.Windows.Automation.Peers.AutomationControlType GetAutomationControlTypeCore() =>
+            System.Windows.Automation.Peers.AutomationControlType.Text;
+        protected override List<System.Windows.Automation.Peers.AutomationPeer>? GetChildrenCore() => null;
+        public override object? GetPattern(System.Windows.Automation.Peers.PatternInterface patternInterface) =>
+            patternInterface == System.Windows.Automation.Peers.PatternInterface.Value ? this : base.GetPattern(patternInterface);
+        public bool IsReadOnly => true;
+        public string Value => owner.spoken;
+        public void SetValue(string value) => throw new InvalidOperationException("Usage limits are read-only.");
+    }
+
+    protected override System.Windows.Automation.Peers.AutomationPeer OnCreateAutomationPeer() => new Peer(this);
+
+    public void Update(UsageLimitSummary limit, DateTimeOffset now, string? label, bool showsProvider = true, bool first = true, bool last = true)
+    {
         rule.Visibility = first ? Visibility.Collapsed : Visibility.Visible;
-        account.Text = limit.AccountLabel ?? "";
-        account.Visibility = limit.AccountLabel is null ? Visibility.Collapsed : Visibility.Visible;
-        main.Update(limit, now);
-        var second = limit.OtherSummary(now);
-        other.Visibility = second is null ? Visibility.Collapsed : Visibility.Visible;
-        if (second is not null) other.Update(second, now);
-        // Spoken carries the other window too (`OtherText`), so the provider is one element.
-        System.Windows.Automation.AutomationProperties.SetName(this, limit.Title + ", " + limit.Spoken(now));
+        rule.Margin = new Thickness(showsProvider ? 0 : 44, 0, 0, 0);
+        block.Margin = new Thickness(0, first ? 0 : 7, 0, last ? 0 : 7);
+        provider.Text = limit.Source.ShortTitle;
+        provider.Opacity = showsProvider ? 1 : 0;
+        account.Text = label ?? "";
+        account.Visibility = label is null ? Visibility.Collapsed : Visibility.Visible;
+        Grid.SetColumn(basis, label is null ? 0 : 1);
+        Grid.SetColumnSpan(basis, label is null ? 2 : 1);
+        provenance.Text = limit.Provenance(now);
+        live.Visibility = limit.IsLive(now) ? Visibility.Visible : Visibility.Collapsed;
+        var lines = limit.WindowLines(now);
+        main.Update(lines[0], now);
+        other.Visibility = lines.Count > 1 ? Visibility.Visible : Visibility.Collapsed;
+        if (lines.Count > 1) other.Update(lines[1], now);
+        spoken = limit.Spoken(now);
+        System.Windows.Automation.AutomationProperties.SetName(this,
+            Loc($"{limit.Source.ShortTitle} 사용 한도", $"{limit.Source.ShortTitle} usage limits"));
+        Ui.Help(this, limit.Help(now));
     }
 }
 
-/// "Claude · 5시간  42% 사용 … 2시간 13분 후 초기화" over a 4 DIP meter.
-sealed class LimitWindow : StackPanel
+/// One 16 DIP line: window, flexible 4 DIP meter, percentage and a glyph plus reset countdown.
+sealed class LimitWindow : Grid
 {
-    readonly TextBlock title = Ui.Text("", Font.MetaMedium);
-    readonly TextBlock value = Ui.Line();
-    readonly Border details = new();
-    readonly Meter meter = new() { Margin = new Thickness(0, 4, 0, 0) };
-    object? shown;
+    readonly TextBlock title = Ui.Text("", Font.Meta, Theme.Secondary);
+    readonly TextBlock value = Ui.Line(), reset = Ui.Text("", Font.MetaMono, Theme.Secondary);
+    readonly TextBlock arrow = Ui.Icon(Ui.Refresh, 8, Theme.Tertiary);
+    readonly Meter meter = new() { Height = 4, VerticalAlignment = VerticalAlignment.Center };
 
     public LimitWindow()
     {
-        title.TextTrimming = TextTrimming.None;
-        // 13 DIP value beside 11 DIP texts: raised by the ascent difference so all three share one baseline.
-        value.Margin = new Thickness(0, -2, 0, 0);
-        var line = Dashboard.Spread(Dashboard.Row(6, title, value), details);
-        line.Height = 16;
-        Children.Add(line);
-        Children.Add(meter);
+        Height = 16;
+        foreach (var width in new[] { 34d, 8, double.NaN, 8, 38, 8, 78 })
+            ColumnDefinitions.Add(new ColumnDefinition { Width = double.IsNaN(width) ? new GridLength(1, GridUnitType.Star) : new GridLength(width) });
+        value.TextAlignment = TextAlignment.Right;
+        value.TextTrimming = TextTrimming.None;
+        value.VerticalAlignment = VerticalAlignment.Center;
+        title.VerticalAlignment = VerticalAlignment.Center;
+        reset.TextTrimming = TextTrimming.None;
+        reset.VerticalAlignment = VerticalAlignment.Center;
+        var countdown = Dashboard.Row(3, arrow, reset);
+        countdown.HorizontalAlignment = HorizontalAlignment.Right;
+        countdown.VerticalAlignment = VerticalAlignment.Center;
+        UIElement[] cells = [title, meter, value, countdown];
+        for (var index = 0; index < cells.Length; index++)
+        {
+            Grid.SetColumn(cells[index], index * 2);
+            Children.Add(cells[index]);
+        }
     }
 
-    public void Update(UsageLimitSummary limit, DateTimeOffset now)
+    public void Update(UsageLimitSummary.WindowLine line, DateTimeOffset now)
     {
-        var expired = limit.Expired(now);
-        title.Text = limit.ShortTitle;
+        title.Text = line.WindowLabel;
         value.Inlines.Clear();
-        if (expired) value.Inlines.Add(Ui.Run("—", Font.Value, Theme.Tertiary));
+        if (line.Expired) value.Inlines.Add(Ui.Run("—", Font.Value, Theme.Tertiary));
         else
         {
-            value.Inlines.Add(Ui.Run(limit.PercentText, Font.Value, limit.IsOld(now) ? Theme.Secondary : Theme.Label));
+            value.Inlines.Add(Ui.Run(line.PercentText, Font.Value, line.Old ? Theme.Secondary : Theme.Label));
             value.Inlines.Add(Ui.Run("%", Font.Micro, Theme.Secondary));
-            value.Inlines.Add(Ui.Run(Loc(" 사용", " used"), Font.Meta, Theme.Secondary));
         }
-        // The reset countdown is never truncated; the record age drops first.
-        var texts = limit.Details(now);
-        var key = (string.Join("|", texts), title.Text, limit.PercentText, expired);
-        if (!Equals(key, shown))
-        {
-            shown = key;
-            title.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            value.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-            var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - 2 * Dashboard.Inset - title.DesiredSize.Width - 6 - value.DesiredSize.Width - 8;
-            details.Child = Dashboard.Fit(room, [.. texts.Select(text => (Func<FrameworkElement>)(() => Ui.Text(text, Font.MetaMono, Theme.Secondary)))]);
-        }
-        meter.Visibility = expired ? Visibility.Collapsed : Visibility.Visible;
-        meter.Set(limit.UsedPercent / 100, Theme.MeterColor(limit.UsedPercent));
-        Ui.Help(this, limit.Help(now));
+        var countdown = line.Reset(now);
+        reset.Text = countdown ?? "";
+        arrow.Visibility = !line.Expired && countdown is not null ? Visibility.Visible : Visibility.Collapsed;
+        meter.Set(line.Expired ? 0 : line.UsedPercent / 100, Theme.MeterColor(line.UsedPercent));
     }
 }
 

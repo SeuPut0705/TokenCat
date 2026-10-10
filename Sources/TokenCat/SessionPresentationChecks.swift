@@ -514,6 +514,31 @@ func runSessionPresentationChecks() -> [String] {
     check(claudeSummary?.isOld(now: now) == false && SessionPresentation.claudeUsageLimit(
             ClaudeUsageLimits(sevenDay: claudeWindow(31, resetsIn: day, received: -900)), now: now)?.isOld(now: now) == true,
           "a Claude limit received over 10 minutes ago reads weaker")
+    // The compact card: every window of an account on its own line in window order, provenance said once per account.
+    var weeklyFirst = claudeSummary
+    weeklyFirst?.windowMinutes = 10_080
+    weeklyFirst?.other?.windowMinutes = 300
+    let lines = claudeSummary?.windowLines(now: now) ?? []
+    let ompRecord = UsageLimitSummary(usedPercent: 35, windowMinutes: 10_080, resetsAt: at(day), recordedAt: at(-240), recordedBy: "omp")
+    check(lines.map(\.label) == ["5시간", "주간"] && lines.map(\.percentText) == ["42", "31"]
+          && lines.first?.reset(now: now) == "2시간 13분" && weeklyFirst?.windowLines(now: now).map(\.label) == ["5시간", "주간"]
+          && allReset?.windowLines(now: now).first.map { $0.expired && $0.reset(now: now) == "초기화됨" } == true
+          && claudeSummary?.provenance(now: now) == "1분 전" && ompRecord.provenance(now: now) == "omp · 4분 전",
+          "limit card: windows are not one line each in window order, or the provenance is not said once per account")
+    func labelled(_ label: String?) -> UsageLimitSummary {
+        var limit = ompRecord
+        limit.accountLabel = label
+        return limit
+    }
+    check(UsageLimitSummary.compactAccountLabels([labelled("seuput@naver.com · team"), labelled("aisa@example.com"), labelled(nil)])
+            == ["seuput · team", "aisa", nil]
+          && UsageLimitSummary.compactAccountLabels([labelled("same@a.com"), labelled("same@b.com")]) == ["same@a.com", "same@b.com"],
+          "limit card: account labels are not shortened to the e-mail's name, or two shortened labels read alike")
+    AppLanguage.with(.en) {
+        check(lines.isEmpty || (claudeSummary?.windowLines(now: now).map(\.label) == ["5h", "Week"]
+                                && ompRecord.provenance(now: now) == "omp · 4m ago"),
+              "limit card: English window labels do not fit the narrow column")
+    }
     // The Claude desktop app's usage history: the last sample only, no reset time (none is shown), reset one window after it.
     let desktopAt = Date(timeIntervalSince1970: 1_790_000_000)
     func desktop(_ version: Int, recorded: TimeInterval) -> ClaudeUsageLimits? {

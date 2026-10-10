@@ -321,6 +321,65 @@ struct UsageLimitSummary: Equatable {
                   "The last Claude account usage sent by Claude Code to its status line or recorded by the Claude desktop app. It isn't a live balance and updates only while you use Claude."))
         return (accountLabel.map { $0 + "\n" } ?? "") + basis + loc(" 소진 시점을 예측하지 않습니다.", " TokenCat doesn't predict when you'll reach it.") + (otherText(now: now).map { "\n" + $0 } ?? "")
     }
+
+    /// One window of the compact card: its length, use and reset, shortest window first.
+    struct WindowLine: Equatable {
+        /// The card's narrow window column: "5시간"/"주간", in English "5h"/"Week" ("5-hour"/"weekly" stay in help).
+        static func label(_ minutes: Int?) -> String {
+            guard AppLanguage.current == .en, let minutes, minutes > 0 else { return SessionPresentation.windowLabel(minutes) }
+            switch minutes {
+            case 10_080: return "Week"
+            case 43_200, 43_800: return "Month"
+            default: return minutes % 1_440 == 0 ? "\(minutes / 1_440)d" : minutes % 60 == 0 ? "\(minutes / 60)h" : "\(minutes)m"
+            }
+        }
+        var label: String
+        var usedPercent: Double
+        var resetsAt: Date?
+        var expired: Bool
+        /// Older than 10 minutes: drawn weaker.
+        var old: Bool
+        var percentText: String { "\(Int(usedPercent.rounded()))" }
+        /// "4일 19시간", "초기화됨" once reset, nil without a reset time (the desktop app).
+        func reset(now: Date) -> String? {
+            if expired { return loc("초기화됨", "Reset") }
+            return resetsAt.map { SessionPresentation.countdown(to: $0, now: now) }
+        }
+    }
+    /// This account's windows, the other live one included, in window order (5-hour before weekly).
+    func windowLines(now: Date) -> [WindowLine] {
+        let main = WindowLine(label: WindowLine.label(windowMinutes), usedPercent: usedPercent, resetsAt: resetsAt,
+                              expired: expired(now: now), old: isOld(now: now))
+        let second = otherSummary(now: now).map {
+            WindowLine(label: WindowLine.label($0.windowMinutes), usedPercent: $0.usedPercent, resetsAt: $0.resetsAt,
+                       expired: false, old: $0.isOld(now: now))
+        }
+        let minutes = [windowMinutes ?? .max, other?.windowMinutes ?? .max]
+        guard let second else { return [main] }
+        return minutes[0] <= minutes[1] ? [main, second] : [second, main]
+    }
+    /// Where the numbers come from, said once per account: "실시간", "omp · 5분 전", "5분 전".
+    func provenance(now: Date) -> String {
+        if isLive(now: now) { return loc("실시간", "Live") }
+        let age = SessionPresentation.helpAge(recordedAt, now: now)
+        return recordedBy.map { "\($0) · \(age)" } ?? age
+    }
+    /// The account named on screen: an e-mail by its local part ("seuput · team"), the full label wherever two would read
+    /// alike. Help and VoiceOver keep the full label.
+    static func compactAccountLabels(_ limits: [UsageLimitSummary]) -> [String?] {
+        func short(_ label: String) -> String {
+            label.split(separator: " ", omittingEmptySubsequences: false).map { word in
+                guard let at = word.firstIndex(of: "@"), at > word.startIndex else { return String(word) }
+                return String(word[..<at])
+            }.joined(separator: " ")
+        }
+        let shortened = limits.map { $0.accountLabel.map(short) }
+        return zip(limits, shortened).map { limit, label in
+            guard let label else { return nil }
+            let clash = zip(limits, shortened).contains { $0.0.accountLabel != limit.accountLabel && $0.1 == label }
+            return clash ? limit.accountLabel : label
+        }
+    }
 }
 
 /// Why the footer warns about telemetry; copy stays short enough for the 388 pt footer.
