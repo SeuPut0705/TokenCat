@@ -228,7 +228,8 @@ public static class LiveLimitChecks
         {
             int count;
             lock (gate) calls[slot] = count = calls.GetValueOrDefault(slot) + 1;
-            await pending.Task.WaitAsync(token);
+            // The app runs the checks on its WPF thread, which the blocking waits below hold: a captured context would deadlock.
+            await pending.Task.WaitAsync(token).ConfigureAwait(false);
             if (slot == code) return new(Failed: true);
             if (slot == first && count == 1) return new();
             return new(Claude: new ClaudeUsageLimits(new ClaudeLimitWindow(slot == first ? 11 : slot == second ? 22 : 33, now.AddSeconds(300), now)));
@@ -241,15 +242,36 @@ public static class LiveLimitChecks
                 deliveryCount++;
             }
         }
-        var initial = poller.Tick(now, false, slots, _ => false, Deliver);
-        poller.Tick(now.AddSeconds(16), true, slots, _ => false, Deliver).GetAwaiter().GetResult();
-        pending.SetResult();
-        initial.GetAwaiter().GetResult();
-        poller.Tick(now.AddSeconds(61), false, slots, _ => true, Deliver).GetAwaiter().GetResult();
-        poller.Tick(now.AddSeconds(122), false, slots, _ => true, Deliver).GetAwaiter().GetResult();
+        // Like the WPF dispatcher the app runs these checks on, but a post runs elsewhere instead of deadlocking: a continuation
+        // that comes back to the blocked thread is counted, so the console run on a Mac catches it too.
+        var context = new CountingContext();
+        var previous = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(context);
+        try
+        {
+            var initial = poller.Tick(now, false, slots, _ => false, Deliver);
+            poller.Tick(now.AddSeconds(16), true, slots, _ => false, Deliver).GetAwaiter().GetResult();
+            pending.SetResult();
+            initial.GetAwaiter().GetResult();
+            poller.Tick(now.AddSeconds(61), false, slots, _ => true, Deliver).GetAwaiter().GetResult();
+            poller.Tick(now.AddSeconds(122), false, slots, _ => true, Deliver).GetAwaiter().GetResult();
+        }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        check(context.Posts == 0, "live poller resumes on the caller's synchronization context, which deadlocks the app's blocking self-test");
         check(calls[code] == 2 && calls[first] == 3 && calls[second] == 3 && calls[missing] == 3
               && deliveryCount == 8 && deliveries[first] == 11 && deliveries[second] == 22 && deliveries[missing] == 33,
               "live poller mixes account slots, per-token rejection sets, attributed numbers, or per-slot backoff");
+    }
+
+    sealed class CountingContext : SynchronizationContext
+    {
+        int posts;
+        public int Posts => Volatile.Read(ref posts);
+        public override void Post(SendOrPostCallback callback, object? state)
+        {
+            Interlocked.Increment(ref posts);
+            ThreadPool.QueueUserWorkItem(_ => callback(state));
+        }
     }
 
     static void Rows(Action<bool, string> check)
