@@ -45,8 +45,8 @@ static class Theme
     /// Informational secondary text remains fully opaque in High Contrast.
     public static Color Secondary => HighContrast ? Label : Dark ? Rgb(0xFFFFFF, 140) : Primary(0.66);
     public static Color Tertiary => HighContrast ? SystemColors.GrayTextColor : Dark ? Rgb(0xFFFFFF, 64) : Rgb(0x000000, 66);
-    public static Color Hover => HighContrast ? SystemColors.ControlColor : Primary(0.05);
-    public static Color Pressed => HighContrast ? SystemColors.ControlColor : Primary(0.12);
+    public static Color Hover => HighContrast ? SystemColors.HighlightColor : Primary(0.05);
+    public static Color Pressed => HighContrast ? SystemColors.HighlightColor : Primary(0.12);
     public static Color Accent => HighContrast ? SystemColors.HotTrackColor : Dark ? Rgb(0x60CDFF) : Rgb(0x005FB8);
     public static Color Selection => HighContrast ? SystemColors.ControlColor : Alpha(Accent, 0.16);
     public static Color Background => HighContrast ? SystemColors.WindowColor : Dark ? Rgb(0x202020) : Rgb(0xF9F9F9);
@@ -175,6 +175,12 @@ static class Ui
     public static T Hover<T>(T button, UIElement content, Action click, string help, bool circle = false) where T : ButtonBase
     {
         var chrome = new Border { Child = content, CornerRadius = new CornerRadius(circle ? 99 : ControlRadius), Background = Brushes.Transparent };
+        if (Theme.HighContrast) chrome.BorderThickness = new Thickness(1);
+        void Paint(bool over, bool pressed = false)
+        {
+            chrome.Background = Theme.HighContrast ? Brushes.Transparent : over ? Theme.Brush(pressed ? Theme.Pressed : Theme.Hover) : Brushes.Transparent;
+            chrome.BorderBrush = Theme.HighContrast && over ? Theme.Brush(SystemColors.HighlightColor) : Brushes.Transparent;
+        }
         button.Content = chrome;
         button.Cursor = System.Windows.Input.Cursors.Hand;
         button.Focusable = true;
@@ -184,13 +190,13 @@ static class Ui
         button.FocusVisualStyle = FocusRing();
         System.Windows.Automation.AutomationProperties.SetHelpText(button, help);
         System.Windows.Automation.AutomationProperties.SetName(button, help);
-        button.MouseEnter += (_, _) => chrome.Background = Theme.Brush(Theme.Hover);
-        button.MouseLeave += (_, _) => chrome.Background = Brushes.Transparent;
-        button.PreviewMouseLeftButtonDown += (_, _) => chrome.Background = Theme.Brush(Theme.Pressed);
-        button.PreviewMouseLeftButtonUp += (_, _) => chrome.Background = button.IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent;
-        button.LostMouseCapture += (_, _) => chrome.Background = button.IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent;
-        button.PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) chrome.Background = Theme.Brush(Theme.Pressed); };
-        button.PreviewKeyUp += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) chrome.Background = button.IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent; };
+        button.MouseEnter += (_, _) => Paint(true);
+        button.MouseLeave += (_, _) => Paint(false);
+        button.PreviewMouseLeftButtonDown += (_, _) => Paint(true, true);
+        button.PreviewMouseLeftButtonUp += (_, _) => Paint(button.IsMouseOver);
+        button.LostMouseCapture += (_, _) => Paint(button.IsMouseOver);
+        button.PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) Paint(true, true); };
+        button.PreviewKeyUp += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) Paint(button.IsMouseOver); };
         button.Click += (_, _) => click();
         return button;
     }
@@ -209,10 +215,12 @@ static class Ui
     /// `.bordered .small`; `menu` adds a chevron for a button that opens a list of choices.
     public static Button SmallButton(string title, Action click, string? help = null, bool menu = false)
     {
-        UIElement content = Text(title, Font.Meta);
+        var text = Text(title, Font.Meta);
+        TextBlock? chevron = null;
+        UIElement content = text;
         if (menu)
         {
-            var chevron = Icon(ChevronDown, 8, Theme.Secondary);
+            chevron = Icon(ChevronDown, 8, Theme.Secondary);
             chevron.Margin = new Thickness(6, 1, 0, 0);
             content = new StackPanel { Orientation = Orientation.Horizontal, Children = { content, chevron } };
         }
@@ -220,18 +228,26 @@ static class Ui
         {
             Child = content, Padding = new Thickness(8, 2, 8, 2), CornerRadius = new CornerRadius(ControlRadius),
             Background = Theme.Brush(Theme.Primary(0.1)),
+            BorderBrush = Theme.HighContrast ? Theme.Brush(SystemColors.ControlTextColor) : null,
+            BorderThickness = new Thickness(Theme.HighContrast ? 1 : 0),
         };
         var button = new Button { Content = chrome, Template = PlainTemplate(), FocusVisualStyle = FocusRing(), Cursor = System.Windows.Input.Cursors.Hand, ToolTip = help };
         // The content is a Border, which gives UI Automation no text: name it by its title.
         System.Windows.Automation.AutomationProperties.SetName(button, title);
-        System.Windows.Automation.AutomationProperties.SetHelpText(button, help ?? title);
-        button.MouseEnter += (_, _) => chrome.Background = Theme.Brush(Theme.Primary(0.15));
-        button.MouseLeave += (_, _) => chrome.Background = Theme.Brush(Theme.Primary(0.1));
-        button.PreviewMouseLeftButtonDown += (_, _) => chrome.Background = Theme.Brush(Theme.Pressed);
-        button.PreviewMouseLeftButtonUp += (_, _) => chrome.Background = Theme.Brush(button.IsMouseOver ? Theme.Primary(0.15) : Theme.Primary(0.1));
-        button.LostMouseCapture += (_, _) => chrome.Background = Theme.Brush(button.IsMouseOver ? Theme.Primary(0.15) : Theme.Primary(0.1));
-        button.PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) chrome.Background = Theme.Brush(Theme.Pressed); };
-        button.PreviewKeyUp += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) chrome.Background = Theme.Brush(Theme.Primary(0.1)); };
+        if (help is not null) System.Windows.Automation.AutomationProperties.SetHelpText(button, help);
+        void Paint(bool over, bool pressed = false)
+        {
+            chrome.Background = Theme.Brush(over ? pressed ? Theme.Pressed : Theme.HighContrast ? Theme.Hover : Theme.Primary(0.15) : Theme.Primary(0.1));
+            text.Foreground = Theme.Brush(Theme.HighContrast && over ? SystemColors.HighlightTextColor : Theme.Label);
+            if (chevron is not null) chevron.Foreground = Theme.Brush(Theme.HighContrast && over ? SystemColors.HighlightTextColor : Theme.Secondary);
+        }
+        button.MouseEnter += (_, _) => Paint(true);
+        button.MouseLeave += (_, _) => Paint(false);
+        button.PreviewMouseLeftButtonDown += (_, _) => Paint(true, true);
+        button.PreviewMouseLeftButtonUp += (_, _) => Paint(button.IsMouseOver);
+        button.LostMouseCapture += (_, _) => Paint(button.IsMouseOver);
+        button.PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) Paint(true, true); };
+        button.PreviewKeyUp += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) Paint(button.IsMouseOver); };
         button.Click += (_, _) => click();
         return button;
     }

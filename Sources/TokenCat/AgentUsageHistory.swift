@@ -100,7 +100,11 @@ enum AgentUsageHistory {
 
 /// Reads metadata on the token queue; each database is queried again only when it or its WAL changes.
 final class AgentUsageHistoryReader {
-    private let databases: [URL]
+    private var databases: [URL]
+    private let home: URL
+    private let environment: [String: String]
+    private var rootsCheckedAt: TimeInterval
+    static let rootsInterval: TimeInterval = 5
     private let accounts: LimitAccountReader
     private var cache: [URL: (stamp: [Int64], rows: [AgentUsageHistory.Row])] = [:]
 
@@ -109,10 +113,19 @@ final class AgentUsageHistoryReader {
     init(home: URL = FileManager.default.homeDirectoryForCurrentUser, environment: [String: String] = ProcessInfo.processInfo.environment,
          accounts: LimitAccountReader? = nil) {
         databases = AgentUsageHistory.databases(home: home, environment: environment)
+        self.home = home
+        self.environment = environment
+        rootsCheckedAt = ProcessInfo.processInfo.systemUptime
         self.accounts = accounts ?? LimitAccountReader(home: home, environment: environment)
     }
 
-    func read() -> AgentUsageHistory.Limits {
+    func read(uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) -> AgentUsageHistory.Limits {
+        if uptime - rootsCheckedAt >= Self.rootsInterval || uptime < rootsCheckedAt {
+            databases = AgentUsageHistory.databases(home: home, environment: environment)
+            rootsCheckedAt = uptime
+            let current = Set(databases)
+            cache = cache.filter { current.contains($0.key) }
+        }
         accounts.refresh()
         var merged = AgentUsageHistory.Limits()
         for database in databases {

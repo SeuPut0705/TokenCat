@@ -115,21 +115,30 @@ public static class SessionTitleChecks
                   && CodexRow(unnamed) is { Title: null },
                   "Codex: a session_index thread name, its rename, a rewritten index or a thread without a name went wrong");
 
-            // Three thousand unasked names keep only the newest 2,048; an evicted name is found again on demand.
+            // Three thousand unasked names keep only the newest 2,048; evicted names asked for in one sample are found again by
+            // one scan at the next refresh, an id written in mixed case too.
             var boundedHome = Path.Combine(root, "thread-names");
             var boundedRollout = Path.Combine(boundedHome, "sessions", "2026", "10", "04", "rollout-x.jsonl");
             Append(Path.Combine(boundedHome, "session_index.jsonl"),
-                Enumerable.Range(0, 3_000).Select(number => Name($"t{number}", $"Name {number}", 0)));
+                [Name("Mixed-T", "Mixed name", 0), .. Enumerable.Range(0, 3_000).Select(number => Name($"t{number}", $"Name {number}", 0))]);
             var names = CodexThreadNames.ForRollout(boundedRollout);
-            names.Refresh(now);
+            names.Refresh();
             var held = names.Count;
-            var newest = names.Name("t2999", now);
-            var oldest = names.Name("T0", now);
+            var newest = names.Name("t2999");
+            string[] evictedThreads = ["T0", "t1", "t2", "mixed-t", "no-name"];
+            var waiting = evictedThreads.Select(names.Name).ToList();
+            var lookUps = names.LookUps;
+            names.Refresh();
+            var scans = names.LookUps - lookUps;
+            var found = evictedThreads.Select(names.Name).ToList();
+            names.Refresh();
+            var rescans = names.LookUps - lookUps - scans;
             names.Sweep();
             names.Sweep();
-            check(held <= CodexThreadNames.UnaskedLimit && newest == "Name 2999" && oldest == "Name 0"
+            check(held <= CodexThreadNames.UnaskedLimit && newest == "Name 2999" && waiting.All(name => name is null)
+                  && scans == 1 && rescans == 0 && found.SequenceEqual(["Name 0", "Name 1", "Name 2", "Mixed name", null])
                   && names.Count <= CodexThreadNames.UnaskedLimit,
-                  "Codex thread names: names no reader asked for were not bounded, or an older thread's name was not found again");
+                  "Codex thread names: names no reader asked for were not bounded, or older threads' names were not found again by one scan");
 
             // omp: the title slot and header, then title_change records; Pi: session_info names, an empty one clears.
             var ompHome = Path.Combine(root, "omp");

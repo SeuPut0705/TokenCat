@@ -204,14 +204,43 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         status != nil && status != .notDetermined && (status == .denied || sound == .disabled || sound == .notSupported)
     }
 
-    /// At launch: input-needed notifications from earlier runs have no live routing token and are removed.
-    func removeStaleInput() {
+    static func containsLegacyIdentity(identifier: String, userInfo: [AnyHashable: Any]) -> Bool {
+        if userInfo["group"] != nil { return true }
+        for prefix in ["input-", "done-"] where identifier.hasPrefix(prefix) {
+            return UUID(uuidString: String(identifier.dropFirst(prefix.count))) == nil
+        }
+        return false
+    }
+
+    static func restoredInputEvents(_ signals: [AttentionSignal], removed: Int, enabled: Bool, dashboardVisible: Bool) -> [AttentionEvent] {
+        guard removed > 0, enabled, !dashboardVisible else { return [] }
+        return signals.filter(\.input).map { .input($0) }
+    }
+
+    func retainGroups(_ groups: Set<String>) {
+        guard groupTokens.keys.contains(where: { !groups.contains($0) }) else { return }
+        groupTokens = groupTokens.filter { groups.contains($0.key) }
+        tokenGroups = tokenGroups.filter { groups.contains($0.value) }
+    }
+
+    /// Removes stale input alerts and identity-bearing requests from older versions, delivered or pending.
+    /// Completion is on main, after both stores have been inspected.
+    func removeStaleInput(_ completion: @escaping (Int) -> Void) {
         center.getDeliveredNotifications { [weak self] delivered in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                let current = Set(self.groupTokens.values.map { "input-" + $0 })
-                let stale = delivered.map(\.request.identifier).filter { $0.hasPrefix("input-") && !current.contains($0) }
-                if !stale.isEmpty { self.center.removeDeliveredNotifications(withIdentifiers: stale) }
+            self?.center.getPendingNotificationRequests { [weak self] pending in
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    let current = Set(self.groupTokens.values.map { "input-" + $0 })
+                    func stale(_ request: UNNotificationRequest) -> Bool {
+                        Self.containsLegacyIdentity(identifier: request.identifier, userInfo: request.content.userInfo)
+                            || (request.identifier.hasPrefix("input-") && !current.contains(request.identifier))
+                    }
+                    let deliveredIDs = delivered.map(\.request).filter(stale).map(\.identifier)
+                    let pendingIDs = pending.filter(stale).map(\.identifier)
+                    self.center.removeDeliveredNotifications(withIdentifiers: deliveredIDs)
+                    self.center.removePendingNotificationRequests(withIdentifiers: pendingIDs)
+                    completion(Set((deliveredIDs + pendingIDs).filter { $0.hasPrefix("input-") }).count)
+                }
             }
         }
     }

@@ -19,8 +19,8 @@ enum AppInfo {
              "Reads only metadata from local logs and telemetry; never stores or shows prompts or responses"),
          loc("모델을 호출하거나 계정에 로그인하지 않습니다. 업데이트 확인과 내려받기는 GitHub에만 연결합니다",
              "Never calls a model or signs in. Update checks and downloads connect only to GitHub"),
-         loc("실시간 한도 확인이 켜져 있으면 Codex·Claude Code·omp·Pi에 저장된 로그인으로 OpenAI·Anthropic 사용량을 묻습니다. 토큰은 저장하지 않습니다",
-             "With Live usage limits on, asks OpenAI and Anthropic for usage with sign-ins saved by Codex, Claude Code, omp or Pi. Tokens are never stored")]
+         loc("실시간 한도 확인이 켜져 있으면 OpenAI는 Codex CLI의 로그인으로, Anthropic은 Claude Code·omp·Pi에 저장된 로그인으로 사용량을 묻습니다. 토큰은 저장하지 않습니다",
+             "With Live usage limits on, asks OpenAI for usage through the Codex CLI's sign-in, and Anthropic through sign-ins saved by Claude Code, omp or Pi. Tokens are never stored")]
     }
     /// The list as bullet lines, for the standard About panel.
     static var privacy: String { privacyLines.map { "• " + $0 }.joined(separator: "\n") }
@@ -273,14 +273,24 @@ private struct SettingsLabel: View {
 }
 
 /// Grouped forms align footers trailing at body size on macOS; keep them as leading captions.
+private struct SettingsCaption: View {
+    @Environment(\.colorSchemeContrast) private var contrast
+    let text: String
+    var color: Color = .secondary
+    var body: some View {
+        Text(text).font(TCFont.meta)
+            .foregroundStyle(color == .secondary ? TCColor.textSecondary(contrast: contrast == .increased) : color)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
 private func settingsFooter(_ text: String) -> some View {
-    Text(text).font(TCFont.meta).foregroundStyle(TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)).multilineTextAlignment(.leading)
-        .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
+    SettingsCaption(text: text).multilineTextAlignment(.leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
 }
 
 private func settingsCaption(_ text: String, color: Color = .secondary) -> some View {
-    Text(text).font(TCFont.meta).foregroundStyle(color == .secondary ? TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast) : color)
-        .fixedSize(horizontal: false, vertical: true)
+    SettingsCaption(text: text, color: color)
 }
 
 /// System Settings › Notifications, at TokenCat.
@@ -749,6 +759,7 @@ struct TelemetryFiles: Equatable {
 }
 
 private struct TelemetryPane: View {
+    @Environment(\.colorSchemeContrast) private var contrast
     @ObservedObject var model: DashboardModel
     @ObservedObject var preferences: Preferences
     let actions: SettingsActions
@@ -881,10 +892,10 @@ private struct TelemetryPane: View {
         VStack(alignment: .trailing, spacing: 2) {
             HStack(spacing: 6) {
                 Image(systemName: row.symbol).font(.system(size: 12)).foregroundStyle(row.color).accessibilityHidden(true)
-                Text(text).font(TCFont.body).foregroundStyle(TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast))
+                Text(text).font(TCFont.body).foregroundStyle(TCColor.textSecondary(contrast: contrast == .increased))
             }
             if let detail {
-                Text(detail).font(TCFont.meta).foregroundStyle(TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)).multilineTextAlignment(.trailing)
+                Text(detail).font(TCFont.meta).foregroundStyle(TCColor.textSecondary(contrast: contrast == .increased)).multilineTextAlignment(.trailing)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -900,6 +911,7 @@ private struct TelemetryPane: View {
 }
 
 private struct AboutPane: View {
+    @Environment(\.colorSchemeContrast) private var contrast
     let model: DashboardModel
     let preferences: Preferences
     let state: SettingsState
@@ -928,7 +940,7 @@ private struct AboutPane: View {
                             }
                         }
                     }
-                    .font(TCFont.meta).foregroundStyle(TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast))
+                    .font(TCFont.meta).foregroundStyle(TCColor.textSecondary(contrast: contrast == .increased))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 6)

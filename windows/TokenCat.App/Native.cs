@@ -117,14 +117,14 @@ static class Native
 
     /// Supported Windows 11 DWM materials without a layered/software-rendered WPF window. Attribute failures on Windows 10
     /// leave the solid background intact. High Contrast and disabled Transparency effects always use the solid fallback.
-    public static void StyleWindow(Window window, bool round, bool material = false)
+    public static bool StyleWindow(Window window, bool round, bool material = false)
     {
         var hwnd = new WindowInteropHelper(window).EnsureHandle();
         window.UseLayoutRounding = true;
         window.SnapsToDevicePixels = true;
         int dark = Theme.Dark && !Theme.HighContrast ? 1 : 0, corner = Theme.HighContrast ? 1 : round ? 2 : 0;
         DwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int));
-        DwmSetWindowAttribute(hwnd, 33, ref corner, sizeof(int));
+        var rounded = DwmSetWindowAttribute(hwnd, 33, ref corner, sizeof(int)) == 0 && corner == 2;
         // DWMSBT_TRANSIENTWINDOW (acrylic) for the flyout; DWMSBT_MAINWINDOW (Mica) for ordinary windows.
         int backdrop = material && Theme.Materials ? window is Flyout ? 3 : 2 : 1;
         var supported = DwmSetWindowAttribute(hwnd, 38, ref backdrop, sizeof(int)) == 0 && backdrop != 1;
@@ -133,6 +133,7 @@ static class Native
         if (HwndSource.FromHwnd(hwnd)?.CompositionTarget is { } target)
             target.BackgroundColor = supported ? System.Windows.Media.Colors.Transparent : Theme.Background;
         window.Background = supported ? System.Windows.Media.Brushes.Transparent : Theme.Brush(Theme.Background);
+        return rounded;
     }
 
     /// Physical pixels throughout (PerMonitorV2): move onto the anchor's monitor first so WPF rescales for its DPI, then

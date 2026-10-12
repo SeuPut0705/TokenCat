@@ -39,7 +39,7 @@ sealed class Widget : Window
         SourceInitialized += (_, _) =>
         {
             Native.NoActivate(this);
-            Native.StyleWindow(this, round: true);
+            View.Rounded = Native.StyleWindow(this, round: true);
             Native.OnWheel(this, Wheel);
             Native.OnResize(this, Resizing);
         };
@@ -50,7 +50,7 @@ sealed class Widget : Window
     public void Restyle()
     {
         Background = Theme.Brush(Theme.Background);
-        if (IsLoaded) Native.StyleWindow(this, round: true);
+        if (IsLoaded) View.Rounded = Native.StyleWindow(this, round: true);
         View.InvalidateVisual();
     }
 
@@ -183,6 +183,8 @@ sealed class WidgetView : FrameworkElement
     public double PixelsPerPoint { get; private set; } = 1;
     /// DIPs per point.
     public double Scale { get; private set; } = 1;
+    internal bool Rounded { get; set; }
+    internal double OutlineRadius => Theme.HighContrast || !Rounded ? 0 : 8 / Scale;
     /// How the last render drew the runner: whole pixels per art pixel stay nearest-neighbour at exactly that size; a
     /// fractional size scales the next whole size up down smoothly (never nearest-neighbour, which would make uneven pixels).
     public BitmapScalingMode SpriteScaling { get; private set; } = BitmapScalingMode.NearestNeighbor;
@@ -295,7 +297,7 @@ sealed class WidgetView : FrameworkElement
             outline.Freeze();
         }
         var half = edge.Item2 / 2;
-        context.DrawRoundedRectangle(null, outline, new Rect(half, half, PointSize.Width - 2 * half, PointSize.Height - 2 * half), 8, 8);
+        context.DrawRoundedRectangle(null, outline, new Rect(half, half, PointSize.Width - 2 * half, PointSize.Height - 2 * half), OutlineRadius, OutlineRadius);
         context.Pop();
     }
 

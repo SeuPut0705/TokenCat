@@ -1,3 +1,4 @@
+import CoreServices
 import Foundation
 import SQLite3
 
@@ -854,7 +855,7 @@ func runTrackerChecks() -> [String] {
         try FileManager.default.createDirectory(at: watchRoot, withIntermediateDirectories: true)
         let woke = DispatchSemaphore(value: 0)
         let watchedFile = watchRoot.appendingPathComponent("live.jsonl")
-        let watcher = LogWatcher { paths in
+        let watcher = LogWatcher { paths, _ in
             if paths.contains(where: { $0.hasSuffix("/live.jsonl") }) { woke.signal() }
         }
         check(watcher.start(directories: [watchRoot, root.appendingPathComponent("missing")]),
@@ -868,8 +869,13 @@ func runTrackerChecks() -> [String] {
         while woke.wait(timeout: .now() + 0.3) == .success {}
         try line(usage(10, 10, "2026-10-04T04:00:01Z")).write(to: watchedFile)
         check(woke.wait(timeout: .now() + 0.6) == .timedOut, "Log watcher delivered events after stop()")
-        check(!LogWatcher { _ in }.start(directories: [root.appendingPathComponent("missing")]),
+        check(!LogWatcher { _, _ in }.start(directories: [root.appendingPathComponent("missing")]),
               "Log watcher claimed to watch a missing directory")
+        let lostFlags = [kFSEventStreamEventFlagMustScanSubDirs, kFSEventStreamEventFlagUserDropped,
+                         kFSEventStreamEventFlagKernelDropped, kFSEventStreamEventFlagRootChanged]
+        check(lostFlags.allSatisfy { LogWatcher.requiresRediscovery(FSEventStreamEventFlags($0)) }
+              && !LogWatcher.requiresRediscovery(FSEventStreamEventFlags(kFSEventStreamEventFlagItemModified)),
+              "Log watcher: dropped, coalesced and root-changed events request rediscovery instead of being filtered as non-log paths")
 
         // A forked Codex log replays the parent's session_meta and open turn after its own.
         let forkHome = root.appendingPathComponent("fork")
@@ -1306,6 +1312,7 @@ func runTrackerChecks() -> [String] {
     gooseLogChecks { check($0, $1) }
     sessionTitleChecks { check($0, $1) }
     cacheBoundChecks(root: root) { check($0, $1) }
+    snapshotFailureChecks(root: root) { check($0, $1) }
     print("Tracker checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
 }
@@ -1545,18 +1552,28 @@ private func runAccountSwitchChecks(root: URL, check: (Bool, String) -> Void) {
               "Account switches: initial Claude and Codex root observations or session attribution failed")
         now = start.addingTimeInterval(60)
         try config("account-b")
+        let switchedAt = now.addingTimeInterval(-4)
+        for url in [codexHome.appendingPathComponent("auth.json"), claudeConfig.appendingPathComponent(".claude.json")] {
+            try FileManager.default.setAttributes([.modificationDate: switchedAt], ofItemAtPath: url.path)
+        }
+        try write(codexRecords("codex-between", at: now.addingTimeInterval(-2), used: 8, reset: start.addingTimeInterval(2_000)),
+                  to: codexLogs.appendingPathComponent("between.jsonl"))
+        try write(claudeRecords("claude-between", at: now.addingTimeInterval(-2)), to: claudeLogs.appendingPathComponent("between.jsonl"))
         let switched = tracker.sample()
         check(switched.first { $0.sessionID == "codex-a" }?.limitAccount?.id == "account-a"
               && switched.first { $0.sessionID == "codex-a" }?.rateLimit?.account?.id == "account-a"
               && switched.first { $0.sessionID == "claude-a" }?.limitAccount?.id == "account-a"
-              && tracker.accountReader.observedAccount(source: .codex, path: oldCodex.path)?.switchedAt == now
-              && tracker.accountReader.observedAccount(source: .claude, path: oldClaude.path)?.switchedAt == now,
+              && tracker.accountReader.observedAccount(source: .codex, path: oldCodex.path)?.switchedAt == switchedAt
+              && tracker.accountReader.observedAccount(source: .claude, path: oldClaude.path)?.switchedAt == switchedAt,
               "Account switches: pinned Claude and Codex sessions or limits changed account after a root login switch")
-        let switchedAt = now
+        check(switched.first { $0.sessionID == "codex-between" }?.limitAccount?.id == "account-b"
+              && switched.first { $0.sessionID == "codex-between" }?.rateLimit?.account?.id == "account-b"
+              && switched.first { $0.sessionID == "claude-between" }?.limitAccount?.id == "account-b",
+              "Account switches: a session written after the config mtime but before the next sample missed the new account")
         try write(codexRecords("codex-unknown", at: start, used: 99, reset: start.addingTimeInterval(20_000)),
                   to: codexLogs.appendingPathComponent("historical.jsonl"))
         try write(claudeRecords("claude-unknown", at: start), to: claudeLogs.appendingPathComponent("historical.jsonl"))
-        now = switchedAt.addingTimeInterval(2)
+        now = now.addingTimeInterval(2)
         try write(codexRecords("codex-b", at: now, used: 7, reset: start.addingTimeInterval(2_000)),
                   to: codexLogs.appendingPathComponent("fresh-b.jsonl"))
         try write(claudeRecords("claude-b", at: now), to: claudeLogs.appendingPathComponent("fresh-b.jsonl"))
@@ -1613,4 +1630,84 @@ private func runAccountSwitchChecks(root: URL, check: (Bool, String) -> Void) {
     } catch {
         check(false, "Account switches fixture error: \(error.localizedDescription)")
     }
+}
+
+/// Same-stamp repairs are deliberately invisible: they prove a content failure is not parsed a second time.
+private func snapshotFailureChecks(root: URL, check: (Bool, String) -> Void) {
+    let failure = "a permanently broken snapshot file is not re-parsed every sample, but a file caught mid-write is read again once it changes"
+    do {
+        let folder = root.appendingPathComponent("snapshot-failures")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let now = Date(timeIntervalSince1970: 1_791_100_000)
+        func rewrite(_ data: Data, to url: URL, modified: Date) throws {
+            if !FileManager.default.fileExists(atPath: url.path) { try Data().write(to: url) }
+            let file = try FileHandle(forWritingTo: url)
+            defer { try? file.close() }
+            try file.truncate(atOffset: 0)
+            try file.write(contentsOf: data)
+            try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        }
+        let valid = try JSONSerialization.data(withJSONObject: [
+            "id": "T-repaired", "title": "Recovered snapshot",
+            "messages": [["role": "user", "content": [["type": "text"]], "meta": ["sentAt": now.timeIntervalSince1970 * 1_000]]]
+        ])
+        var broken = valid
+        broken[broken.count - 1] = 32
+        let url = folder.appendingPathComponent("T-broken.json")
+        try rewrite(broken, to: url, modified: now)
+        let reader = AmpLogReader(url: url)
+        for _ in 0..<3 { reader.read(tailLimit: 1_024, now: now) }
+        let initiallyEmpty = reader.readings(id: "amp:broken", now: now).isEmpty
+        try rewrite(valid, to: url, modified: now)
+        reader.read(tailLimit: 1_024, now: now)
+        let sameStampEmpty = reader.readings(id: "amp:broken", now: now).isEmpty
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(1)], ofItemAtPath: url.path)
+        reader.read(tailLimit: 1_024, now: now)
+        let recovered = reader.readings(id: "amp:broken", now: now).first?.title == "Recovered snapshot"
+
+        // chmod does not change this reader's stamp. An unreadable file must recover after access is restored.
+        let blocked = folder.appendingPathComponent("T-blocked.json")
+        try rewrite(valid, to: blocked, modified: now)
+        let blockedReader = AmpLogReader(url: blocked)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: blocked.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: blocked.path) }
+        let unreadable = (try? Data(contentsOf: blocked)) == nil
+        blockedReader.read(tailLimit: 1_024, now: now)
+        let refusedEmpty = blockedReader.readings(id: "amp:blocked", now: now).isEmpty
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: blocked.path)
+        blockedReader.read(tailLimit: 1_024, now: now)
+        check(initiallyEmpty && sameStampEmpty && recovered && unreadable && refusedEmpty
+              && blockedReader.readings(id: "amp:blocked", now: now).first?.title == "Recovered snapshot", failure)
+
+        // An unchanged broken or oversized CLI manifest must not reparse the unchanged messages.
+        for oversized in [false, true] {
+            let session = folder.appendingPathComponent(oversized ? "oversized" : "broken")
+            try FileManager.default.createDirectory(at: session, withIntermediateDirectories: true)
+            let messages = session.appendingPathComponent("\(session.lastPathComponent).messages.json")
+            let manifest = session.appendingPathComponent("\(session.lastPathComponent).json")
+            func message(_ model: String) throws -> Data {
+                try JSONSerialization.data(withJSONObject: [["role": "user", "ts": now.timeIntervalSince1970 * 1_000,
+                                                            "content": "fixture", "modelInfo": ["id": model]]])
+            }
+            try rewrite(message("first-model"), to: messages, modified: now)
+            try rewrite(oversized ? Data(repeating: 32, count: 1_048_577) : Data("{".utf8), to: manifest, modified: now)
+            let cli = TokenLogFormat.cline.open(messages)
+            cli.read(tailLimit: 1_024, now: now)
+            try rewrite(message("other-model"), to: messages, modified: now)
+            for _ in 0..<3 { cli.read(tailLimit: 1_024, now: now) }
+            let unchanged = cli.readings(id: "cline:fixture", now: now).first?.model == "first-model"
+            try rewrite(Data("{\"status\":\"running\"}".utf8), to: manifest, modified: now.addingTimeInterval(1))
+            cli.read(tailLimit: 1_024, now: now)
+            check(unchanged && cli.readings(id: "cline:fixture", now: now).first?.model == "other-model",
+                  "Cline CLI: a broken or oversized manifest reparses unchanged messages, or a changed manifest is not retried")
+        }
+        let dump = folder.appendingPathComponent("sample-dump.json")
+        SampleBench.dump((tokens: [], sessions: .empty, limits: []), to: dump.path)
+        let initialPermissions = (try FileManager.default.attributesOfItem(atPath: dump.path))[.posixPermissions] as? NSNumber
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: dump.path)
+        SampleBench.dump((tokens: [], sessions: .empty, limits: []), to: dump.path)
+        let replacedPermissions = (try FileManager.default.attributesOfItem(atPath: dump.path))[.posixPermissions] as? NSNumber
+        check(initialPermissions?.intValue == 0o600 && replacedPermissions?.intValue == 0o600,
+              "benchmark dumps restrict private session metadata to owner-only access for new and existing files")
+    } catch { check(false, "\(failure): \(error.localizedDescription)") }
 }

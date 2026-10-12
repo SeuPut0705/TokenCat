@@ -20,13 +20,13 @@ public static class ShellChecks
         signal = signal with { Input = true };
         var asked = tracker.Update([signal]);
         check(asked.Count == 1 && asked[0].Title == "입력 필요 · TokenCat" && asked[0].Subtitle == "Claude Code · claude-opus-5-5"
-              && asked[0].Body == "답변하면 계속됩니다" && asked[0].Identifier == "input-claude:s1",
+              && asked[0].Body == "답변하면 계속됩니다",
               "Entering input did not notify once with the state-first title and metadata only");
         check(tracker.Update([signal]).Count == 0, "Input notified again on an unchanged publish");
         signal = signal with { Input = false, Live = false, Ended = A.Complete, OutputTokens = 12_480, DurationSeconds = 252 };
         var finished = tracker.Update([signal]);
-        check(finished.Count == 1 && finished[0].Title == "턴 완료 · TokenCat" && finished[0].Body == "12,480 tok · 4분 12초"
-              && finished[0].Identifier == "done-claude:s1", "Live → complete did not produce the metadata-only completion");
+        check(finished.Count == 1 && finished[0].Title == "턴 완료 · TokenCat" && finished[0].Body == "12,480 tok · 4분 12초",
+              "Live → complete did not produce the metadata-only completion");
         check(tracker.Update([signal]).Count == 0, "A completed turn notified twice");
         var codex = new AttentionSignal("codex:t1", TokenSource.Codex, null, null, false, false) { Ended = A.Interrupted, OutputTokens = 0 };
         check(tracker.Update([signal, codex]).Count == 0, "A session first seen already finished was reported");

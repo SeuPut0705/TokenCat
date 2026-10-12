@@ -33,7 +33,7 @@ public static class MonitorChecks
                 return new SystemSnapshot { CpuPercent = 5, SampledAt = DateTimeOffset.UtcNow };
             }
             var published = new List<(double At, MonitorState State)>();
-            monitor = new LiveMonitor(new MonitorOptions(home.FullName, support.FullName, sampler));
+            monitor = new LiveMonitor(new MonitorOptions(home.FullName, support.FullName, sampler, Environment: _ => null));
             monitor.Updated += state => { lock (published) published.Add((watch.Elapsed.TotalSeconds, state)); };
             monitor.Start();
             monitor.Start(); // Repeated starts must keep one sampling timer.
@@ -57,9 +57,10 @@ public static class MonitorChecks
                 .DistinctBy(item => item.State.TokensSampledAt).ToArray();
             var quietBeforeWrite = tokenTimes.Count(item => item.At < appendedAt) == 1;
             var liveAfterWrite = tokenTimes.Count(item => item.At >= appendedAt) >= 4;
-            check(intervals.Count > 0 && Math.Abs(median - LiveMonitor.SamplingInterval) < Math.Max(0.2, LiveMonitor.SamplingInterval * 0.25)
-                  && quietBeforeWrite && liveAfterWrite && VisibleCadence(home.FullName, support.FullName),
+            check(intervals.Count > 0 && Math.Abs(median - LiveMonitor.SamplingInterval) < Math.Max(0.2, LiveMonitor.SamplingInterval * 0.25),
                   $"the system sample cadence is not ~1 s (median {median:F2} s over {sampled.Count} samples)");
+            check(quietBeforeWrite && liveAfterWrite && VisibleCadence(home.FullName, support.FullName),
+                  "token sampling does not idle while hidden or run each second while live or visible");
             check(sampled.Count <= (int)Math.Ceiling(6 / LiveMonitor.SamplingInterval) + 2,
                   $"repeated Start() runs more than one sampling timer ({sampled.Count} samples in 6 s)");
             check(sampled.Count == stoppedSamples && published.Count == stoppedPublishes,
@@ -72,10 +73,22 @@ public static class MonitorChecks
             check(last is not null && last.HasSample && last.TokensSampledAt is not null && last.LogFoldersFound && last.CpuHistory.Count > 0
                   && last.TelemetryState == TelemetryCollectorState.Stopped && last.Groups.Count == 1 && last.Sessions.Blocks.Count == 1,
                   "the published state lacks the system sample, the token sample, the log folders or the session list");
-            var reopened = new LiveMonitor(new MonitorOptions(home.FullName, support.FullName, sampler));
+            using var reopened = new LiveMonitor(new MonitorOptions(home.FullName, support.FullName, sampler, Environment: _ => null));
             check(monitor.Current.TelemetryRestartNeeded.SetEquals([TokenSource.Codex])
                   && reopened.Current.TelemetryRestartNeeded.SetEquals([TokenSource.Codex]),
                   "a client connected for telemetry is not waiting for a restart, or the notice did not survive a relaunch");
+            check(RestartAfterFault(home.FullName, support.FullName),
+                  "a faulted previous loop prevents Stop and Start from restarting sampling");
+            using var collector = new TelemetryCollector(port: 0);
+            using var retryMonitor = new LiveMonitor(new MonitorOptions(home.FullName, support.FullName, sampler,
+                Telemetry: collector, Environment: _ => null));
+            var retryWake = new SampleWake();
+            typeof(LiveMonitor).GetField("wake", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .SetValue(retryMonitor, retryWake);
+            retryMonitor.RetryTelemetryNow();
+            var retrySignal = retryWake.WaitAsync(CancellationToken.None);
+            check(retrySignal.IsCompletedSuccessfully && retrySignal.Result,
+                  "a user-triggered telemetry retry does not wake token sampling immediately");
         }
         finally
         {
@@ -91,7 +104,7 @@ public static class MonitorChecks
         var idleHome = Path.Combine(home, "idle-home");
         Directory.CreateDirectory(idleHome);
         using var monitor = new LiveMonitor(new MonitorOptions(idleHome, support,
-            () => new SystemSnapshot { SampledAt = DateTimeOffset.UtcNow }));
+            () => new SystemSnapshot { SampledAt = DateTimeOffset.UtcNow }, Environment: _ => null));
         var samples = new List<DateTimeOffset>();
         monitor.Updated += state =>
         {
@@ -99,7 +112,7 @@ public static class MonitorChecks
                 lock (samples) if (samples.Count == 0 || samples[^1] != at) samples.Add(at);
         };
         monitor.Start();
-        Thread.Sleep(6_200);
+        Thread.Sleep((int)(LiveMonitor.IdleTokenInterval * 2_000 + 1_000));
         DateTimeOffset[] idle;
         lock (samples) idle = samples.ToArray();
         monitor.SetDashboardVisible(true);
@@ -108,7 +121,27 @@ public static class MonitorChecks
         lock (samples) visible = samples.Skip(idle.Length).ToArray();
         monitor.Stop();
         monitor.Stopped.GetAwaiter().GetResult();
-        return idle.Length == 2 && (idle[1] - idle[0]).TotalSeconds >= LiveMonitor.IdleTokenInterval - 0.5
+        return idle.Length >= 2 && idle.Zip(idle.Skip(1), (a, b) => (b - a).TotalSeconds).All(gap => gap >= LiveMonitor.IdleTokenInterval - 0.5)
             && visible.Length >= 2 && (visible[^1] - visible[^2]).TotalSeconds <= 1.5;
+    }
+
+    static bool RestartAfterFault(string home, string support)
+    {
+        using var sampled = new ManualResetEventSlim();
+        using var monitor = new LiveMonitor(new MonitorOptions(home, support,
+            () => { sampled.Set(); return new SystemSnapshot(); }, Environment: _ => null));
+        // A prior worker fault is the boundary Start must tolerate, irrespective of which reader threw.
+        typeof(LiveMonitor).GetField("loops", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+            .SetValue(monitor, Task.FromException(new IOException("fixture previous loop failure")));
+        monitor.Start();
+        var restarted = sampled.Wait(TimeSpan.FromSeconds(3));
+        monitor.Stop();
+        monitor.Stopped.GetAwaiter().GetResult();
+        sampled.Reset();
+        monitor.Start();
+        restarted &= sampled.Wait(TimeSpan.FromSeconds(3));
+        monitor.Stop();
+        monitor.Stopped.GetAwaiter().GetResult();
+        return restarted;
     }
 }

@@ -58,7 +58,7 @@ static class Bench
             return new(ms, allocated, io[0] - opens, io[1] - stats, io[2] - dirs);
         }
 
-        var pipeline = new Pipeline(home, Timed);
+        var pipeline = new Pipeline(home, Timed, synthetic);
         var peak = 0L;
         Cost[] Once(Action? between = null)
         {
@@ -103,22 +103,26 @@ static class Bench
     }
 
     /// LiveMonitor.SampleTokens and Publish, with no telemetry collector and no settings store. Like the monitor, the limit
-    /// rows and the omp/Pi records use the tracker's account reader, which the tracker refreshes once a sample.
+    /// rows and the omp/Pi records use the tracker's account reader, which the tracker refreshes once a sample. A synthetic
+    /// home is measured alone: no environment variable (CODEX_HOME, CLAUDE_CONFIG_DIR, XDG_*) or Claude desktop history adds
+    /// the real logs or limits.
     sealed class Pipeline
     {
         readonly TokenTracker tracker;
         readonly LimitAccountReader limitAccounts;
         readonly AgentUsageHistoryReader agentUsage;
+        readonly ClaudeUsage.DesktopReader desktop;
         readonly Func<Action, Cost> timed;
 
-        public Pipeline(string home, Func<Action, Cost> timed)
+        public Pipeline(string home, Func<Action, Cost> timed, bool synthetic)
         {
             this.timed = timed;
-            tracker = new(home);
+            Func<string, string?> environment = synthetic ? _ => null : Environment.GetEnvironmentVariable;
+            tracker = new(home, environment: environment);
             limitAccounts = tracker.AccountReader;
-            agentUsage = new(home, Environment.GetEnvironmentVariable, limitAccounts);
+            agentUsage = new(home, environment, limitAccounts);
+            desktop = new(synthetic ? [] : AppPaths.ClaudeDesktopHistory());
         }
-        readonly ClaudeUsage.DesktopReader desktop = new(AppPaths.ClaudeDesktopHistory());
         public int Rows { get; private set; }
         public void Rediscover() => tracker.Rediscover();
         public void NoteChanged(IEnumerable<string> paths) => tracker.NoteChanged(paths);
@@ -275,7 +279,7 @@ static class Bench
         };
 
         public static string AppendLine(string path, DateTimeOffset at, int n) =>
-            (path.Contains("/.codex/", StringComparison.Ordinal)
+            (path.Replace('\\', '/').Contains("/.codex/", StringComparison.Ordinal)
                 ? T("""{"timestamp":"@TS@","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"output_tokens":@0@},"last_token_usage":{"output_tokens":40}}}}""", 1_000_000 + n * 40)
                 : T("""{"type":"assistant","isSidechain":false,"timestamp":"@TS@","uuid":"append@0@","message":{"id":"append@0@","model":"claude-opus-4-1","content":[{"type":"text","text":"x"}],"usage":{"output_tokens":@1@}}}""", n, 30 + n % 50))
             .Replace("@TS@", Ts(at)) + "\n";

@@ -34,6 +34,8 @@ public sealed class AmpLogReader(string path) : ITokenLogReader
     /// Tool runs that ended; any other status still runs.
     static readonly HashSet<string> FinishedRuns = ["done", "error", "cancelled", "rejected-by-user"];
     (long, long, long)? stamp;
+    /// The snapshot that did not parse: not parsed again until it changes, while the last good one stays shown.
+    (long, long, long)? failedStamp;
     LogTurnState turn = new();
     string? threadID = Path.GetFileNameWithoutExtension(path);
     string? model;
@@ -56,8 +58,8 @@ public sealed class AmpLogReader(string path) : ITokenLogReader
             var info = new FileInfo(path);
             if (!info.Exists) return;
             var current = (info.CreationTimeUtc.Ticks, info.Length, info.LastWriteTimeUtc.Ticks);
-            if (current == stamp) return;
-            // Oversized snapshots stay rejected until they change; failed reads/parses are retried next sample.
+            if (current == stamp || current == failedStamp) return;
+            // Oversized snapshots stay rejected until they change; a file that could not be opened is retried next sample.
             if (info.Length > MaximumBytes) { stamp = current; return; }
             byte[] data;
             using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
@@ -65,7 +67,7 @@ public sealed class AmpLogReader(string path) : ITokenLogReader
                 data = new byte[stream.Length];
                 stream.ReadExactly(data);
             }
-            if (Json.Parse(data) is not { ValueKind: JsonValueKind.Object } thread) return;
+            if (Json.Parse(data) is not { ValueKind: JsonValueKind.Object } thread) { failedStamp = current; return; }
             stamp = current;
             var modified = new DateTimeOffset(info.LastWriteTimeUtc);
             Parse(thread, modified > now.AddSeconds(5) ? now.AddSeconds(5) : modified);

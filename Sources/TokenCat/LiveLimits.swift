@@ -439,21 +439,23 @@ final class LiveLimitPoller {
             var state = states[accountSlot] ?? State()
             guard !state.inFlight, LiveLimits.due(last: state.last, retryAt: state.retryAt, now: now, live: live(accountSlot), open: open, opened: opened)
             else { continue }
+            let previousLast = state.last
             state.last = now
             state.inFlight = true
             states[accountSlot] = state
             let rejected = state.rejected, keychain = !keychainRefused, read = read, started = generation
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 let outcome = read(accountSlot, rejected, keychain)
-                DispatchQueue.main.async { self?.finish(accountSlot, outcome, started: started, deliver) }
+                DispatchQueue.main.async { self?.finish(accountSlot, outcome, started: started, previousLast: previousLast, deliver) }
             }
         }
     }
 
-    private func finish(_ accountSlot: LimitSlot, _ result: LiveLimits.Outcome, started: Int, _ deliver: (LiveLimits.Outcome) -> Void) {
+    private func finish(_ accountSlot: LimitSlot, _ result: LiveLimits.Outcome, started: Int, previousLast: Date?, _ deliver: (LiveLimits.Outcome) -> Void) {
         var state = states[accountSlot] ?? State()
         state.inFlight = false
         guard started == generation else {
+            state.last = previousLast
             states[accountSlot] = state
             return
         }

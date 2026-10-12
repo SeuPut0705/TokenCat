@@ -156,9 +156,10 @@ public static class CopilotAmpDroidChecks
             var ampDonePath = Path.Combine(threads, "T-done.json");
             var partialThread = renamedThread.ToArray();
             partialThread[0] = (byte)'!';
+            // Caught mid-write: the broken snapshot keeps the last good one, and the finished write is read once it changes.
             Write(ampDonePath, partialThread, 6);
             ampTracker.Sample();
-            Write(ampDonePath, renamedThread, 6);
+            Write(ampDonePath, renamedThread, 7);
             check(ampTracker.Sample().FirstOrDefault(r => r.SessionID == "T-done")?.Title == "Amp renamed thread",
                   "Amp: a renamed thread snapshot did not update the title");
 

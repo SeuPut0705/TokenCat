@@ -139,8 +139,10 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
             catch (OperationCanceledException)
             {
                 Kill(process);
-                // Kill is asynchronous: finish reaping the server before a result or the next poll can escape.
-                await process.WaitForExitAsync().ConfigureAwait(false);
+                // An orphan can retain stderr after the server exits; do not hold this slot forever waiting for EOF.
+                using var reap = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                try { await process.WaitForExitAsync(reap.Token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { }
             }
         }
     }
@@ -205,8 +207,7 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
         }
         candidatesFromConfigs.AddRange(agents);
         var candidates = ClaudeCandidates(saved, codeAccount, candidatesFromConfigs, slot.Account);
-        // A refused token no longer offered (rotated, signed out) can never be offered again: forget its hash.
-        rejected.IntersectWith(candidates.Select(candidate => TokenHash(candidate.Access)));
+        // Keep refusals across transient credential-source failures; slot retention/Forget owns their lifetime.
         var refused = new HashSet<string>(StringComparer.Ordinal);
         var usableAfter = DateTimeOffset.UtcNow.AddSeconds(60).ToUnixTimeMilliseconds();
         foreach (var (access, expires) in candidates)

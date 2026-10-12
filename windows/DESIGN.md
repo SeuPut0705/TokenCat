@@ -317,9 +317,14 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
   unfinished), turns, output tokens, context, subagent trees (Claude `subagents/agent-*`, Codex forked threads), Codex rate limits,
   5-minute output flow. Same JSONL gives the same `TokenReading` (§6.3 parity test).
 * Churn bounds mirror Swift: dedupe evicts the oldest ID instead of clearing all history; evicted logs lose their account pins.
-  Codex names retain IDs requested within 10 minutes plus the newest 2,048 unrequested names, with a last-4-MB lookup on return.
-  Cursor composers follow the 10-minute requested set; shared omp pin scans sweep unused logs after 120 seconds.
-  Snapshot readers commit their file stamp only after a successful read and parse (oversize is an intentional rejection).
+  Codex names retain IDs requested within 10 minutes plus the newest 2,048 unrequested names; evicted-name misses are
+  batched into one last-4-MB lookup at the next sample, including mixed-case IDs.
+  Cursor composers follow the 10-minute requested set; shared omp pin scans sweep unused logs after 120 seconds and read only
+  through the sampled stamp's length, so an append between stat and read never forces a full rescan.
+  Snapshot readers retain separate successful and failed-content stamps: an unchanged broken/oversized file is not reparsed,
+  while a changed stamp retries immediately. Open/read/sharing failures retry next sample instead of parking the stamp.
+  Cline CLI also retains the failed manifest stamp independently of its messages.
+  Account root links refresh every five seconds; a detected account switch starts at the earlier of observation and config mtime.
 * Log-wait-only flow captions keep “Last record”: the header and rows carry the waiting state and elapsed time.
   Row metadata preserves the client name while project/model text truncates first; full values remain in help and UI Automation.
 * Loopback OTLP/HTTP-JSON collector on `127.0.0.1:16493`: `/v1/logs|metrics|traces`, `/v1/claude/status`, `/health`, `/v1/readings`,
@@ -424,9 +429,16 @@ with `Typography.NumeralAlignment="Tabular"` for "mono" digits. Korean falls bac
 Supported Windows 11 surfaces use DWM transient acrylic for the flyout and Mica for Settings and detached dashboards.
 Unsupported DWM attributes, Windows 10, disabled Transparency effects and High Contrast retain solid surfaces.
 High Contrast uses the system palette, opaque informational text, outlined controls and visible page/layout selection.
+Small buttons use Highlight/HighlightText for hover and press; row hover outlines and tree guides remain visible.
 Tab navigation cycles; Settings navigation accepts Up/Down/Home/End and Esc. Session rows expose UI Automation Invoke and
-ExpandCollapse, disclosures expose Invoke, and full details stay in tooltips/help. System metrics is a keyboard-reachable button.
-Unchanged Settings pages and tray frames reuse resources; hidden flyouts skip dashboard refresh work.
+ExpandCollapse with state-change events; list toggles expose both, while load-more disclosures expose Invoke only.
+Full details stay in tooltips/help; buttons without separate help do not repeat their name as HelpText.
+System metrics is a keyboard-reachable button. Metadata shares shrink width smallest-first, preserving unused space for long names.
+Unchanged Settings pages and tray frames reuse resources; invalidation retains the visible HICON until replacement, with disposal releasing all.
+The launch-time welcome flyout uses the existing one-time `trayTipShown` gate independently of dismissing or reopening the card.
+Widget outlines have an eight DIP radius regardless of widget scale, or square corners in High Contrast / without DWM rounding.
+Hidden flyouts skip dashboard refresh work.
+Visible, unminimized Settings windows count alongside dashboards for adaptive local polling and foreground limits refresh.
 **Drag to detach** (the mac popover's `detachableWindow`): a left press on a part that doesn't click (the header, card backgrounds,
 empty space; not buttons, links, the session list, the System area or the scroll bar) moved past
 `SystemParameters.MinimumHorizontal/VerticalDragDistance` hides the flyout and opens "Open as window" with the grabbed point under the
@@ -669,10 +681,13 @@ would trip NETSDK1151 (self-contained → framework-dependent exe), so it is avo
    Windows. `config.toml` keeps the mac's text-level edit, which already preserves CRLF. A leading BOM is removed before the line scan
    (otherwise a first-line `[otel]` isn't recognised and a duplicate table breaks Codex) and put back on write.
 10. Concurrency: `LiveMonitor` serializes token sampling with a bounded, coalesced watcher wake set (0.25 s minimum interval).
-    System metrics still tick each second. Logs tick each second while a session is live or a flyout/unminimized dashboard is open,
-    otherwise every five seconds; filesystem changes still wake sampling immediately. Stop drains the workers before a restart.
-    Live-limit cancellation invalidates in-flight results; ineligible slot state is retained for one hour, preserving in-flight reads
-    and pending backoff, then discarded with its rejected credential hashes. Turning off the setting never delivers stale results.
+    System metrics still tick each second. Logs tick each second while a session is live or a flyout/unminimized dashboard/settings is open,
+    otherwise every five seconds; filesystem changes still wake sampling immediately, and watcher overflow requests rediscovery.
+    User-triggered telemetry retry wakes token sampling immediately. Stop drains the workers before a restart; a faulted previous
+    worker does not poison the next generation, and the cancellation source is disposed only after Stop and worker completion.
+    Live-limit cancellation invalidates in-flight results and restores the slot's prior last-read time. Ineligible slot state is
+    retained for one hour, preserving in-flight reads and pending backoff, then discarded with its rejected credential hashes.
+    Turning off the setting never delivers stale results; transient credential-source failures never forget rejected hashes.
 
 ### 6.3 "Same JSONL → same readings" parity test (Mac, during WP1)
 Build the mac binary from the repo (`swift build`, never `/Applications/TokenCat.app`). Then run both against the same home at the same

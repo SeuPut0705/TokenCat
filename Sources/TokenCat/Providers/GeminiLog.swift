@@ -315,7 +315,8 @@ private final class GeminiChatReader: TokenLogReader {
     private let legacy: Bool
     private let tail: LogLineTail
     private var state: ChatTurnState
-    private var snapshot: (modified: TimeInterval, size: Int64)?
+    private var snapshot: String?
+    private var failedStamp: String?
     private var seen = RecentKeys<Void>(limit: 8_192)
     private var lastMessageID: String?
     /// From `.project_root`; the metadata's directories are used only without it.
@@ -381,11 +382,13 @@ private final class GeminiChatReader: TokenLogReader {
     private func readSnapshot() {
         var info = stat()
         guard stat(url.path, &info) == 0 else { return }
-        let current = (TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9, Int64(info.st_size))
-        guard snapshot.map({ $0 != current }) ?? true, current.1 <= 33_554_432 else { return }
-        // The stamp is kept only after a successful parse: a snapshot caught mid-write is read again on the next sample.
-        guard let data = try? Data(contentsOf: url), let record = LogFields.object(data) else { return }
+        let current = "\(info.st_dev)-\(info.st_ino)-\(info.st_size)-\(info.st_mtimespec.tv_sec)-\(info.st_mtimespec.tv_nsec)"
+        guard current != snapshot, current != failedStamp else { return }
+        guard info.st_size <= 33_554_432 else { failedStamp = current; return }
+        guard let data = try? Data(contentsOf: url) else { return }
+        guard let record = LogFields.object(data) else { failedStamp = current; return }
         snapshot = current
+        failedStamp = nil
         reset(subagentParent: subagentParent)
         metadata(record)
         for message in record["messages"] as? [[String: Any]] ?? [] { autoreleasepool { self.message(message) } }

@@ -269,11 +269,15 @@ func runLiveLimitChecks() -> [String] {
     quiet.cancel()
     RunLoop.main.run(until: Date().addingTimeInterval(0.4))
     check(quietDelivered.isEmpty, "a live read finishing after live usage limits were turned off is delivered")
+    quietTick(1, [oneSlot])
+    RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+    check(quietDelivered == [oneSlot],
+          "a live read cancelled by turning live limits off does not delay the next read after they come back")
     quietTick(1, [twoSlot])
     RunLoop.main.run(until: Date().addingTimeInterval(0.4))
     let kept = quiet.trackedSlots
     quietTick(1 + LiveLimitPoller.retention, [])
-    check(quietDelivered == [twoSlot] && kept == [oneSlot, twoSlot] && quiet.trackedSlots.isEmpty,
+    check(quietDelivered == [oneSlot, twoSlot] && kept == [oneSlot, twoSlot] && quiet.trackedSlots.isEmpty,
           "live poller keeps the state of slots no longer eligible past the retention, or drops it too early")
 
     // Codex merge: a live read overrides older records of its window and keeps "실시간" against a later equal record.

@@ -141,9 +141,35 @@ enum SampleBench {
         return "\(v[0]) allocs (\(v[1] / 1024) KB), \(v[2]) opens, \(v[3]) stats, \(v[4]) getattrlist, \(v[5]) dir reads, \(v[6]) reads (\(v[7] / 1024) KB)"
     }
 
+    static func privateLimitDescription(_ limits: [UsageLimitSummary]) -> String {
+        String(describing: limits.map { limit in
+            var copy = limit
+            copy.accountLabel = limit.account?.storageKey
+            copy.account = nil
+            return copy
+        })
+    }
+
+    static func writePrivateDump(_ text: String, to path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        let temporary = url.deletingLastPathComponent().appendingPathComponent(".tokencat-dump-" + UUID().uuidString)
+        guard FileManager.default.createFile(atPath: temporary.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let handle = try FileHandle(forWritingTo: temporary)
+        defer { try? handle.close() }
+        try handle.write(contentsOf: Data(text.utf8))
+        if FileManager.default.fileExists(atPath: path) {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: temporary, options: .usingNewMetadataOnly)
+        } else {
+            try FileManager.default.moveItem(at: temporary, to: url)
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+    }
     /// Readings without their sample clock, plus the presentation's describable pieces, for before/after comparisons
     /// (run with SWIFT_DETERMINISTIC_HASHING=1 so dictionary order is stable).
-    private static func dump(_ result: (tokens: [TokenReading], sessions: SessionListModel, limits: [UsageLimitSummary]), to path: String) {
+    static func dump(_ result: (tokens: [TokenReading], sessions: SessionListModel, limits: [UsageLimitSummary]), to path: String) {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -153,7 +179,7 @@ enum SampleBench {
             return copy
         }
         var text = (try? encoder.encode(tokens)).map { String(decoding: $0, as: UTF8.self) } ?? ""
-        text += "\n" + String(describing: result.sessions.counts) + "\n" + String(describing: result.limits) + "\n"
-        try? text.write(toFile: path, atomically: true, encoding: .utf8)
+        text += "\n" + String(describing: result.sessions.counts) + "\n" + privateLimitDescription(result.limits) + "\n"
+        try? writePrivateDump(text, to: path)
     }
 }

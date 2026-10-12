@@ -266,6 +266,7 @@ final class DashboardModel: ObservableObject {
     private let limitAccounts: LimitAccountReader
     /// Set by the app shell: whether the popover or panel is on screen, and whether the screens or the Mac sleep.
     var dashboardVisible: () -> Bool = { false }
+    var settingsVisible: () -> Bool = { false }
     var livePaused = false
     private let liveLimits = LiveLimitPoller()
     /// Whether a log folder of a client TokenCat reads exists (`TokenTracker.watchedDirectories`). Checked every 5 s on the
@@ -397,12 +398,13 @@ final class DashboardModel: ObservableObject {
     func retryTelemetryNow() {
         guard telemetryProvider == nil else { return }
         telemetry.retryNow()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.refresh() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.refreshTokens() }
     }
     /// "다시 확인": checks the log folders now instead of at the next 5 s tick.
     func recheckLogFolders() {
         guard running else { return }
         checkLogFolders()
+        refreshTokens()
     }
     func start() {
         guard !running else { return }
@@ -415,12 +417,16 @@ final class DashboardModel: ObservableObject {
         RunLoop.main.add(next, forMode: .common)
         timer = next
         // Filtered on the watcher's queue: the watched roots also hold tool output, lock files and OpenCode's snapshot git
-        // store, whose bursts would otherwise reach the main thread and wake a full sample. The 1 s timer covers the rest.
+        // store, whose bursts would otherwise reach the main thread and wake a full sample. Adaptive ticks cover the rest.
         let tracker = self.tracker
-        let watcher = LogWatcher { [weak self] paths in
+        let watcher = LogWatcher { [weak self] paths, rediscover in
             let logs = paths.filter(tracker.wakesSampling)
-            guard !logs.isEmpty else { return }
-            DispatchQueue.main.async { self?.logsChanged(logs) }
+            guard rediscover || !logs.isEmpty else { return }
+            DispatchQueue.main.async {
+                guard let self, self.running else { return }
+                if rediscover { self.tokenQueue.async { tracker.rediscover() } }
+                self.logsChanged(logs)
+            }
         }
         watcher.start(directories: tracker.watchedDirectories)
         self.watcher = watcher
@@ -474,7 +480,7 @@ final class DashboardModel: ObservableObject {
         guard running else { return }
         refreshSystem()
         let uptime = ProcessInfo.processInfo.systemUptime
-        if anyLive || dashboardVisible() || lastTokenSampleStart.map({ uptime - $0 >= Self.idleTokenInterval || uptime < $0 }) ?? true {
+        if anyLive || dashboardVisible() || settingsVisible() || lastTokenSampleStart.map({ uptime - $0 >= Self.idleTokenInterval || uptime < $0 }) ?? true {
             refreshTokens()
         }
         if lastFolderCheck.map({ ProcessInfo.processInfo.systemUptime - $0 >= Self.folderCheckInterval }) ?? true { checkLogFolders() }
@@ -575,7 +581,13 @@ final class DashboardModel: ObservableObject {
                 if lastReceived != self.telemetryLastReceived { self.telemetryLastReceived = lastReceived }
                 let mergedBatches = self.telemetryBatches.merging(batches) { max($0, $1) }
                 if mergedBatches != self.telemetryBatches { self.telemetryBatches = mergedBatches }
-                let limits = self.claudeLimits.merged(claudeLimits)
+                // Removed accounts retain their windows only while shown; configured, recorded and session accounts stay.
+                var current = Set((known[.claude] ?? []).map(\.storageKey))
+                if let account = defaults[.claude] { current.insert(account.storageKey) }
+                for reading in tokens where reading.limitProvider == .claude {
+                    if let account = reading.limitAccount { current.insert(account.storageKey) }
+                }
+                let limits = self.claudeLimits.merged(claudeLimits).pruned(current: current, now: measuredAt)
                 if limits != self.claudeLimits {
                     self.claudeLimits = limits
                     if self.ownsTelemetryState { limits.save(to: .standard) }
@@ -629,14 +641,20 @@ final class DashboardModel: ObservableObject {
                         self.cpuHistory.append(cpu)
                         self.cpuHistory = Array(self.cpuHistory.suffix(90))
                     }
-                    // The token sample of the same tick rebuilds the sessions; only a slow or stalled one leaves the
-                    // clocks to this sample.
-                    if self.tokensSampledAt.map({ system.sampledAt.timeIntervalSince($0) >= 2 * Self.samplingInterval }) ?? true {
-                        self.rebuildPresentation()
-                    }
+                    self.advancePresentationClock(to: system.sampledAt)
                     self.onUpdate?()
                 }
             }
+        }
+    }
+    /// Menu-bar ages always advance. Closed, idle dashboards need no new flow/list/limit presentation:
+    /// non-live states cannot become live merely as time passes, so their AI counts remain valid.
+    func advancePresentationClock(to sampledAt: Date) {
+        let next = max(sampledAt, tokensSampledAt ?? .distantPast)
+        if next != now { now = next }
+        if (anyLive || dashboardVisible() || settingsVisible()),
+           tokensSampledAt.map({ next.timeIntervalSince($0) >= 2 * Self.samplingInterval }) ?? true {
+            rebuildPresentation()
         }
     }
     private func rebuildPresentation() {
@@ -828,6 +846,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         notifier.activate()
         model.onUpdate = { [weak self] in self?.publish() }
         model.dashboardVisible = { [weak self] in self?.dashboardVisible ?? false }
+        model.settingsVisible = { [weak self] in self?.settingsWindow?.isVisible == true }
         model.updateRequest = { [weak self] in self?.handleUpdate($0) }
         updater.onChange = { [weak self] state in
             guard let self else { return }
@@ -996,10 +1015,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // baseline also those an earlier run left behind.
         if !clearedStaleInput {
             clearedStaleInput = true
-            notifier.removeStaleInput()
+            notifier.removeStaleInput { [weak self] removed in
+                guard let self else { return }
+                for event in Notifier.restoredInputEvents(Array(self.latestSignals.values), removed: removed,
+                                                         enabled: self.model.preferences.notifyInput,
+                                                         dashboardVisible: self.dashboardVisible) {
+                    self.notifier.post(event)
+                }
+            }
         }
         for (id, before) in latestSignals where before.input && next[id]?.input != true { notifier.removeInput(id) }
         latestSignals = next
+        notifier.retainGroups(Set(next.keys))
         // The baseline always advances, so turning a toggle on later never replays old transitions.
         for event in attention.update(signals) {
             switch event {

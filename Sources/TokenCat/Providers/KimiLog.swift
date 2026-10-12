@@ -209,6 +209,7 @@ final class KimiCodeLogReader: TokenLogReader {
     private let tail: LogLineTail
     private let stateURL: URL
     private var stateStamp: String?
+    private var failedStamp: String?
     private let sessionID: String
     private let agentID: String
     private let clientName: String?
@@ -276,10 +277,15 @@ final class KimiCodeLogReader: TokenLogReader {
 
     /// `state.json` is rewritten whole on every metadata change (title, agents); read again when its file, size or time changed.
     private func readState() {
-        guard let current = KimiLog.stamp(stateURL), current != stateStamp else { return }
-        // Kept only after a successful parse: a state.json caught mid-rewrite is read again on the next sample.
-        guard let state = KimiLog.object(stateURL) else { return }
+        var info = stat()
+        guard stat(stateURL.path, &info) == 0 else { return }
+        let current = "\(info.st_ino)-\(info.st_size)-\(info.st_mtimespec.tv_sec)-\(info.st_mtimespec.tv_nsec)"
+        guard current != stateStamp, current != failedStamp else { return }
+        guard info.st_size <= 4_194_304 else { failedStamp = current; return }
+        guard let data = try? Data(contentsOf: stateURL) else { return }
+        guard let state = LogFields.object(data) else { failedStamp = current; return }
         stateStamp = current
+        failedStamp = nil
         cwd = LogFields.text(state["cwd"]) ?? LogFields.text(state["workDir"]) ?? cwd
         title = KimiLog.title(state)
         let agent = (state["agents"] as? [String: Any])?[agentID] as? [String: Any]

@@ -141,7 +141,15 @@ sealed class Shell
         Publish(monitor.Current);
 
         // The first-run hint belongs in the welcome card, not an unsolicited notification (all alerts default off).
-        if (SettingsStore.Shared.Get<bool?>(OnboardingSeenKey) != true) OpenAtCorner();
+        if (ShouldOpenFirstRun(SettingsStore.Shared)) OpenAtCorner();
+    }
+
+    internal static bool ShouldOpenFirstRun(SettingsStore store)
+    {
+        const string key = "trayTipShown"; // Preserve the one-time gate for upgraded installations too.
+        if (store.Get<bool?>(key) == true) return false;
+        store.Set(key, true);
+        return store.Get<bool?>(OnboardingSeenKey) != true;
     }
 
     /// A second launch (payload-free hand-off) opens the dashboard at the primary work area's corner on the taskbar's side
@@ -250,13 +258,14 @@ sealed class Shell
     bool DashboardVisible => flyout.IsVisible || window is { IsVisible: true, IsActive: true };
 
     /// Live usage limits poll while the setting is on and the PC is awake with a screen on; every minute while the flyout or an
-    /// unminimized window shows them.
+    /// unminimized dashboard/settings window shows them. The same visibility enables adaptive local polling.
     void SyncLimits()
     {
         if (quitting) return;
-        monitor.SetDashboardVisible(flyout.IsVisible || window is { IsVisible: true, WindowState: not WindowState.Minimized });
-        monitor.WatchLimits(preferences.LiveUsageLimits && !suspended && !displayOff,
-            flyout.IsVisible || window is { IsVisible: true, WindowState: not WindowState.Minimized });
+        var visible = flyout.IsVisible || window is { IsVisible: true, WindowState: not WindowState.Minimized }
+            || settings is { IsVisible: true, WindowState: not WindowState.Minimized };
+        monitor.SetDashboardVisible(visible);
+        monitor.WatchLimits(preferences.LiveUsageLimits && !suspended && !displayOff, visible);
     }
 
     // MARK: Character
@@ -473,18 +482,20 @@ sealed class Shell
         HideFlyout();
         if (settings is null)
         {
-            settings = new SettingsWindow(new SettingsActions(preferences, () => { monitor.RetryTelemetryNow(); After(TimeSpan.FromMilliseconds(300), monitor.Refresh); },
+            settings = new SettingsWindow(new SettingsActions(preferences, monitor.RetryTelemetryNow,
                 HandleUpdate, ReshowOnboarding, on =>
                 {
                     LoginItem.Set(on);
                     RefreshViews();
                 }, SetTelemetryConnected), SettingsInput());
-            settings.Closed += (_, _) => settings = null;
+            settings.Closed += (_, _) => { settings = null; SyncLimits(); };
+            settings.StateChanged += (_, _) => SyncLimits();
         }
         if (page is { } chosen) settings.Select(chosen);
         settings.Refresh(SettingsInput());
         settings.Show();
         Front(settings);
+        SyncLimits();
     }
 
     /// Activate alone doesn't restore a minimized window: it would stay on the taskbar while the click shows nothing.

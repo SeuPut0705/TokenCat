@@ -504,6 +504,29 @@ func runShellChecks() -> [String] {
           && otherRequest.identifier != inputRequest.identifier
           && token.flatMap { relaunched.group(for: $0) } == nil,
           "Notification routing tokens differ across sessions and launches")
+    check(Notifier.containsLegacyIdentity(identifier: "done-" + UUID().uuidString, userInfo: ["group": "private"])
+          && Notifier.containsLegacyIdentity(identifier: "done-claude:private", userInfo: [:])
+          && Notifier.containsLegacyIdentity(identifier: "input-private", userInfo: [:])
+          && !Notifier.containsLegacyIdentity(identifier: inputRequest.identifier, userInfo: inputRequest.content.userInfo)
+          && !Notifier.containsLegacyIdentity(identifier: "update", userInfo: [:]),
+          "Legacy notification identity metadata and non-UUID session identifiers are removed")
+    var waiting = signal
+    waiting.input = true
+    check(Notifier.restoredInputEvents([waiting, signal], removed: 1, enabled: true, dashboardVisible: false) == [.input(waiting)]
+          && Notifier.restoredInputEvents([waiting], removed: 0, enabled: true, dashboardVisible: false).isEmpty
+          && Notifier.restoredInputEvents([waiting], removed: 1, enabled: false, dashboardVisible: false).isEmpty
+          && Notifier.restoredInputEvents([waiting], removed: 1, enabled: true, dashboardVisible: true).isEmpty,
+          "Relaunch restores only waiting input notifications when enabled and the dashboard is hidden")
+    notifier.retainGroups([privateSignal.id])
+    check(token.flatMap { notifier.group(for: $0) } == nil
+          && (otherRequest.content.userInfo["token"] as? String).flatMap { notifier.group(for: $0) } == privateSignal.id,
+          "Notification routing retains only live groups")
+    let account = LimitAccount(id: "bench-private-account", email: "bench-private@example.com")
+    let limit = UsageLimitSummary(usedPercent: 20, recordedAt: Date(), account: account, accountLabel: "bench-private-label")
+    let dumpText = SampleBench.privateLimitDescription([limit])
+    check(dumpText.contains(account.storageKey) && !dumpText.contains(account.id)
+          && !dumpText.contains(account.email!) && !dumpText.contains("bench-private-label"),
+          "Benchmark limit dumps contain account hashes only and no identity metadata")
     check(tracker.update([signal]).isEmpty, "A completed turn notified twice")
     check(Notifier.describeSound(.authorized, .notSupported, on: true).hasPrefix("macOS가 TokenCat 알림 소리를 허용하지 않았습니다")
           && Notifier.soundBlocked(.authorized, .notSupported) && Notifier.soundBlocked(.authorized, .disabled)
@@ -651,7 +674,8 @@ func runShellChecks() -> [String] {
           "About's privacy statement is not three separate lines")
     check(AppInfo.privacyLines[1].contains("업데이트 확인과 내려받기")
           && !AppInfo.privacyLines[1].contains("인터넷은")
-          && AppInfo.privacyLines[2].contains("omp·Pi"),
+          && AppInfo.privacyLines[2].contains("OpenAI는 Codex CLI의 로그인으로")
+          && AppInfo.privacyLines[2].contains("Anthropic은 Claude Code·omp·Pi"),
           "About privacy separates update traffic from live usage and names every saved sign-in source")
     // The 실측 tab's folder buttons: only existing config files, keyed by client, and the backup folder apart.
     let home = FileManager.default.temporaryDirectory.appendingPathComponent("tokencat-files-\(UUID().uuidString)", isDirectory: true)
@@ -664,7 +688,8 @@ func runShellChecks() -> [String] {
     AppLanguage.with(.en) {
         check(AppInfo.privacyLines[1].contains("Update checks and downloads")
               && !AppInfo.privacyLines[1].contains("goes online only")
-              && AppInfo.privacyLines[2].contains("omp or Pi"),
+              && AppInfo.privacyLines[2].contains("OpenAI for usage through the Codex CLI's sign-in")
+              && AppInfo.privacyLines[2].contains("Anthropic through sign-ins saved by Claude Code, omp or Pi"),
               "About privacy separates update traffic from live usage and names every saved sign-in source")
         check(SettingsPane.allCases.map(\.title) == ["General", "Menu Bar", "Character", "Telemetry", "About"]
               && TelemetryStatusRow.collector(.busyOtherApp).text == "Off · another app is using port 16493"

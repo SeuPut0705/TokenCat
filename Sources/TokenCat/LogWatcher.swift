@@ -1,19 +1,25 @@
 import CoreServices
 import Foundation
 
-/// Wakes token sampling as soon as a read client's log changes. Only paths are delivered;
-/// TokenTracker still reads the files. The 1 s timer remains the fallback.
+/// Wakes token sampling as soon as a read client's log changes. Paths and lost-event signals are delivered;
+/// TokenTracker still reads the files. The adaptive sampling timer remains the fallback.
 final class LogWatcher {
     private let queue = DispatchQueue(label: "dev.seuput.TokenCat.logs", qos: .utility)
     private let queueKey = DispatchSpecificKey<Void>()
-    private let handler: ([String]) -> Void
+    private let handler: ([String], Bool) -> Void
     private var stream: FSEventStreamRef?
 
-    init(handler: @escaping ([String]) -> Void) {
+    init(handler: @escaping ([String], Bool) -> Void) {
         self.handler = handler
         queue.setSpecific(key: queueKey, value: ())
     }
     deinit { stop() }
+
+    static func requiresRediscovery(_ flags: FSEventStreamEventFlags) -> Bool {
+        let lost = FSEventStreamEventFlags(kFSEventStreamEventFlagMustScanSubDirs
+            | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped | kFSEventStreamEventFlagRootChanged)
+        return flags & lost != 0
+    }
 
     /// Watches the existing directories; returns false when none could be watched.
     @discardableResult
@@ -23,13 +29,14 @@ final class LogWatcher {
         guard !paths.isEmpty else { return false }
         var context = FSEventStreamContext(version: 0, info: Unmanaged.passUnretained(self).toOpaque(),
                                            retain: nil, release: nil, copyDescription: nil)
-        let callback: FSEventStreamCallback = { _, info, _, paths, _, _ in
+        let callback: FSEventStreamCallback = { _, info, count, paths, eventFlags, _ in
             guard let info else { return }
             let watcher = Unmanaged<LogWatcher>.fromOpaque(info).takeUnretainedValue()
-            watcher.handler(unsafeBitCast(paths, to: NSArray.self) as? [String] ?? [])
+            let rediscover = UnsafeBufferPointer(start: eventFlags, count: count).contains(where: LogWatcher.requiresRediscovery)
+            watcher.handler(unsafeBitCast(paths, to: NSArray.self) as? [String] ?? [], rediscover)
         }
         let flags = FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes
-            | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer)
+            | kFSEventStreamCreateFlagFileEvents | kFSEventStreamCreateFlagNoDefer | kFSEventStreamCreateFlagWatchRoot)
         guard let created = FSEventStreamCreate(nil, callback, &context, paths as CFArray,
                                                 FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 0.1, flags) else { return false }
         FSEventStreamSetDispatchQueue(created, queue)

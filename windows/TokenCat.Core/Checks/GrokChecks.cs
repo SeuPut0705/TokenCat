@@ -174,7 +174,7 @@ public static class GrokChecks
                 """)));
             Append(unified, Lines(Inference("grok-child", 3_621, output: 7, prompt: 900, elapsed: 700)));
             now = Start.AddSeconds(3_632);
-            // The same-size repaired summary keeps its time: a failed parse must not suppress the next read.
+            // A summary caught mid-write keeps the last good one; the finished write is read once its stamp changes.
             var renamedSummary = Path.Combine(renamed, "summary.json");
             var completeSummary = File.ReadAllBytes(renamedSummary);
             var partialSummary = completeSummary.ToArray();
@@ -183,7 +183,7 @@ public static class GrokChecks
             var summaryModified = File.GetLastWriteTimeUtc(renamedSummary);
             tracker.Sample();
             File.WriteAllBytes(renamedSummary, completeSummary);
-            File.SetLastWriteTimeUtc(renamedSummary, summaryModified);
+            File.SetLastWriteTimeUtc(renamedSummary, summaryModified.AddSeconds(1));
             var rows = tracker.Sample().Where(r => r.Source == TokenSource.Grok).ToList();
             var renamedRow = rows.FirstOrDefault(r => r.SessionID == "grok-renamed");
             check(renamedRow is { ActivityState: TokenActivityState.Complete, LastOutputTokens: 77, Title: "Renamed by person", SpeedMeasurement: null },

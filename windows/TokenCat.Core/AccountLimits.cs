@@ -73,6 +73,12 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
     readonly Dictionary<string, (long[] Stamp, List<Credential> Values)> credentials = new(PathComparer);
     /// Root observations survive metadata cache invalidation and remain memory-only.
     readonly Dictionary<string, RootAccount> observedRoots = new(PathComparer);
+    /// The last observation of roots no longer configured (at most `RemovedRootLimit`): a root that returns with another login
+    /// is a switch, not a first observation that would hand its whole history to that login. Nothing is attributed through
+    /// these. Keyed as `PathComparer` compares (upper-cased on Windows), so a returning root matches whatever its case.
+    const int RemovedRootLimit = 32;
+    readonly RecentKeys<RootAccount> removedRoots = new(RemovedRootLimit);
+    static string RemovedKey(string key) => OperatingSystem.IsWindows() ? key.ToUpperInvariant() : key;
     readonly Dictionary<TokenSource, LimitAccount> defaults = [];
     readonly Dictionary<TokenSource, List<LimitAccount>> accounts = [];
     List<Root> roots = [];
@@ -81,8 +87,8 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
     internal static StringComparer PathComparer => OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     /// Seconds a resolved link stays cached. Refresh runs every sample and attributes every Claude, Codex and omp row; resolving
     /// each root and log path again would cost an attribute query (and on Windows a reparse-point open) per path component each
-    /// second. A re-linked folder is seen within this interval.
-    public const double LinkRefreshInterval = 60;
+    /// second. A re-linked folder is seen within this interval, as on the mac (`rootsInterval`).
+    public const double LinkRefreshInterval = 5;
     readonly Dictionary<string, string> realPaths = new(StringComparer.Ordinal);
     DateTimeOffset? linksResolvedAt;
 
@@ -190,16 +196,28 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
         {
             var key = Path.GetFullPath(root.Metadata);
             observed.Add(key);
-            var metadata = ConfigMetadata(root.Metadata, root.Source)?.Account;
-            var account = metadata is null ? null : Resolve(root.Source, metadata.Id, metadata.Email, metadata.OrganizationName);
-            if (!observedRoots.TryGetValue(key, out var previous))
+            var config = ConfigMetadata(root.Metadata, root.Source);
+            var account = config?.Account is { } metadata ? Resolve(root.Source, metadata.Id, metadata.Email, metadata.OrganizationName) : null;
+            var previous = observedRoots.GetValueOrDefault(key) ?? removedRoots[RemovedKey(key)];
+            if (previous is null)
                 observedRoots[key] = new RootAccount(account, null);
             else if (previous.Account != account)
-                observedRoots[key] = new RootAccount(account, observedAt);
+                observedRoots[key] = new RootAccount(account, SwitchTime(config, observedAt));
+            else
+                observedRoots[key] = previous;
         }
-        // A root that is no longer configured (CLAUDE_CONFIG_DIR or CODEX_HOME moved) keeps no account.
-        foreach (var key in observedRoots.Keys.Where(key => !observed.Contains(key)).ToArray()) observedRoots.Remove(key);
+        // A root that is no longer configured (CLAUDE_CONFIG_DIR or CODEX_HOME moved) keeps no account; its last one is
+        // remembered only to date a later return.
+        foreach (var key in observedRoots.Keys.Where(key => !observed.Contains(key)).ToArray())
+        {
+            removedRoots.Set(RemovedKey(key), observedRoots[key]);
+            observedRoots.Remove(key);
+        }
     }
+    /// A login switch dates from the config write that made it, not from the sample that read it: rows logged in between
+    /// are the new login's. Never later than now (a write time ahead of the clock).
+    static DateTimeOffset SwitchTime(Config? config, DateTimeOffset observedAt) =>
+        config is not null && new DateTimeOffset(config.Stamp[2], TimeSpan.Zero) is var written && written < observedAt ? written : observedAt;
     /// Roots with an observed account (C4d's bound).
     internal int ObservedRootCount => observedRoots.Count;
     static bool NormalizedEmpty(string id) => LimitAccount.Normalized(id).Length == 0;

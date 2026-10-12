@@ -56,6 +56,8 @@ public sealed class GrokLogReader : ITokenLogReader
     TokenSpeedMeasurement? measurement;
 
     (long, long, long)? summaryStamp;
+    /// A `summary.json` that did not parse: not parsed again until it changes, while the last good one stays shown.
+    (long, long, long)? failedSummaryStamp;
     string? cwd;
     string? summaryModel;
     string? effort;
@@ -282,9 +284,10 @@ public sealed class GrokLogReader : ITokenLogReader
                 return;
             }
             var current = (info.CreationTimeUtc.Ticks, info.Length, info.LastWriteTimeUtc.Ticks);
-            if (current == summaryStamp) return;
+            if (current == summaryStamp || current == failedSummaryStamp) return;
             if (info.Length > 1_048_576) { summaryStamp = current; return; }
-            if (Json.Parse(ReadAll(info.FullName)) is not { ValueKind: JsonValueKind.Object } summary) return;
+            // A file that could not be opened is retried next sample.
+            if (Json.Parse(ReadAll(info.FullName)) is not { ValueKind: JsonValueKind.Object } summary) { failedSummaryStamp = current; return; }
             summaryStamp = current;
             if (LogFields.Text(summary.Field("info")?.Field("cwd")) is { Length: <= 4_096 } path) cwd = path;
             cwd ??= GroupCwd(System.IO.Path.GetDirectoryName(directory)!);

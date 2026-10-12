@@ -174,4 +174,18 @@ func runAgentUsageHistoryChecks(_ check: (@autoclosure () -> Bool, String) -> Vo
     check(refreshed.claude[one.storageKey]?.fiveHour?.usedPercent == 11
           && refreshed.claude[unique.storageKey]?.fiveHour?.usedPercent == 44 && refreshed.codex.first { $0.account == unique }?.usedPercent == 44,
           "history reader does not refresh credential metadata before resolving missing emails")
+
+    // A profile created after launch is discovered on the next roots cadence, without reopening the app.
+    let baselineUptime = ProcessInfo.processInfo.systemUptime
+    _ = reader.read(uptime: baselineUptime)
+    let late = home.appendingPathComponent(".omp/profiles/after-launch/agent")
+    try? FileManager.default.createDirectory(at: late, withIntermediateDirectories: true)
+    run("ATTACH DATABASE '\(late.appendingPathComponent("agent.db").path)' AS late")
+    run("CREATE TABLE late.usage_history AS SELECT * FROM usage_history WHERE account_id = 'acct-b'")
+    run("UPDATE late.usage_history SET account_id = 'late-profile', used_fraction = 0.63")
+    run("DETACH DATABASE late")
+    let lateAccount = LimitAccount(id: "late-profile", email: "person@example.com")
+    let discovered = reader.read(uptime: baselineUptime + AgentUsageHistoryReader.rootsInterval + 1)
+    check(!failed && discovered.claude[lateAccount.storageKey]?.fiveHour?.usedPercent == 63,
+          "omp usage history discovers an agent.db profile created after launch on the next roots cadence")
 }

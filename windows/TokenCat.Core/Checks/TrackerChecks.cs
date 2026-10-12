@@ -1172,7 +1172,141 @@ public static class TrackerChecks
         GooseLogChecks.Run(check);
         SessionTitleChecks.Run(check);
         ResourceChecks.Run(check);
+        RunSnapshotChecks(check);
         return c.Done();
+    }
+
+    /// Whole-file snapshot readers on their real read path (Amp, Gemini legacy, Cline task and CLI with its manifest, Kimi Code
+    /// `state.json`, Grok `summary.json`, Copilot `workspace.yaml`). Their stamps are private, so they are observed by reflection.
+    static void RunSnapshotChecks(Action<bool, string> check)
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"TokenCat-snapshots-{Guid.NewGuid()}");
+        var start = At("2026-10-04T12:00:00Z");
+        var now = start.AddSeconds(60);
+        static object? Field(object reader, string name) =>
+            reader.GetType().GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.GetValue(reader);
+        void Write(string path, string text, double seconds)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            File.WriteAllText(path, text);
+            File.SetLastWriteTimeUtc(path, start.AddSeconds(seconds).UtcDateTime);
+        }
+        void Touch(string path, double seconds) => File.SetLastWriteTimeUtc(path, start.AddSeconds(seconds).UtcDateTime);
+        // A rewrite that could not be opened (a writer's lock) is not cached: it is read once the lock is gone, unchanged.
+        bool LockedRetried(ITokenLogReader reader, string file, string good, string text, double seconds)
+        {
+            Write(file, text, seconds);
+            var before = Field(reader, good);
+            using (new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                reader.Read(1_048_576, now);
+            var skipped = Equals(Field(reader, good), before);
+            reader.Read(1_048_576, now);
+            return skipped && Field(reader, good) is { } after && !Equals(after, before);
+        }
+        // Read whole; caught mid-write (truncated, same length as the finished write); finished with the same stamp; changed.
+        bool Recovers(ITokenLogReader reader, string file, string good, string failed, string valid, string finished)
+        {
+            Write(file, valid, 1);
+            reader.Read(1_048_576, now);
+            var parsed = Field(reader, good);
+            Write(file, finished[..^1] + " ", 2);
+            reader.Read(1_048_576, now);
+            var broken = Field(reader, failed);
+            reader.Read(1_048_576, now);
+            Write(file, finished, 2);
+            reader.Read(1_048_576, now);
+            var suppressed = parsed is not null && broken is not null && Equals(Field(reader, good), parsed) && Equals(Field(reader, failed), broken);
+            Touch(file, 3);
+            reader.Read(1_048_576, now);
+            var recovered = Field(reader, good) is { } after && !Equals(after, parsed) && !Equals(after, broken);
+            return suppressed && recovered && LockedRetried(reader, file, good, valid, 4);
+        }
+        try
+        {
+            const string Valid = """{"v":"a"}""", Finished = """{"v":"bb"}""", ValidList = """[{"v":"a"}]""", FinishedList = """[{"v":"bb"}]""";
+            var amp = Path.Combine(root, "amp", "threads", "T-snap.json");
+            var gemini = Path.Combine(root, "gemini", "SnapProject", "chats", "session-snap.json");
+            var task = Path.Combine(root, "cline", "tasks", "task-snap", "ui_messages.json");
+            var cliFolder = Path.Combine(root, "cline", "sessions", "cli-snap");
+            var cli = Path.Combine(cliFolder, "cli-snap.messages.json");
+            var manifest = Path.Combine(cliFolder, "cli-snap.json");
+            var kimiSession = Path.Combine(root, "kimi", "sessions", "wd_snap", "session_snap");
+            var kimiWire = Path.Combine(kimiSession, "agents", KimiLog.MainAgent, "wire.jsonl");
+            var grokSession = Path.Combine(root, "grok", "sessions", "%2Ftmp%2FSnap", "grok-snap");
+            var copilotFolder = Path.Combine(root, "copilot", "session-state", "copilot-snap");
+            foreach (var empty in new[] { kimiWire, Path.Combine(grokSession, "updates.jsonl"), Path.Combine(grokSession, "events.jsonl"),
+                                           Path.Combine(copilotFolder, "events.jsonl") })
+                Write(empty, "", 0);
+
+            var cliReader = new ClineLogReader(cli);
+            var recovers = Recovers(new AmpLogReader(amp), amp, "stamp", "failedStamp", Valid, Finished)
+                && Recovers(TokenLogFormat.Gemini.Open(gemini), gemini, "snapshot", "failedSnapshot", Valid, Finished)
+                && Recovers(new ClineLogReader(task), task, "stamp", "failedStamp", ValidList, FinishedList)
+                && Recovers(cliReader, cli, "stamp", "failedStamp", ValidList, FinishedList)
+                && Recovers(new KimiCodeLogReader(kimiWire), Path.Combine(kimiSession, "state.json"), "stateStamp", "failedStateStamp", Valid, Finished)
+                && Recovers(new GrokLogReader(Path.Combine(grokSession, "updates.jsonl")), Path.Combine(grokSession, "summary.json"),
+                    "summaryStamp", "failedSummaryStamp", Valid, Finished)
+                && LockedRetried(new CopilotLogReader(Path.Combine(copilotFolder, "events.jsonl")), Path.Combine(copilotFolder, "workspace.yaml"),
+                    "workspaceStamp", "name: snap\n", 1);
+
+            // Cline CLI: a broken or oversized manifest keeps its stamp, so the unchanged messages are not summarised again
+            // (the summary object stays the same); a changed manifest is read again.
+            void ReadCli() => cliReader.Read(1_048_576, now);
+            object? Summary() => Field(cliReader, "summary");
+            Write(manifest, """{"status":"completed"}""", 5);
+            ReadCli();
+            var withManifest = Summary();
+            Write(manifest, "{\"status\":\"running\" ", 6);
+            ReadCli();
+            ReadCli();
+            var brokenKept = withManifest is not null && ReferenceEquals(Summary(), withManifest) && Field(cliReader, "failedManifestStamp") is not null;
+            Write(manifest, "{\"status\":\"running\"}", 6);
+            ReadCli();
+            var sameStampKept = ReferenceEquals(Summary(), withManifest);
+            Touch(manifest, 7);
+            ReadCli();
+            var manifestRetried = Summary() is { } retried && !ReferenceEquals(retried, withManifest);
+            Write(manifest, "{\"status\":\"completed\",\"pad\":\"" + new string('x', 1_048_576) + "\"}", 8);
+            ReadCli();
+            var oversized = Summary();
+            ReadCli();
+            var oversizedKept = oversized is not null && !ReferenceEquals(oversized, withManifest) && ReferenceEquals(Summary(), oversized);
+            Write(manifest, """{"status":"completed"}""", 9);
+            var lockedManifest = Summary();
+            using (new FileStream(manifest, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) ReadCli();
+            var lockSkipped = ReferenceEquals(Summary(), lockedManifest);
+            ReadCli();
+            var lockRetried = lockSkipped && !ReferenceEquals(Summary(), lockedManifest);
+
+            check(recovers && brokenKept && sameStampKept && manifestRetried && oversizedKept && lockRetried,
+                  "a permanently broken snapshot file is not re-parsed every sample, but a file caught mid-write is read again once it changes");
+
+            // Gemini and Qwen read a timestamp as TokenLogParser does: ISO 8601 text or epoch seconds.
+            var epoch = start.ToUnixTimeSeconds();
+            var numericGemini = Path.Combine(root, "gemini", "NumericProject", "chats", "session-numeric.json");
+            Write(numericGemini, $$$"""{"sessionId":"gem-numeric","lastUpdated":{{{epoch + 2}}},"messages":[{"id":"n1","timestamp":{{{epoch}}},"type":"user","content":"fixture"},{"id":"n2","timestamp":{{{epoch + 1}}},"type":"gemini","content":"fixture","tokens":{"input":5,"output":9,"total":14}}]}""", 2);
+            var geminiReader = TokenLogFormat.Gemini.Open(numericGemini);
+            geminiReader.Read(1_048_576, start.AddSeconds(5));
+            var numericQwen = Path.Combine(root, "qwen", "NumericProject", "chats", "qn-1.jsonl");
+            Write(numericQwen, $$$"""{"uuid":"q1","sessionId":"qn-1","timestamp":{{{epoch}}},"type":"user","message":{"role":"user","parts":[{"text":"fixture"}]}}""" + "\n"
+                + $$$"""{"uuid":"q2","sessionId":"qn-1","timestamp":{{{epoch + 1}}},"type":"assistant","model":"qwen-fixture","message":{"role":"model","parts":[{"text":"fixture"}]},"usageMetadata":{"promptTokenCount":100,"candidatesTokenCount":40,"totalTokenCount":140}}""" + "\n", 2);
+            var qwenReader = TokenLogFormat.Qwen.Open(numericQwen);
+            qwenReader.Read(1_048_576, start.AddSeconds(5));
+            check(geminiReader.Readings("gemini-numeric", start.AddSeconds(5)).FirstOrDefault()?.RecentOutputs
+                      .SequenceEqual([new TokenOutputEvent(start.AddSeconds(1), 9)]) == true
+                  && qwenReader.Readings("qwen-numeric", start.AddSeconds(5)).FirstOrDefault()?.RecentOutputs
+                      .SequenceEqual([new TokenOutputEvent(start.AddSeconds(1), 40)]) == true,
+                  "Gemini and Qwen: a numeric epoch-seconds timestamp was not read as the record time");
+        }
+        catch (Exception error)
+        {
+            check(false, $"Snapshot fixture error: {error.Message}");
+        }
+        finally
+        {
+            try { Directory.Delete(root, true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
     }
 
     internal static bool WriteLimitCredentialFixture(string path, params (string Provider, JsonNode Data, bool Disabled)[] rows)
@@ -1419,6 +1553,46 @@ public static class TrackerChecks
                   && returned.FirstOrDefault(row => row.SessionID == "codex-a") is { LimitAccount: null }
                   && returned.FirstOrDefault(row => row.SessionID == "claude-a") is { LimitAccount: null },
                   "Account switches: an evicted log kept its account pin, or came back attributed to the new login");
+            // A switch dates from the config write, not from the sample that read it; a write time ahead of the clock is capped
+            // at the sample.
+            string[] configs = [Path.Combine(codexHome, "auth.json"), Path.Combine(claudeConfig, ".claude.json")];
+            now = now.AddSeconds(30);
+            var written = now.AddSeconds(-20);
+            Config("account-c");
+            foreach (var config in configs) File.SetLastWriteTimeUtc(config, written.UtcDateTime);
+            tracker.Sample();
+            var codexSwitch = tracker.AccountReader.ObservedAccount(TokenSource.Codex, oldCodex)?.SwitchedAt;
+            var claudeSwitch = tracker.AccountReader.ObservedAccount(TokenSource.Claude, oldClaude)?.SwitchedAt;
+            now = now.AddSeconds(30);
+            Config("account-d");
+            foreach (var config in configs) File.SetLastWriteTimeUtc(config, now.AddSeconds(3_600).UtcDateTime);
+            tracker.Sample();
+            check(codexSwitch == written && claudeSwitch == written
+                  && tracker.AccountReader.ObservedAccount(TokenSource.Codex, oldCodex) is { Account.Id: "account-d" } ahead && ahead.SwitchedAt == now
+                  && tracker.AccountReader.ObservedAccount(TokenSource.Claude, oldClaude) is { Account.Id: "account-d" } aheadClaude && aheadClaude.SwitchedAt == now,
+                  "Account switches: a login switch was not dated by the earlier of its config write and the sample that read it");
+            // A root that is no longer configured attributes nothing; one that returns with another login is a switch dated by
+            // its write, not a first observation, and one that returns with the same login keeps its observation. On Windows
+            // it returns spelled in another case, which names the same folder.
+            var listed = true;
+            var recased = false;
+            var reader = new LimitAccountReader(home, key => listed ? recased ? Env(key)?.ToUpperInvariant() : Env(key) : null);
+            reader.Refresh(now);
+            var firstSeen = reader.ObservedAccount(TokenSource.Codex, oldCodex);
+            listed = false;
+            reader.Refresh(now.AddSeconds(10));
+            var gone = reader.ObservedAccount(TokenSource.Codex, oldCodex) is null && reader.Account(oldCodex, TokenSource.Codex) is null
+                       && reader.ObservedAccount(TokenSource.Claude, oldClaude) is null && reader.Account(oldClaude, TokenSource.Claude) is null;
+            File.WriteAllBytes(configs[0], Json.Serialize(new { tokens = new { account_id = "account-e" } }));
+            var rewritten = now.AddSeconds(15);
+            File.SetLastWriteTimeUtc(configs[0], rewritten.UtcDateTime);
+            listed = true;
+            recased = OperatingSystem.IsWindows();
+            reader.Refresh(now.AddSeconds(20));
+            check(firstSeen is { Account.Id: "account-d", SwitchedAt: null } && gone
+                  && reader.ObservedAccount(TokenSource.Codex, oldCodex) is { Account.Id: "account-e" } back && back.SwitchedAt == rewritten
+                  && reader.ObservedAccount(TokenSource.Claude, oldClaude) is { Account.Id: "account-d", SwitchedAt: null },
+                  "Account switches: a removed root kept attributing logs, or returned with another login as a first observation");
         }
         catch (Exception error) { check(false, $"Account switches fixture error: {error.Message}"); }
     }

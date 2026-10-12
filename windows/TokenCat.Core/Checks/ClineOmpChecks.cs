@@ -203,11 +203,24 @@ public static class ClineOmpChecks
         }
         catch (Exception error) { check(false, $"omp account pins fixture error: {error.Message}"); }
 
-        // Earlier fixture scans survive while touched, then disappear after a sweep window with no reader.
-        var heldPins = OmpPinStore.Shared.Count;
-        OmpPinStore.Shared.Sweep();
-        OmpPinStore.Shared.Sweep();
-        check(heldPins > 0 && OmpPinStore.Shared.Count == 0,
+        // Use a private store so the check never sweeps another tracker's process-wide cache.
+        var pinStore = new OmpPinStore();
+        var racedPin = Path.Combine(root, "raced-pins.jsonl");
+        var firstHash = new string('a', 64);
+        var appendedHash = new string('b', 64);
+        File.WriteAllText(racedPin, $$"""{"type":"credential_pin","provider":"openai-codex","hash":"{{firstHash}}"}""" + "\n");
+        var beforeAppend = new FileInfo(racedPin);
+        var staleStamp = (beforeAppend.CreationTimeUtc.Ticks, beforeAppend.Length, beforeAppend.LastWriteTimeUtc.Ticks);
+        File.AppendAllText(racedPin, $$"""{"type":"credential_pin","provider":"anthropic","hash":"{{appendedHash}}"}""" + "\n");
+        var before = pinStore.Pins(racedPin, staleStamp);
+        var after = pinStore.Pins(racedPin);
+        check(before.GetValueOrDefault(TokenSource.Codex) == firstHash && !before.ContainsKey(TokenSource.Claude)
+              && after.GetValueOrDefault(TokenSource.Claude) == appendedHash,
+              "omp credential pins: an append between stat and read scans beyond the committed stamp and forces a full rescan");
+        var heldPins = pinStore.Count;
+        pinStore.Sweep();
+        pinStore.Sweep();
+        check(heldPins > 0 && pinStore.Count == 0,
               "omp credential pins: the scan state of logs no reader asks for was kept");
 
         try

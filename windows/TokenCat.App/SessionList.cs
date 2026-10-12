@@ -170,7 +170,7 @@ sealed class SessionList : Border
                             selectedId == SessionListModel.OlderID, null, Loc("이전 기록 더 보기", "Show earlier records"))));
                     break;
                 case SessionListEntry.Toggle:
-                    items.Add(Reconcile.Item(SessionListModel.ToggleID, () => new DisclosureRow(ToggleExpanded),
+                    items.Add(Reconcile.Item(SessionListModel.ToggleID, () => new DisclosureRow(ToggleExpanded, toggle: true),
                         (DisclosureRow row) => row.Update(display.ToggleText, display.Expanded, selectedId == SessionListModel.ToggleID,
                             display.ToggleHelp, display.ToggleSpoken)));
                     break;
@@ -385,9 +385,10 @@ sealed class SessionList : Border
     public Action? Recheck { get; set; }
 }
 
-/// Lays children out left to right at their natural width; the one marked `Shrink` takes what is left and trims.
+/// Lays children left to right; shrink children share the remaining width, satisfying the smallest natural widths first.
 sealed class TrimLine : Panel
 {
+    readonly List<(UIElement Child, double Width)> shrink = [];
     public static readonly DependencyProperty ShrinkProperty = DependencyProperty.RegisterAttached("Shrink", typeof(bool), typeof(TrimLine),
         new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.AffectsParentMeasure));
 
@@ -406,24 +407,34 @@ sealed class TrimLine : Panel
     protected override Size MeasureOverride(Size available)
     {
         double used = 0, height = 0;
-        var shrinking = 0;
+        shrink.Clear();
         foreach (UIElement child in InternalChildren)
         {
-            if ((bool)child.GetValue(ShrinkProperty)) { if (child.Visibility != Visibility.Collapsed) shrinking++; continue; }
+            if ((bool)child.GetValue(ShrinkProperty))
+            {
+                if (child.Visibility != Visibility.Collapsed)
+                {
+                    child.Measure(new Size(double.PositiveInfinity, available.Height));
+                    shrink.Add((child, child.DesiredSize.Width));
+                }
+                continue;
+            }
             child.Measure(new Size(double.PositiveInfinity, available.Height));
             used += child.DesiredSize.Width;
             height = Math.Max(height, child.DesiredSize.Height);
         }
         var remaining = double.IsInfinity(available.Width) ? double.PositiveInfinity : Math.Max(0, available.Width - used);
-        foreach (UIElement child in InternalChildren)
+        shrink.Sort(static (a, b) => a.Width.CompareTo(b.Width));
+        var shrinking = shrink.Count;
+        foreach (var (child, width) in shrink)
         {
-            if (!(bool)child.GetValue(ShrinkProperty) || child.Visibility == Visibility.Collapsed) continue;
-            child.Measure(new Size(remaining / shrinking, available.Height));
+            child.Measure(new Size(Math.Min(width, remaining / shrinking), available.Height));
             used += child.DesiredSize.Width;
-            remaining -= child.DesiredSize.Width;
+            remaining = Math.Max(0, remaining - child.DesiredSize.Width);
             shrinking--;
             height = Math.Max(height, child.DesiredSize.Height);
         }
+        shrink.Clear();
         return new Size(double.IsInfinity(available.Width) ? used : Math.Min(used, available.Width), height);
     }
 
@@ -461,6 +472,13 @@ sealed class ActionPeer(FrameworkElement owner, Action invoke, Func<bool>? expan
         PatternInterface.ExpandCollapse when expanded is not null => this,
         _ => base.GetPattern(patternInterface),
     };
+    public void ExpandedChanged(bool before, bool after)
+    {
+        if (before != after)
+            RaisePropertyChangedEvent(ExpandCollapsePatternIdentifiers.ExpandCollapseStateProperty,
+                before ? ExpandCollapseState.Expanded : ExpandCollapseState.Collapsed,
+                after ? ExpandCollapseState.Expanded : ExpandCollapseState.Collapsed);
+    }
     public void Invoke() => Owner.Dispatcher.Invoke(invoke);
     public ExpandCollapseState ExpandCollapseState => expanded?.Invoke() == true ? ExpandCollapseState.Expanded : ExpandCollapseState.Collapsed;
     public void Expand() { if (expanded?.Invoke() == false) Invoke(); }
@@ -472,7 +490,7 @@ abstract class RowShell : Grid
 {
     readonly Border fill = new() { CornerRadius = new CornerRadius(Ui.ControlRadius), Margin = new Thickness(4, 0, 4, 0) };
     protected readonly Grid Body = new();
-    bool selected;
+    bool selected, expanded;
     protected TokenReading? Reading;
     protected RowContext? Context;
     protected string? RowId;
@@ -495,6 +513,9 @@ abstract class RowShell : Grid
         Context = context;
         Height = height;
         selected = context.SelectedId == id;
+        var wasExpanded = expanded;
+        expanded = reading is not null && context.DetailId == id;
+        (UIElementAutomationPeer.FromElement(this) as ActionPeer)?.ExpandedChanged(wasExpanded, expanded);
         Paint();
         Ui.Help(this, help);
         AutomationProperties.SetHelpText(this, help + (reading is null ? "" : "\n" + (context.DetailId == id
@@ -503,14 +524,15 @@ abstract class RowShell : Grid
     }
 
     void Activate() { if (RowId is { } id) Context?.Tap(id); }
-    protected override AutomationPeer OnCreateAutomationPeer() => new ActionPeer(this, Activate, Reading is null ? null : () => Context?.DetailId == RowId);
+    protected override AutomationPeer OnCreateAutomationPeer() => new ActionPeer(this, Activate, Reading is null ? null : () => expanded);
 
     /// The selection fill is faint (1.4:1), so the keyboard selection also gets an accent outline (at least 3:1).
     void Paint()
     {
-        fill.Background = selected ? Theme.Brush(Theme.Selection) : IsMouseOver ? Theme.Brush(Theme.Hover) : null;
-        fill.BorderBrush = Theme.Brush(Theme.Accent);
-        fill.BorderThickness = new Thickness(selected ? 1.5 : 0);
+        var highlighted = selected || IsMouseOver;
+        fill.Background = Theme.HighContrast ? null : selected ? Theme.Brush(Theme.Selection) : IsMouseOver ? Theme.Brush(Theme.Hover) : null;
+        fill.BorderBrush = Theme.Brush(Theme.HighContrast ? SystemColors.HighlightColor : Theme.Accent);
+        fill.BorderThickness = new Thickness(selected ? 1.5 : Theme.HighContrast && highlighted ? 1 : 0);
     }
 }
 
@@ -527,7 +549,7 @@ sealed class BlockView : Grid
     public BlockView(Action expand)
     {
         this.expand = expand;
-        guide.Stroke = Theme.Brush(Theme.Primary(0.15));
+        guide.Stroke = Theme.Brush(Theme.HighContrast ? SystemColors.WindowTextColor : Theme.Primary(0.15));
         Children.Add(guide);
         Children.Add(rows);
     }
@@ -992,11 +1014,13 @@ sealed class DisclosureRow : Border
     readonly TextBlock text = Ui.Text("", Font.MetaMedium, Theme.Secondary);
     readonly TextBlock chevron = Ui.Icon(Ui.ChevronDown, 9, Theme.Secondary);
     readonly Action open;
+    readonly bool toggle;
     bool selected, expanded;
 
-    public DisclosureRow(Action open)
+    public DisclosureRow(Action open, bool toggle = false)
     {
         this.open = open;
+        this.toggle = toggle;
         Height = SessionListModel.OlderHeight;
         Background = Brushes.Transparent;
         Cursor = Cursors.Hand;
@@ -1013,7 +1037,9 @@ sealed class DisclosureRow : Border
     public void Update(string title, bool up, bool isSelected, string? help, string name)
     {
         selected = isSelected;
+        var wasExpanded = expanded;
         expanded = up;
+        if (toggle) (UIElementAutomationPeer.FromElement(this) as ActionPeer)?.ExpandedChanged(wasExpanded, expanded);
         text.Text = title;
         chevron.Text = (up ? Ui.ChevronUp : Ui.ChevronDown).ToString();
         Ui.Help(this, help);
@@ -1021,13 +1047,13 @@ sealed class DisclosureRow : Border
         Paint();
     }
 
-    protected override AutomationPeer OnCreateAutomationPeer() => new ActionPeer(this, open, () => expanded);
+    protected override AutomationPeer OnCreateAutomationPeer() => new ActionPeer(this, open, toggle ? () => expanded : null);
 
     void Paint()
     {
-        Background = selected ? Theme.Brush(Theme.Selection) : IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent;
-        BorderBrush = Theme.Brush(Theme.Accent);
-        BorderThickness = new Thickness(selected ? 1.5 : 0);
+        Background = Theme.HighContrast ? Brushes.Transparent : selected ? Theme.Brush(Theme.Selection) : IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent;
+        BorderBrush = Theme.Brush(Theme.HighContrast ? SystemColors.HighlightColor : Theme.Accent);
+        BorderThickness = new Thickness(selected ? 1.5 : Theme.HighContrast && IsMouseOver ? 1 : 0);
     }
 }
 

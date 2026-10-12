@@ -67,11 +67,12 @@ public static class SessionTitle
 /// lines written on every rename or generated name (the rollout's `thread_name_updated` event is not persisted). The newest
 /// non-empty name of an id wins, as in Codex's own lookup; a rewrite that removes names (the file shrinks or is replaced) is
 /// read again. One index per file, shared by every rollout reader of that Codex home; the tracker refreshes each once a sample.
-/// Names are held for threads asked about within `Retention`, plus the 2,048 newest unasked ones. An evicted thread's name
-/// is looked up synchronously within the index's last 4 MB when a reader asks again.
+/// Names are held for threads asked about since the previous sweep (every `PruneInterval`), plus the 2,048 newest unasked
+/// ones. A miss once a name was evicted is resolved at the next refresh, together with every other such miss, in one scan of
+/// the index's last 4 MB: a cold start with hundreds of rollouts scans once, not once per thread.
 public sealed class CodexThreadNames
 {
-    public const double PruneInterval = 600, Retention = 600;
+    public const double PruneInterval = 600;
     internal const int UnaskedLimit = 2_048;
     const int TailLimit = 4_194_304;
     static readonly object Gate = new();
@@ -82,6 +83,8 @@ public sealed class CodexThreadNames
     readonly Dictionary<string, string?> asked = new(StringComparer.Ordinal);
     readonly HashSet<string> askedSinceSweep = new(StringComparer.Ordinal);
     readonly RecentKeys<string> unasked = new(UnaskedLimit);
+    /// Threads asked about after an eviction whose name the next refresh looks up (at most the threads asked in one sample).
+    readonly HashSet<string> pending = new(StringComparer.Ordinal);
     bool evicted;
     long sweptAt = Environment.TickCount64;
     CodexThreadNames(string path)
@@ -107,9 +110,12 @@ public sealed class CodexThreadNames
 
     /// Names held now, including threads whose name has not been recorded yet.
     internal int Count { get { lock (Gate) return asked.Count + unasked.Count; } }
+    /// Scans of the index for evicted names so far.
+    internal int LookUps { get { lock (Gate) return lookUps; } }
+    int lookUps;
 
-    /// Reads lines appended since the last call; a stat when nothing changed.
-    public void Refresh(DateTimeOffset now)
+    /// Reads lines appended since the last call (a stat when nothing changed), then looks up the evicted names asked for since.
+    public void Refresh()
     {
         lock (Gate)
         {
@@ -126,10 +132,16 @@ public sealed class CodexThreadNames
                 if (asked.ContainsKey(entry.Id)) asked[entry.Id] = entry.Name;
                 else RememberUnasked(entry.Id, entry.Name);
             });
+            if (pending.Count == 0) return;
+            HashSet<string> missing = evicted ? [.. pending.Where(id => unasked[id] is null)] : [];
+            var found = missing.Count > 0 ? LookUp(missing) : null;
+            foreach (var id in pending) asked[id] = unasked[id] ?? found?.GetValueOrDefault(id);
+            pending.Clear();
         }
     }
 
-    public string? Name(string? thread, DateTimeOffset now)
+    /// Null while an evicted thread's name waits for the next refresh.
+    public string? Name(string? thread)
     {
         if (thread is null) return null;
         var id = thread.ToLowerInvariant();
@@ -138,7 +150,11 @@ public sealed class CodexThreadNames
             askedSinceSweep.Add(id);
             if (asked.TryGetValue(id, out var known)) return known;
             var name = unasked[id];
-            if (name is null && evicted) name = LookUp(id);
+            if (name is null && evicted)
+            {
+                pending.Add(id);
+                return null;
+            }
             asked[id] = name;
             return name;
         }
@@ -175,9 +191,11 @@ public sealed class CodexThreadNames
         return (id.ToLowerInvariant(), name);
     }
 
-    /// The newest name of an evicted id within the same bounded window as the initial read.
-    string? LookUp(string id)
+    /// The newest name of each id within the same bounded window as the initial read. Every line is parsed as that read
+    /// parses it, so an id is matched whatever its case in the index.
+    Dictionary<string, string>? LookUp(HashSet<string> ids)
     {
+        lookUps++;
         try
         {
             using var handle = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 0);
@@ -185,15 +203,12 @@ public sealed class CodexThreadNames
             var offset = Math.Max(0, size - TailLimit);
             var lines = new LogLineAssembler();
             lines.Restart(dropFirst: offset > 0);
-            var lower = Encoding.UTF8.GetBytes(id);
-            var upper = Encoding.UTF8.GetBytes(id.ToUpperInvariant());
-            string? name = null;
+            var names = new Dictionary<string, string>(StringComparer.Ordinal);
             LogLineTail.ReadForward(handle, ref offset, size, TailLimit, lines, line =>
             {
-                if (line.IndexOf(lower) < 0 && line.IndexOf(upper) < 0) return;
-                if (Entry(line) is { } entry && entry.Id == id) name = entry.Name;
+                if (Entry(line) is { } entry && ids.Contains(entry.Id)) names[entry.Id] = entry.Name;
             });
-            return name;
+            return names;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
     }

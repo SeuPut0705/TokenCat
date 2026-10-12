@@ -102,6 +102,21 @@ static class AppChecks
                     reused &= tray.DrawnHandle == handles[frame];
                 }
                 check(reused, "tray animation reuses each cached frame's native icon");
+                tray.Visible = true;
+                var continuous = true;
+                for (var i = 0; i < 130; i++)
+                {
+                    tray.Render(RunnerCharacter.Cat, RunnerPose.Walk, i % 4, i, StateDot.None);
+                    continuous &= tray.DrawnHandle != IntPtr.Zero;
+                }
+                var visible = tray.DrawnHandle;
+                tray.ClearFrames();
+                continuous &= tray.DrawnHandle == visible && visible != IntPtr.Zero;
+                tray.ClearFrames(); // A second invalidation before drawing must retain the same retired icon.
+                continuous &= tray.DrawnHandle == visible;
+                tray.Render(RunnerCharacter.Cat, RunnerPose.Walk, 0, null, StateDot.None);
+                check(continuous && tray.DrawnHandle != IntPtr.Zero,
+                    "tray cache overflow and invalidation retain the visible icon until its replacement is assigned");
             }
             var released = Native.GuiResources();
             check(released.Gdi <= resources.Gdi + 2 && released.User <= resources.User + 2,
@@ -116,6 +131,18 @@ static class AppChecks
                 && Theme.Secondary == Theme.Label && !Theme.Materials && Theme.Surface == Theme.Background
                 && stroke?.DashStyle.Dashes.Count == 0 && Ui.Container(new Border()).BorderThickness == new Thickness(1),
                 "High Contrast uses the system palette, solid state rings and outlined surfaces without materials");
+            var small = Ui.SmallButton("Retry", () => { });
+            var chrome = (Border)small.Content;
+            small.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseEnterEvent });
+            check(chrome.BorderThickness == new Thickness(1) && ((SolidColorBrush)chrome.BorderBrush).Color == SystemColors.ControlTextColor
+                && ((SolidColorBrush)chrome.Background).Color == SystemColors.HighlightColor
+                && ((SolidColorBrush)((TextBlock)chrome.Child).Foreground).Color == SystemColors.HighlightTextColor
+                && Theme.Hover == SystemColors.HighlightColor && Theme.Pressed == SystemColors.HighlightColor
+                && Tree(new BlockView(() => { })).OfType<System.Windows.Shapes.Path>().Single().Stroke is SolidColorBrush guide && guide.Color == SystemColors.WindowTextColor,
+                "High Contrast small buttons use outlined system highlights and tree guides remain visible");
+            small.RaiseEvent(new MouseEventArgs(Mouse.PrimaryDevice, 0) { RoutedEvent = Mouse.MouseLeaveEvent });
+            check(((SolidColorBrush)((TextBlock)chrome.Child).Foreground).Color == Theme.Label,
+                "High Contrast small buttons restore their normal text after hover");
         }
         finally { Theme.HighContrastOverride = contrast; }
 
@@ -124,6 +151,11 @@ static class AppChecks
         {
             var input = Fixtures.Settings();
             var preferences = new Preferences(new SettingsStore(path));
+            check(Shell.ShouldOpenFirstRun(new SettingsStore(path)) && !Shell.ShouldOpenFirstRun(new SettingsStore(path)),
+                "the welcome flyout opens only once even when the card remains undismissed");
+            new SettingsStore(path).Set(Shell.OnboardingSeenKey, false);
+            check(!Shell.ShouldOpenFirstRun(new SettingsStore(path)),
+                "showing the welcome card again does not reset the launch-time flyout gate");
             var actions = new SettingsActions(preferences, () => { }, _ => { }, () => { }, _ => { }, _ => { });
             var retained = true;
             foreach (var page in Enum.GetValues<SettingsPage>())
@@ -197,8 +229,29 @@ static class AppChecks
             "session metadata keeps the client name whole while long projects and models truncate");
         var called = false;
         var disclosure = new DisclosureRow(() => called = true);
-        (UIElementAutomationPeer.CreatePeerForElement(disclosure)?.GetPattern(PatternInterface.Invoke) as IInvokeProvider)?.Invoke();
+        var disclosurePeer = UIElementAutomationPeer.CreatePeerForElement(disclosure);
+        (disclosurePeer?.GetPattern(PatternInterface.Invoke) as IInvokeProvider)?.Invoke();
         check(called, "session disclosures expose their action through UI Automation");
+        check(disclosurePeer?.GetPattern(PatternInterface.ExpandCollapse) is null,
+            "showing more earlier records exposes Invoke without a misleading ExpandCollapse state");
+        var toggle = new DisclosureRow(() => { }, toggle: true);
+        var togglePeer = UIElementAutomationPeer.CreatePeerForElement(toggle);
+        toggle.Update("Collapse", true, false, null, "Collapse");
+        check((togglePeer?.GetPattern(PatternInterface.ExpandCollapse) as IExpandCollapseProvider)?.ExpandCollapseState == ExpandCollapseState.Expanded,
+            "the session list toggle exposes its updated expansion state");
+        var project = TrimLine.Shrink(new Border { MinWidth = 0, Child = new Border { Width = 180, Height = 10 } });
+        var model = TrimLine.Shrink(new Border { MinWidth = 0, Child = new Border { Width = 40, Height = 10 } });
+        var line = new TrimLine(project, model);
+        line.Measure(new Size(200, 10));
+        check(Math.Abs(project.DesiredSize.Width - 160) < 0.01 && Math.Abs(model.DesiredSize.Width - 40) < 0.01,
+            "metadata shrink children satisfy the smallest natural width before sharing the remaining space");
+        var widgetOutline = new WidgetView { Rounded = true };
+        widgetOutline.Update([], StatusBarLayout.Minimal, nextPercent: 200);
+        widgetOutline.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        check(Math.Abs(widgetOutline.OutlineRadius * widgetOutline.Scale - 8) < 0.01,
+            "widget outlines keep an eight DIP radius independently of widget scale");
+        widgetOutline.Rounded = false;
+        check(widgetOutline.OutlineRadius == 0, "widget outlines stay square when DWM rounding is unavailable");
         var button = Tree(dashboard).OfType<Button>().Single(control => AutomationProperties.GetName(control).Contains("Task Manager", StringComparison.Ordinal)
             || AutomationProperties.GetName(control).Contains("작업 관리자", StringComparison.Ordinal));
         check(button.Focusable && UIElementAutomationPeer.CreatePeerForElement(button)?.GetPattern(PatternInterface.Invoke) is IInvokeProvider,
@@ -628,7 +681,11 @@ static class AppChecks
             var texts = about.OfType<TextBlock>().Select(text => text.Text.Replace("⁠", "")).ToList();
             var bullets = AppInfo.PrivacyLines.Count == 3 && AppInfo.PrivacyLines.All(texts.Contains)
                           && AppInfo.PrivacyLines[0] == "로컬 로그·실측의 메타데이터만 읽고, 프롬프트·응답 본문은 저장하거나 표시하지 않습니다"
-                          && With(AppLanguage.En, () => AppInfo.PrivacyLines[1]) == "Never calls a model or signs in. Update checks and downloads connect only to GitHub";
+                          && With(AppLanguage.En, () => AppInfo.PrivacyLines[1]) == "Never calls a model or signs in. Update checks and downloads connect only to GitHub"
+                          && AppInfo.PrivacyLines[2].Contains("OpenAI는 Codex CLI의 로그인으로", StringComparison.Ordinal)
+                          && AppInfo.PrivacyLines[2].Contains("Anthropic은 Claude Code·omp·Pi에 저장된 로그인으로", StringComparison.Ordinal)
+                          && With(AppLanguage.En, () => AppInfo.PrivacyLines[2]).Contains("OpenAI for usage through the Codex CLI's sign-in", StringComparison.Ordinal)
+                          && With(AppLanguage.En, () => AppInfo.PrivacyLines[2]).Contains("Anthropic through sign-ins saved by Claude Code, omp or Pi", StringComparison.Ordinal);
             List<Button> updateButtons(List<DependencyObject> page) => [.. page.OfType<Button>().Where(button => AutomationProperties.GetName(button) is "업데이트" or "지금 확인")];
             var installable = updateButtons(about) is [{ IsDefault: true } only] && AutomationProperties.GetName(only) == "업데이트";
             var installing = updateButtons(Descendants(new SettingsView(fixture with { Dashboard = fixture.Dashboard with { Update = Fixtures.Update("downloading", Fixtures.Now) } },
@@ -743,6 +800,9 @@ static class AppChecks
         var link = Ui.Link("백업 보기", () => { }, "원본 백업");
         check(AutomationProperties.GetName(Ui.SmallButton("지금 다시 시도", () => { })) == "지금 다시 시도" && AutomationProperties.GetName(link) == "백업 보기"
               && Equals(link.ToolTip, "원본 백업"), "text buttons are named by their visible words, with the help as a tooltip");
+        check(AutomationProperties.GetHelpText(Ui.SmallButton("Retry", () => { })).Length == 0
+            && AutomationProperties.GetHelpText(Ui.SmallButton("Retry", () => { }, "Try again")) == "Try again",
+            "small buttons expose help text only when separate help is supplied");
 
         var footer = new Footer(DashboardActions.None);
         var failed = Fixtures.Update("failed", Fixtures.Now).Notice(null);

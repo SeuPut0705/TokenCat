@@ -12,7 +12,8 @@ namespace TokenCat;
 /// the collector reads as stopped; passive desktop and omp/Pi records still work. Without `ReadLimits` nothing goes online.
 public sealed record MonitorOptions(string Home, string SupportDirectory, Func<SystemSnapshot> SampleSystem,
     TelemetryCollector? Telemetry = null, Func<DateTimeOffset>? Clock = null,
-    Func<LimitSlot, CancellationToken, Task<LiveLimitResult>>? ReadLimits = null, Action<LimitSlot>? ForgetLimits = null);
+    Func<LimitSlot, CancellationToken, Task<LiveLimitResult>>? ReadLimits = null, Action<LimitSlot>? ForgetLimits = null,
+    Func<string, string?>? Environment = null);
 
 /// DashboardModel's published state, immutable per publish. Fixtures construct it directly (WP5 snapshots).
 /// `DetectedSources`: clients whose data folder exists (`TokenTracker.DetectedSources`), refreshed with the folder check.
@@ -114,14 +115,14 @@ public sealed class LiveMonitor : IDisposable
         if (options.ReadLimits is { } read) livePoller = new LiveLimitPoller(read, options.ForgetLimits, gate);
         clock = options.Clock ?? (() => DateTimeOffset.UtcNow);
         store = new SettingsStore(Path.Combine(options.SupportDirectory, "settings.json"));
-        tracker = new TokenTracker(options.Home, clock);
+        tracker = new TokenTracker(options.Home, clock, environment: options.Environment);
         // One account reader for the tracker, the limit rows and the omp/Pi records: the tracker refreshes it once a sample.
         limitAccounts = tracker.AccountReader;
         limitAccounts.Refresh(clock());
         defaultLimitAccounts = DefaultAccounts();
         knownLimitAccounts = KnownAccounts();
         desktop = new ClaudeUsage.DesktopReader(AppPaths.ClaudeDesktopHistory());
-        agentUsage = new AgentUsageHistoryReader(options.Home, Environment.GetEnvironmentVariable, limitAccounts);
+        agentUsage = new AgentUsageHistoryReader(options.Home, options.Environment ?? Environment.GetEnvironmentVariable, limitAccounts);
         foreach (var (id, seconds) in store.Get<Dictionary<string, double>>(PendingRestartKey) ?? new Dictionary<string, double>())
             foreach (var source in TokenSource.TelemetryClients.Where(value => value.Id == id))
                 pendingRestart[source] = DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1_000));
@@ -175,10 +176,10 @@ public sealed class LiveMonitor : IDisposable
             loops = Task.Run(async () =>
             {
                 // A Stop() then Start() waits for the stopped loops, which end at their next cancellation check.
-                await previous.ConfigureAwait(false);
+                try { await previous.ConfigureAwait(false); }
+                catch (Exception) { } // A stopped, faulted generation must not poison every subsequent Start().
                 await Task.WhenAll(Task.Run(() => SystemLoop(signal, token)), Task.Run(() => TokenLoop(signal, token))).ConfigureAwait(false);
             });
-            _ = loops.ContinueWith(_ => cancellation.Dispose(), TaskScheduler.Default);
         }
     }
 
@@ -189,8 +190,10 @@ public sealed class LiveMonitor : IDisposable
         {
             if (running is null) return;
             livePoller?.Cancel();
-            running.Cancel();
+            var cancellation = running;
+            cancellation.Cancel();
             running = null;
+            _ = loops.ContinueWith(_ => cancellation.Dispose(), TaskScheduler.Default);
             wake?.Complete();
             wake = null;
             watcher?.Stop();
@@ -210,7 +213,7 @@ public sealed class LiveMonitor : IDisposable
         lock (gate) wake?.Tick();
     }
 
-    /// The shell reports whether either the flyout or detached dashboard is on screen, independently of live-limit settings.
+    /// The shell reports whether the flyout, detached dashboard or settings is on screen, independently of live-limit settings.
     public void SetDashboardVisible(bool visible)
     {
         lock (gate)
@@ -226,7 +229,7 @@ public sealed class LiveMonitor : IDisposable
     {
         if (options.Telemetry is not { } telemetry) return;
         telemetry.RetryNow();
-        _ = Task.Delay(300).ContinueWith(_ => Refresh(), TaskScheduler.Default);
+        Refresh();
     }
 
     /// After TokenCat changed a client's config: it needs a new launch until its first reading arrives.
@@ -289,10 +292,10 @@ public sealed class LiveMonitor : IDisposable
                         }
                         PublishSystem();
                     }
+                    lock (gate) PollLimits(token);
                 }
                 // A failed sample keeps the previous values; the footer's collection delay shows it.
                 catch (Exception error) when (error is not OperationCanceledException) { }
-                lock (gate) PollLimits(token);
             }
             while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false));
         }

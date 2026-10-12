@@ -11,6 +11,7 @@ sealed class TrayIcon : IDisposable
     readonly record struct FrameKey(int Size, bool Light, RunnerCharacter Character, RunnerPose Pose, int Frame, int? Fx, StateDot Dot);
     readonly Dictionary<FrameKey, Drawing.Icon> frames = [];
     FrameKey? drawn;
+    Drawing.Icon? retired;
     bool lightTaskbar;
     public int Size { get; private set; }
     internal IntPtr DrawnHandle => icon.Icon?.Handle ?? IntPtr.Zero;
@@ -53,6 +54,8 @@ sealed class TrayIcon : IDisposable
             frames[key] = next = Native.IconFromBgra(Pixels(Size, character, pose, frame, fxStep, dot, lightTaskbar), Size);
         }
         icon.Icon = next;
+        Release(retired);
+        retired = null;
         drawn = key;
     }
 
@@ -68,10 +71,13 @@ sealed class TrayIcon : IDisposable
         return TrayFrame.Head(Sprites.Sheet(Sprites.HeadName(head, TrayFrame.HeadScale(size))), bob,
             fxStep is null ? null : Sprites.Art(RunnerCharacter.Cat).Fx.GetValueOrDefault(pose), fxStep ?? 0, size, dot, lightTaskbar);
     }
-    void ClearFrames()
+    internal void ClearFrames()
     {
-        if (frames.Count > 0) icon.Icon = null;
-        foreach (var frame in frames.Values) Release(frame);
+        foreach (var frame in frames.Values)
+        {
+            if (ReferenceEquals(frame, icon.Icon)) retired = frame;
+            else Release(frame);
+        }
         frames.Clear();
         drawn = null;
     }
@@ -116,7 +122,10 @@ sealed class TrayIcon : IDisposable
     public void Dispose()
     {
         icon.Visible = false;
+        icon.Icon = null;
         ClearFrames();
+        Release(retired);
+        retired = null;
         icon.Dispose();
     }
 }

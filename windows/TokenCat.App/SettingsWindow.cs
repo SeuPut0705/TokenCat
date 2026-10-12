@@ -34,8 +34,8 @@ static class AppInfo
             "Reads only metadata from local logs and telemetry; never stores or shows prompts or responses"),
         Loc("모델을 호출하거나 계정에 로그인하지 않습니다. 업데이트 확인과 내려받기는 GitHub에만 연결합니다",
             "Never calls a model or signs in. Update checks and downloads connect only to GitHub"),
-        Loc("실시간 한도 확인이 켜져 있으면 Codex·Claude Code·omp·Pi에 저장된 로그인으로 OpenAI·Anthropic 사용량을 묻습니다. 토큰은 저장하지 않습니다",
-            "With Live usage limits on, asks OpenAI and Anthropic for usage with sign-ins saved by Codex, Claude Code, omp or Pi. Tokens are never stored"),
+        Loc("실시간 한도 확인이 켜져 있으면 OpenAI는 Codex CLI의 로그인으로, Anthropic은 Claude Code·omp·Pi에 저장된 로그인으로 사용량을 묻습니다. 토큰은 저장하지 않습니다",
+            "With Live usage limits on, asks OpenAI for usage through the Codex CLI's sign-in, and Anthropic through sign-ins saved by Claude Code, omp or Pi. Tokens are never stored"),
     ];
 
     /// The release zip puts LICENSE next to TokenCat.exe.

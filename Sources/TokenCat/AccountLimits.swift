@@ -196,7 +196,9 @@ final class LimitAccountReader {
             if var previous = observedRoots[key] {
                 if previous.account != account {
                     previous.account = account
-                    previous.switchedAt = now
+                    let config = configMetadata(root.metadata, provider: root.source)
+                    let modified = config.map { Date(timeIntervalSince1970: TimeInterval($0.stamp[3]) + TimeInterval($0.stamp[4]) / 1e9) }
+                    previous.switchedAt = min(now, modified ?? now)
                     observedRoots[key] = previous
                 }
             } else {

@@ -31,6 +31,7 @@ private final class ClineLogReader: TokenLogReader {
     /// Roo Code, Kilo Code, Zoo Code or IBM Bob, by the extension folder the task lives in; nil for Cline.
     private let clientName: String?
     private var stamp: ClineLogStamp?
+    private var failedStamp: ClineLogStamp?
     private var parsedAt: Date?
     private var summary: ClineLogSummary?
     private var cwd: String?
@@ -40,6 +41,9 @@ private final class ClineLogReader: TokenLogReader {
     private var historyModel: String?
     private var historyStamp: ClineLogStamp?
     private var manifestStamp: ClineLogStamp?
+    private var failedManifestStamp: ClineLogStamp?
+    /// Only manifest scalars used by the summary survive; the title/first prompt is never retained.
+    private var manifest: [String: String]?
     private var metadataModel: String?
     private var metadataStamp: ClineLogStamp?
     private static let maximumBytes = 67_108_864
@@ -56,22 +60,55 @@ private final class ClineLogReader: TokenLogReader {
         if cli {
             let manifestURL = folder.appendingPathComponent("\(folder.lastPathComponent).json")
             let current = [ClineLogStamp(url), ClineLogStamp(manifestURL)]
-            guard let messagesStamp = current[0], messagesStamp != stamp || current[1] != manifestStamp else { return }
-            // Stamps are kept only after a successful parse, so a file caught mid-write is read again on the next sample.
-            guard let messages = Self.messages(url) else { return }
-            let manifest = Self.object(manifestURL, limit: 1_048_576)
+            guard let messagesStamp = current[0], messagesStamp != failedStamp else { return }
+            let messagesChanged = messagesStamp != stamp
+            let manifestChanged = current[1] != (failedManifestStamp ?? manifestStamp)
+            guard messagesChanged || manifestChanged else { return }
+            if manifestChanged {
+                if let manifestFile = current[1] {
+                    if manifestFile.size > 1_048_576 {
+                        failedManifestStamp = manifestFile
+                        manifest = nil
+                    } else {
+                        // A sharing lock can clear without changing the stamp: do not cache I/O errors.
+                        guard let data = try? Data(contentsOf: manifestURL) else { return }
+                        if let object = LogFields.object(data) {
+                            manifest = ["model", "status", "ended_at"].reduce(into: [:]) { values, key in
+                                if let value = object[key] as? String { values[key] = value }
+                            }
+                            cwd = Self.path(object["cwd"]) ?? cwd
+                            manifestStamp = manifestFile
+                            failedManifestStamp = nil
+                        } else {
+                            failedManifestStamp = manifestFile
+                            manifest = nil
+                        }
+                    }
+                } else {
+                    manifest = nil
+                    manifestStamp = nil
+                    failedManifestStamp = nil
+                }
+                // Rejecting a manifest alone must not parse the unchanged messages again.
+                if failedManifestStamp != nil, !messagesChanged { return }
+            }
+            guard messagesStamp.size <= Self.maximumBytes else { failedStamp = messagesStamp; return }
+            guard let data = try? Data(contentsOf: url) else { return }
+            guard let messages = Self.messages(data) else { failedStamp = messagesStamp; return }
             stamp = messagesStamp
-            manifestStamp = current[1] == nil || manifest != nil ? current[1] : nil
-            cwd = Self.path(manifest?["cwd"]) ?? cwd
+            failedStamp = nil
             summary = ClineLogSummary(cli: messages, manifest: manifest)
             return
         }
-        guard let current = ClineLogStamp(url), current != stamp else { return }
+        guard let current = ClineLogStamp(url), current != stamp, current != failedStamp else { return }
         // A large task rewritten while it streams is summarised at most every 5 s.
         if current.size > 8_388_608, let parsedAt, now.timeIntervalSince(parsedAt) < 5 { return }
         parsedAt = now
-        guard let messages = Self.messages(url) else { return }
+        guard current.size <= Self.maximumBytes else { failedStamp = current; return }
+        guard let data = try? Data(contentsOf: url) else { return }
+        guard let messages = Self.messages(data) else { failedStamp = current; return }
         stamp = current
+        failedStamp = nil
         summary = ClineLogSummary(task: messages)
         if summary?.model == nil { readTaskMetadata(folder) }
         if (cwd == nil && !cwdSearched) || (summary?.model == nil && metadataModel == nil) { readHistory(folder) }
@@ -168,10 +205,9 @@ private final class ClineLogReader: TokenLogReader {
         return path
     }
 
-    /// The message array (the CLI may wrap it as `{messages: […]}`); nil when unreadable or oversized.
-    private static func messages(_ url: URL) -> [[String: Any]]? {
-        guard let data = contents(url, limit: maximumBytes),
-              let value = try? JSONSerialization.jsonObject(with: data) else { return nil }
+    /// The message array (the CLI may wrap it as `{messages: […]}`); nil for broken or wrong-shaped content.
+    private static func messages(_ data: Data) -> [[String: Any]]? {
+        guard let value = try? JSONSerialization.jsonObject(with: data) else { return nil }
         return value as? [[String: Any]] ?? (value as? [String: Any])?["messages"] as? [[String: Any]]
     }
 

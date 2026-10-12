@@ -60,6 +60,7 @@ final class GrokLogReader: TokenLogReader {
     private var measurement: TokenSpeedMeasurement?
 
     private var summaryStamp: String?
+    private var failedStamp: String?
     private var cwd: String?
     private var summaryModel: String?
     private var effort: String?
@@ -274,11 +275,12 @@ final class GrokLogReader: TokenLogReader {
             return
         }
         let current = "\(info.st_ino)-\(info.st_size)-\(info.st_mtimespec.tv_sec)-\(info.st_mtimespec.tv_nsec)"
-        guard current != summaryStamp else { return }
-        guard info.st_size <= 1_048_576 else { summaryStamp = current; return }
-        // Kept only after a successful parse: a summary caught mid-rewrite is read again on the next sample.
-        guard let data = try? Data(contentsOf: url), let summary = LogFields.object(data) else { return }
+        guard current != summaryStamp, current != failedStamp else { return }
+        guard info.st_size <= 1_048_576 else { failedStamp = current; return }
+        guard let data = try? Data(contentsOf: url) else { return }
+        guard let summary = LogFields.object(data) else { failedStamp = current; return }
         summaryStamp = current
+        failedStamp = nil
         if let path = LogFields.text((summary["info"] as? [String: Any])?["cwd"]), path.count <= 4_096 { cwd = path }
         if cwd == nil { cwd = Self.groupCwd(directory.deletingLastPathComponent()) }
         summaryModel = Self.modelName(summary["current_model_id"]) ?? summaryModel

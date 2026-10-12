@@ -494,7 +494,7 @@ sealed class OmpPinStore
     readonly HashSet<string> touched = new(LimitAccountReader.PathComparer);
     long sweptAt = Environment.TickCount64;
 
-    OmpPinStore() { }
+    internal OmpPinStore() { }
 
     internal int Count { get { lock (gate) return files.Count; } }
     sealed record Record
@@ -589,7 +589,9 @@ sealed class OmpPinStore
             try
             {
                 int count;
-                while ((count = stream.Read(chunk, 0, 1_048_576)) > 0)
+                // The tail's stat can precede an append: never scan bytes beyond the stamp we commit.
+                while (state.Offset < stamp.Length
+                    && (count = stream.Read(chunk, 0, (int)Math.Min(1_048_576, stamp.Length - state.Offset))) > 0)
                 {
                     state.Offset += count;
                     state.Lines.Consume(chunk.AsSpan(0, count), line => Consume(line, state));

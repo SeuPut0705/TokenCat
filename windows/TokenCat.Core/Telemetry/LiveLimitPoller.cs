@@ -6,7 +6,7 @@ public sealed class LiveLimitPoller
 {
     sealed class State
     {
-        public DateTimeOffset? Last, RetryAt;
+        public DateTimeOffset? Last, PreviousLast, RetryAt;
         public int Failures;
         public bool InFlight;
     }
@@ -57,6 +57,7 @@ public sealed class LiveLimitPoller
             {
                 if (!states.TryGetValue(slot, out var state)) states[slot] = state = new();
                 if (state.InFlight || !LiveLimits.Due(state.Last, state.RetryAt, now, live(slot), open, opened)) continue;
+                state.PreviousLast = state.Last;
                 state.Last = now;
                 state.InFlight = true;
                 started.Add(slot);
@@ -69,12 +70,16 @@ public sealed class LiveLimitPoller
     {
         LiveLimitResult result;
         try { result = await read(slot, token).ConfigureAwait(false); }
-        catch (OperationCanceledException) when (token.IsCancellationRequested) { result = new(Failed: true); }
+        catch (Exception) { result = new(Failed: true); }
         lock (gate)
         {
             var state = states[slot];
             state.InFlight = false;
-            if (epoch != generation || token.IsCancellationRequested) return;
+            if (epoch != generation || token.IsCancellationRequested)
+            {
+                state.Last = state.PreviousLast;
+                return;
+            }
             state.Failures = result.Failed ? Math.Min(state.Failures + 1, 30) : 0;
             state.RetryAt = result.Failed ? state.Last?.AddSeconds(60 * Math.Pow(2, Math.Min(state.Failures, 5) - 1)) : null;
             if (result.Codex is not null || result.Claude is not null) deliver(result with { Slot = slot });

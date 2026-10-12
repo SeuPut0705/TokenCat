@@ -235,6 +235,8 @@ public sealed class KimiCodeLogReader : ITokenLogReader
     readonly LogLineTail tail;
     readonly string statePath;
     (long, long, long)? stateStamp;
+    /// A `state.json` that did not parse: not parsed again until it changes, while the last good one stays shown.
+    (long, long, long)? failedStateStamp;
     readonly string sessionID;
     readonly string agentID;
     readonly string? clientName;
@@ -293,11 +295,13 @@ public sealed class KimiCodeLogReader : ITokenLogReader
     }
 
     /// `state.json` is rewritten whole on every metadata change (title, agents); read again when its file, size or time changed.
+    /// One that could not be opened is retried next sample.
     void ReadState()
     {
-        if (KimiLog.Stamp(statePath) is not { } current || current == stateStamp) return;
+        if (KimiLog.Stamp(statePath) is not { } current || current == stateStamp || current == failedStateStamp) return;
         if (current.Item2 > 4_194_304) { stateStamp = current; return; }
-        if (KimiLog.Object(statePath) is not { } state) return;
+        if (KimiLog.Bytes(statePath) is not { } data) return;
+        if (Json.Parse(data) is not { ValueKind: JsonValueKind.Object } state) { failedStateStamp = current; return; }
         stateStamp = current;
         cwd = LogFields.Text(state.Field("cwd")) ?? LogFields.Text(state.Field("workDir")) ?? cwd;
         title = KimiLog.Title(state);

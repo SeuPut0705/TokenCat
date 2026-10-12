@@ -26,6 +26,24 @@ func runSessionPresentationChecks() -> [String] {
         SessionListModel.make(tokens: tokens, now: now, expanded: expanded, flow: flow, calendar: utc)
     }
 
+    // Idle system publishes age menu-bar values without rebuilding the off-screen flow or list.
+    let idleModel = DashboardModel(telemetryProvider: { [] }, restoresRestartState: false)
+    idleModel.tokens = [reading("idle-clock", state: .complete)]
+    idleModel.tokensSampledAt = now
+    idleModel.system.sampledAt = now
+    idleModel.sessionsExpanded = true
+    let idleFlow = idleModel.flow
+    let idleAI = StatusAISummary(groups: idleModel.groups, counts: idleModel.sessions.counts)
+    idleModel.system.sampledAt = at(3)
+    idleModel.advancePresentationClock(to: at(3))
+    check(idleModel.now == at(3) && idleModel.flow == idleFlow && idleAI.running == 0
+          && StatusAISummary(groups: idleModel.groups, counts: idleModel.sessions.counts) == idleAI,
+          "idle system samples advance menu-bar ages without rebuilding the closed dashboard or changing its idle AI count")
+    idleModel.settingsVisible = { true }
+    idleModel.advancePresentationClock(to: at(3))
+    check(idleModel.flow.newest == FlowSeries.bucketStart(at(3)) && idleModel.flow != idleFlow,
+          "a visible Settings window keeps presentation clocks on the active cadence")
+
     // Display state maps the tracker enum; stale is "로그 대기" only for 10 minutes after the newest record.
     func state(_ value: TokenReading) -> SessionDisplayState { SessionPresentation.displayState(value, now: now) }
     var output = reading("o", active: true, state: .output)
@@ -600,6 +618,19 @@ func runSessionPresentationChecks() -> [String] {
         ClaudeLimitsByAccount().save(to: defaults)
         check(defaults.data(forKey: ClaudeUsageLimits.defaultsKey) == nil && ClaudeLimitsByAccount.load(from: defaults, defaultAccount: nil).isEmpty,
               "empty Claude limits clear the stored value")
+        let configured = LimitAccount(id: "configured")
+        let recorded = LimitAccount(id: "recorded")
+        let session = LimitAccount(id: "session")
+        let shown = LimitAccount(id: "shown")
+        let obsolete = LimitAccount(id: "obsolete")
+        let hidden = ClaudeUsageLimits(fiveHour: claudeWindow(10, resetsIn: -86_401, received: -100_000))
+        let unpruned: ClaudeLimitsByAccount = [configured.storageKey: hidden, recorded.storageKey: hidden,
+            session.storageKey: hidden, shown.storageKey: merged, obsolete.storageKey: hidden, "legacy": hidden]
+        let pruned = unpruned.pruned(current: [configured.storageKey, recorded.storageKey, session.storageKey], now: now)
+        pruned.save(to: defaults)
+        check(Set(pruned.keys) == [configured.storageKey, recorded.storageKey, session.storageKey, shown.storageKey, "legacy"]
+              && ClaudeLimitsByAccount.load(from: defaults, defaultAccount: nil) == pruned,
+              "Claude limit pruning keeps configured, recorded, session and shown accounts, but drops obsolete hidden accounts")
         scratch.discard()
     } else { check(false, "temporary defaults suite unavailable") }
 

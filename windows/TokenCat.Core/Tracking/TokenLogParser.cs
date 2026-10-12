@@ -875,7 +875,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
     static double? Number(JsonElement? value, double limit) => value?.Number is { } number && number <= limit ? number : null;
 
     /// Rule 4: text as `LogFields.Date` reads it (what ISO8601DateFormatter accepts); numbers are epoch seconds.
-    static DateTimeOffset? Date(JsonElement? value)
+    internal static DateTimeOffset? Date(JsonElement? value)
     {
         if (value?.Text is { } text) return LogFields.Date(text);
         if (value?.Number is { } seconds && seconds > 0 && seconds < 253_370_764_800) // before 9999-01-01, as LogFields.Date

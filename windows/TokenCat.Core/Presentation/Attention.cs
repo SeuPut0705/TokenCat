@@ -72,10 +72,6 @@ public sealed record AttentionEvent(AttentionKind Kind, AttentionSignal Signal)
         }
     }
 
-    /// One delivered notification per group and kind: a newer one replaces it, and leaving input removes it.
-    public string Identifier => Kind == AttentionKind.Input ? InputIdentifier(Signal.Id) : "done-" + Signal.Id;
-    public static string InputIdentifier(string group) => "input-" + group;
-
     /// Raw duration reported by the client ("4분 12초" / "4m 12s"); never combined with token counts.
     public static string? Duration(double seconds)
     {

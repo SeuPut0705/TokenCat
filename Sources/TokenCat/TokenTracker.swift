@@ -88,7 +88,7 @@ final class TokenTracker {
     func isLog(_ path: String) -> Bool { logRoot(of: path) != nil }
 
     /// Whether a file event should wake a sample: a log, or the `-wal` journal of a database log (OpenCode writes its
-    /// changes there until a checkpoint). Other files under the watched roots wait for the 1 s timer. Any thread may ask.
+    /// changes there until a checkpoint). Other files under the watched roots wait for the adaptive tick. Any thread may ask.
     func wakesSampling(_ path: String) -> Bool {
         isLog(path) || (path.hasSuffix("-wal") && isLog(String(path.dropLast(4))))
     }

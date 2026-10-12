@@ -123,12 +123,14 @@ public sealed class TokenTracker
         }
         AccountReader.Refresh(now);
         // Every Codex reader of one Codex home shares its thread-name index: one stat of it per sample, not one per rollout.
+        // An index that throws keeps its previous names, like a reader that throws below.
         refreshedIndexes.Clear();
         foreach (var file in files.Values)
             if (file.Reader is TokenFileCursor { ThreadNames: { } index } && !refreshedIndexes.Contains(index))
             {
                 refreshedIndexes.Add(index);
-                index.Refresh(now);
+                try { index.Refresh(); }
+                catch (Exception) { }
             }
         // One reader that throws (a corrupt or hostile log) keeps its previous state and rows; the others still report.
         foreach (var file in files.Values)
@@ -341,7 +343,7 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
             ParentSessionID = parser.ParentSessionID,
             AgentID = parser.AgentID,
             Project = parser.Project,
-            Title = ThreadNames is { } names ? names.Name(parser.SessionID, now) : parser.Title,
+            Title = ThreadNames is { } names ? names.Name(parser.SessionID) : parser.Title,
             ProjectPath = parser.ProjectPath,
             IsSubagent = parser.IsSubagent,
             AgentRole = SidecarRole ?? parser.AgentRole,

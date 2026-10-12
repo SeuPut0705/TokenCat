@@ -33,18 +33,41 @@ public static class LiveLimitChecks
         }
         finally { folder.Delete(true); }
         Rows(check);
+        var now = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
+        var stale = new ClaudeUsageLimits(new ClaudeLimitWindow(20, now.AddDays(-2), now.AddDays(-3)));
+        var shown = new ClaudeUsageLimits(new ClaudeLimitWindow(30, now.AddHours(1), now));
+        var pruning = ClaudeLimitsByAccount.Pruned(new Dictionary<string, ClaudeUsageLimits>
+        {
+            ["configured"] = stale, ["recorded"] = stale, ["session"] = stale, ["shown"] = shown, ["obsolete"] = stale,
+            [ClaudeLimitsByAccount.LegacyKey] = stale,
+        }, new HashSet<string> { "configured", "recorded", "session" }, now);
+        check(pruning.Keys.ToHashSet().SetEquals(["configured", "recorded", "session", "shown", ClaudeLimitsByAccount.LegacyKey]),
+              "Claude limit pruning keeps configured, recorded, session and shown accounts, but drops obsolete hidden accounts");
         return c.Done();
     }
 
     /// A script that prints each line and reads one stdin line at each `Read`.
     static string FakeAppServer(string folder, string name, params string[] steps)
     {
-        var windows = OperatingSystem.IsWindows();
-        var path = Path.Combine(folder, name + (windows ? ".cmd" : ".sh"));
-        var lines = steps.Select(step => step == Read ? (windows ? "set /p line=" : "read -r line") : windows ? "echo " + step : $"printf '%s\\n' '{step}'");
-        File.WriteAllText(path, string.Join(windows ? "\r\n" : "\n", [windows ? "@echo off" : "#!/bin/sh", .. lines]) + "\n");
-        if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        if (OperatingSystem.IsWindows())
+            return WindowsAppServer(folder, name, string.Join("\n", steps.Select(step => step == Read
+                ? "$null = [Console]::In.ReadLine()" : $"[Console]::Out.WriteLine('{step.Replace("'", "''")}')")));
+        var path = Path.Combine(folder, name + ".sh");
+        var lines = steps.Select(step => step == Read ? "read -r line" : $"printf '%s\\n' '{step}'");
+        File.WriteAllText(path, string.Join("\n", ["#!/bin/sh", .. lines]) + "\n");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         return path;
+    }
+
+    // cmd's set /p can discard a second line from the same stdin write. Console.In retains buffered JSON-RPC lines.
+    static string WindowsAppServer(string folder, string name, string body)
+    {
+        var script = Path.Combine(folder, name + ".ps1");
+        var shim = Path.Combine(folder, name + ".cmd");
+        File.WriteAllText(script, "$ErrorActionPreference = 'Stop'\n"
+            + $"[IO.File]::WriteAllText('{shim.Replace("'", "''")}.pid', [string]$PID)\n" + body + "\n");
+        File.WriteAllText(shim, "@echo off\r\npowershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"%~dpn0.ps1\"\r\nexit /b %errorlevel%\r\n");
+        return shim;
     }
 
     static bool Ended(string script)
@@ -79,29 +102,43 @@ public static class LiveLimitChecks
               && Run(Path.Combine(folder, "missing")) is { Failed: true }, "a JSON-RPC error, another limit or a missing executable reads as an answer");
         // Never answers: ended at the timeout instead of waiting for it.
         var windows = OperatingSystem.IsWindows();
-        var silent = Path.Combine(folder, "silent" + (windows ? ".cmd" : ".sh"));
-        File.WriteAllText(silent, windows
-            ? $"@echo off\r\npowershell.exe -NoProfile -NonInteractive -Command \"$PID | Set-Content -LiteralPath '{silent.Replace("'", "''")}.pid'; [Console]::ReadLine() | Out-Null; Start-Sleep -Seconds 30\"\r\n"
-            : "#!/bin/sh\necho $$ > \"$0.pid\"\nread -r line\nexec sleep 30\n");
-        if (!windows) File.SetUnixFileMode(silent, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var silent = windows
+            ? WindowsAppServer(folder, "silent", "$null = [Console]::In.ReadLine()\nStart-Sleep -Seconds 30")
+            : Path.Combine(folder, "silent.sh");
+        if (!windows)
+        {
+            File.WriteAllText(silent, "#!/bin/sh\necho $$ > \"$0.pid\"\nread -r line\nexec sleep 30\n");
+            File.SetUnixFileMode(silent, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
         var watch = Stopwatch.StartNew();
-        check(Run(silent, timeout: 1) is { Failed: true } && watch.Elapsed < TimeSpan.FromSeconds(6) && Ended(silent),
+        // Include PowerShell startup in the Windows deadline; the PID still proves the actual server was ended.
+        check(Run(silent, timeout: windows ? 3 : 1) is { Failed: true } && watch.Elapsed < TimeSpan.FromSeconds(windows ? 8 : 6) && Ended(silent),
               "a silent Codex app-server is not ended at the timeout");
         // LiveLimitsChecks.swift's ordered server: the order of requests is enforced (a wrong line exits with an error code),
         // notifications come before each response, and the initialize response arrives in two writes 0.1 s apart. The server
-        // then idles; the reader must end it. (On Windows the cmd script checks the methods without quotes and writes the
-        // response at once: cmd cannot print a partial line with quotes reliably.)
+        // then idles; the reader must end it. Both platforms validate all three ordered stdin lines and split the answer.
         var ordered = Path.Combine(folder, "ordered" + (windows ? ".cmd" : ".sh"));
         const string notice = """{"jsonrpc":"2.0","method":"remoteControl/status/changed","params":{"status":"off"}}""";
         const string limits = """{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1791580427},"secondary":null,"credits":{"hasCredits":false},"planType":"pro","rateLimitReachedType":null}}}""";
-        File.WriteAllText(ordered, windows
-            ? string.Join("\r\n", "@echo off", "set /p line=", "echo %line% | findstr /c:initialize >nul || exit /b 3", "echo " + notice,
-                """echo {"jsonrpc":"2.0","id":1,"result":{"userAgent":"fake/1.0"}}""", "set /p line=",
-                "echo %line% | findstr /c:initialized >nul || exit /b 4", "set /p line=",
-                "echo %line% | findstr /c:rateLimits/read >nul || exit /b 6",
-                """echo {"jsonrpc":"2.0","method":"account/updated","params":{"authMode":"chatgpt"}}""", "echo " + limits,
-                $"powershell.exe -NoProfile -NonInteractive -Command \"$PID | Set-Content -LiteralPath '{ordered.Replace("'", "''")}.pid'; Start-Sleep -Seconds 30\"") + "\r\n"
-            : $$$"""
+        if (windows)
+            ordered = WindowsAppServer(folder, "ordered", $$$"""
+                $line = [Console]::In.ReadLine()
+                if ($line -notmatch '"method":"initialize"') { exit 3 }
+                [Console]::Out.WriteLine('{{{notice}}}')
+                [Console]::Out.Write('{"jsonrpc":"2.0","id":1,')
+                [Console]::Out.Flush()
+                Start-Sleep -Milliseconds 100
+                [Console]::Out.WriteLine('"result":{"userAgent":"fake/1.0"}}')
+                $line = [Console]::In.ReadLine()
+                if ($line -notmatch '"method":"initialized"') { exit 4 }
+                $line = [Console]::In.ReadLine()
+                if ($line -notmatch '"id":2') { exit 5 }
+                if ($line -notmatch '"method":"account/rateLimits/read"') { exit 6 }
+                [Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"account/updated","params":{"authMode":"chatgpt"}}')
+                [Console]::Out.WriteLine('{{{limits}}}')
+                Start-Sleep -Seconds 30
+                """);
+        else File.WriteAllText(ordered, $$$"""
               #!/bin/sh
               echo $$ > "$0.pid"
               read -r line
@@ -122,10 +159,10 @@ public static class LiveLimitChecks
               """);
         if (!windows) File.SetUnixFileMode(ordered, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var started = Stopwatch.StartNew();
-        var answered = Run(ordered, timeout: 5);
+        var answered = Run(ordered, timeout: windows ? 7 : 5);
         var elapsed = started.Elapsed;
         check(!answered.Failed && answered.Codex is [{ UsedPercent: 31, WindowMinutes: 10_080, Live: true } window]
-              && window.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_791_580_427) && elapsed < TimeSpan.FromSeconds(4) && Ended(ordered),
+              && window.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_791_580_427) && elapsed < TimeSpan.FromSeconds(windows ? 6 : 4) && Ended(ordered),
               $"the Codex app-server read skips notifications, joins split lines and ends the server ({(answered.Codex is { } got ? string.Join(", ", got) : "nil")})");
         var now = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
         check(LiveLimits.DecodeCodex(Json.Parse("""{"limitId":"other","primary":{"usedPercent":10}}"""u8), now) is null
@@ -196,6 +233,11 @@ public static class LiveLimitChecks
               && stub.Requests.Count == 4, "a token without an expiry is sent, or one refused with 403 is sent again");
         File.Delete(credentials);
         check(Claude() is { Claude: null, Failed: false } && stub.Requests.Count == 4, "no Claude sign-in still sends a request");
+        Store("t4", 3_600);
+        var restoredRefusal = Claude();
+        check(restoredRefusal is { Claude: null, Failed: false } && stub.Requests.Count == 4,
+              "a temporarily missing credential file forgets a token refused with 401 or 403");
+        File.Delete(credentials);
         // omp's and Pi's saved Anthropic sign-in: read from agent.db, offered after Claude Code's, only for Claude Code's account.
         var agentDb = Path.Combine(folder, ".omp", "agent", "agent.db");
         Directory.CreateDirectory(Path.GetDirectoryName(agentDb)!);
@@ -348,9 +390,42 @@ public static class LiveLimitChecks
         inFlight.SetResult(new());
         reading.GetAwaiter().GetResult();
         busy.Tick(now.AddSeconds(LiveLimitPoller.Retention), false, new HashSet<LimitSlot>(), _ => false, _ => { }).GetAwaiter().GetResult();
-        check(delivered.SequenceEqual([second]) && retained.SetEquals([first, second]) && boundary.SetEquals([second])
+        check(delivered.SequenceEqual([second]) && retained.SetEquals([second]) && boundary.SetEquals([second])
               && quiet.Held == 0 && forgotten.SequenceEqual([first, second]) && busyRetained && busy.Held == 0,
               "live poller keeps the state of slots no longer eligible past the retention, or drops it too early");
+
+        var resumeCalls = 0;
+        var resumeReady = new TaskCompletionSource<LiveLimitResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resumable = new LiveLimitPoller((_, _) =>
+        {
+            resumeCalls++;
+            return resumeCalls is 1 or 3 ? resumeReady.Task : Task.FromResult(new LiveLimitResult());
+        });
+        var interrupted = resumable.Tick(now, false, new HashSet<LimitSlot> { first }, _ => false, _ => { });
+        resumable.Cancel();
+        resumeReady.SetResult(new());
+        interrupted.GetAwaiter().GetResult();
+        resumable.Tick(now.AddSeconds(1), false, new HashSet<LimitSlot> { first }, _ => false, _ => { }).GetAwaiter().GetResult();
+        var resumedFirst = resumeCalls == 2;
+        resumeReady = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        var interruptedAgain = resumable.Tick(now.AddSeconds(1 + LiveLimits.IdleInterval), false,
+            new HashSet<LimitSlot> { first }, _ => false, _ => { });
+        resumable.Cancel();
+        resumeReady.SetResult(new());
+        interruptedAgain.GetAwaiter().GetResult();
+        resumable.Tick(now.AddSeconds(2 + LiveLimits.IdleInterval), false,
+            new HashSet<LimitSlot> { first }, _ => false, _ => { }).GetAwaiter().GetResult();
+        check(resumedFirst && resumeCalls == 4,
+              "a live read cancelled by turning live limits off does not delay the next read after they come back");
+        var faultCalls = 0;
+        var faulted = new LiveLimitPoller((_, _) =>
+        {
+            faultCalls++;
+            throw new IOException("fixture read failure");
+        });
+        faulted.Tick(now, false, new HashSet<LimitSlot> { first }, _ => false, _ => { }).GetAwaiter().GetResult();
+        faulted.Tick(now.AddSeconds(LiveLimits.IdleInterval + 1), false, new HashSet<LimitSlot> { first }, _ => false, _ => { }).GetAwaiter().GetResult();
+        check(faultCalls == 2, "a faulted live read permanently holds its in-flight slot");
     }
 
     sealed class CountingContext : SynchronizationContext

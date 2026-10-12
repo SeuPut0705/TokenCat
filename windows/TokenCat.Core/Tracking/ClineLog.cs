@@ -34,12 +34,16 @@ sealed class ClineLogReader(string path) : ITokenLogReader
 {
     const FileShare Sharing = FileShare.ReadWrite | FileShare.Delete; // never block the extension's rewrites
     const long MaximumBytes = 67_108_864;
+    const long ManifestBytes = 1_048_576;
     readonly bool cli = Path.GetFileName(path) != "ui_messages.json";
     /// Roo Code, Kilo Code, Zoo Code or IBM Bob, by the extension folder the task lives in; null for Cline.
     readonly string? clientName = path.Replace('\\', '/') is var normalized
         ? TokenProvider.VSCodeExtensions.FirstOrDefault(extension => normalized.Contains($"/{extension.Id}/", StringComparison.OrdinalIgnoreCase)).Client
         : null;
     (long Ticks, long Size)? stamp, manifestStamp, historyStamp, metadataStamp;
+    /// Snapshots that did not parse: not parsed again until they change, while the last good summary stays shown. A broken
+    /// manifest keeps unchanged messages from being summarised again; messages that change are summarised without it.
+    (long Ticks, long Size)? failedStamp, failedManifestStamp;
     DateTimeOffset? parsedAt;
     ClineLogSummary? summary;
     string? cwd;
@@ -67,28 +71,39 @@ sealed class ClineLogReader(string path) : ITokenLogReader
             var manifestPath = Path.Combine(folder, Path.GetFileName(folder) + ".json");
             var current = Stamp(path);
             var currentManifest = Stamp(manifestPath);
-            if (current is null || (current == stamp && currentManifest == manifestStamp)) return;
-            if (current.Value.Item2 > MaximumBytes) { stamp = current; manifestStamp = currentManifest; return; }
-            using var messages = Document(path, MaximumBytes);
-            if (messages is null || MessageArray(messages.RootElement) is not { } list) return;
-            using var manifest = Document(manifestPath, 1_048_576);
-            var manifestRoot = manifest?.RootElement;
+            if (current is null || current == failedStamp
+                || (current == stamp && (currentManifest == manifestStamp || currentManifest == failedManifestStamp))) return;
+            if (current.Value.Size > MaximumBytes) { stamp = current; manifestStamp = currentManifest; return; }
+            // A file that could not be opened (a writer's lock) is retried next sample; an oversized manifest is left unread.
+            var manifestBroken = currentManifest is not null && currentManifest == failedManifestStamp;
+            byte[]? manifestData = null;
+            if (!manifestBroken && currentManifest is { } manifestFile && manifestFile.Size <= ManifestBytes
+                && (manifestData = Bytes(manifestPath, ManifestBytes)) is null) return;
+            using var manifest = Parse(manifestData);
+            JsonElement? manifestRoot = manifest?.RootElement is { ValueKind: JsonValueKind.Object } root ? root : null;
+            manifestBroken |= manifestData is not null && manifestRoot is null;
+            if (manifestBroken && current == stamp) { failedManifestStamp = currentManifest; return; }
+            if (Bytes(path, MaximumBytes) is not { } data) return;
+            using var messages = Parse(data);
+            if (messages is null || MessageArray(messages.RootElement) is not { } list) { failedStamp = current; return; }
             stamp = current;
-            manifestStamp = currentManifest is null || manifestRoot is { ValueKind: JsonValueKind.Object }
-                || currentManifest.Value.Item2 > 1_048_576 ? currentManifest : null;
+            if (manifestBroken) failedManifestStamp = currentManifest;
+            else manifestStamp = currentManifest;
             cwd = PathText(manifestRoot?.Field("cwd")) ?? cwd;
             summary = ClineLogSummary.FromCli(list, manifestRoot);
             return;
         }
         var currentStamp = Stamp(path);
-        if (currentStamp is null || currentStamp == stamp) return;
+        if (currentStamp is null || currentStamp == stamp || currentStamp == failedStamp) return;
         // A large task rewritten while it streams is summarised at most every 5 s.
-        if (currentStamp.Value.Item2 > 8_388_608 && parsedAt is { } parsed && (now - parsed).TotalSeconds < 5) return;
-        if (currentStamp.Value.Item2 > MaximumBytes) { stamp = currentStamp; return; }
+        if (currentStamp.Value.Size > 8_388_608 && parsedAt is { } parsed && (now - parsed).TotalSeconds < 5) return;
+        if (currentStamp.Value.Size > MaximumBytes) { stamp = currentStamp; return; }
         parsedAt = now;
-        using (var document = Document(path, MaximumBytes))
+        // A file that could not be opened is retried next sample.
+        if (Bytes(path, MaximumBytes) is not { } bytes) return;
+        using (var document = Parse(bytes))
         {
-            if (document is null || MessageArray(document.RootElement) is not { } messages) return;
+            if (document is null || MessageArray(document.RootElement) is not { } messages) { failedStamp = currentStamp; return; }
             stamp = currentStamp;
             summary = ClineLogSummary.FromTask(messages);
         }
@@ -201,21 +216,30 @@ sealed class ClineLogReader(string path) : ITokenLogReader
         root.ValueKind == JsonValueKind.Array ? LogFields.Objects(root)
         : root.Field("messages") is { ValueKind: JsonValueKind.Array } messages ? LogFields.Objects(messages) : null;
 
-    static (long, long)? Stamp(string file)
+    static (long Ticks, long Size)? Stamp(string file)
     {
         var info = new FileInfo(file);
         return info.Exists ? (info.LastWriteTimeUtc.Ticks, info.Length) : null;
     }
 
-    static JsonDocument? Document(string file, long limit)
+    static JsonDocument? Document(string file, long limit) => Parse(Bytes(file, limit));
+
+    /// The whole file; null when it could not be opened or read, or is past `limit`.
+    static byte[]? Bytes(string file, long limit)
     {
         try
         {
             using var handle = new FileStream(file, FileMode.Open, FileAccess.Read, Sharing, bufferSize: 0);
-            if (handle.Length > limit) return null;
-            return JsonDocument.Parse(ReadAt(handle, 0, (int)handle.Length), Json.Depth);
+            return handle.Length > limit ? null : ReadAt(handle, 0, (int)handle.Length);
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return null; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    static JsonDocument? Parse(byte[]? data)
+    {
+        if (data is null) return null;
+        try { return JsonDocument.Parse(data, Json.Depth); }
+        catch (JsonException) { return null; }
     }
 
     static byte[] ReadAt(FileStream handle, long position, int count)

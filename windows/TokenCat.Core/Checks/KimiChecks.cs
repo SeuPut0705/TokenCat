@@ -156,7 +156,7 @@ public static class KimiChecks
 
             // Titles: only generated or user-set ones; never the prompt copy, never an imported kimi-cli fallback.
             static JsonElement E(string json) => JsonDocument.Parse(json).RootElement;
-            // Repair a mid-rewrite snapshot without changing its stamp: the failed parse must be retried.
+            // A snapshot caught mid-rewrite keeps the last good one; the finished rewrite is read once its stamp changes.
             var statePath = Path.Combine(session, "state.json");
             var renamedState = Encoding.UTF8.GetBytes("""{"cwd":"/tmp/KimiProject","title":"Kimi renamed","titleKind":"custom"}""" + "\n");
             var partialState = renamedState.ToArray();
@@ -165,7 +165,7 @@ public static class KimiChecks
             var stateModified = File.GetLastWriteTimeUtc(statePath);
             tracker.Sample();
             File.WriteAllBytes(statePath, renamedState);
-            File.SetLastWriteTimeUtc(statePath, stateModified);
+            File.SetLastWriteTimeUtc(statePath, stateModified.AddSeconds(1));
             var retriedTitle = tracker.Sample().FirstOrDefault(r => !r.IsSubagent)?.Title;
             check(KimiLog.Title(E("""{"title":"Fix login","titleKind":"custom"}""")) == "Fix login"
                   && KimiLog.Title(E("""{"title":"PRIVATE_PROMPT","titleKind":"replaceable"}""")) is null

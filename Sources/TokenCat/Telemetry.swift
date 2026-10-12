@@ -109,6 +109,12 @@ extension Dictionary where Key == String, Value == ClaudeUsageLimits {
         merging(other) { $0.merged($1) }
     }
 
+    /// Obsolete account hashes are kept only while their windows are shown. Unattributed legacy records always stay.
+    func pruned(current: Set<String>, now: Date) -> Self {
+        filter { $0.key == Self.legacyKey || current.contains($0.key)
+            || SessionPresentation.claudeUsageLimit($0.value, now: now)?.isShown(now: now) == true }
+    }
+
     static func load(from defaults: UserDefaults, defaultAccount: LimitAccount?) -> Self {
         guard let data = defaults.data(forKey: ClaudeUsageLimits.defaultsKey) else { return [:] }
         // Window objects can decode as empty ClaudeUsageLimits too; distinguish a real hashed store before legacy decoding.

@@ -326,6 +326,8 @@ file sealed class GeminiChatReader : ITokenLogReader
     readonly LogLineTail tail;
     ChatTurnState state = new(TokenSource.Gemini);
     (long Modified, long Size)? snapshot;
+    /// A legacy snapshot that did not parse: not parsed again until it changes, while the last good one stays shown.
+    (long Modified, long Size)? failedSnapshot;
     readonly RecentKeys seen = new(8_192);
     string? lastMessageID;
     readonly string? subagentParent;
@@ -398,7 +400,8 @@ file sealed class GeminiChatReader : ITokenLogReader
             header: line => { if (TokenLogParser.Record(line) is { } record) Metadata(record); });
     }
 
-    /// Legacy snapshots are rewritten whole: reread (up to 32 MB) when the size or modification time changes.
+    /// Legacy snapshots are rewritten whole: reread (up to 32 MB) when the size or modification time changes. One that could
+    /// not be opened is retried next sample.
     void ReadSnapshot()
     {
         try
@@ -406,12 +409,12 @@ file sealed class GeminiChatReader : ITokenLogReader
             var info = new FileInfo(path);
             if (!info.Exists) return;
             var current = (info.LastWriteTimeUtc.Ticks, info.Length);
-            if (snapshot == current) return;
+            if (snapshot == current || failedSnapshot == current) return;
             if (current.Length > 33_554_432) { snapshot = current; return; }
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             var data = new byte[stream.Length];
             stream.ReadExactly(data);
-            if (TokenLogParser.Record(data) is not { } record) return;
+            if (TokenLogParser.Record(data) is not { } record) { failedSnapshot = current; return; }
             snapshot = current;
             Reset();
             Metadata(record);
@@ -455,7 +458,7 @@ file sealed class GeminiChatReader : ITokenLogReader
             state.IsSubagent = true;
             state.AgentID = state.SessionID;
         }
-        state.Note(LogFields.Date(record.Field("lastUpdated")));
+        state.Note(TokenLogParser.Date(record.Field("lastUpdated")));
         if (projectRoot is null && record.Field("directories") is { ValueKind: JsonValueKind.Array } directories
             && directories.GetArrayLength() > 0 && directories[0].Text is { } directory) state.SetProject(directory);
         if (SessionTitle.Clean(record.Field("summary")) is { } summary) state.Title = summary;
@@ -468,7 +471,7 @@ file sealed class GeminiChatReader : ITokenLogReader
     void Message(JsonElement record)
     {
         if (record.Field("id")?.Text is not { } id || record.Field("type")?.Text is not { } type) return;
-        var date = LogFields.Date(record.Field("timestamp"));
+        var date = TokenLogParser.Date(record.Field("timestamp"));
         var isNew = seen.Insert(id);
         if (isNew) lastMessageID = id;
         var isLatest = id == lastMessageID;
@@ -506,7 +509,7 @@ file sealed class GeminiChatReader : ITokenLogReader
                 }
                 var calls = record.Field("toolCalls") is { ValueKind: JsonValueKind.Array } list
                     ? list.EnumerateArray().Where(call => call.ValueKind == JsonValueKind.Object).ToList() : [];
-                var finished = calls.Select(call => LogFields.Date(call.Field("timestamp"))).Max();
+                var finished = calls.Select(call => TokenLogParser.Date(call.Field("timestamp"))).Max();
                 // An earlier message appended again (late tokens) does not move the turn.
                 if (!isLatest)
                 {
@@ -614,7 +617,7 @@ file sealed class QwenChatReader : ITokenLogReader
             if (subagent is not null) state.ParentSessionID = session;
         }
         if (subagent is not null && state.AgentRole is null) state.AgentRole = TokenLogParser.Label(record.Field("agentName"));
-        var date = LogFields.Date(record.Field("timestamp"));
+        var date = TokenLogParser.Date(record.Field("timestamp"));
         state.Note(date);
         var subtype = record.Field("subtype")?.Text;
         var parts = record.Field("message")?.Field("parts") is { ValueKind: JsonValueKind.Array } array

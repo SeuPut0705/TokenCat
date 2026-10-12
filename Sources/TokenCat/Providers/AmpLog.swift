@@ -30,6 +30,7 @@ extension TokenLogFormat {
 final class AmpLogReader: TokenLogReader {
     let url: URL
     private var stamp: String?
+    private var failedStamp: String?
     private var turn = LogTurnState()
     private var threadID: String?
     private var model: String?
@@ -62,12 +63,13 @@ final class AmpLogReader: TokenLogReader {
         var info = stat()
         guard stat(url.path, &info) == 0 else { return }
         let current = "\(info.st_dev)-\(info.st_ino)-\(info.st_size)-\(info.st_mtimespec.tv_sec)-\(info.st_mtimespec.tv_nsec)"
-        guard current != stamp else { return }
+        guard current != stamp, current != failedStamp else { return }
         let modified = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9)
-        // An oversized thread is a deliberate rejection and stays rejected until it changes; a file caught mid-write (or
-        // unreadable) keeps no stamp, so the next sample reads it again.
-        guard Int(info.st_size) <= Self.maximumBytes else { stamp = current; return }
-        guard let data = try? Data(contentsOf: url), let thread = LogFields.object(data) else { return }
+        // Bad content stays rejected until its stamp changes; an I/O error can clear without a rewrite.
+        guard Int(info.st_size) <= Self.maximumBytes else { failedStamp = current; return }
+        guard let data = try? Data(contentsOf: url) else { return }
+        guard let thread = LogFields.object(data) else { failedStamp = current; return }
+        failedStamp = nil
         stamp = current
         autoreleasepool { parse(thread, modified: min(modified, now.addingTimeInterval(5))) }
     }
