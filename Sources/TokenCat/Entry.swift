@@ -324,13 +324,24 @@ enum TokenCatMain {
             if state == .output { reading.lastOutputAt = at; reading.lastOutputDelta = 12 }
             return reading
         }
+        // Running subagents fold under their session (index 0 is the Claude session "f0", 1 the Codex "f1") as the bar's "└N".
+        func subagent(_ parent: Int, _ index: Int, _ state: TokenActivityState) -> TokenReading {
+            var child = reading(parent, state)
+            child.id = "fixture-\(parent)-agent-\(index)"
+            child.agentID = "a\(index)"
+            child.isSubagent = true
+            return child
+        }
         let rows: [(String, [TokenReading])] = [
             (loc("활동 없음", "No activity"), []), (loc("진행", "Working"), [reading(0, .working)]),
             (loc("도구 실행", "Running tool"), [reading(1, .tool)]),
             // A fresh record is an event: the cat runs while the mark stays 진행.
             (loc("방금 기록", "Just recorded"), [reading(2, .output)]), (loc("로그 대기", "Waiting for log"), [reading(3, .stale)]),
             (loc("입력 필요", "Input needed"), [reading(4, .input), reading(6, .input), reading(5, .working)]),
-            (loc("세션 12개", plural(12, "session")), (0..<12).map { reading($0, .tool) })
+            (loc("세션 12개", plural(12, "session")), (0..<12).map { reading($0, .tool) }),
+            (loc("하위 에이전트 3", plural(3, "subagent")), [reading(0, .working)] + (0..<3).map { subagent(0, $0, $0 == 0 ? .tool : .working) }),
+            (loc("하위 에이전트 12", plural(12, "subagent")), [reading(0, .tool), reading(1, .working)]
+                + (0..<12).map { subagent($0 % 2, $0, .tool) })
         ]
         // The average speed item, turned on for the last rows: measured 3 s ago on the session's model by one, two and four
         // clients (Codex 55.6, Claude 312.5, Gemini 100, OpenCode 25 tok/s; at most three glyphs show), then none.

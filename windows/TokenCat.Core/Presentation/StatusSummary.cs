@@ -104,9 +104,10 @@ public enum StatusBarValueTone { Label, Warning, Critical }
 
 /// One menu-bar item as drawn. Provider glyphs label measured speed and weekly remaining; their details supply spoken words.
 /// Weekly tooltip text includes every contributing account, while its single source is the least-left account's provider.
+/// `Subagents`: the AI item's running subagents, drawn as a small "└N" after the count (at most 99); 0 adds nothing.
 public sealed record StatusBarMetric(MetricID Id, string Label, string Value, bool IsActive = false,
     TokenActivityState ActivityState = TokenActivityState.Idle, string? Detail = null, IReadOnlyList<TokenSource>? Sources = null,
-    StatusBarValueTone ValueTone = StatusBarValueTone.Label, string? Tooltip = null)
+    StatusBarValueTone ValueTone = StatusBarValueTone.Label, string? Tooltip = null, int Subagents = 0)
 {
     /// What Narrator reads for the item: its detail, else the words drawn.
     public string Spoken => Detail ?? $"{Label} {Value.Replace('\n', ' ')}";
@@ -116,9 +117,9 @@ public sealed record StatusBarMetric(MetricID Id, string Label, string Value, bo
     /// By value, the contributors included, so an unchanged strip is not redrawn.
     public bool Equals(StatusBarMetric? other) => other is not null && Id == other.Id && Label == other.Label && Value == other.Value
         && IsActive == other.IsActive && ActivityState == other.ActivityState && Detail == other.Detail && ValueTone == other.ValueTone
-        && Tooltip == other.Tooltip && Contributors.SequenceEqual(other.Contributors);
+        && Tooltip == other.Tooltip && Subagents == other.Subagents && Contributors.SequenceEqual(other.Contributors);
 
-    public override int GetHashCode() => HashCode.Combine(Id, Label, Value, IsActive, ActivityState, Detail, ValueTone, Tooltip);
+    public override int GetHashCode() => HashCode.Combine(Id, Label, Value, IsActive, ActivityState, Detail, ValueTone, HashCode.Combine(Tooltip, Subagents));
 }
 
 /// AI summary, derived once per publish from the shared session groups.
@@ -132,6 +133,8 @@ public sealed record StatusAISummary
     public int Waiting { get; init; }
     /// `SessionCounts.Phase` with input forced: input > tool > working (API retry included) > stale (log wait) > idle.
     public TokenActivityState Phase { get; init; } = TokenActivityState.Idle;
+    /// `SessionCounts.RunningSubagents`: subagents running under the running groups, which the bar counts once each.
+    public int Subagents { get; init; }
 
     public StatusAISummary() { }
 
@@ -142,6 +145,7 @@ public sealed record StatusAISummary
         Running = counts.RunningGroups + waiting.Count(group => !group.State.IsRunning);
         Waiting = counts.Waiting;
         Phase = Input > 0 ? TokenActivityState.Input : counts.Phase;
+        Subagents = counts.RunningSubagents;
     }
 }
 
@@ -173,7 +177,7 @@ public static class StatusBarContent
     }
 
     /// The status item's geometry in points (`StatusBarContentView`): 4 pt edges, the 32 × 20 runner slot while the character
-    /// is shown and fixed cells, so the width never follows the values.
+    /// is shown and fixed cells, so the width never follows the values; only running subagents widen the AI cell (`SubagentWidth`).
     public const double Edge = 4, RunnerWidth = 32, Height = 24, MarkSlot = 8 + 3;
 
     /// Without the character the minimal AI cell widens to 41 pt. The speed item fits "9999 tok/s" (`Format.BarTps` drops the decimal
@@ -186,10 +190,23 @@ public static class StatusBarContent
         _ => id switch { MetricID.Network => 114, MetricID.Ai => 46, MetricID.AverageSpeed => 91, MetricID.WeeklyLimit => 56, _ => 52 },
     };
 
+    /// A cell as drawn: the AI cell widens by `SubagentWidth` only while subagents run.
+    public static double CellWidth(StatusBarLayout layout, StatusBarMetric metric, bool showRunner = true) =>
+        CellWidth(layout, metric.Id, showRunner) + SubagentWidth(metric.Subagents);
+
+    /// The "└N" badge after the AI count: a 3 pt gap, the 4 pt arrow, 1 pt, then one or two 8.5 pt digits.
+    public static double SubagentWidth(int subagents) => subagents <= 0 ? 0 : subagents < 10 ? 14 : 20;
+
     /// Neither items nor the character: the 28 pt "TC" placeholder.
-    public static double RequiredWidth(StatusBarLayout layout, IEnumerable<MetricID> ids, bool showRunner = true)
+    public static double RequiredWidth(StatusBarLayout layout, IEnumerable<MetricID> ids, bool showRunner = true) =>
+        Required(ids.Select(id => CellWidth(layout, id, showRunner)).ToList(), showRunner);
+
+    /// The strip as drawn: `RequiredWidth` plus the AI cell's subagent badge while subagents run.
+    public static double DrawnWidth(StatusBarLayout layout, IEnumerable<StatusBarMetric> metrics, bool showRunner = true) =>
+        Required(metrics.Select(metric => CellWidth(layout, metric, showRunner)).ToList(), showRunner);
+
+    static double Required(List<double> cells, bool showRunner)
     {
-        var cells = ids.Select(id => CellWidth(layout, id, showRunner)).ToList();
         if (cells.Count == 0 && !showRunner) return 28;
         return Edge * 2 + (showRunner ? RunnerWidth + (cells.Count == 0 ? 0 : 2) : 0) + cells.Sum();
     }
@@ -272,7 +289,8 @@ public static class StatusBarContent
                     var shown = waitingOnly ? ai.Waiting : ai.Running > 0 && ai.Phase == TokenActivityState.Input ? ai.Input : ai.Running;
                     var value = hasTokenSample ? shown.ToString(CultureInfo.InvariantCulture) : "—";
                     var state = !hasTokenSample ? TokenActivityState.Idle : ai.Running > 0 ? ai.Phase : waitingOnly ? TokenActivityState.Stale : TokenActivityState.Idle;
-                    metrics.Add(new(id, "AI", value, hasTokenSample && ai.Running > 0, state));
+                    metrics.Add(new(id, "AI", value, hasTokenSample && ai.Running > 0, state,
+                        Subagents: hasTokenSample && ai.Running > 0 ? Math.Min(ai.Subagents, 99) : 0));
                     break;
                 case MetricID.AverageSpeed:
                     // The contributing clients' glyphs, or "AVG" without a measurement, label the item; the unit is split off and

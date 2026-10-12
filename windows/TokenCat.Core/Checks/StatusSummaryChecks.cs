@@ -77,6 +77,30 @@ public static class StatusSummaryChecks
         check("a running subagent keeps an idle parent's group running", ai([parent, child]).Value == 1);
         child = child with { ActivityState = A.Input };
         check("a subagent waiting for input marks its top-level group", ai([parent, child]) == (1, A.Input));
+        // Running subagents ride on the AI item as "└N": counted per subagent, never as extra sessions, only while something runs.
+        var lead = new TokenReading(TokenSource.Claude, "claude:lead") { SessionID = "sl", Active = true, ActivityState = A.Working, SampledAt = at };
+        TokenReading helper(int index, A state = A.Tool) => new(TokenSource.Claude, $"claude:lead/agent-{index}")
+        { SessionID = "sl", AgentID = $"h{index}", IsSubagent = true, Active = state != A.Complete, ActivityState = state, SampledAt = at };
+        StatusBarMetric aiItem(IReadOnlyList<TokenReading> readings, bool hasTokenSample = true) =>
+            StatusBarContent.Metrics(new SystemSnapshot(), summary(readings).AI, StatusBarLayout.Compact, [MetricID.Ai], true, hasTokenSample)[0];
+        check("running subagents show beside the session count, which still counts their session once",
+              aiItem([lead, helper(0), helper(1), helper(2)]) is { Value: "1", Subagents: 3 } && aiItem([lead]).Subagents == 0
+              && aiItem([lead, helper(0, A.Complete)]).Subagents == 0 && aiItem([stale]).Subagents == 0
+              && aiItem([lead, .. Enumerable.Range(0, 120).Select(index => helper(index))]).Subagents == 99
+              && aiItem([lead, helper(0)], hasTokenSample: false).Subagents == 0);
+        var badgeWidths = new List<string>();
+        foreach (var layout in Enum.GetValues<StatusBarLayout>())
+            foreach (var runner in new[] { true, false })
+            {
+                var counted = new StatusBarMetric(MetricID.Ai, "AI", "2", true, A.Working);
+                var plain = StatusBarContent.DrawnWidth(layout, [counted], runner);
+                var one = StatusBarContent.DrawnWidth(layout, [counted with { Subagents = 3 }], runner);
+                var two = StatusBarContent.DrawnWidth(layout, [counted with { Subagents = 12 }], runner);
+                if (plain != StatusBarContent.RequiredWidth(layout, [MetricID.Ai], runner) || one != plain + 14 || two != plain + 20)
+                    badgeWidths.Add($"{layout}/{runner} {plain}→{one}/{two}");
+            }
+        check("the subagent badge widens the AI cell by 14 pt (20 pt for two digits) only while subagents run, after the count: "
+              + string.Join(", ", badgeWidths), badgeWidths.Count == 0);
         check("rate split keeps the unit", StatusBarContent.SplitRate("1.5kB/s") == ("1.5", "kB/s")
               && StatusBarContent.SplitRate("≥999GB/s") == ("≥999", "GB/s") && StatusBarContent.SplitRate("—") == ("—", ""));
         var busy = new SystemSnapshot { CpuPercent = 37, UploadBytesPerSecond = 1_499, MemoryUsedBytes = 19_000_000_000, MemoryTotalBytes = 25_769_803_776 };

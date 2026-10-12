@@ -34,12 +34,14 @@ struct StatusBarMetric: Equatable {
     /// Contributing speed clients, or the account provider whose weekly limit has the least left.
     var sources: [TokenSource] = []
     var valueTone: StatusBarValueTone = .label
+    /// The AI item's running subagents, drawn as a small "└N" after the count (at most 99); 0 draws nothing and adds no width.
+    var subagents = 0
 
     /// Help and VoiceOver can age without changing a single painted pixel.
     func hasSameDrawing(as other: Self) -> Bool {
         id == other.id && label == other.label && value == other.value && symbol == other.symbol
             && isActive == other.isActive && activityState == other.activityState
-            && sources == other.sources && valueTone == other.valueTone
+            && sources == other.sources && valueTone == other.valueTone && subagents == other.subagents
     }
 }
 
@@ -54,6 +56,8 @@ struct StatusAISummary: Equatable {
     /// `SessionCounts.phase`, with input forced: input > tool > working (API retry included) > stale (log wait) > idle.
     /// A fresh output record is an event (the cat's run), never a phase.
     var phase: TokenActivityState = .idle
+    /// `SessionCounts.runningSubagents`: subagents running under the running groups, which the bar counts once each.
+    var subagents = 0
 
     init() {}
     init(groups: [SessionGroup], counts: SessionCounts) {
@@ -62,6 +66,7 @@ struct StatusAISummary: Equatable {
         running = counts.runningGroups + waiting.filter { !$0.state.isRunning }.count
         self.waiting = counts.waiting
         phase = input > 0 ? .input : counts.phase
+        subagents = counts.runningSubagents
     }
 
     static func phaseTitle(_ phase: TokenActivityState) -> String {
@@ -199,7 +204,8 @@ enum StatusBarContent {
                         + " · " + runningBySource(counts, sources: sources)
                     : loc("AI 기록 확인 중", "Reading AI records")
                 return StatusBarMetric(id: id, label: "AI", value: value, symbol: "", detail: detail,
-                                       isActive: hasTokenSample && ai.running > 0, activityState: state)
+                                       isActive: hasTokenSample && ai.running > 0, activityState: state,
+                                       subagents: hasTokenSample && ai.running > 0 ? min(ai.subagents, 99) : 0)
             case .averageSpeed:
                 // The contributing clients' glyphs (`SpeedGlyph`), or "AVG" without a measurement, label the item; the unit
                 // is split off and drawn smaller like "%".
@@ -349,7 +355,7 @@ final class StatusBarContentView: NSView {
     var requiredWidth: CGFloat {
         if metrics.isEmpty && !showRunner { return 28 }
         let runnerWidth = showRunner ? Self.runnerSlot.width + (metrics.isEmpty ? 0 : 2) : 0
-        return edge * 2 + runnerWidth + metrics.reduce(0) { $0 + cellWidth($1.id) }
+        return edge * 2 + runnerWidth + metrics.reduce(0) { $0 + cellWidth($1) }
     }
 
     override init(frame frameRect: NSRect) {
@@ -442,6 +448,13 @@ final class StatusBarContentView: NSView {
         }
     }
 
+    /// A cell as drawn: the AI cell widens by `subagentWidth` only while subagents run.
+    func cellWidth(_ metric: StatusBarMetric) -> CGFloat { cellWidth(metric.id) + Self.subagentWidth(metric.subagents) }
+
+    /// The "└N" badge after the AI count: a 3 pt gap, the 4 pt arrow, 1 pt, then one or two 8.5 pt digits (about 5.7 pt each).
+    static func subagentWidth(_ subagents: Int) -> CGFloat { subagents <= 0 ? 0 : subagents < 10 ? 14 : 20 }
+    static let subagentFont = NSFont.monospacedDigitSystemFont(ofSize: 8.5, weight: .medium)
+
     /// Speed glyph sides: the two-line label row, and beside the value on one line.
     static let glyphSide: (compact: CGFloat, inline: CGFloat) = (8, 10)
     /// The average speed item draws at most three client glyphs side by side, 1 pt apart, so each icon stays whole.
@@ -516,7 +529,7 @@ final class StatusBarContentView: NSView {
             return
         }
         for (index, metric) in metrics.enumerated() {
-            let width = cellWidth(metric.id)
+            let width = cellWidth(metric)
             let cell = NSRect(x: x, y: 0, width: width, height: rect.height)
             if cell.intersects(dirtyRect) {
                 if index > 0 && group(metrics[index - 1].id) != group(metric.id) {
@@ -650,14 +663,16 @@ final class StatusBarContentView: NSView {
     }
 
     /// Mark slot (shape = state) then the count: label while running, secondary for log wait or before the
-    /// first sample ("—"), tertiary "0" with an empty slot (M-2).
+    /// first sample ("—"), tertiary "0" with an empty slot (M-2). Running subagents follow as a secondary "└N", baseline-aligned.
     private func drawAI(_ metric: StatusBarMetric, centerY: CGFloat, in rect: NSRect, font: NSFont, _ palette: Palette,
                         centered: Bool, prefix: [Run] = []) {
         let tone = metric.isActive ? palette.label : metric.value == "—" || metric.activityState == .stale ? palette.secondary : palette.tertiary
         let count = [Run(text: metric.value, font: font, color: tone)]
         let countWidth = string(count).size().width
+        let badge = metric.subagents > 0 ? [Run(text: String(metric.subagents), font: Self.subagentFont, color: palette.secondary)] : []
+        let badgeWidth = badge.isEmpty ? 0 : 3 + 5 + string(badge).size().width
         let prefixWidth = prefix.isEmpty ? 0 : string(prefix).size().width + 3
-        let total = prefixWidth + Self.markSlot + countWidth
+        let total = prefixWidth + Self.markSlot + countWidth + badgeWidth
         var x = centered ? max(rect.minX, rect.midX - total / 2) : rect.minX
         if !prefix.isEmpty {
             draw(prefix, centerY: centerY, in: NSRect(x: x, y: rect.minY, width: prefixWidth, height: rect.height), alignment: .left)
@@ -665,7 +680,30 @@ final class StatusBarContentView: NSView {
         }
         drawMark(metric.activityState, center: NSPoint(x: x + (Self.markSlot - 3) / 2, y: centerY), palette)
         x += Self.markSlot
-        draw(count, centerY: centerY, in: NSRect(x: x, y: rect.minY, width: max(1, rect.maxX - x), height: rect.height), alignment: .left)
+        draw(count, centerY: centerY, in: NSRect(x: x, y: rect.minY, width: max(1, rect.maxX - x - badgeWidth), height: rect.height),
+             alignment: .left)
+        guard !badge.isEmpty, let context = NSGraphicsContext.current?.cgContext else { return }
+        // "↳" drawn, not typed (a font's arrow is twice as wide): down from the small digits' cap height, then right to an
+        // arrowhead at their middle, so it reads as a branch rather than the letter L.
+        let hook = snap(x + countWidth + 3) + 0.5
+        let baseline = centerY + font.capHeight / 2
+        let arm = snap(baseline - Self.subagentFont.capHeight / 2) - 0.5
+        context.saveGState()
+        context.setStrokeColor(palette.secondary.cgColor)
+        context.setLineWidth(1)
+        context.setLineCap(.round)
+        context.setLineJoin(.round)
+        context.move(to: CGPoint(x: hook, y: snap(baseline - Self.subagentFont.capHeight)))
+        context.addLine(to: CGPoint(x: hook, y: arm))
+        context.addLine(to: CGPoint(x: hook + 4, y: arm))
+        context.move(to: CGPoint(x: hook + 2.5, y: arm - 1.5))
+        context.addLine(to: CGPoint(x: hook + 4, y: arm))
+        context.addLine(to: CGPoint(x: hook + 2.5, y: arm + 1.5))
+        context.strokePath()
+        context.restoreGState()
+        let digits = x + countWidth + 3 + 5
+        draw(badge, centerY: centerY, capFont: font, in: NSRect(x: digits, y: rect.minY, width: max(1, rect.maxX - digits), height: rect.height),
+             alignment: .left)
     }
 
     /// `StateGlyph` marks: purple ring working, blue rounded square tool, neutral half disc log wait, yellow "?" input.
@@ -1029,6 +1067,17 @@ func runStatusBarChecks() -> [String] {
     check("marks are 7 pt glyphs, the input disc 8 pt, in the unchanged 11 pt slot",
           StatusBarContentView.markWidth(.tool) == 7 && StatusBarContentView.markWidth(.working) == 7 && StatusBarContentView.markWidth(.stale) == 7
           && StatusBarContentView.markWidth(.input) == 8 && StatusBarContentView.markWidth(.output) == 0 && StatusBarContentView.markSlot == 11)
+    // Running subagents ride on the AI item as "└N": counted per subagent, never as extra sessions, only while something runs.
+    let lead = TokenReading(source: .claude, id: "claude:lead", sessionID: "sl", active: true, activityState: .working, sampledAt: at)
+    func helper(_ index: Int, _ state: TokenActivityState = .tool) -> TokenReading {
+        TokenReading(source: .claude, id: "claude:lead/agent-\(index)", sessionID: "sl", agentID: "h\(index)", isSubagent: true,
+                     active: state != .complete, activityState: state, sampledAt: at)
+    }
+    let helpers = ai([lead] + (0..<3).map { helper($0) })
+    check("running subagents show beside the session count, which still counts their session once",
+          helpers?.value == "1" && helpers?.subagents == 3 && ai([lead])?.subagents == 0 && ai([lead, helper(0, .complete)])?.subagents == 0
+          && ai([stale])?.subagents == 0 && ai([lead] + (0..<120).map { helper($0) })?.subagents == 99
+          && metrics(system, [lead, helper(0)], hasTokenSample: false).first { $0.id == .ai }?.subagents == 0)
     let question = TokenReading(source: .claude, id: "question", sessionID: "q1", active: true, activityState: .input, sampledAt: at)
     // The bar counts only the groups waiting for the person while any does; the detail keeps the whole breakdown.
     check("input outranks tool, counts once per group and shows only the groups waiting for input",
@@ -1207,7 +1256,7 @@ func runStatusBarChecks() -> [String] {
                                isActive: state != .idle, activityState: state, sources: sources)
     }
     let worst = [metric(.cpu, "100%"), metric(.memory, "100%"), metric(.disk, "100%"), metric(.battery, "100%"),
-                 metric(.network, "↑999MB/s\n↓125MB/s"), metric(.ai, "99", .input),
+                 metric(.network, "↑999MB/s\n↓125MB/s"), { var ai = metric(.ai, "99", .input); ai.subagents = 99; return ai }(),
                  metric(.averageSpeed, "9999tok/s", sources: [.codex, .claude, .gemini, .opencode]), metric(.averageSpeed, "9999tok/s"),
                  metric(.weeklyLimit, "100%", sources: [.codex]), metric(.weeklyLimit, "—")]
     var shrunk: [String] = []
@@ -1228,6 +1277,27 @@ func runStatusBarChecks() -> [String] {
     }
     check("worst-case values fit their slots without shrinking: \(shrunk.joined(separator: ", "))", shrunk.isEmpty)
     check("AI count stays put when its state mark changes: \(drifting.joined(separator: ", "))", drifting.isEmpty)
+    // Responsive: the AI cell widens by the badge only while subagents run, and the badge follows the count.
+    var badgeWidths: [String] = []
+    for layout in StatusBarLayout.allCases {
+        for runner in [true, false] {
+            var counted = metric(.ai, "2", .working)
+            view.update(metrics: [counted], layout: layout, showRunner: runner)
+            let plain = view.requiredWidth
+            counted.subagents = 3
+            view.update(metrics: [counted], layout: layout, showRunner: runner)
+            _ = view.snapshotImage()
+            let one = view.requiredWidth
+            let follows = (view.drawnText.last { $0.text == "3" }?.x ?? 0) > (view.drawnText.last { $0.text == "2" }?.x ?? .infinity)
+            counted.subagents = 12
+            view.update(metrics: [counted], layout: layout, showRunner: runner)
+            if one != plain + 14 || view.requiredWidth != plain + 20 || !follows {
+                badgeWidths.append("\(layout.rawValue)/\(runner) \(plain)→\(one)/\(view.requiredWidth) follows \(follows)")
+            }
+        }
+    }
+    check("the subagent badge widens the AI cell by 14 pt (20 pt for two digits) only while subagents run, after the count: "
+          + badgeWidths.joined(separator: ", "), badgeWidths.isEmpty)
     var weeklyFits = true
     for layout in [StatusBarLayout.compact, .inline] {
         view.update(metrics: [metric(.weeklyLimit, "100%", sources: [.codex])], layout: layout, showRunner: false)

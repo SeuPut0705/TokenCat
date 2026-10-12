@@ -223,8 +223,8 @@ sealed class WidgetView : FrameworkElement
         if (showRunner) InvalidateVisual();
     }
 
-    /// The strip in points, values aside (the widget's width never follows them).
-    public Size PointSize => new(StatusBarContent.RequiredWidth(layout, metrics.Select(metric => metric.Id), showRunner) + 2 * Inset,
+    /// The strip in points, values aside (the widget's width never follows them); running subagents widen the AI cell.
+    public Size PointSize => new(StatusBarContent.DrawnWidth(layout, metrics, showRunner) + 2 * Inset,
         StatusBarContent.Height + 2 * Pad);
 
     void Units()
@@ -277,7 +277,7 @@ sealed class WidgetView : FrameworkElement
         for (var index = 0; index < metrics.Count; index++)
         {
             var metric = metrics[index];
-            var cell = new Rect(x, Pad, StatusBarContent.CellWidth(layout, metric.Id, showRunner), StatusBarContent.Height);
+            var cell = new Rect(x, Pad, StatusBarContent.CellWidth(layout, metric, showRunner), StatusBarContent.Height);
             if (index > 0 && Group(metrics[index - 1].Id) != Group(metric.Id))
                 context.DrawRectangle(Theme.Brush(Tone(0.26)), null, new Rect(Snap(x), Snap(Pad + 4), 1 / PixelsPerPoint, Snap(StatusBarContent.Height - 8)));
             switch (layout)
@@ -396,13 +396,17 @@ sealed class WidgetView : FrameworkElement
     }
 
     /// Mark slot (shape = state) then the count: label while running, secondary for log wait or before the first sample,
-    /// tertiary "0" with an empty slot (M-2). The slot is always reserved, so the count never moves.
+    /// tertiary "0" with an empty slot (M-2). The slot is always reserved, so the count never moves. Running subagents follow
+    /// as a secondary "└N" on the count's baseline.
     void DrawAI(DrawingContext context, StatusBarMetric metric, double centerY, Rect rect, double size, bool centered, TextRun[]? prefix = null)
     {
         var tone = metric.IsActive ? label : metric.Value == "—" || metric.ActivityState == TokenActivityState.Stale ? secondary : tertiary;
         TextRun[] count = [new(metric.Value, size, FontWeights.Medium, tone)];
+        var countWidth = Format(count, 1).WidthIncludingTrailingWhitespace;
+        TextRun[] badge = metric.Subagents > 0 ? [new(metric.Subagents.ToString(CultureInfo.InvariantCulture), 8.5, FontWeights.Medium, secondary)] : [];
+        var badgeWidth = badge.Length == 0 ? 0 : 3 + 5 + Format(badge, 1).WidthIncludingTrailingWhitespace;
         var prefixWidth = prefix is null ? 0 : Format(prefix, 1).WidthIncludingTrailingWhitespace + 3;
-        var total = prefixWidth + StatusBarContent.MarkSlot + Format(count, 1).WidthIncludingTrailingWhitespace;
+        var total = prefixWidth + StatusBarContent.MarkSlot + countWidth + badgeWidth;
         var x = centered ? Math.Max(rect.Left, rect.Left + rect.Width / 2 - total / 2) : rect.Left;
         if (prefix is not null)
         {
@@ -411,8 +415,39 @@ sealed class WidgetView : FrameworkElement
         }
         DrawMark(context, metric.ActivityState, new Point(x + (StatusBarContent.MarkSlot - 3) / 2, centerY));
         x += StatusBarContent.MarkSlot;
-        Draw(context, count, centerY, new Rect(x, rect.Top, Math.Max(1, rect.Right - x), rect.Height), TextAlignment.Left);
+        Draw(context, count, centerY, new Rect(x, rect.Top, Math.Max(1, rect.Right - x - badgeWidth), rect.Height), TextAlignment.Left);
+        if (badge.Length == 0) return;
+        // "↳" drawn, not typed (a font's arrow is twice as wide): down from the small digits' cap height, then right to an
+        // arrowhead at their middle, so it reads as a branch rather than the letter L.
+        if (hookPen is null || hookKey != (secondary, PixelsPerPoint))
+        {
+            hookKey = (secondary, PixelsPerPoint);
+            hookPen = new Pen(Theme.Brush(secondary), Math.Max(1, Math.Round(PixelsPerPoint)) / PixelsPerPoint)
+            { StartLineCap = PenLineCap.Round, EndLineCap = PenLineCap.Round, LineJoin = PenLineJoin.Round };
+            hookPen.Freeze();
+        }
+        var hook = Snap(x + countWidth + 3) + 0.5 / PixelsPerPoint;
+        var baseline = centerY + size * CapRatio / 2;
+        var smallCap = 8.5 * CapRatio;
+        var arm = Snap(baseline - smallCap / 2) - 0.5 / PixelsPerPoint;
+        var geometry = new StreamGeometry();
+        using (var path = geometry.Open())
+        {
+            path.BeginFigure(new Point(hook, Snap(baseline - smallCap)), false, false);
+            path.LineTo(new Point(hook, arm), true, true);
+            path.LineTo(new Point(hook + 4, arm), true, true);
+            path.BeginFigure(new Point(hook + 2.5, arm - 1.5), false, false);
+            path.LineTo(new Point(hook + 4, arm), true, true);
+            path.LineTo(new Point(hook + 2.5, arm + 1.5), true, true);
+        }
+        geometry.Freeze();
+        context.DrawGeometry(null, hookPen, geometry);
+        var digits = x + countWidth + 3 + 5;
+        Draw(context, badge, centerY, new Rect(digits, rect.Top, Math.Max(1, rect.Right - digits), rect.Height), TextAlignment.Left, size);
     }
+
+    Pen? hookPen;
+    (Color, double) hookKey;
 
     /// `StateGlyph` marks: purple ring working, blue rounded square tool, yellow "?" input, the half disc in the secondary tone.
     void DrawMark(DrawingContext context, TokenActivityState state, Point center)

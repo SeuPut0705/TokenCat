@@ -2,6 +2,12 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.22.0
+
+**macOS and Windows**
+
+- The AI menu bar item (and Windows widget) now shows running subagents beside the session count as a small `↳3`, up to 99. The item widens only while subagents run; the session count still counts each session once. · AI 메뉴 막대 항목(Windows 위젯 포함)이 세션 수 옆에 실행 중인 하위 에이전트 수를 작은 `↳3`으로 보여 줍니다(최대 99). 하위 에이전트가 실행 중일 때만 항목이 넓어지며, 세션 수는 여전히 세션마다 한 번만 셉니다.
+
 ## 0.21.0
 
 **macOS and Windows**
