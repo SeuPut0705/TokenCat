@@ -203,6 +203,13 @@ public static class ClineOmpChecks
         }
         catch (Exception error) { check(false, $"omp account pins fixture error: {error.Message}"); }
 
+        // Earlier fixture scans survive while touched, then disappear after a sweep window with no reader.
+        var heldPins = OmpPinStore.Shared.Count;
+        OmpPinStore.Shared.Sweep();
+        OmpPinStore.Shared.Sweep();
+        check(heldPins > 0 && OmpPinStore.Shared.Count == 0,
+              "omp credential pins: the scan state of logs no reader asks for was kept");
+
         try
         {
             // Cline in VS Code, Roo Code in Cursor, and the Cline CLI.

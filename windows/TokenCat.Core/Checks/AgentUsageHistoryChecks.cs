@@ -112,6 +112,25 @@ public static class AgentUsageHistoryChecks
               && AgentUsageHistory.Databases(home, key => key == "PI_CODING_AGENT_DIR" ? agent : null).Count == 2,
               "the omp usage reader misses a WAL write, canonical attribution, or Pi's folder");
 
+        Directory.CreateDirectory(Path.Combine(home, ".omp", "profiles", "work"));
+        var xdg = Path.Combine(folder, "xdg");
+        Directory.CreateDirectory(Path.Combine(xdg, "omp", "profiles", "work"));
+        var piSessions = Path.Combine(folder, "pi-sessions");
+        var roots = AgentUsageHistory.Databases(home, key => key switch
+        {
+            "PI_CONFIG_DIR" => ".ompx",
+            "XDG_DATA_HOME" => xdg,
+            "PI_CODING_AGENT_SESSION_DIR" => piSessions,
+            _ => null,
+        });
+        bool Lists(params string[] parts) => roots.Contains(Path.GetFullPath(Path.Combine(new[] { home }.Concat(parts).ToArray())));
+        check(Lists(".ompx", "agent", "agent.db") && roots.Contains(Path.Combine(xdg, "omp", "agent.db"))
+              && Lists(".omp", "profiles", "work", "agent", "agent.db") && Lists(".pi", "agent", "agent.db")
+              && roots.Contains(Path.Combine(xdg, "omp", "profiles", "work", "agent.db"))
+              && !roots.Contains(Path.Combine(folder, "agent.db"))
+              && !roots.Any(path => path.StartsWith(piSessions, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal)),
+              "omp usage history: an agent folder the omp provider reads (PI_CONFIG_DIR, XDG, profiles) is not read, or Pi's session folder is taken for one");
+
         // Merge and labels: an omp record is a record, never live; a newer one wins over the bridge, an older one doesn't.
         var bridge = new ClaudeUsageLimits(new ClaudeLimitWindow(3, at(15_000), at(-900)));
         var merged = ClaudeUsage.Merged(bridge, claudeA);

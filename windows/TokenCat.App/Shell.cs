@@ -68,8 +68,9 @@ sealed class Shell
         animator = new RunnerAnimator(RunnerManifest.Parse(Sprites.Resource("runner-v2.json")), () => DateTimeOffset.UtcNow);
         tray = new TrayIcon(trayMenu);
         flyout = new Flyout(actions);
+        var limits = new LiveLimits(AppPaths.Home, Updater.CurrentVersion);
         monitor = new LiveMonitor(new MonitorOptions(AppPaths.Home, AppPaths.Support, sampler.Sample, collector,
-            ReadLimits: new LiveLimits(AppPaths.Home, Updater.CurrentVersion).Read));
+            ReadLimits: limits.Read, ForgetLimits: limits.Forget));
     }
 
     MonitorState Current => state ?? monitor.Current;
@@ -253,6 +254,7 @@ sealed class Shell
     void SyncLimits()
     {
         if (quitting) return;
+        monitor.SetDashboardVisible(flyout.IsVisible || window is { IsVisible: true, WindowState: not WindowState.Minimized });
         monitor.WatchLimits(preferences.LiveUsageLimits && !suspended && !displayOff,
             flyout.IsVisible || window is { IsVisible: true, WindowState: not WindowState.Minimized });
     }

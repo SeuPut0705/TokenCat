@@ -20,7 +20,10 @@ public static class MonitorChecks
             var log = Path.Combine(home.FullName, ".claude", "projects", "C--work-demo", "s1.jsonl");
             Directory.CreateDirectory(Path.GetDirectoryName(log)!);
             static string stamp(DateTimeOffset at) => at.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
-            File.WriteAllText(log, $$$"""{"type":"user","uuid":"u1","sessionId":"s1","cwd":"C:\\work\\demo","timestamp":"{{{stamp(DateTimeOffset.UtcNow)}}}","message":{"content":[{"type":"text"}]}}""" + "\n");
+            var initialStamp = stamp(DateTimeOffset.UtcNow);
+            File.WriteAllText(log,
+                $$$"""{"type":"user","uuid":"u1","sessionId":"s1","cwd":"C:\\work\\demo","timestamp":"{{{initialStamp}}}","message":{"content":[{"type":"text"}]}}""" + "\n"
+                + $$$"""{"type":"system","subtype":"turn_duration","timestamp":"{{{initialStamp}}}","durationMs":1}""" + "\n");
 
             var watch = Stopwatch.StartNew();
             var sampled = new List<double>();
@@ -37,7 +40,9 @@ public static class MonitorChecks
             Thread.Sleep(1_200);
             var written = DateTimeOffset.FromUnixTimeMilliseconds(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             var appendedAt = watch.Elapsed.TotalSeconds;
-            File.AppendAllText(log, $$$$"""{"type":"assistant","uuid":"a1","sessionId":"s1","timestamp":"{{{{stamp(written)}}}}","message":{"id":"msg-1","model":"fixture-model","usage":{"output_tokens":42,"input_tokens":10}}}""" + "\n");
+            File.AppendAllText(log,
+                $$$"""{"type":"user","uuid":"u2","sessionId":"s1","timestamp":"{{{stamp(written)}}}","message":{"content":[{"type":"text"}]}}""" + "\n"
+                + $$$$"""{"type":"assistant","uuid":"a1","sessionId":"s1","timestamp":"{{{{stamp(written)}}}}","message":{"id":"msg-1","model":"fixture-model","usage":{"output_tokens":42,"input_tokens":10}}}""" + "\n");
             Thread.Sleep(4_800);
             monitor.Stop();
             int stoppedSamples, stoppedPublishes;
@@ -48,7 +53,12 @@ public static class MonitorChecks
 
             var intervals = sampled.Zip(sampled.Skip(1), (a, b) => b - a).Order().ToList();
             var median = intervals.Count == 0 ? 0 : intervals[intervals.Count / 2];
-            check(intervals.Count > 0 && Math.Abs(median - LiveMonitor.SamplingInterval) < Math.Max(0.2, LiveMonitor.SamplingInterval * 0.25),
+            var tokenTimes = published.Where(item => item.State.TokensSampledAt is not null)
+                .DistinctBy(item => item.State.TokensSampledAt).ToArray();
+            var quietBeforeWrite = tokenTimes.Count(item => item.At < appendedAt) == 1;
+            var liveAfterWrite = tokenTimes.Count(item => item.At >= appendedAt) >= 4;
+            check(intervals.Count > 0 && Math.Abs(median - LiveMonitor.SamplingInterval) < Math.Max(0.2, LiveMonitor.SamplingInterval * 0.25)
+                  && quietBeforeWrite && liveAfterWrite && VisibleCadence(home.FullName, support.FullName),
                   $"the system sample cadence is not ~1 s (median {median:F2} s over {sampled.Count} samples)");
             check(sampled.Count <= (int)Math.Ceiling(6 / LiveMonitor.SamplingInterval) + 2,
                   $"repeated Start() runs more than one sampling timer ({sampled.Count} samples in 6 s)");
@@ -74,5 +84,31 @@ public static class MonitorChecks
             support.Delete(true);
         }
         return c.Done();
+    }
+
+    static bool VisibleCadence(string home, string support)
+    {
+        var idleHome = Path.Combine(home, "idle-home");
+        Directory.CreateDirectory(idleHome);
+        using var monitor = new LiveMonitor(new MonitorOptions(idleHome, support,
+            () => new SystemSnapshot { SampledAt = DateTimeOffset.UtcNow }));
+        var samples = new List<DateTimeOffset>();
+        monitor.Updated += state =>
+        {
+            if (state.TokensSampledAt is { } at)
+                lock (samples) if (samples.Count == 0 || samples[^1] != at) samples.Add(at);
+        };
+        monitor.Start();
+        Thread.Sleep(6_200);
+        DateTimeOffset[] idle;
+        lock (samples) idle = samples.ToArray();
+        monitor.SetDashboardVisible(true);
+        Thread.Sleep(2_200);
+        DateTimeOffset[] visible;
+        lock (samples) visible = samples.Skip(idle.Length).ToArray();
+        monitor.Stop();
+        monitor.Stopped.GetAwaiter().GetResult();
+        return idle.Length == 2 && (idle[1] - idle[0]).TotalSeconds >= LiveMonitor.IdleTokenInterval - 0.5
+            && visible.Length >= 2 && (visible[^1] - visible[^2]).TotalSeconds <= 1.5;
     }
 }

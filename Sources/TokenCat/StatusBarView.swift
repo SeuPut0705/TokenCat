@@ -34,6 +34,13 @@ struct StatusBarMetric: Equatable {
     /// Contributing speed clients, or the account provider whose weekly limit has the least left.
     var sources: [TokenSource] = []
     var valueTone: StatusBarValueTone = .label
+
+    /// Help and VoiceOver can age without changing a single painted pixel.
+    func hasSameDrawing(as other: Self) -> Bool {
+        id == other.id && label == other.label && value == other.value && symbol == other.symbol
+            && isActive == other.isActive && activityState == other.activityState
+            && sources == other.sources && valueTone == other.valueTone
+    }
 }
 
 /// Menu-bar AI summary, derived once per publish from the shared session groups.
@@ -128,7 +135,7 @@ enum StatusBarContent {
     static func weeklyDetails(_ limits: [UsageLimitSummary], now: Date) -> String {
         let labels = UsageLimitSummary.compactAccountLabels(limits)
         return limits.enumerated().map { index, limit in
-            let value = String(format: "%.0f%%", weeklyRemaining(limit))
+            let value = Format.percent(weeklyRemaining(limit))
             let account = limit.source.shortTitle + (labels[index].map { " " + $0 } ?? "")
             let reset = limit.resetDate.map { date in
                 let time = SessionPresentation.countdown(to: date, now: now)
@@ -148,7 +155,7 @@ enum StatusBarContent {
                         hasSample: Bool, hasTokenSample: Bool) -> [StatusBarMetric] {
         func percentage(_ number: Double?) -> String {
             guard hasSample, let number, number.isFinite else { return "—" }
-            return String(format: "%.0f%%", number)
+            return Format.percent(number)
         }
         let upload = networkRate(hasSample ? system.uploadBytesPerSecond : nil)
         let download = networkRate(hasSample ? system.downloadBytesPerSecond : nil)
@@ -209,7 +216,7 @@ enum StatusBarContent {
                                            detail: loc("주간 한도 기록 없음", "No weekly limit recorded"))
                 }
                 let left = weeklyRemaining(winner)
-                return StatusBarMetric(id: id, label: "WK", value: String(format: "%.0f%%", left), symbol: "",
+                return StatusBarMetric(id: id, label: "WK", value: Format.percent(left), symbol: "",
                                        detail: weeklyDetails(weekly, now: now), sources: [winner.source],
                                        valueTone: left <= 5 ? .critical : left <= 15 ? .warning : .label)
             }
@@ -236,6 +243,7 @@ enum StatusBarContent {
             guard let used, let total, total > 0 else { return nil }
             let tera = total >= 1_099_511_627_776
             let factor = tera ? 1_099_511_627_776.0 : 1_073_741_824.0
+            // A hovering tooltip uses whole GB / tenths of TB to stay calm; AX details retain Format.capacity's precision.
             let format = tera ? "%.1f" : "%.0f"
             return String(format: format, Double(used) / factor) + " / " + String(format: format, Double(total) / factor) + (tera ? " TB" : " GB")
         }
@@ -358,14 +366,19 @@ final class StatusBarContentView: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     /// Publishes arrive every second or more; an unchanged menu bar is not redrawn.
-    func update(metrics: [StatusBarMetric], layout: StatusBarLayout, showRunner: Bool) {
-        guard metrics != self.metrics || layout != self.layout || showRunner != self.showRunner else { return }
+    @discardableResult
+    func update(metrics: [StatusBarMetric], layout: StatusBarLayout, showRunner: Bool) -> Bool {
+        let drawingChanged = layout != self.layout || showRunner != self.showRunner
+            || metrics.count != self.metrics.count
+            || !zip(metrics, self.metrics).allSatisfy { $0.hasSameDrawing(as: $1) }
+        guard metrics != self.metrics || drawingChanged else { return false }
         let previousWidth = requiredWidth
         self.metrics = metrics
         self.layout = layout
         self.showRunner = showRunner
         if previousWidth != requiredWidth { invalidateIntrinsicContentSize() }
-        needsDisplay = true
+        if drawingChanged { needsDisplay = true }
+        return drawingChanged
     }
 
     func updateRunner(pose: RunnerPose, frame: Int, fx: Int? = nil) {
@@ -379,12 +392,14 @@ final class StatusBarContentView: NSView {
     /// Increase Contrast, Reduce Motion and similar display options changed.
     func displayOptionsChanged() {
         symbolImages.removeAll()
+        textCache.removeAll(keepingCapacity: true)
         needsDisplay = true
     }
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         symbolImages.removeAll()
+        textCache.removeAll(keepingCapacity: true)
         needsDisplay = true
     }
 
@@ -463,12 +478,21 @@ final class StatusBarContentView: NSView {
         var stateColours: Bool
     }
 
-    private struct Run {
+    private struct Run: Equatable {
         var text: String
         var font: NSFont
         var color: NSColor
         var kern: CGFloat = 0
     }
+
+    /// A small per-view working set, shared by count measurement and painting. Appearance changes flush it.
+    private struct CachedText {
+        var runs: [Run]
+        var scale: CGFloat
+        var text: NSAttributedString
+    }
+    private var textCache: [CachedText] = []
+    private(set) var textBuilds = 0
 
     private var scale: CGFloat { pixelScale ?? window?.backingScaleFactor ?? 2 }
     private func snap(_ value: CGFloat) -> CGFloat { (value * scale).rounded() / scale }
@@ -740,6 +764,7 @@ final class StatusBarContentView: NSView {
     }
 
     private func string(_ runs: [Run], scale: CGFloat = 1) -> NSAttributedString {
+        if let cached = textCache.first(where: { $0.scale == scale && $0.runs == runs }) { return cached.text }
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineBreakMode = .byClipping
         let result = NSMutableAttributedString()
@@ -748,6 +773,9 @@ final class StatusBarContentView: NSView {
             result.append(NSAttributedString(string: run.text, attributes: [.font: font, .foregroundColor: run.color,
                                                                             .kern: run.kern, .paragraphStyle: paragraph]))
         }
+        if textCache.count == 128 { textCache.removeAll(keepingCapacity: true) }
+        textCache.append(CachedText(runs: runs, scale: scale, text: result))
+        textBuilds += 1
         return result
     }
 
@@ -885,7 +913,7 @@ final class MenuBarPreviewCache {
     func preview(metrics: [StatusBarMetric], preferences: Preferences, pose: RunnerPose, now: Date) -> (images: [NSImage], width: CGFloat) {
         let key = [preferences.statusBarLayout.rawValue, "\(preferences.showRunner)", preferences.character.rawValue, preferences.order.map(\.rawValue).joined(separator: ","),
                    preferences.visible.map(\.rawValue).sorted().joined(separator: ","), pose.rawValue].joined(separator: "|")
-        let current = metrics.map { "\($0.id.rawValue)=\($0.value)/\($0.activityState.rawValue)/\($0.isActive)/\($0.sources.map(\.rawValue))" }
+        let current = metrics.map { "\($0.id.rawValue)=\($0.value)/\($0.activityState.rawValue)/\($0.isActive)/\($0.sources.map(\.rawValue))/\($0.valueTone)" }
         if key == structure && (current == values || now.timeIntervalSince(builtAt) < 1) { return result }
         structure = key
         values = current
@@ -1390,6 +1418,38 @@ func runStatusBarChecks() -> [String] {
     _ = cache.preview(metrics: [metric(.cpu, "12%"), base[1]], preferences: preferences, pose: .sit, now: at.addingTimeInterval(1.7))
     check("the settings preview rebuilds on a pose change at once and on value changes at most once a second",
           throttled == 1 && cache.builds == 3 && cache.result.images.count == 2)
+    var toneOnly = base
+    toneOnly[0] = metric(.weeklyLimit, "15%")
+    _ = cache.preview(metrics: toneOnly, preferences: preferences, pose: .sit, now: at.addingTimeInterval(2.8))
+    let normalBuilds = cache.builds
+    toneOnly[0].valueTone = .warning
+    _ = cache.preview(metrics: toneOnly, preferences: preferences, pose: .sit, now: at.addingTimeInterval(3.9))
+    check("the settings preview updates when only the value tone changes",
+          cache.builds == normalBuilds + 1 && toneOnly[0].value == "15%")
+
+    let redraw = StatusBarContentView(frame: NSRect(x: 0, y: 0, width: 40, height: 22))
+    var aging = metric(.weeklyLimit, "22%")
+    redraw.update(metrics: [aging], layout: .compact, showRunner: false)
+    let stableWidth = redraw.requiredWidth
+    var previous = aging
+    var previousRedraws = 0
+    var redrawRequests = 0
+    for second in 1...60 {
+        aging.detail = "Resets in \(second) seconds"
+        if aging != previous { previousRedraws += 1 }
+        previous = aging
+        if redraw.update(metrics: [aging], layout: .compact, showRunner: false) { redrawRequests += 1 }
+    }
+    check("help-only updates preserve painted content and fixed width",
+          redrawRequests == 0 && redraw.requiredWidth == stableWidth && redraw.metrics.first?.detail == aging.detail)
+    _ = redraw.snapshotImage()
+    let firstBuilds = redraw.textBuilds
+    _ = redraw.snapshotImage()
+    check("unchanged menu bar text reuses attributed strings", firstBuilds > 0 && redraw.textBuilds == firstBuilds)
+    aging.value = "21%"
+    let valueRedraw = redraw.update(metrics: [aging], layout: .compact, showRunner: false)
+    check("a changed value redraws without relayout", valueRedraw && redraw.requiredWidth == stableWidth)
+    print("Status bar redraw probe: 60 help updates, \(previousRedraws) → \(redrawRequests) redraw requests; repeated raster text builds \(firstBuilds) → \(redraw.textBuilds)")
     print("Status bar checks: \(checks - failures.count) PASS / \(failures.count) FAIL / \(skipped) SKIP")
     return failures
 }

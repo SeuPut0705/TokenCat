@@ -406,19 +406,23 @@ sealed class TrimLine : Panel
     protected override Size MeasureOverride(Size available)
     {
         double used = 0, height = 0;
-        UIElement? shrink = null;
+        var shrinking = 0;
         foreach (UIElement child in InternalChildren)
         {
-            if ((bool)child.GetValue(ShrinkProperty)) { shrink = child; continue; }
+            if ((bool)child.GetValue(ShrinkProperty)) { if (child.Visibility != Visibility.Collapsed) shrinking++; continue; }
             child.Measure(new Size(double.PositiveInfinity, available.Height));
             used += child.DesiredSize.Width;
             height = Math.Max(height, child.DesiredSize.Height);
         }
-        if (shrink is not null)
+        var remaining = double.IsInfinity(available.Width) ? double.PositiveInfinity : Math.Max(0, available.Width - used);
+        foreach (UIElement child in InternalChildren)
         {
-            shrink.Measure(new Size(Math.Max(0, (double.IsInfinity(available.Width) ? double.PositiveInfinity : available.Width - used)), available.Height));
-            used += shrink.DesiredSize.Width;
-            height = Math.Max(height, shrink.DesiredSize.Height);
+            if (!(bool)child.GetValue(ShrinkProperty) || child.Visibility == Visibility.Collapsed) continue;
+            child.Measure(new Size(remaining / shrinking, available.Height));
+            used += child.DesiredSize.Width;
+            remaining -= child.DesiredSize.Width;
+            shrinking--;
+            height = Math.Max(height, child.DesiredSize.Height);
         }
         return new Size(double.IsInfinity(available.Width) ? used : Math.Min(used, available.Width), height);
     }
@@ -603,7 +607,9 @@ sealed class LiveRow : RowShell
     readonly TextBlock number = Ui.Line();
     readonly Run outputAmount = Ui.Run("", Font.Metric), outputUnit = Ui.Run(" tok", Font.Micro, Theme.Secondary);
     readonly TextBlock chipWords = Ui.Text("", Font.MetaMedium);
-    readonly TextBlock client = TrimLine.Shrink(Ui.Text("", Font.Meta, Theme.Secondary));
+    readonly TextBlock clientProject = TrimLine.Shrink(Ui.Text("", Font.Meta, Theme.Secondary));
+    readonly TextBlock client = Ui.Text("", Font.Meta, Theme.Secondary);
+    readonly TextBlock clientModel = TrimLine.Shrink(Ui.Text("", Font.Meta, Theme.Secondary));
     readonly TextBlock trailing = Ui.Text("", Font.MetaMono);
     // 15 tall for MetaMono's descenders (a comma, a g), drawn 3 into the bottom padding so the row stays 58.
     readonly Border line3 = new() { Height = 15, Margin = new Thickness(Dashboard.GlyphX, 2, 0, -3) };
@@ -620,8 +626,10 @@ sealed class LiveRow : RowShell
         number.TextAlignment = TextAlignment.Right;
         var first = Dashboard.Spread(new TrimLine(glyph, project, shortId), number);
         first.Height = 18;
-        // The chip's words never trim; the client line does.
-        var second = Dashboard.Spread(new TrimLine(chipWords, client), trailing);
+        // Keep the client name whole; the project and model divide the remaining metadata width.
+        client.TextTrimming = TextTrimming.None;
+        var metadata = TrimLine.Shrink(new TrimLine(clientProject, client, clientModel));
+        var second = Dashboard.Spread(new TrimLine(chipWords, metadata), trailing);
         second.Height = 14;
         second.Margin = new Thickness(Dashboard.TextX, 2, 0, 0);
         var stack = new StackPanel { Margin = new Thickness(0, 5, Dashboard.Inset, 5) };
@@ -659,7 +667,12 @@ sealed class LiveRow : RowShell
             Ui.Help(number, Loc("현재 턴 시작 부분을 읽지 못해 이번 턴 누적량을 알 수 없습니다", "Couldn't read the start of this turn, so its total is unknown"));
         }
 
-        client.Text = " · " + SessionPresentation.ClientLine(reading);
+        var rowProject = SessionPresentation.RowProject(reading);
+        clientProject.Text = rowProject is null ? "" : " · " + rowProject;
+        clientProject.Visibility = rowProject is null ? Visibility.Collapsed : Visibility.Visible;
+        client.Text = " · " + reading.ClientTitle;
+        var effort = SessionPresentation.EffortLabel(reading);
+        clientModel.Text = " · " + (reading.Model ?? Loc("모델 기록 대기", "waiting for model")) + (effort is null ? "" : " · " + effort);
         trailing.Text = item.State switch
         {
             SessionDisplayState.Waiting => Loc("활동 ", "Active ") + Format.Age(SessionPresentation.LiveAt(reading), now),
@@ -785,26 +798,26 @@ sealed class IdleRow : RowShell
         Ui.Help(trailing, state.Title + Loc(" · 마지막 활동 ", " · last activity ") + SessionPresentation.HelpAge(reading.LastActivity, now, false));
 
         var showsId = context.ShowsID(reading);
-        var key = (reading.Title, reading.Project, reading.Source, word, showsId, showsLast, trailing.Text);
+        var key = (reading.Title, reading.Project, reading.ClientTitle, word, showsId, showsLast, trailing.Text);
         if (Equals(key, namesKey)) return;
         namesKey = key;
         lastTurn.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         trailing.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - Dashboard.GlyphX - 12 - 6 - 8 - Dashboard.Inset
             - (showsLast ? lastTurn.DesiredSize.Width + 10 : 0) - trailing.DesiredSize.Width;
-        // A titled row keeps its project beside the title; the title is cut before it.
+        // Keep the client name whole; a long titled row's project moves to the full row help first.
         var rowProject = SessionPresentation.RowProject(reading);
-        FrameworkElement Names(bool withClient, bool withId, bool withWord, bool trim)
+        FrameworkElement Names(bool withId, bool withWord, bool trim, bool withProject = true)
         {
             var title = Ui.Text(SessionPresentation.RowTitle(reading), Font.Body);
             return new TrimLine(trim ? TrimLine.Shrink(title) : title,
-                rowProject is null ? null : Spaced(Ui.Text(rowProject, Font.Meta, Theme.Secondary)),
-                withClient ? Spaced(Ui.Text(reading.ClientTitle, Font.Meta, Theme.Secondary)) : null,
+                withProject && rowProject is not null ? Spaced(Ui.Text(rowProject, Font.Meta, Theme.Secondary)) : null,
+                Spaced(Ui.Text(reading.ClientTitle, Font.Meta, Theme.Secondary)),
                 withWord && word is not null ? Spaced(Ui.Text(word, Font.Micro, Theme.Secondary)) : null,
                 withId ? Spaced(Ui.Text(SessionPresentation.ShortID(reading), Font.Meta, Theme.Secondary)) : null);
         }
-        names.Child = Dashboard.Fit(room, () => Names(true, showsId, true, false), () => Names(true, showsId, false, false),
-            () => Names(true, false, false, false), () => Names(false, false, false, true));
+        names.Child = Dashboard.Fit(room, () => Names(showsId, true, false), () => Names(showsId, false, false),
+            () => Names(false, false, false), () => Names(false, false, true, withProject: false));
     }
 
     public static T Spaced<T>(T element, double gap = 6) where T : FrameworkElement

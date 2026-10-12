@@ -179,14 +179,15 @@ public sealed class CopilotLogReader : ITokenLogReader
             if (!file.Exists) return;
             var current = (file.CreationTimeUtc.Ticks, file.Length, file.LastWriteTimeUtc.Ticks);
             if (current == workspaceStamp) return;
-            workspaceStamp = current;
-            if (file.Length > 65_536) return;
+            // Oversized files stay rejected until they change; failed reads are retried next sample.
+            if (file.Length > 65_536) { workspaceStamp = current; return; }
             byte[] data;
             using (var stream = new FileStream(file.FullName, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
                 data = new byte[stream.Length];
                 stream.ReadExactly(data);
             }
+            workspaceStamp = current;
             var values = YamlValues(Encoding.UTF8.GetString(data), ["cwd", "name", "summary"]);
             if (cwd is null && values.GetValueOrDefault("cwd") is { Length: > 0 } path) cwd = path;
             title = SessionTitle.Clean(values.GetValueOrDefault("name")) ?? SessionTitle.Clean(values.GetValueOrDefault("summary"));

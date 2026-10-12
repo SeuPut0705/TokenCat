@@ -40,6 +40,9 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
     readonly HttpClient http = new(handler ?? Handler()) { Timeout = Timeout, MaxResponseContentBufferSize = 1 << 20 };
     readonly Dictionary<LimitSlot, HashSet<string>> rejectedBySlot = [];
 
+    /// Called only after the poller evicts an ineligible slot with no read in flight or pending backoff.
+    public void Forget(LimitSlot slot) { lock (accountGate) rejectedBySlot.Remove(slot); }
+
     static SocketsHttpHandler Handler()
     {
         var value = UpdateClient.Handler();
@@ -133,7 +136,12 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
             catch (IOException) { }
             using var exit = new CancellationTokenSource(TimeSpan.FromSeconds(2));
             try { await process.WaitForExitAsync(exit.Token).ConfigureAwait(false); }
-            catch (OperationCanceledException) { Kill(process); }
+            catch (OperationCanceledException)
+            {
+                Kill(process);
+                // Kill is asynchronous: finish reaping the server before a result or the next poll can escape.
+                await process.WaitForExitAsync().ConfigureAwait(false);
+            }
         }
     }
 

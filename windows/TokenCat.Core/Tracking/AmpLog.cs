@@ -57,8 +57,8 @@ public sealed class AmpLogReader(string path) : ITokenLogReader
             if (!info.Exists) return;
             var current = (info.CreationTimeUtc.Ticks, info.Length, info.LastWriteTimeUtc.Ticks);
             if (current == stamp) return;
-            stamp = current;
-            if (info.Length > MaximumBytes) return;
+            // Oversized snapshots stay rejected until they change; failed reads/parses are retried next sample.
+            if (info.Length > MaximumBytes) { stamp = current; return; }
             byte[] data;
             using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
             {
@@ -66,6 +66,7 @@ public sealed class AmpLogReader(string path) : ITokenLogReader
                 stream.ReadExactly(data);
             }
             if (Json.Parse(data) is not { ValueKind: JsonValueKind.Object } thread) return;
+            stamp = current;
             var modified = new DateTimeOffset(info.LastWriteTimeUtc);
             Parse(thread, modified > now.AddSeconds(5) ? now.AddSeconds(5) : modified);
         }

@@ -226,6 +226,14 @@ public static class CursorChecks
                   && !tracker.IsLog(Path.Combine(projects, "empty-window", "terminals", "1.txt")),
                   "Cursor: a changed path was matched to the wrong file of a project folder");
 
+            // Forget composers and their data stamps together after ten minutes without a reader.
+            var store = CursorIDEStore.At(state);
+            var cachedBefore = store.Held;
+            _ = store.Composer("cur-unknown", now.AddSeconds(700));
+            check(cachedBefore.Composers > 2 && cachedBefore.DataStamps > 2
+                  && store.Held.Composers <= 1 && store.Held.DataStamps <= 1,
+                  "Cursor: composers no reader asked about for 10 minutes were kept");
+
             // Older IDE builds keep the headers as one JSON value in ItemTable.
             var oldHome = Path.Combine(root, "old-home");
             Write(Path.Combine(oldHome, ".cursor", "projects", "Users-nobody-old", "agent-transcripts", "cur-old", "cur-old.jsonl"),

@@ -100,8 +100,12 @@ public static class CopilotAmpDroidChecks
             check(!Encoding.UTF8.GetString(Json.Serialize(copilot)).Contains("PRIVATE", StringComparison.Ordinal) && working?.Title is null,
                   "Copilot CLI: prompt, reply or tool input text leaked, or a session without workspace.yaml got a title");
             // A rename writes `name:` (and the same `summary:`); the yaml is read again although the event log did not change.
-            Write(Path.Combine(state, "copilot-done", "workspace.yaml"),
+            var workspace = Path.Combine(state, "copilot-done", "workspace.yaml");
+            Write(workspace,
                 Encoding.UTF8.GetBytes("id: copilot-done\ncwd: \"/tmp/YamlProject\"\nsummary: \"Renamed \\\"fixture\\\" #1\"\nname: \"Renamed \\\"fixture\\\" #1\"\n"));
+            // A failed read must not commit the new stamp: retry the unchanged file after the writer releases it.
+            using (var writer = new FileStream(workspace, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                copilotTracker.Sample();
             var yaml = CopilotLogReader.YamlValues("name: |-\n  Block\n  title\nsummary: plain: text\n", ["name", "summary"]);
             check(copilotTracker.Sample().FirstOrDefault(r => r.SessionID == "copilot-done")?.Title == "Renamed \"fixture\" #1"
                   && yaml.Count == 2 && yaml.GetValueOrDefault("name") == "Block\ntitle" && yaml.GetValueOrDefault("summary") == "plain: text",
@@ -131,7 +135,8 @@ public static class CopilotAmpDroidChecks
                 $$$"""[{"timestamp":"{{{Stamp(4)}}}","model":"claude-sonnet-4","toMessageId":3,"tokens":{"input":10,"output":15}}]"""), 4);
             Write(Path.Combine(threads, "T-blocked.json"), Thread("T-blocked",
                 string.Join(",", User(0, 1, Prompt), Reply(1, 2, 8, "tool_use", "b-t1"), User(2, 3, Result("b-t1", "blocked-on-user")))), 3);
-            var amp = new TokenTracker(ampHome, () => Start.AddSeconds(10), environment: _ => null).Sample();
+            var ampTracker = new TokenTracker(ampHome, () => Start.AddSeconds(10), environment: _ => null);
+            var amp = ampTracker.Sample();
             var ampWorking = amp.FirstOrDefault(r => r.SessionID == "T-working");
             check(ampWorking is { Active: true, ActivityState: TokenActivityState.Tool, ToolName: "Bash", CurrentTurnOutputTokens: 60, Model: "claude-sonnet-4" }
                   && ampWorking.CurrentTurnStartedAt == Start.AddSeconds(1),
@@ -146,10 +151,15 @@ public static class CopilotAmpDroidChecks
                   "Amp: a tool blocked on the person must wait for input");
             check(amp.Count == 3 && !Encoding.UTF8.GetString(Json.Serialize(amp)).Contains("PRIVATE", StringComparison.Ordinal) && ampDone?.Title == "Amp fixture title",
                   "Amp: thread text leaked, a thread was missed, or its title was not kept");
-            Write(Path.Combine(threads, "T-done.json"), Thread("T-done", string.Join(",", User(0, 1, Prompt), Reply(1, 2, 70, "end_turn")),
-                title: "Amp renamed thread"), 6);
-            check(new TokenTracker(ampHome, () => Start.AddSeconds(10), environment: _ => null).Sample()
-                      .FirstOrDefault(r => r.SessionID == "T-done")?.Title == "Amp renamed thread",
+            var renamedThread = Thread("T-done", string.Join(",", User(0, 1, Prompt), Reply(1, 2, 70, "end_turn")),
+                title: "Amp renamed thread");
+            var ampDonePath = Path.Combine(threads, "T-done.json");
+            var partialThread = renamedThread.ToArray();
+            partialThread[0] = (byte)'!';
+            Write(ampDonePath, partialThread, 6);
+            ampTracker.Sample();
+            Write(ampDonePath, renamedThread, 6);
+            check(ampTracker.Sample().FirstOrDefault(r => r.SessionID == "T-done")?.Title == "Amp renamed thread",
                   "Amp: a renamed thread snapshot did not update the title");
 
             // Droid

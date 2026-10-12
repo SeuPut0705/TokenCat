@@ -296,8 +296,9 @@ public sealed class KimiCodeLogReader : ITokenLogReader
     void ReadState()
     {
         if (KimiLog.Stamp(statePath) is not { } current || current == stateStamp) return;
-        stateStamp = current;
+        if (current.Item2 > 4_194_304) { stateStamp = current; return; }
         if (KimiLog.Object(statePath) is not { } state) return;
+        stateStamp = current;
         cwd = LogFields.Text(state.Field("cwd")) ?? LogFields.Text(state.Field("workDir")) ?? cwd;
         title = KimiLog.Title(state);
         role = TokenLogParser.Label(state.Field("agents")?.Field(agentID)?.Field("labels")?.Field("profileName")) ?? role;
@@ -423,7 +424,7 @@ public sealed class KimiCLILogReader : ITokenLogReader
     TokenContextUsage? context;
     /// `StatusUpdate`s already counted in the current step, by `message_id`: a step makes one model call, and some
     /// OpenAI-compatible gateways reuse one response id for every call, so ids are only compared within a step.
-    readonly HashSet<string> counted = new(StringComparer.Ordinal);
+    readonly RecentKeys counted = new(1_024);
     /// Open `QuestionRequest`s by tool call; its tool result answers it.
     readonly Dictionary<string, string> questions = new(StringComparer.Ordinal);
     (long, long, long)? workDirsStamp;
@@ -562,11 +563,7 @@ public sealed class KimiCLILogReader : ITokenLogReader
                 if (LogFields.Count(payload?.Field("context_tokens")) is { } used and > 0 && at is { } recorded)
                     context = new TokenContextUsage(used, LogFields.Count(payload?.Field("max_context_tokens")) is { } window and > 0 ? window : null, recorded, null);
                 if (payload?.Field("token_usage") is not { ValueKind: JsonValueKind.Object } usage || LogFields.Count(usage.Field("output")) is not { } output) break;
-                if (LogFields.Text(payload?.Field("message_id")) is { } messageID)
-                {
-                    if (!counted.Add(messageID)) break;
-                    if (counted.Count > 1_024) counted.Clear();
-                }
+                if (LogFields.Text(payload?.Field("message_id")) is { } messageID && !counted.Insert(messageID)) break;
                 if (turn.LastActivity is null) turn.Resume(at);
                 turn.AddOutput(output, at);
                 break;

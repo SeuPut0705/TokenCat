@@ -117,7 +117,8 @@ public static class TelemetryChecks
         foreach (var service in new[] { "arbitrary-codex-service", "arbitrary codex service", "Codex Desktop arbitrary", string.Concat(Enumerable.Repeat("codex", 100)), "claude-code" })
             unknownService.Ingest(Metric(serviceTBT, service: service), "/v1/metrics");
         check(unknownService.Snapshot().Count == 0, "Unknown or cross-provider service was classified by a metric name alone");
-        check(unknownService.Diagnostics().Entries.Any(entry => entry.ResourceServiceName == TelemetryDecoder.UnknownMetadata && entry.MetricName == serviceTBT && !entry.Recognized),
+        check(unknownService.Diagnostics().Entries.Any(entry => entry.ResourceServiceName == TelemetryCollector.UnknownMetadata && entry.MetricName == serviceTBT && !entry.Recognized)
+              && !unknownService.Diagnostics().Entries.Any(entry => entry.ResourceServiceName?.Contains("arbitrary", StringComparison.Ordinal) == true),
               "Diagnostics lost the rejected resource service/name pair");
 
         var diagnostics = new TelemetryCollector();
@@ -133,23 +134,39 @@ public static class TelemetryChecks
               "Signal diagnostic counts confused rejected batches or decoded readings");
         check(diagnosticSnapshot.Entries.Any(entry => entry is { ResourceServiceName: "Codex Desktop", MetricName: serviceTBT, Unit: "ms", Recognized: true })
               && diagnosticSnapshot.Entries.Any(entry => entry is { Unit: "s", Recognized: false })
-              && diagnosticSnapshot.Entries.Any(entry => entry is { MetricName: TelemetryDecoder.UnknownMetadata, Recognized: false }),
+              && diagnosticSnapshot.Entries.Any(entry => entry is { MetricName: TelemetryCollector.UnknownMetadata, Recognized: false }),
               "Diagnostics did not separate known metadata from unsupported units/names");
         var diagnosticJSON = Json(diagnosticSnapshot);
         check(!diagnosticJSON.Contains("PRIVATE") && !diagnosticJSON.Contains("output_tokens") && !diagnosticJSON.Contains("\"duration_ms\":"),
               "Diagnostic output retained event bodies or other attributes");
+        // Distinct known service × metric × unit slots exercise the bound without echoing arbitrary metadata.
         const int bound = TelemetryCollector.MaximumDiagnostics;
-        for (var index = 0; index < bound + 8; index++)
-            diagnostics.Ingest(Logs(new() { ["event.name"] = $"unknown.event.{index}" }, service: "unknown-service"), "/v1/logs");
-        check(diagnostics.Diagnostics().Entries.Count == bound && diagnostics.Diagnostics().Entries[^1].Name == $"unknown.event.{bound + 7}",
+        var slots = (from service in new[] { "codex_cli_rs", "codex_exec", "codex-app-server", "codex_desktop", "codex-tui",
+                         "codex_vscode", "codex_mcp_server", "codex_sdk_ts", "codex-app-server-sdk", "Codex Desktop" }
+                     from name in new[] { serviceTBT, "codex.responses_api_engine_iapi_tbt.duration_ms", "codex.responses_api_inference_time.duration_ms" }
+                     from unit in new[] { "s", "1", "By" }
+                     select (Service: service, Name: name, Unit: unit)).Take(bound + 8).ToArray();
+        foreach (var slot in slots) diagnostics.Ingest(Metric(slot.Name, unit: slot.Unit, service: slot.Service), "/v1/metrics");
+        var lastSlot = diagnostics.Diagnostics().Entries[^1];
+        check(diagnostics.Diagnostics().Entries.Count == bound && lastSlot.ResourceServiceName == slots[^1].Service
+              && lastSlot.MetricName == slots[^1].Name && lastSlot.Unit == slots[^1].Unit,
               "Diagnostic metadata did not evict entries at its memory bound");
         diagnostics.Ingest(Metric(new string('x', 1000)), "/v1/metrics");
         check(diagnostics.Diagnostics().Entries[^1].MetricName == "__invalid_metadata__", "Oversized diagnostic metadata was retained");
         var echoed = new TelemetryCollector();
         echoed.Ingest(Metric("person@example.com", unit: "C:/Users/person", service: "person@example.com"), "/v1/metrics");
         var echoedJSON = Json(echoed.Diagnostics());
+        var units = new TelemetryCollector();
+        string[] knownUnits = ["", "ms", "s", "us", "ns", "1", "By", "{token}"];
+        foreach (var unit in knownUnits) units.Ingest(Metric(serviceTBT, unit: unit), "/v1/metrics");
+        foreach (var unit in new[] { "min", "h", "%", "{tokens}", "tokens", "{request}", "{call}" })
+            units.Ingest(Metric(serviceTBT, unit: unit), "/v1/metrics");
+        var unitEntries = units.Diagnostics().Entries;
         check(!echoedJSON.Contains("person") && echoed.Diagnostics().Entries.Any(entry => entry is
-                  { ResourceServiceName: TelemetryDecoder.UnknownMetadata, MetricName: TelemetryDecoder.UnknownMetadata, Unit: TelemetryDecoder.UnknownMetadata, Recognized: false }),
+                  { ResourceServiceName: TelemetryCollector.UnknownMetadata, MetricName: TelemetryCollector.UnknownMetadata, Unit: TelemetryCollector.UnknownMetadata, Recognized: false })
+              && unitEntries.Count == knownUnits.Length + 1
+              && knownUnits.All(unit => unitEntries.Any(entry => entry.Unit == unit))
+              && unitEntries.Any(entry => entry is { Unit: TelemetryCollector.UnknownMetadata, Recognized: false }),
               "diagnostics echo only known service, metric and unit names");
         const string iapiTBT = "codex.responses_api_engine_iapi_tbt.duration_ms";
         foreach (var reverseOrder in new[] { false, true })
@@ -315,18 +332,19 @@ public static class TelemetryChecks
         const string chunkedHead = "POST /v1/logs HTTP/1.1\r\nHost: 127.0.0.1:16493\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n";
         var chunked = Bytes(chunkedHead + "6;name=value\r\n{\"reso\r\nb\r\nurceLogs\":[\r\n2\r\n]}\r\n0\r\nX-Trailer: 1\r\n\r\n");
         check(TelemetryHttp.Parse(chunked) is HttpDecision.Request { Path: "/v1/logs", Body: var chunkedBody }
-              && chunkedBody.SequenceEqual("{\"resourceLogs\":[]}"u8.ToArray())
-              && TelemetryHttp.Parse(chunked.AsSpan(0, chunked.Length - 3)) is HttpDecision.Waiting
-              && TelemetryHttp.Parse(chunked.AsSpan(0, chunkedHead.Length + 9)) is HttpDecision.Waiting,
-              "A chunked body with an extension and a trailer did not decode, or a prefix did not wait");
+              && chunkedBody.SequenceEqual("{\"resourceLogs\":[]}"u8.ToArray()), "A chunked body was not joined into its JSON");
+        check(new[] { chunked.Length - 1, chunked.Length - 3, chunked.Length - 30, chunked.Length - 40 }
+                  .All(cut => TelemetryHttp.Parse(chunked.AsSpan(0, cut)) is HttpDecision.Waiting),
+              "A partial chunked body did not wait for the rest");
         check(Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n2\r\n{}\r\n0\r\n\r\n")) == 400
               && Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: gzip, chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n")) == 400
               && Code(Parse("POST /v1/logs HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")) == 400
               && Code(Parse(chunkedHead + "zz\r\n{}\r\n0\r\n\r\n")) == 400
               && Code(Parse(chunkedHead + "2\r\n{}xx0\r\n\r\n")) == 400
               && Code(Parse(chunkedHead + "2\r\n{}\r\n0\r\n\r\nGET")) == 400
-              && Code(Parse("GET /health HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n")) == 400,
-              "Chunked framing errors (with Content-Length, other codings, repeated, bad hex, missing CRLF, trailing bytes, on GET) were accepted");
+              && Code(Parse(chunkedHead + "200001\r\n")) == 413
+              && Code(Parse("GET /health HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n")) == 400,
+              "A chunked body with a length, another coding, bad framing, trailing bytes or an oversized chunk was accepted");
         var hugeChunks = Bytes(chunkedHead + "200000\r\n" + new string('a', 0x200000) + "\r\n1\r\n");
         check(Code(TelemetryHttp.Parse(hugeChunks)) == 413
               && Code(Parse("POST /v1/claude/status HTTP/1.1\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\n\r\n10001\r\n")) == 413,

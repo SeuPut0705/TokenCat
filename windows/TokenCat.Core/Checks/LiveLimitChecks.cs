@@ -47,6 +47,13 @@ public static class LiveLimitChecks
         return path;
     }
 
+    static bool Ended(string script)
+    {
+        if (!File.Exists(script + ".pid") || !int.TryParse(File.ReadAllText(script + ".pid").Trim(), out var pid)) return false;
+        try { using var process = Process.GetProcessById(pid); return process.HasExited; }
+        catch (ArgumentException) { return true; }
+    }
+
     static void Codex(string folder, Action<bool, string> check)
     {
         LiveLimitResult Run(string path, double timeout = 10) =>
@@ -71,14 +78,19 @@ public static class LiveLimitChecks
         check(Run(refused) is { Failed: true, Codex: null } && Run(other) is { Failed: true, Codex: null }
               && Run(Path.Combine(folder, "missing")) is { Failed: true }, "a JSON-RPC error, another limit or a missing executable reads as an answer");
         // Never answers: ended at the timeout instead of waiting for it.
-        var silent = FakeAppServer(folder, "silent", Read, Read, Read);
+        var windows = OperatingSystem.IsWindows();
+        var silent = Path.Combine(folder, "silent" + (windows ? ".cmd" : ".sh"));
+        File.WriteAllText(silent, windows
+            ? $"@echo off\r\npowershell.exe -NoProfile -NonInteractive -Command \"$PID | Set-Content -LiteralPath '{silent.Replace("'", "''")}.pid'; [Console]::ReadLine() | Out-Null; Start-Sleep -Seconds 30\"\r\n"
+            : "#!/bin/sh\necho $$ > \"$0.pid\"\nread -r line\nexec sleep 30\n");
+        if (!windows) File.SetUnixFileMode(silent, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         var watch = Stopwatch.StartNew();
-        check(Run(silent, timeout: 1) is { Failed: true } && watch.Elapsed < TimeSpan.FromSeconds(6), "a silent app-server is not ended at the timeout");
+        check(Run(silent, timeout: 1) is { Failed: true } && watch.Elapsed < TimeSpan.FromSeconds(6) && Ended(silent),
+              "a silent Codex app-server is not ended at the timeout");
         // LiveLimitsChecks.swift's ordered server: the order of requests is enforced (a wrong line exits with an error code),
         // notifications come before each response, and the initialize response arrives in two writes 0.1 s apart. The server
         // then idles; the reader must end it. (On Windows the cmd script checks the methods without quotes and writes the
         // response at once: cmd cannot print a partial line with quotes reliably.)
-        var windows = OperatingSystem.IsWindows();
         var ordered = Path.Combine(folder, "ordered" + (windows ? ".cmd" : ".sh"));
         const string notice = """{"jsonrpc":"2.0","method":"remoteControl/status/changed","params":{"status":"off"}}""";
         const string limits = """{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1791580427},"secondary":null,"credits":{"hasCredits":false},"planType":"pro","rateLimitReachedType":null}}}""";
@@ -88,7 +100,7 @@ public static class LiveLimitChecks
                 "echo %line% | findstr /c:initialized >nul || exit /b 4", "set /p line=",
                 "echo %line% | findstr /c:rateLimits/read >nul || exit /b 6",
                 """echo {"jsonrpc":"2.0","method":"account/updated","params":{"authMode":"chatgpt"}}""", "echo " + limits,
-                "ping -n 31 127.0.0.1 >nul") + "\r\n"
+                $"powershell.exe -NoProfile -NonInteractive -Command \"$PID | Set-Content -LiteralPath '{ordered.Replace("'", "''")}.pid'; Start-Sleep -Seconds 30\"") + "\r\n"
             : $$$"""
               #!/bin/sh
               echo $$ > "$0.pid"
@@ -112,15 +124,8 @@ public static class LiveLimitChecks
         var started = Stopwatch.StartNew();
         var answered = Run(ordered, timeout: 5);
         var elapsed = started.Elapsed;
-        bool Ended()
-        {
-            if (windows) return true; // no pid from cmd; the elapsed bound shows the reader did not wait for the idle server
-            if (!int.TryParse(File.ReadAllText(ordered + ".pid").Trim(), out var pid)) return false;
-            try { using var process = Process.GetProcessById(pid); return process.HasExited; }
-            catch (ArgumentException) { return true; }
-        }
         check(!answered.Failed && answered.Codex is [{ UsedPercent: 31, WindowMinutes: 10_080, Live: true } window]
-              && window.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_791_580_427) && elapsed < TimeSpan.FromSeconds(4) && Ended(),
+              && window.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_791_580_427) && elapsed < TimeSpan.FromSeconds(4) && Ended(ordered),
               $"the Codex app-server read skips notifications, joins split lines and ends the server ({(answered.Codex is { } got ? string.Join(", ", got) : "nil")})");
         var now = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
         check(LiveLimits.DecodeCodex(Json.Parse("""{"limitId":"other","primary":{"usedPercent":10}}"""u8), now) is null
@@ -314,6 +319,38 @@ public static class LiveLimitChecks
         check(calls[code] == 2 && calls[first] == 3 && calls[second] == 3 && calls[missing] == 3
               && deliveryCount == 8 && deliveries[first] == 11 && deliveries[second] == 22 && deliveries[missing] == 33,
               "live poller mixes account slots, per-token rejection sets, attributed numbers, or per-slot backoff");
+
+        // Cancelled reads finish without delivery; slots that briefly leave retain their cadence and rejection state.
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var delivered = new List<LimitSlot>();
+        var forgotten = new List<LimitSlot>();
+        var quiet = new LiveLimitPoller(async (slot, _) =>
+        {
+            await ready.Task.ConfigureAwait(false);
+            return new(Claude: new ClaudeUsageLimits(new ClaudeLimitWindow(10, now.AddSeconds(300), now)));
+        }, forgotten.Add);
+        var cancelled = quiet.Tick(now, false, new HashSet<LimitSlot> { first }, _ => false, result => delivered.Add(result.Slot!));
+        quiet.Cancel();
+        ready.SetResult();
+        cancelled.GetAwaiter().GetResult();
+        check(delivered.Count == 0, "a live read finishing after live usage limits were turned off is delivered");
+        quiet.Tick(now.AddSeconds(1), false, new HashSet<LimitSlot> { second }, _ => false, result => delivered.Add(result.Slot!)).GetAwaiter().GetResult();
+        var retained = quiet.TrackedSlots;
+        quiet.Tick(now.AddSeconds(LiveLimitPoller.Retention), false, new HashSet<LimitSlot>(), _ => false, _ => { }).GetAwaiter().GetResult();
+        var boundary = quiet.TrackedSlots;
+        quiet.Tick(now.AddSeconds(1 + LiveLimitPoller.Retention), false, new HashSet<LimitSlot>(), _ => false, _ => { }).GetAwaiter().GetResult();
+        // A read still running past retention must keep its slot until it finishes.
+        var inFlight = new TaskCompletionSource<LiveLimitResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var busy = new LiveLimitPoller((_, _) => inFlight.Task);
+        var reading = busy.Tick(now, false, new HashSet<LimitSlot> { first }, _ => false, _ => { });
+        busy.Tick(now.AddSeconds(LiveLimitPoller.Retention), false, new HashSet<LimitSlot>(), _ => false, _ => { }).GetAwaiter().GetResult();
+        var busyRetained = busy.TrackedSlots.Contains(first);
+        inFlight.SetResult(new());
+        reading.GetAwaiter().GetResult();
+        busy.Tick(now.AddSeconds(LiveLimitPoller.Retention), false, new HashSet<LimitSlot>(), _ => false, _ => { }).GetAwaiter().GetResult();
+        check(delivered.SequenceEqual([second]) && retained.SetEquals([first, second]) && boundary.SetEquals([second])
+              && quiet.Held == 0 && forgotten.SequenceEqual([first, second]) && busyRetained && busy.Held == 0,
+              "live poller keeps the state of slots no longer eligible past the retention, or drops it too early");
     }
 
     sealed class CountingContext : SynchronizationContext

@@ -39,7 +39,6 @@ public sealed partial record TokenLogFormat
 sealed class OmpLogReader(string path) : ITokenLogReader
 {
     readonly LogLineTail tail = new(path);
-    readonly OmpCredentialPinReader pinReader = new(path);
     IReadOnlyDictionary<TokenSource, string> credentialPins = new Dictionary<TokenSource, string>();
     OmpLogState state = new(path);
     bool headerRead;
@@ -53,7 +52,7 @@ sealed class OmpLogReader(string path) : ITokenLogReader
             state = new OmpLogState(path);
             headerRead = false;
         }, line => state.Consume(line.ToArray(), tail.SkippedHead));
-        credentialPins = pinReader.Read(tail.Stamp);
+        credentialPins = OmpPinStore.Shared.Pins(path, tail.Stamp);
         // The header (a title line, then the session line) is lost when the first read starts mid-file.
         if (!tail.SkippedHead || headerRead) return;
         try
@@ -485,9 +484,19 @@ sealed record OmpRecordHead(Dictionary<string, string> Fields, Dictionary<string
     }
 }
 
-/// Pin metadata is streamed independently of usage tails, including undiscovered ancestor logs.
-sealed class OmpCredentialPinReader(string path)
+/// Pin metadata is streamed independently of usage tails, including undiscovered ancestor logs. One locked store shares
+/// parent scans across every reader; logs and ancestors nobody asks for are swept after 120 seconds.
+sealed class OmpPinStore
 {
+    public static readonly OmpPinStore Shared = new();
+    internal const double SweepInterval = 120;
+    readonly object gate = new();
+    readonly HashSet<string> touched = new(LimitAccountReader.PathComparer);
+    long sweptAt = Environment.TickCount64;
+
+    OmpPinStore() { }
+
+    internal int Count { get { lock (gate) return files.Count; } }
     sealed record Record
     {
         public string? Type { get; init; }
@@ -506,13 +515,34 @@ sealed class OmpCredentialPinReader(string path)
     readonly Dictionary<string, FileState> files = new(LimitAccountReader.PathComparer);
 
     /// `ownStamp`: the log's stamp from the usage tail's stat of this sample, so the log is not queried twice.
-    public IReadOnlyDictionary<TokenSource, string> Read((long Identity, long Length, long Written)? ownStamp = null) =>
-        Inherited(path, new HashSet<string>(LimitAccountReader.PathComparer), ownStamp);
+    public IReadOnlyDictionary<TokenSource, string> Pins(string path, (long Identity, long Length, long Written)? ownStamp = null)
+    {
+        lock (gate)
+        {
+            var uptime = Environment.TickCount64;
+            if (uptime - sweptAt >= SweepInterval * 1_000 || uptime < sweptAt) SweepLocked(uptime);
+            return Inherited(path, new HashSet<string>(LimitAccountReader.PathComparer), ownStamp);
+        }
+    }
+
+    /// Drops scan state for logs nobody asked for since the previous sweep.
+    internal void Sweep()
+    {
+        lock (gate) SweepLocked(Environment.TickCount64);
+    }
+
+    void SweepLocked(long uptime)
+    {
+        foreach (var path in files.Keys.Where(path => !touched.Contains(path)).ToArray()) files.Remove(path);
+        touched.Clear();
+        sweptAt = uptime;
+    }
 
     Dictionary<TokenSource, string> Inherited(string path, HashSet<string> visited, (long Identity, long Length, long Written)? knownStamp = null)
     {
         path = Path.GetFullPath(path);
         if (!visited.Add(path)) return [];
+        touched.Add(path);
         var own = Metadata(path, knownStamp);
         var directory = Path.GetDirectoryName(path);
         string? parent = null;
@@ -555,11 +585,11 @@ sealed class OmpCredentialPinReader(string path)
                 state = new FileState();
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 0);
             stream.Position = state.Offset;
-            var chunk = ArrayPool<byte>.Shared.Rent(65_536);
+            var chunk = ArrayPool<byte>.Shared.Rent(1_048_576);
             try
             {
                 int count;
-                while ((count = stream.Read(chunk, 0, 65_536)) > 0)
+                while ((count = stream.Read(chunk, 0, 1_048_576)) > 0)
                 {
                     state.Offset += count;
                     state.Lines.Consume(chunk.AsSpan(0, count), line => Consume(line, state));

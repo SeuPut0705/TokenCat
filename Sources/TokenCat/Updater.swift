@@ -104,8 +104,10 @@ enum UpdateFailure: Error, Equatable {
         switch self {
         case .network: return loc("GitHub에 연결하지 못했습니다. 네트워크 연결을 확인하세요.", "Couldn't connect to GitHub. Check your network connection.")
         case .server(let status): return loc("GitHub가 HTTP \(status) 오류로 응답했습니다. 잠시 뒤 다시 시도하세요.", "GitHub responded with HTTP \(status). Try again in a moment.")
-        case .rateLimited(let until): return loc("GitHub 요청 한도에 걸렸습니다. \(Self.clock(until)) 이후에 다시 확인할 수 있습니다.",
-                                                  "GitHub's rate limit was reached. You can check again after \(Self.clock(until)).")
+        case .rateLimited(let until):
+            let time = Self.clock(until)
+            return loc("GitHub 요청 한도에 걸렸습니다. \(time) 이후에 다시 확인할 수 있습니다.",
+                       "GitHub's rate limit was reached. You can check again after \(time).")
         case .invalidResponse: return loc("GitHub 응답을 읽지 못했습니다.", "Couldn't read GitHub's response.")
         case .notNewer: return loc("설치할 새 버전이 없습니다.", "There's no new version to install.")
         // A copy opened while this one runs only shows this one's panel and quits, so the manual paths say to quit first.
@@ -808,8 +810,9 @@ final class Updater {
             print(loc("결과: 예상하지 못한 304 응답", "Result: unexpected 304 response"))
             return 1
         case .rateLimited(let until):
-            print(loc("결과: 확인 실패 · GitHub 요청 한도 · \(UpdateFailure.clock(until)) 이후 다시 시도",
-                      "Result: check failed · GitHub rate limit · try again after \(UpdateFailure.clock(until))"))
+            let time = UpdateFailure.clock(until)
+            print(loc("결과: 확인 실패 · GitHub 요청 한도 · \(time) 이후 다시 시도",
+                      "Result: check failed · GitHub rate limit · try again after \(time)"))
             return 1
         case .failed(let failure):
             print(loc("결과: 확인 실패 · \(failure.text)", "Result: check failed · \(failure.text)"))

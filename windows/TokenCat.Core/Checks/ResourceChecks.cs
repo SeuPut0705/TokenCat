@@ -25,6 +25,9 @@ static class ResourceChecks
 
         // C2: the omp/Pi window label multiplies without overflowing.
         check(AgentUsageHistory.WindowMinutes("9223372036854775807 hours") is null && AgentUsageHistory.WindowMinutes($"{int.MaxValue} days") is null
+              && AgentUsageHistory.WindowMinutes("35791395 hours") is null && AgentUsageHistory.WindowMinutes("1491309 days") is null
+              && AgentUsageHistory.WindowMinutes("35791394 hours") == 2_147_483_640
+              && AgentUsageHistory.WindowMinutes("1491308 days") == 2_147_483_520
               && AgentUsageHistory.WindowMinutes("5 hours") == 300,
               "omp usage history: an overflowing window label is ignored, not a crash");
 
@@ -54,12 +57,12 @@ static class ResourceChecks
         check(paths.Count == SampleWake.MaximumPaths && rediscover && overflowed && wake.Take() is { Paths.Count: 0, Rediscover: false },
               "the token wake queue grew past its bound or lost a rescan request");
 
-        // C4d: a slot that stayed ineligible past the idle interval is forgotten; an eligible one keeps its state.
+        // C4d: a slot that stayed ineligible past the retention is forgotten; an eligible one keeps its state.
         var poller = new LiveLimitPoller((slot, _) => Task.FromResult(new LiveLimitResult(Failed: true)));
         var kept = new LimitSlot(TokenSource.Codex, new LimitAccount("kept"));
         var dropped = new LimitSlot(TokenSource.Claude, new LimitAccount("dropped"));
         poller.Tick(at, false, new HashSet<LimitSlot> { kept, dropped }, _ => false, _ => { }).Wait();
-        poller.Tick(at.AddSeconds(LiveLimits.IdleInterval + 1), false, new HashSet<LimitSlot> { kept }, _ => false, _ => { }).Wait();
+        poller.Tick(at.AddSeconds(LiveLimitPoller.Retention + 1), false, new HashSet<LimitSlot> { kept }, _ => false, _ => { }).Wait();
         check(poller.Held == 1, "live limit polling kept the state of an account that is no longer eligible");
     }
 }

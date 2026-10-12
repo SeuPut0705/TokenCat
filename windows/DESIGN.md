@@ -43,7 +43,7 @@ Facts marked *probed* were run on this Mac (.NET 10.0.401); the rest are Windows
 | Claude limits | (a) `%APPDATA%\Claude\plan-usage-history.json` when present. (b) The statusLine bridge as a PowerShell script, added **only when settings has no statusLine** in v1. | Re-running an existing command needs the shell Claude Code used (Git Bash or PowerShell). That can't be verified here (open question 2). |
 | Notifications | Opt-in, `NotifyIcon.ShowBalloonTip` (Windows shows it as a toast). No WinRT/App SDK. | Zero packages and no AUMID/shortcut registration. Transient on Windows 11 (open question 9). |
 | Login item | Opt-in `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\TokenCat = "<exe path>"`. Status also reads `…\Explorer\StartupApproved\Run` (never writes it). | No admin. Task Manager's "disabled" state is visible. |
-| Updates | Same GitHub `releases/latest`, asset `TokenCat-Windows.zip`, size + `sha256:` digest check, rename-then-replace of the running exe, relaunch. | The mac contract is unchanged (the mac app only looks for `TokenCat.zip`). |
+| Updates | Same GitHub `releases/latest`, asset `TokenCat-Windows.zip`, size + `sha256:` digest check, rename-then-replace of the running exe, relaunch. | The Mac app prefers `TokenCat-macOS.zip` and falls back to `TokenCat.zip`; 0.18.1 and earlier look only for `TokenCat.zip`. |
 | State | `%LOCALAPPDATA%\TokenCat\` holds `settings.json` (UserDefaults equivalent, **same key names**, read-modify-write under a named mutex), `telemetry-connection.json`, `telemetry-backups\` and `claude-statusline.ps1`. | Per-machine state, like Application Support. |
 | Signing | Unsigned v1. | Signing has a cost and an eligibility question (open question 5). |
 
@@ -316,12 +316,21 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
   oversized-line handling, Claude open-turn start, Codex metadata restore. Per-session state (working/tool/input/retry/log wait/idle/stale/
   unfinished), turns, output tokens, context, subagent trees (Claude `subagents/agent-*`, Codex forked threads), Codex rate limits,
   5-minute output flow. Same JSONL gives the same `TokenReading` (§6.3 parity test).
+* Churn bounds mirror Swift: dedupe evicts the oldest ID instead of clearing all history; evicted logs lose their account pins.
+  Codex names retain IDs requested within 10 minutes plus the newest 2,048 unrequested names, with a last-4-MB lookup on return.
+  Cursor composers follow the 10-minute requested set; shared omp pin scans sweep unused logs after 120 seconds.
+  Snapshot readers commit their file stamp only after a successful read and parse (oversize is an intentional rejection).
+* Log-wait-only flow captions keep “Last record”: the header and rows carry the waiting state and elapsed time.
+  Row metadata preserves the client name while project/model text truncates first; full values remain in help and UI Automation.
 * Loopback OTLP/HTTP-JSON collector on `127.0.0.1:16493`: `/v1/logs|metrics|traces`, `/v1/claude/status`, `/health`, `/v1/readings`,
   `/v1/diagnostics`, the same caps, retry delays [5,30,120] and busy-port detection via `/health`. `TelemetryHttp.Parse` takes a
   `Content-Length` or a `Transfer-Encoding: chunked` body (Gemini CLI and Qwen Code's Node exporters send no length): both, another
   coding, a repeated header, bad hex (1–8 digits), a missing CRLF or bytes after the final CRLF → 400; decoded body over 2 MB (64 KB
   for the status route) or framing over 2 × 2 MB → 413; GET routes still refuse any body. Measured tok/s via `TokenSpeed.apply`.
   Never derived from log timings, never aggregated across sessions.
+  Diagnostic metadata echoes only known service/metric names and units (`""`, `ms`, `s`, `us`, `ns`, `1`, `By`, `{token}`);
+  unknown values become `__unknown_metadata__`, and malformed/oversized values remain `__invalid_metadata__`.
+  Event bodies are examined only when both event-name attributes are absent.
 * Decoder (`TelemetryDecode.cs`): Claude Code `api_request` logs and `llm_request` spans, Codex TBT metrics, and Gemini CLI
   (`gemini-cli`, `gemini_cli.api_response`) / Qwen Code (`qwen-code`, `qwen-code.api_response`) logs. Their allowlist adds only
   `input/output/thoughts/total_token_count`, `role`, `subagent_name` (presence only) and `response_id` (request ID). Only main-
@@ -352,6 +361,8 @@ like the mac `requiresApproval`, and never write that key: re-enabling is the us
 * Start at login (opt-in), self-update, ko/en (`--language`), single instance with second-launch hand-off, light/dark.
 * CLI: `--self-test`, `--telemetry-lifecycle-checks [port]`, `--connect-telemetry`, `--disconnect-telemetry`, `--telemetry-readings`,
   `--update-check`, `--diagnose`, `--language ko|en`. New: `--snapshot <dir>` (renders fixtures to PNG for CI review).
+  Console-only options use `dotnet run --project windows/TokenCat.Checks -c Release --`: `--live-limits` for provider reads,
+  `--bench-sample [home] [--synthetic] [--iterations N]` for collection measurements, and `--diagnose-tokens [home]` for parity.
 
 ### 3.2 Explicit cuts (v1) and their upgrade paths
 | Cut | Reason | Later |
@@ -409,6 +420,13 @@ deactivates (hides) it, so a click within 300 ms of a hide does nothing instead 
 and raises `MouseDoubleClick`, not `MouseClick`, so that event shows it again. The spike has exactly this
 (`Native.ShowAt`). Sections and order are the mac `DashboardView.body`. Fonts: Segoe UI Variable/Segoe UI
 with `Typography.NumeralAlignment="Tabular"` for "mono" digits. Korean falls back to Malgun Gothic automatically.
+
+Supported Windows 11 surfaces use DWM transient acrylic for the flyout and Mica for Settings and detached dashboards.
+Unsupported DWM attributes, Windows 10, disabled Transparency effects and High Contrast retain solid surfaces.
+High Contrast uses the system palette, opaque informational text, outlined controls and visible page/layout selection.
+Tab navigation cycles; Settings navigation accepts Up/Down/Home/End and Esc. Session rows expose UI Automation Invoke and
+ExpandCollapse, disclosures expose Invoke, and full details stay in tooltips/help. System metrics is a keyboard-reachable button.
+Unchanged Settings pages and tray frames reuse resources; hidden flyouts skip dashboard refresh work.
 **Drag to detach** (the mac popover's `detachableWindow`): a left press on a part that doesn't click (the header, card backgrounds,
 empty space; not buttons, links, the session list, the System area or the scroll bar) moved past
 `SystemParameters.MinimumHorizontal/VerticalDragDistance` hides the flyout and opens "Open as window" with the grabbed point under the
@@ -473,8 +491,8 @@ Two `ResourceDictionary` token sets (Light/Dark) copied from `DesignTokens.swift
 ### 4.6 First run
 1. The flyout opens once with the onboarding card (mac `OnboardingCard` outcome texts). Its telemetry line names
    `OnboardingCard.Clients(listed, notes)`: the telemetry clients that are listed and not skipped (Codex·Claude Code by default).
-2. One balloon: "TokenCat is in the notification area. If you don't see it, open ^ and drag the cat onto the taskbar" / "TokenCat이
-   알림 영역에 있습니다. 보이지 않으면 ^를 열고 고양이를 작업 표시줄로 끌어 놓으세요."
+2. The welcome card says "Open ^ in the notification area to find TokenCat" / "알림 영역의 ^를 열면 TokenCat이 보입니다."
+   Its help explains dragging the cat onto the taskbar. No unsolicited first-run balloon is sent.
 3. Telemetry auto-connect runs as on mac (unless opted out).
 
 ### 4.7 On-screen widget (0.12.0)
@@ -606,7 +624,7 @@ would trip NETSDK1151 (self-contained → framework-dependent exe), so it is avo
 | DashboardView.swift, SettingsView.swift | App/Dashboard.xaml, SettingsWindow.xaml | 5 |
 | DesignTokens.swift (+`runDesignTokenChecks` contrast pairs) | App/Theme.xaml + Theme.cs, contrast check in App `--self-test` | 5 |
 | SnapshotFixtures.swift | App/Fixtures.cs + Snapshot.cs (`--snapshot`) | 5 |
-| Notifier.swift 114–229 (UNUserNotificationCenter) | App/Notifications.cs (balloon) | 5 |
+| Notifier.swift (UNUserNotificationCenter) | App/Shell.cs + TrayIcon.cs (balloon delivery) | 5 |
 | AnnouncementGate, docs/Generator, Assets/Generator | — (cut / mac-only tools) | — |
 
 ### 6.2 Porting rules (these are where a "same input → same output" port breaks)
@@ -637,8 +655,8 @@ would trip NETSDK1151 (self-contained → framework-dependent exe), so it is avo
    paths over 260 chars itself; no manifest entry needed.
 8. Files: open logs with `FileAccess.Read, FileShare.ReadWrite | FileShare.Delete`. Writers (Codex in Rust, Claude Code via libuv) share
    all three, and denying delete would block their renames. Reopen per read, as the mac does. **Per-tick size = `new FileInfo(path).Length`
-   (a fresh `GetFileAttributesEx`), never the `FileInfo` handed out by `Directory.Enumerate*`.** NTFS updates the directory-entry copy of
-   size/mtime lazily while a writer holds the file open (Codex keeps its rollout open). The mac's 1 s stat poll is what makes updates timely;
+   (a fresh `GetFileAttributesEx`), never the `FileInfo` handed out by `Directory.Enumerate*`.** NTFS updates directory-entry
+   size/mtime lazily while a writer holds the file open. The shared 1 s live / 5 s idle stat poll makes updates timely;
    `FileSystemWatcher` (like FSEvents) is only a wake-up hint. Its size/last-write notifications fire "only when the cache is
    sufficiently flushed" [ReadDirectoryChangesW]. Discovery
    ranking (32 most recent) uses enumeration mtimes as mac does. `// ponytail: enumeration mtime may lag for a log held open since before
@@ -650,9 +668,11 @@ would trip NETSDK1151 (self-contained → framework-dependent exe), so it is avo
    Retry 3× on `IOException` (editors and antivirus hold files briefly). POSIX permission fields stay in the manifest and are ignored on
    Windows. `config.toml` keeps the mac's text-level edit, which already preserves CRLF. A leading BOM is removed before the line scan
    (otherwise a first-line `[otel]` isn't recognised and a duplicate table breaks Codex) and put back on write.
-10. Concurrency: `LiveMonitor` runs one async loop (`PeriodicTimer` 1 s + a `Channel` of watcher paths, 0.25 s min token interval) with a
-    `CancellationToken`, instead of GCD queues plus generation counters. The ported live-check asserts one timer and no publish after
-    `Stop()`.
+10. Concurrency: `LiveMonitor` serializes token sampling with a bounded, coalesced watcher wake set (0.25 s minimum interval).
+    System metrics still tick each second. Logs tick each second while a session is live or a flyout/unminimized dashboard is open,
+    otherwise every five seconds; filesystem changes still wake sampling immediately. Stop drains the workers before a restart.
+    Live-limit cancellation invalidates in-flight results; ineligible slot state is retained for one hour, preserving in-flight reads
+    and pending backoff, then discarded with its rejected credential hashes. Turning off the setting never delivers stale results.
 
 ### 6.3 "Same JSONL → same readings" parity test (Mac, during WP1)
 Build the mac binary from the repo (`swift build`, never `/Applications/TokenCat.app`). Then run both against the same home at the same
@@ -1008,7 +1028,7 @@ WP5 data binding finishes after WP3. All file ownership is disjoint. `Suites.cs`
    - [ ] Memory: working set after 1 h, uncompressed vs compressed build (open question 3).
 5. After the parallel polish task has merged: apply the `release.yml` patch, add README/README.ko Windows sections, bump `build.sh`. The
    release has both assets with matching digests, `/releases/latest` readback passes for both, and the mac updater still installs
-   `TokenCat.zip` (UpdaterChecks unchanged).
+   `TokenCat-macOS.zip`, falling back to `TokenCat.zip` when the platform-specific asset is absent.
 6. Next release: in-app update N-1 → N on the PC (rename-replace, relaunch, Run key still valid, `.old` removed).
 
 ---
@@ -1099,8 +1119,11 @@ add members freely.
   Swift prefix, e.g. `new Check("Localization", "Localization: ")`; `c.Skip()` for Updater's skips). `Suites.RunAll()` runs every
   registered suite in Korean; `Suites.Report(failures)` prints and returns the exit code (the App's `--self-test` appends its
   own checks first).
-* `TokenCat.Checks`: no args → all suites; `-- --diagnose-tokens [home]` → `TokenDiagnostics.Run` (WP1);
-  `-- --telemetry-lifecycle-checks [port]` → `TelemetryLifecycleChecks.Run(int?)` (WP2; null = pick a free pair).
+* `TokenCat.Checks`: no args → all suites; `-- --diagnose-tokens [home]` → `TokenDiagnostics.Run`;
+  `-- --telemetry-lifecycle-checks [port]` → `TelemetryLifecycleChecks.Run(int?)` (null = pick a free pair);
+  `-- --live-limits` → account-separated live reads and omp/Pi records, printing numeric windows and at most four ID suffix characters;
+  `-- --bench-sample [home] [--synthetic] [--iterations N]` → read-only collection benchmark (temporary workload with `--synthetic`).
+  Run these with `dotnet run --project windows/TokenCat.Checks -c Release -- …`; live reads contact the providers, benchmarks do not.
 
 **Differences from §11's sketches**
 * `TokenReading.RequestIDs` is `ImmutableHashSet<string>` (System.Text.Json can't create an `IReadOnlySet`).

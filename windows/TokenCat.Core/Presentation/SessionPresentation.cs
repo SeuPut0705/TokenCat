@@ -1162,8 +1162,8 @@ public static class SessionPresentation
             .ToList();
     }
 
-    /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record. A turn waiting
-    /// for the person keeps the base caption: the header already says so.
+    /// Why nothing new is recorded after 30 s. Input and log waiting keep the base caption:
+    /// their state and wait age already live in the header and session rows.
     public static FlowCaption Caption(SessionCounts counts, DateTimeOffset? last, DateTimeOffset now, bool spoken = false)
     {
         var @base = new FlowCaption(LastRecordCaption, Loc("최근 5분 안에 로그에 기록된 마지막 출력입니다", "The latest output recorded in the logs within the last 5 min"));
@@ -1184,8 +1184,7 @@ public static class SessionPresentation
             return new FlowCaption(Loc($"{tool} 중 · 응답 후 기록", $"{tool} · logged after reply"), help);
         }
         if (counts.Working > 0) return new FlowCaption(Loc("진행 중 · 응답 후 기록", "Working · logged after reply"), help);
-        var minutes = counts.WaitingSince is { } since ? Math.Max(1, (int)Seconds(now, since) / 60) : 1;
-        return new FlowCaption(Loc($"로그 대기 · {minutes}분째 기록 없음", $"Waiting for log · no record for {Format.Span(minutes, Format.TimeUnit.Minute, spoken)}"), help);
+        return @base;
     }
 
     /// Cause-specific copy from the collector state, the setup note and pending or expired restarts.

@@ -5,14 +5,14 @@ using static TokenCat.Lang;
 namespace TokenCat;
 
 // App.swift's DashboardModel and TelemetryRestartState (DESIGN §6.1, rule 10). GCD queues and generation counters become two
-// loops over one CancellationToken: the system loop owns the single 1 s PeriodicTimer and wakes the token loop each tick;
-// log-watcher paths wake it too, at most every 0.25 s. Named LiveMonitor because System.Threading.Monitor is an implicit using.
+// loops over one CancellationToken: the system loop owns the single 1 s PeriodicTimer and wakes logs every 1 s while live
+// or visible, otherwise every 5 s; log-watcher paths wake them immediately, at most every 0.25 s.
 
 /// `SampleSystem` is the App's Windows sampler (called on a worker thread, at most once at a time). Without `Telemetry`
 /// the collector reads as stopped; passive desktop and omp/Pi records still work. Without `ReadLimits` nothing goes online.
 public sealed record MonitorOptions(string Home, string SupportDirectory, Func<SystemSnapshot> SampleSystem,
     TelemetryCollector? Telemetry = null, Func<DateTimeOffset>? Clock = null,
-    Func<LimitSlot, CancellationToken, Task<LiveLimitResult>>? ReadLimits = null);
+    Func<LimitSlot, CancellationToken, Task<LiveLimitResult>>? ReadLimits = null, Action<LimitSlot>? ForgetLimits = null);
 
 /// DashboardModel's published state, immutable per publish. Fixtures construct it directly (WP5 snapshots).
 /// `DetectedSources`: clients whose data folder exists (`TokenTracker.DetectedSources`), refreshed with the folder check.
@@ -63,7 +63,7 @@ public sealed record TelemetryRestartState
 
 public sealed class LiveMonitor : IDisposable
 {
-    public const double SamplingInterval = 1, FolderCheckInterval = 5;
+    public const double SamplingInterval = 1, FolderCheckInterval = 5, IdleTokenInterval = 5;
     /// File events can arrive many times per second while a client streams tool output.
     public const double MinimumTokenInterval = 0.25;
     const string PendingRestartKey = "telemetryPendingRestart";
@@ -79,11 +79,12 @@ public sealed class LiveMonitor : IDisposable
 
     // Everything below is guarded by `gate`.
     SystemSnapshot system = new();
-    bool hasSample, sessionsExpanded, logFoldersFound = true;
+    bool hasSample, sessionsExpanded, logFoldersFound = true, dashboardVisible, anyLive = true;
     IReadOnlySet<TokenSource> detectedSources = new HashSet<TokenSource>();
     readonly List<double> cpuHistory = [];
     IReadOnlyList<TokenReading> tokens = [];
     DateTimeOffset? tokensSampledAt, nextRetryAt;
+    long lastTokenSampleStart;
     TelemetryCollectorState telemetryState = TelemetryCollectorState.Waiting;
     string telemetryStatus = Loc("실측 수신 대기", "Waiting for telemetry");
     Dictionary<TokenSource, DateTimeOffset> pendingRestart = [];
@@ -110,7 +111,7 @@ public sealed class LiveMonitor : IDisposable
     public LiveMonitor(MonitorOptions options)
     {
         this.options = options;
-        if (options.ReadLimits is { } read) livePoller = new LiveLimitPoller(read);
+        if (options.ReadLimits is { } read) livePoller = new LiveLimitPoller(read, options.ForgetLimits, gate);
         clock = options.Clock ?? (() => DateTimeOffset.UtcNow);
         store = new SettingsStore(Path.Combine(options.SupportDirectory, "settings.json"));
         tracker = new TokenTracker(options.Home, clock);
@@ -157,6 +158,7 @@ public sealed class LiveMonitor : IDisposable
         lock (gate)
         {
             if (running is not null) return;
+            lastTokenSampleStart = 0;
             var cancellation = running = new CancellationTokenSource();
             var token = cancellation.Token;
             var signal = wake = new SampleWake();
@@ -186,6 +188,7 @@ public sealed class LiveMonitor : IDisposable
         lock (gate)
         {
             if (running is null) return;
+            livePoller?.Cancel();
             running.Cancel();
             running = null;
             wake?.Complete();
@@ -205,6 +208,17 @@ public sealed class LiveMonitor : IDisposable
     public void Refresh()
     {
         lock (gate) wake?.Tick();
+    }
+
+    /// The shell reports whether either the flyout or detached dashboard is on screen, independently of live-limit settings.
+    public void SetDashboardVisible(bool visible)
+    {
+        lock (gate)
+        {
+            if (dashboardVisible == visible) return;
+            dashboardVisible = visible;
+            if (visible) wake?.Tick();
+        }
     }
 
     /// "지금 다시 시도" (T-3): the collector's scheduled retry runs now; the new state shows on the next publish.
@@ -236,6 +250,7 @@ public sealed class LiveMonitor : IDisposable
     {
         lock (gate)
         {
+            if (!enabled) livePoller?.Cancel();
             (limitsEnabled, limitsWatched) = (enabled, watched);
         }
     }
@@ -253,7 +268,12 @@ public sealed class LiveMonitor : IDisposable
         {
             do
             {
-                wakeTokens.Tick();
+                lock (gate)
+                {
+                    if (token.IsCancellationRequested) return;
+                    if (anyLive || dashboardVisible || lastTokenSampleStart == 0
+                        || Stopwatch.GetElapsedTime(lastTokenSampleStart).TotalSeconds >= IdleTokenInterval) wakeTokens.Tick();
+                }
                 try
                 {
                     var sample = options.SampleSystem();
@@ -292,6 +312,7 @@ public sealed class LiveMonitor : IDisposable
                 var (paths, rediscover) = wakes.Take();
                 if (rediscover) tracker.Rediscover();
                 lastStart = Stopwatch.GetTimestamp();
+                lock (gate) lastTokenSampleStart = lastStart;
                 try
                 {
                     bool? found = null;
@@ -390,7 +411,7 @@ public sealed class LiveMonitor : IDisposable
         {
             lock (gate)
             {
-                if (token.IsCancellationRequested) return;
+                if (!limitsEnabled || token.IsCancellationRequested) return;
                 if (result.Codex is { } codex) codexLive = codex;
                 if (result.Claude is { } claude)
                 {
@@ -443,6 +464,7 @@ public sealed class LiveMonitor : IDisposable
         var now = tokensSampledAt is { } sampled && sampled > system.SampledAt ? sampled : system.SampledAt;
         usageLimits = SessionPresentation.UsageLimits(tokens, [.. codexLive, .. codexRecorded], claudeLimits, defaultLimitAccounts, knownLimitAccounts, now);
         var groups = SessionPresentation.Groups(tokens, now);
+        anyLive = groups.Any(group => group.State.IsLive);
         current = State(now, FlowSeries.Make(tokens, now), groups, SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed, groups: groups));
         if (running is { IsCancellationRequested: false }) Updated?.Invoke(current);
     }

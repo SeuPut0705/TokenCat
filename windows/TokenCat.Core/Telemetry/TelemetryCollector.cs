@@ -15,6 +15,8 @@ public sealed class TelemetryCollector : IDisposable
     /// Newest reading per (provider, session, agent, model), kept beside the recent window so
     /// a burst of subagent requests cannot evict a quiet session's last measurement.
     public const int MaximumLatest = 128;
+    /// Fixed marker for well-formed service, metric or unit names the collector does not know.
+    public const string UnknownMetadata = "__unknown_metadata__";
     /// Waits before retrying a listener that could not start (for example a busy port).
     public static readonly double[] DefaultRetryDelays = [5, 30, 120];
 

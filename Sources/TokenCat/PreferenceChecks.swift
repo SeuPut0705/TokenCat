@@ -466,7 +466,7 @@ func runShellChecks() -> [String] {
     signal.input = true
     let asked = tracker.update([signal])
     check(asked.count == 1 && asked.first?.title == "입력 필요 · TokenCat" && asked.first?.subtitle == "Claude Code · claude-opus-5-5"
-          && asked.first?.body == "답변하면 계속됩니다" && asked.first?.identifier == "input-claude:s1",
+          && asked.first?.body == "답변하면 계속됩니다",
           "Entering input did not notify once with the state-first title and metadata only")
     check(tracker.update([signal]).isEmpty, "Input notified again on an unchanged publish")
     signal.input = false
@@ -475,9 +475,35 @@ func runShellChecks() -> [String] {
     signal.outputTokens = 12_480
     signal.durationSeconds = 252
     let finished = tracker.update([signal])
-    check(finished.count == 1 && finished.first?.title == "턴 완료 · TokenCat" && finished.first?.body == "12,480 tok · 4분 12초"
-          && finished.first?.identifier == "done-claude:s1",
+    check(finished.count == 1 && finished.first?.title == "턴 완료 · TokenCat" && finished.first?.body == "12,480 tok · 4분 12초",
           "Live → complete did not produce the metadata-only completion")
+    let notifier = Notifier()
+    var privateSignal = signal
+    privateSignal.id = "claude:.claude/projects/-Users-private-project/12345678-1234-1234-1234-123456789ABC.jsonl"
+    let inputRequest = notifier.request(for: .input(privateSignal))
+    let repeatedRequest = notifier.request(for: .input(privateSignal))
+    let doneRequest = notifier.request(for: .finished(privateSignal))
+    let token = inputRequest.content.userInfo["token"] as? String
+    let stored = [inputRequest.identifier, doneRequest.identifier, inputRequest.content.threadIdentifier,
+                  String(describing: inputRequest.content.userInfo)].joined(separator: "\n")
+    check(token != nil && UUID(uuidString: token ?? "") != nil
+          && inputRequest.identifier == "input-" + (token ?? "")
+          && doneRequest.identifier == "done-" + (token ?? "")
+          && repeatedRequest.identifier == inputRequest.identifier
+          && doneRequest.content.threadIdentifier == inputRequest.content.threadIdentifier
+          && inputRequest.content.userInfo.count == 1
+          && token.flatMap { notifier.group(for: $0) } == privateSignal.id
+          && !stored.contains(".claude") && !stored.contains("private-project")
+          && !stored.contains("12345678-1234-1234-1234-123456789ABC"),
+          "Notification store identifiers and routing metadata are opaque per-run tokens")
+    let relaunched = Notifier()
+    let newRequest = relaunched.request(for: .input(privateSignal))
+    privateSignal.id = "codex:another-private-session"
+    let otherRequest = notifier.request(for: .input(privateSignal))
+    check(newRequest.identifier != inputRequest.identifier
+          && otherRequest.identifier != inputRequest.identifier
+          && token.flatMap { relaunched.group(for: $0) } == nil,
+          "Notification routing tokens differ across sessions and launches")
     check(tracker.update([signal]).isEmpty, "A completed turn notified twice")
     check(Notifier.describeSound(.authorized, .notSupported, on: true).hasPrefix("macOS가 TokenCat 알림 소리를 허용하지 않았습니다")
           && Notifier.soundBlocked(.authorized, .notSupported) && Notifier.soundBlocked(.authorized, .disabled)
@@ -623,6 +649,10 @@ func runShellChecks() -> [String] {
           && AppInfo.privacy.components(separatedBy: "\n").allSatisfy { $0.hasPrefix("• ") }
           && AppInfo.privacyLines[1].contains("GitHub") && AppInfo.privacyLines[2].contains("토큰은 저장하지 않습니다"),
           "About's privacy statement is not three separate lines")
+    check(AppInfo.privacyLines[1].contains("업데이트 확인과 내려받기")
+          && !AppInfo.privacyLines[1].contains("인터넷은")
+          && AppInfo.privacyLines[2].contains("omp·Pi"),
+          "About privacy separates update traffic from live usage and names every saved sign-in source")
     // The 실측 tab's folder buttons: only existing config files, keyed by client, and the backup folder apart.
     let home = FileManager.default.temporaryDirectory.appendingPathComponent("tokencat-files-\(UUID().uuidString)", isDirectory: true)
     try? FileManager.default.createDirectory(at: home.appendingPathComponent(".codex"), withIntermediateDirectories: true)
@@ -632,6 +662,10 @@ func runShellChecks() -> [String] {
     check(files.configs == [.codex: home.appendingPathComponent(".codex/config.toml")] && files.backups == nil,
           "The 실측 tab offers config files that don't exist, or misses one that does")
     AppLanguage.with(.en) {
+        check(AppInfo.privacyLines[1].contains("Update checks and downloads")
+              && !AppInfo.privacyLines[1].contains("goes online only")
+              && AppInfo.privacyLines[2].contains("omp or Pi"),
+              "About privacy separates update traffic from live usage and names every saved sign-in source")
         check(SettingsPane.allCases.map(\.title) == ["General", "Menu Bar", "Character", "Telemetry", "About"]
               && TelemetryStatusRow.collector(.busyOtherApp).text == "Off · another app is using port 16493"
               && TelemetryStatusRow.collector(.waiting).text == "On · 127.0.0.1:16493"

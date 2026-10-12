@@ -175,6 +175,26 @@ static class AppChecks
         expand?.Collapse();
         check(invoke is not null && expanded && expand?.ExpandCollapseState == ExpandCollapseState.Collapsed,
             "session rows expose Invoke and ExpandCollapse patterns for inline details");
+        var longReading = fixture.State.Tokens.First(reading => !reading.IsSubagent) with
+        {
+            Title = "A titled session", Project = new string('p', 200), Model = new string('m', 200),
+        };
+        var longLive = new LiveRow();
+        longLive.Update(new SessionRowItem(longReading, SessionDisplayState.Working, SessionRowKind.Live),
+            new RowContext(fixture.State.Now, new HashSet<TokenSource>(), false, new HashSet<string>(), null, null, _ => { }, _ => { }));
+        longLive.Measure(new Size(Dashboard.PanelWidth - 2 * Dashboard.Gutter, 58));
+        var clientName = Tree(longLive).OfType<TextBlock>().Single(text => text.Text == " · " + longReading.ClientTitle);
+        var fullClient = Ui.Text(clientName.Text, Font.Meta, Theme.Secondary);
+        fullClient.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var projectMeta = Tree(longLive).OfType<TextBlock>().Single(text => text.Text == " · " + longReading.Project);
+        var modelMeta = Tree(longLive).OfType<TextBlock>().Single(text => text.Text.StartsWith(" · " + longReading.Model, StringComparison.Ordinal));
+        var fullProject = Ui.Text(projectMeta.Text, Font.Meta, Theme.Secondary);
+        var fullModel = Ui.Text(modelMeta.Text, Font.Meta, Theme.Secondary);
+        fullProject.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        fullModel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        check(clientName.TextTrimming == TextTrimming.None && Math.Abs(clientName.DesiredSize.Width - fullClient.DesiredSize.Width) < 0.01
+              && projectMeta.DesiredSize.Width < fullProject.DesiredSize.Width && modelMeta.DesiredSize.Width < fullModel.DesiredSize.Width,
+            "session metadata keeps the client name whole while long projects and models truncate");
         var called = false;
         var disclosure = new DisclosureRow(() => called = true);
         (UIElementAutomationPeer.CreatePeerForElement(disclosure)?.GetPattern(PatternInterface.Invoke) as IInvokeProvider)?.Invoke();

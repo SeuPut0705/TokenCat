@@ -54,15 +54,18 @@ public sealed record TokenProvider(TokenSource Source, Func<string, Func<string,
                     Path.Combine(defaultData, "sessions"), Path.Combine(defaultData, "tasks")];
         }, TokenLogFormat.Cline),
         // omp and Pi both move their agent folder to PI_CODING_AGENT_DIR; sessions live in its `sessions`. omp names its folder
-        // ~\<PI_CONFIG_DIR> (default .omp) and keeps named profiles in <it>\profiles\<name>\agent (its XDG layout is mac/Linux only).
+        // ~\<PI_CONFIG_DIR> (default .omp) and keeps named profiles in <it>\profiles\<name>\agent. Migrated XDG data lives in
+        // <XDG_DATA_HOME>\omp and <XDG_DATA_HOME>\omp\profiles\<name>, with sessions directly below those folders.
         new(TokenSource.Omp, (home, env) =>
         {
             string[] configs = env("PI_CONFIG_DIR") is { Length: > 0 } configName
                 ? [Path.Combine(home, configName), Path.Combine(home, ".omp")] : [Path.Combine(home, ".omp")];
+            var xdg = EnvPath(home, env, "XDG_DATA_HOME") is { } data ? Path.Combine(data, "omp") : null;
             return [.. new[] { EnvPath(home, env, "PI_CODING_AGENT_DIR") }.OfType<string>()
                         .Concat(configs.Select(config => Path.Combine(config, "agent")))
                         .Append(Path.Combine(home, ".pi", "agent"))
                         .Concat(configs.SelectMany(config => Subfolders(Path.Combine(config, "profiles")).Select(profile => Path.Combine(profile, "agent"))))
+                        .Concat(xdg is null ? [] : new[] { xdg }.Concat(Subfolders(Path.Combine(xdg, "profiles"))))
                         .Select(folder => Path.Combine(folder, "sessions")),
                     .. TokenClientRoots.RootsOf(TokenSource.Omp, home, env)];
         }, TokenLogFormat.Omp),

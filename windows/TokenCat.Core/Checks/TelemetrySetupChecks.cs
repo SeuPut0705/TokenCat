@@ -433,8 +433,12 @@ public static class TelemetrySetupChecks
             Setup(editedOldHome).Connect();
             var backupFolder = Text(Object(editedOldHome, manifestFile)?["backupDirectory"]) ?? "";
             var editedPreBridge = Data(editedOldHome, $"{support}/telemetry-backups/{backupFolder}/{TelemetrySetup.PreBridgeBackupName}");
-            check(Text(StatusLine(editedOldHome)?["command"]) == Setup(editedOldHome).StatusLineCommand && Same(editedPreBridge, editedBytes),
-                  "The bridge step on an edited file did not back it up first");
+            var expectedBridge = (JsonObject)edited.DeepClone();
+            expectedBridge["someFloat"] = 0.1;
+            expectedBridge["statusLine"] = new JsonObject { ["type"] = "command", ["command"] = Setup(editedOldHome).StatusLineCommand };
+            check(Text(StatusLine(editedOldHome)?["command"]) == Setup(editedOldHome).StatusLineCommand
+                  && Same(Data(editedOldHome, claudeFile), Json.Write(expectedBridge)) && Same(editedPreBridge, editedBytes),
+                  "The bridge migration reformatted an edited file or did not back it up first");
             var oldResult = Setup(editedOldHome).Disconnect();
             var oldBackup = BackupFiles(editedOldHome, "before-disconnect-");
             check(oldResult.Message.Contains("TokenCat이 추가한 Claude Code 상태 표시줄은 지웠습니다") && oldBackup.Count == 1
@@ -487,7 +491,9 @@ public static class TelemetrySetupChecks
                   "Gemini CLI / Qwen Code settings were not connected with their other keys kept, or did not ask for a restart");
             // The mac creates the Qwen Code file with mode 0600; Windows inherits the folder's ACL.
             c.Skip();
-            check(clientsSetup.Connect().ChangedFiles.Count == 0, "A repeated connection changed Gemini CLI or Qwen Code settings again");
+            var connectedGemini = Data(clientsHome, geminiFile);
+            check(clientsSetup.Connect().ChangedFiles.Count == 0 && Same(Data(clientsHome, geminiFile), connectedGemini),
+                  "A repeated connection rewrote Gemini CLI settings");
             clientsSetup.Disconnect();
             check(Same(Data(clientsHome, geminiFile), Bytes(geminiOriginal)) && Data(clientsHome, qwenFile) is null,
                   "Disconnecting did not restore the exact Gemini CLI settings or remove the created Qwen Code file");
@@ -502,7 +508,7 @@ public static class TelemetrySetupChecks
             check(Text(revertedGemini?["model"]?["name"]) == "x" && Text(revertedGemini?["theme"]) == "Dracula"
                   && revertedGemini?["telemetry"] is JsonObject revertedTelemetry && revertedTelemetry.Count == 2
                   && revertedTelemetry["logPrompts"]?.GetValue<bool>() == true && revertedTelemetry["useCollector"]?.GetValue<bool>() == false,
-                  "Disconnecting edited Gemini CLI settings lost the edit or kept TokenCat's telemetry keys");
+                  "Disconnecting an edited Gemini CLI file lost the person's change or kept TokenCat's telemetry members");
 
             var absentHome = ClientHome("gemini-absent", null, qwenFolder: false);
             check(!Setup(absentHome).Connect().RestartRequired.Contains(TokenSource.Gemini) && !Directory.Exists(Path.Combine(absentHome, ".gemini"))
@@ -546,7 +552,7 @@ public static class TelemetrySetupChecks
             Put(driftHome, geminiFile, driftBytes);
             var driftResult = Setup(driftHome).Connect();
             check(Skipped(driftResult, TokenSource.Gemini) && Same(Data(driftHome, geminiFile), driftBytes) && driftResult.ChangedFiles.Count == 0,
-                  "Gemini CLI settings edited after the connection were overwritten or blocked the connection");
+                  "Gemini CLI settings changed after the connection were overwritten again");
         }
         catch (Exception error) { check(false, $"Telemetry setup fixture failed: {error.Message}"); }
         finally { root.Delete(true); }

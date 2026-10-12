@@ -419,8 +419,8 @@ enum TokenCatMain {
     }
 
     /// Renders the real Settings window (toolbar tabs and the selected pane) off screen; ImageRenderer cannot draw
-    /// AppKit-backed Form controls. `--pane general|menubar|cat|telemetry|about|all` (default all; `--focus telemetry`
-    /// is the telemetry pane; `cat` is the 캐릭터 tab) stacks the chosen panes vertically. `--character <id>` draws that character. The tab choice is kept in a throwaway defaults domain.
+    /// AppKit-backed Form controls. `--pane general|menubar|cat|telemetry|about|all` (default all; `cat` is the 캐릭터 tab)
+    /// stacks the chosen panes vertically. `--character <id>` draws that character. The tab choice is kept in a throwaway defaults domain.
     /// `--fixtures` uses synthetic state instead of this Mac's logs and preferences: the menu bar fixtures' system sample, the collector off with a retry in
     /// 25 s, Codex waiting for a relaunch, the Claude limit bridge received 50 s ago, version 0.9.1 available (checked
     /// 3 min ago), default preferences, the login item not registered and notification permission not asked yet.
@@ -437,7 +437,7 @@ enum TokenCatMain {
         let arguments = CommandLine.arguments
         let light = arguments.contains("--light")
         func value(_ flag: String) -> String? { arguments.firstIndex(of: flag).flatMap { arguments.indices.contains($0 + 1) ? arguments[$0 + 1] : nil } }
-        let requested = value("--pane") ?? (value("--focus") == SettingsFocus.telemetry.rawValue ? SettingsPane.telemetry.rawValue : "all")
+        let requested = value("--pane") ?? "all"
         let panes = requested == "all" ? SettingsPane.allCases : SettingsPane(rawValue: requested).map { [$0] } ?? []
         guard !panes.isEmpty else { print("Unknown pane '\(requested)': general, menubar, cat, telemetry, about or all"); exit(1) }
         let fixtures = arguments.contains("--fixtures")

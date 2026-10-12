@@ -115,6 +115,22 @@ public static class SessionTitleChecks
                   && CodexRow(unnamed) is { Title: null },
                   "Codex: a session_index thread name, its rename, a rewritten index or a thread without a name went wrong");
 
+            // Three thousand unasked names keep only the newest 2,048; an evicted name is found again on demand.
+            var boundedHome = Path.Combine(root, "thread-names");
+            var boundedRollout = Path.Combine(boundedHome, "sessions", "2026", "10", "04", "rollout-x.jsonl");
+            Append(Path.Combine(boundedHome, "session_index.jsonl"),
+                Enumerable.Range(0, 3_000).Select(number => Name($"t{number}", $"Name {number}", 0)));
+            var names = CodexThreadNames.ForRollout(boundedRollout);
+            names.Refresh(now);
+            var held = names.Count;
+            var newest = names.Name("t2999", now);
+            var oldest = names.Name("T0", now);
+            names.Sweep();
+            names.Sweep();
+            check(held <= CodexThreadNames.UnaskedLimit && newest == "Name 2999" && oldest == "Name 0"
+                  && names.Count <= CodexThreadNames.UnaskedLimit,
+                  "Codex thread names: names no reader asked for were not bounded, or an older thread's name was not found again");
+
             // omp: the title slot and header, then title_change records; Pi: session_info names, an empty one clears.
             var ompHome = Path.Combine(root, "omp");
             var ompLog = Path.Combine(ompHome, ".omp", "agent", "sessions", "--tmp-OmpTitles--", "2026-10-04T05-00-00-000Z_omp-t.jsonl");

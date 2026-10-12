@@ -67,22 +67,23 @@ public static class SessionTitle
 /// lines written on every rename or generated name (the rollout's `thread_name_updated` event is not persisted). The newest
 /// non-empty name of an id wins, as in Codex's own lookup; a rewrite that removes names (the file shrinks or is replaced) is
 /// read again. One index per file, shared by every rollout reader of that Codex home; the tracker refreshes each once a sample.
-/// Names of threads no reader asked for within `Retention` are dropped every `PruneInterval`, so the index does not grow with
-/// every thread ever named; a pruned thread whose rollout returns is found by reading the index again on the next refresh.
+/// Names are held for threads asked about within `Retention`, plus the 2,048 newest unasked ones. An evicted thread's name
+/// is looked up synchronously within the index's last 4 MB when a reader asks again.
 public sealed class CodexThreadNames
 {
-    public const double PruneInterval = 60, Retention = 600;
+    public const double PruneInterval = 600, Retention = 600;
+    internal const int UnaskedLimit = 2_048;
+    const int TailLimit = 4_194_304;
     static readonly object Gate = new();
     static readonly Dictionary<string, CodexThreadNames> Indexes = [];
     readonly string path;
-    LogLineTail tail;
-    readonly Dictionary<string, string> names = [];
-    /// Thread ids readers asked for, with the newest time they asked.
-    readonly Dictionary<string, DateTimeOffset> asked = [];
-    DateTimeOffset? lastPrune;
-    /// A prune dropped names since the index was last read whole, and a thread asked for the first time may be one of them.
-    bool pruned, rescan;
-
+    readonly LogLineTail tail;
+    /// A null value remembers that no name has been recorded for a thread yet.
+    readonly Dictionary<string, string?> asked = new(StringComparer.Ordinal);
+    readonly HashSet<string> askedSinceSweep = new(StringComparer.Ordinal);
+    readonly RecentKeys<string> unasked = new(UnaskedLimit);
+    bool evicted;
+    long sweptAt = Environment.TickCount64;
     CodexThreadNames(string path)
     {
         this.path = path;
@@ -104,46 +105,29 @@ public sealed class CodexThreadNames
         }
     }
 
-    /// Names held now (the bound C4b checks).
-    internal int Count { get { lock (Gate) return names.Count; } }
+    /// Names held now, including threads whose name has not been recorded yet.
+    internal int Count { get { lock (Gate) return asked.Count + unasked.Count; } }
 
     /// Reads lines appended since the last call; a stat when nothing changed.
     public void Refresh(DateTimeOffset now)
     {
         lock (Gate)
         {
-            if (lastPrune is not { } last || Math.Abs((now - last).TotalSeconds) >= PruneInterval)
+            var uptime = Environment.TickCount64;
+            if (uptime - sweptAt >= PruneInterval * 1_000 || uptime < sweptAt) SweepLocked(uptime);
+            tail.Read(TailLimit, () =>
             {
-                lastPrune = now;
-                foreach (var (id, at) in asked.ToArray())
-                    if ((now - at).TotalSeconds > Retention) asked.Remove(id);
-                foreach (var id in names.Keys.Where(id => !asked.ContainsKey(id)).ToArray())
-                {
-                    names.Remove(id);
-                    pruned = true;
-                }
-            }
-            if (rescan)
+                foreach (var id in asked.Keys.ToArray()) asked[id] = null;
+                unasked.Clear();
+                evicted = false;
+            }, line =>
             {
-                // Read whole again, keeping only what readers ask for, so the next prune drops nothing.
-                rescan = pruned = false;
-                tail = new LogLineTail(path);
-                names.Clear();
-                Read(keep: asked.ContainsKey);
-                return;
-            }
-            Read(keep: null);
+                if (Entry(line) is not { } entry) return;
+                if (asked.ContainsKey(entry.Id)) asked[entry.Id] = entry.Name;
+                else RememberUnasked(entry.Id, entry.Name);
+            });
         }
     }
-
-    void Read(Func<string, bool>? keep) =>
-        tail.Read(4_194_304, names.Clear, line =>
-        {
-            if (Json.Parse(line) is not { ValueKind: JsonValueKind.Object } record || LogFields.Text(record.Field("id")) is not { } id
-                || SessionTitle.Clean(record.Field("thread_name")) is not { } name) return;
-            id = id.ToLowerInvariant();
-            if (keep is null || keep(id)) names[id] = name;
-        });
 
     public string? Name(string? thread, DateTimeOffset now)
     {
@@ -151,9 +135,66 @@ public sealed class CodexThreadNames
         var id = thread.ToLowerInvariant();
         lock (Gate)
         {
-            if (!asked.ContainsKey(id) && pruned && !names.ContainsKey(id)) rescan = true;
-            asked[id] = now;
-            return names.GetValueOrDefault(id);
+            askedSinceSweep.Add(id);
+            if (asked.TryGetValue(id, out var known)) return known;
+            var name = unasked[id];
+            if (name is null && evicted) name = LookUp(id);
+            asked[id] = name;
+            return name;
         }
+    }
+
+    /// Threads no reader asked for since the previous sweep become unasked or are forgotten.
+    internal void Sweep()
+    {
+        lock (Gate) SweepLocked(Environment.TickCount64);
+    }
+
+    void SweepLocked(long uptime)
+    {
+        foreach (var (id, name) in asked.ToArray())
+        {
+            if (askedSinceSweep.Contains(id)) continue;
+            asked.Remove(id);
+            if (name is not null) RememberUnasked(id, name);
+        }
+        askedSinceSweep.Clear();
+        sweptAt = uptime;
+    }
+
+    void RememberUnasked(string id, string name)
+    {
+        if (unasked.Count >= UnaskedLimit && !unasked.Contains(id)) evicted = true;
+        unasked.Set(id, name);
+    }
+
+    static (string Id, string Name)? Entry(ReadOnlySpan<byte> line)
+    {
+        if (Json.Parse(line) is not { ValueKind: JsonValueKind.Object } record || LogFields.Text(record.Field("id")) is not { } id
+            || SessionTitle.Clean(record.Field("thread_name")) is not { } name) return null;
+        return (id.ToLowerInvariant(), name);
+    }
+
+    /// The newest name of an evicted id within the same bounded window as the initial read.
+    string? LookUp(string id)
+    {
+        try
+        {
+            using var handle = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 0);
+            var size = handle.Length;
+            var offset = Math.Max(0, size - TailLimit);
+            var lines = new LogLineAssembler();
+            lines.Restart(dropFirst: offset > 0);
+            var lower = Encoding.UTF8.GetBytes(id);
+            var upper = Encoding.UTF8.GetBytes(id.ToUpperInvariant());
+            string? name = null;
+            LogLineTail.ReadForward(handle, ref offset, size, TailLimit, lines, line =>
+            {
+                if (line.IndexOf(lower) < 0 && line.IndexOf(upper) < 0) return;
+                if (Entry(line) is { } entry && entry.Id == id) name = entry.Name;
+            });
+            return name;
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
     }
 }

@@ -68,12 +68,14 @@ sealed class ClineLogReader(string path) : ITokenLogReader
             var current = Stamp(path);
             var currentManifest = Stamp(manifestPath);
             if (current is null || (current == stamp && currentManifest == manifestStamp)) return;
-            stamp = current;
-            manifestStamp = currentManifest;
+            if (current.Value.Item2 > MaximumBytes) { stamp = current; manifestStamp = currentManifest; return; }
             using var messages = Document(path, MaximumBytes);
             if (messages is null || MessageArray(messages.RootElement) is not { } list) return;
             using var manifest = Document(manifestPath, 1_048_576);
             var manifestRoot = manifest?.RootElement;
+            stamp = current;
+            manifestStamp = currentManifest is null || manifestRoot is { ValueKind: JsonValueKind.Object }
+                || currentManifest.Value.Item2 > 1_048_576 ? currentManifest : null;
             cwd = PathText(manifestRoot?.Field("cwd")) ?? cwd;
             summary = ClineLogSummary.FromCli(list, manifestRoot);
             return;
@@ -82,11 +84,12 @@ sealed class ClineLogReader(string path) : ITokenLogReader
         if (currentStamp is null || currentStamp == stamp) return;
         // A large task rewritten while it streams is summarised at most every 5 s.
         if (currentStamp.Value.Item2 > 8_388_608 && parsedAt is { } parsed && (now - parsed).TotalSeconds < 5) return;
-        stamp = currentStamp;
+        if (currentStamp.Value.Item2 > MaximumBytes) { stamp = currentStamp; return; }
         parsedAt = now;
         using (var document = Document(path, MaximumBytes))
         {
             if (document is null || MessageArray(document.RootElement) is not { } messages) return;
+            stamp = currentStamp;
             summary = ClineLogSummary.FromTask(messages);
         }
         if (summary.Model is null) ReadTaskMetadata(folder);

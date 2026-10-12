@@ -17,10 +17,10 @@ enum AppInfo {
     static var privacyLines: [String] {
         [loc("로컬 로그·실측의 메타데이터만 읽고, 프롬프트·응답 본문은 저장하거나 표시하지 않습니다",
              "Reads only metadata from local logs and telemetry; never stores or shows prompts or responses"),
-         loc("모델을 호출하거나 계정에 로그인하지 않으며, 인터넷은 GitHub 업데이트 확인과 내려받기에만 씁니다",
-             "Never calls a model or signs in; goes online only to check GitHub for updates and download them"),
-         loc("실시간 한도 확인이 켜져 있으면 저장된 Codex·Claude Code 로그인으로 OpenAI·Anthropic 사용량을 묻습니다. 토큰은 저장하지 않습니다",
-             "With Live usage limits on, asks OpenAI and Anthropic for usage with Codex and Claude Code's saved sign-in. Tokens are never stored")]
+         loc("모델을 호출하거나 계정에 로그인하지 않습니다. 업데이트 확인과 내려받기는 GitHub에만 연결합니다",
+             "Never calls a model or signs in. Update checks and downloads connect only to GitHub"),
+         loc("실시간 한도 확인이 켜져 있으면 Codex·Claude Code·omp·Pi에 저장된 로그인으로 OpenAI·Anthropic 사용량을 묻습니다. 토큰은 저장하지 않습니다",
+             "With Live usage limits on, asks OpenAI and Anthropic for usage with sign-ins saved by Codex, Claude Code, omp or Pi. Tokens are never stored")]
     }
     /// The list as bullet lines, for the standard About panel.
     static var privacy: String { privacyLines.map { "• " + $0 }.joined(separator: "\n") }
@@ -146,7 +146,7 @@ final class SettingsState: ObservableObject {
 /// The window title follows the selected tab; the last tab is remembered.
 final class SettingsTabsController: NSTabViewController {
     static let width: CGFloat = 480
-    /// The tallest pane must fit without scrolling.
+    /// Grouped forms scroll when a pane would exceed the available compact window height.
     static let maximumHeight: CGFloat = 600
     static let paneKey = "settingsPane"
     private let defaults: UserDefaults
@@ -237,6 +237,7 @@ struct SettingsPaneView: View {
             }
         }
         .formStyle(.grouped)
+        .frame(maxHeight: SettingsTabsController.maximumHeight)
         .fixedSize(horizontal: false, vertical: true)
         .frame(width: SettingsTabsController.width)
         .defaultAppStorage(defaults)
@@ -252,6 +253,7 @@ private struct SettingsLabel: View {
     var warning = false
     /// A disabled control's label is not dimmed by Form on its own.
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
@@ -260,10 +262,11 @@ private struct SettingsLabel: View {
                     Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(TCColor.warning)
                         .accessibilityHidden(true)
                 }
-                Text(title).foregroundStyle(isEnabled ? HierarchicalShapeStyle.primary : .secondary)
+                Text(title).foregroundStyle(isEnabled ? Color.primary : TCColor.textSecondary(contrast: contrast == .increased))
             }
             if let subtitle {
-                Text(subtitle).font(.system(size: 11)).foregroundStyle(subtitleColor).fixedSize(horizontal: false, vertical: true)
+                Text(subtitle).font(TCFont.meta).foregroundStyle(subtitleColor == .secondary ? TCColor.textSecondary(contrast: contrast == .increased) : subtitleColor)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -271,12 +274,13 @@ private struct SettingsLabel: View {
 
 /// Grouped forms align footers trailing at body size on macOS; keep them as leading captions.
 private func settingsFooter(_ text: String) -> some View {
-    Text(text).font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.leading)
+    Text(text).font(TCFont.meta).foregroundStyle(TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)).multilineTextAlignment(.leading)
         .frame(maxWidth: .infinity, alignment: .leading).fixedSize(horizontal: false, vertical: true)
 }
 
 private func settingsCaption(_ text: String, color: Color = .secondary) -> some View {
-    Text(text).font(.system(size: 11)).foregroundStyle(color).fixedSize(horizontal: false, vertical: true)
+    Text(text).font(TCFont.meta).foregroundStyle(color == .secondary ? TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast) : color)
+        .fixedSize(horizontal: false, vertical: true)
 }
 
 /// System Settings › Notifications, at TokenCat.
@@ -335,7 +339,7 @@ private struct GeneralPane: View {
                 // The way to System Settings sits in this row when macOS blocks alerts or the sound.
                 LabeledContent(loc("권한", "Permission")) {
                     VStack(alignment: .trailing, spacing: 6) {
-                        Text(Notifier.describe(state.notificationStatus)).font(.system(size: 11)).multilineTextAlignment(.trailing)
+                        Text(Notifier.describe(state.notificationStatus)).font(TCFont.meta).multilineTextAlignment(.trailing)
                             .foregroundStyle(state.notificationStatus == .denied
                                              && (preferences.notifyTurnComplete || preferences.notifyInput || preferences.notifyUpdate)
                                              ? TCColor.warning : Color.secondary)
@@ -491,7 +495,7 @@ private struct MenuBarPane: View {
             } header: {
                 Text(loc("항목", "Items"))
             } footer: {
-                // One line either way, so the pane stays within `maximumHeight` with the character row.
+                // Keep the explanation short; the grouped form scrolls on a small display.
                 settingsFooter(preferences.statusBarLayout == .minimal
                                ? loc("최소 표시에서는 캐릭터와 AI 상태만 보입니다.", "Minimal shows only the character and AI status.")
                                : loc("끌어서 순서를 바꿉니다. 최소 한 항목은 표시됩니다.",
@@ -591,6 +595,7 @@ private struct LegendTile: View {
     @State private var frame = 0
     @State private var fx: Int?
     @State private var playing = false
+    @State private var playback: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 4) {
@@ -608,6 +613,8 @@ private struct LegendTile: View {
         }
         .contentShape(Rectangle())
         .onHover { if $0 { play() } }
+        .onDisappear { stopPlayback() }
+        .onChange(of: reduceMotion) { if $0 { stopPlayback() } }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(entry.name), \(entry.caption)")
     }
@@ -626,16 +633,29 @@ private struct LegendTile: View {
             if count > 2 { steps.append((0, nil, timing.durations[0])) }
         }
         playing = true
-        Task { @MainActor in
+        playback = Task { @MainActor in
             for step in steps {
+                guard !Task.isCancelled else { return }
                 frame = step.frame
                 fx = step.fx
-                try? await Task.sleep(nanoseconds: UInt64(max(0.05, step.seconds) * 1_000_000_000))
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(max(0.05, step.seconds) * 1_000_000_000))
+                } catch { return }
             }
+            guard !Task.isCancelled else { return }
             frame = 0
             fx = nil
             playing = false
+            playback = nil
         }
+    }
+
+    private func stopPlayback() {
+        playback?.cancel()
+        playback = nil
+        frame = 0
+        fx = nil
+        playing = false
     }
 }
 
@@ -813,7 +833,7 @@ private struct TelemetryPane: View {
                 Spacer(minLength: 0)
                 if let next = model.telemetryNextRetryAt {
                     Text(loc("다음 자동 재시도 ", "Automatic retry in ") + SessionPresentation.clock(max(0, Int(ceil(next.timeIntervalSince(model.now))))))
-                        .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                        .font(TCFont.metaMono).foregroundStyle(.secondary)
                     Button(loc("지금 다시 시도", "Retry Now")) { model.retryTelemetryNow() }
                         .buttonStyle(.bordered).controlSize(.small)
                         .disabled(model.telemetryState == .starting)
@@ -861,10 +881,10 @@ private struct TelemetryPane: View {
         VStack(alignment: .trailing, spacing: 2) {
             HStack(spacing: 6) {
                 Image(systemName: row.symbol).font(.system(size: 12)).foregroundStyle(row.color).accessibilityHidden(true)
-                Text(text).font(.system(size: 13)).foregroundStyle(.secondary)
+                Text(text).font(TCFont.body).foregroundStyle(TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast))
             }
             if let detail {
-                Text(detail).font(.system(size: 11)).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
+                Text(detail).font(TCFont.meta).foregroundStyle(TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast)).multilineTextAlignment(.trailing)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -894,8 +914,8 @@ private struct AboutPane: View {
                     VStack(spacing: 6) {
                         Image(nsImage: NSApp.applicationIconImage).resizable().interpolation(.high).frame(width: 48, height: 48)
                             .accessibilityHidden(true)
-                        Text("TokenCat").font(.system(size: 15, weight: .semibold))
-                        Text(loc("버전 \(AppInfo.version) (\(AppInfo.build))", "Version \(AppInfo.version) (\(AppInfo.build))")).font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)
+                        Text("TokenCat").font(TCFont.metric)
+                        Text(loc("버전 \(AppInfo.version) (\(AppInfo.build))", "Version \(AppInfo.version) (\(AppInfo.build))")).font(TCFont.metaMono).foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
                     .frame(maxWidth: .infinity)
@@ -908,7 +928,7 @@ private struct AboutPane: View {
                             }
                         }
                     }
-                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .font(TCFont.meta).foregroundStyle(TCColor.textSecondary(contrast: NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, 6)
@@ -987,16 +1007,20 @@ private struct MetricRows: View {
                 Image(systemName: "line.3.horizontal").foregroundStyle(.tertiary).accessibilityHidden(true)
                 Toggle(isOn: Binding(get: { !missingBattery && preferences.visible.contains(id) }, set: { preferences.setVisible(id, $0) })) {
                     VStack(alignment: .leading, spacing: 1) {
-                        id.barLabel.map { Text(id.title) + Text(" · \($0)").font(.system(size: 11)).foregroundColor(.secondary) } ?? Text(id.title)
+                        id.barLabel.map { Text(id.title) + Text(" · \($0)").font(TCFont.meta).foregroundColor(.secondary) } ?? Text(id.title)
                         if missingBattery {
-                            Text(loc("이 Mac에는 배터리가 없습니다", "This Mac has no battery")).font(.system(size: 11)).foregroundStyle(.secondary)
+                            Text(loc("이 Mac에는 배터리가 없습니다", "This Mac has no battery")).font(TCFont.meta).foregroundStyle(.secondary)
                         }
                     }
                 }
                 .toggleStyle(.checkbox)
                 .disabled(missingBattery || locked)
-                .accessibilityAction(named: loc("위로 이동", "Move up")) { preferences.move(id, by: -1) }
-                .accessibilityAction(named: loc("아래로 이동", "Move down")) { preferences.move(id, by: 1) }
+                .accessibilityAction(named: loc("위로 이동", "Move up")) {
+                    if !minimal && preferences.order.first != id { preferences.move(id, by: -1) }
+                }
+                .accessibilityAction(named: loc("아래로 이동", "Move down")) {
+                    if !minimal && preferences.order.last != id { preferences.move(id, by: 1) }
+                }
                 Spacer(minLength: 0)
             }
             .help(minimal ? "" : locked ? loc("캐릭터나 다른 항목 중 하나는 표시해야 합니다", "The character or another item must stay visible")
@@ -1092,7 +1116,7 @@ private struct MenuBarPreview: View {
             Text(notch ? loc("메뉴 막대 폭 약 \(width)pt · 노치 Mac에서는 자리가 부족하면 가려질 수 있습니다",
                               "About \(width) pt of menu bar · may hide behind the notch if space is short")
                  : loc("메뉴 막대 폭 약 \(width)pt", "About \(width) pt of menu bar"))
-                .font(.system(size: 11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .font(TCFont.meta).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityElement(children: .ignore)
@@ -1106,9 +1130,9 @@ private struct LicenseView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("MIT License").font(.system(size: 13, weight: .semibold))
+            Text("MIT License").font(TCFont.title)
             ScrollView {
-                Text(AppInfo.license()).font(.system(size: 11)).textSelection(.enabled)
+                Text(AppInfo.license()).font(TCFont.meta).textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack {

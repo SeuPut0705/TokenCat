@@ -70,14 +70,10 @@ enum AttentionEvent: Equatable {
                 .compactMap { $0 }.joined(separator: " · ")
         }
     }
-    /// One delivered notification per group and kind: a newer one replaces it, and leaving input removes it.
-    var identifier: String {
-        switch self {
-        case .input(let signal): return Self.inputIdentifier(signal.id)
-        case .finished(let signal): return "done-" + signal.id
-        }
+    /// A newer notification replaces the same kind; opaque identifiers are assigned by Notifier, never by the group.
+    var notificationPrefix: String {
+        switch self { case .input: return "input-"; case .finished: return "done-" }
     }
-    static func inputIdentifier(_ group: String) -> String { "input-" + group }
 
     /// Raw duration reported by the client ("4분 12초" / "4m 12s"); never combined with token counts.
     static func duration(_ seconds: Double) -> String? {
@@ -122,6 +118,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// A click: the group (`SessionGroup.id`) to select, nil when the notification carries none.
     var onOpen: ((String?) -> Void)?
     private var center: UNUserNotificationCenter { .current() }
+    /// Routing exists only for this process lifetime. macOS stores random tokens, never log paths or session identifiers.
+    private var groupTokens: [String: String] = [:]
+    private var tokenGroups: [String: String] = [:]
 
     func activate() { center.delegate = self }
 
@@ -143,16 +142,31 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Reuses the event's identifier, so a newer notification for the same group replaces the delivered one.
-    func post(_ event: AttentionEvent, sound: Bool = false) {
+    /// Builds the real store boundary without posting, also used by privacy checks.
+    func request(for event: AttentionEvent, sound: Bool = false) -> UNNotificationRequest {
+        let group = event.signal.id
+        let token: String
+        if let existing = groupTokens[group] { token = existing }
+        else {
+            token = UUID().uuidString
+            groupTokens[group] = token
+            tokenGroups[token] = group
+        }
         let content = UNMutableNotificationContent()
         content.title = event.title
         content.subtitle = event.subtitle
         content.body = event.body
-        content.threadIdentifier = event.signal.id
-        content.userInfo = ["group": event.signal.id]
+        content.threadIdentifier = token
+        content.userInfo = ["token": token]
         if sound, case .input = event { content.sound = .default }
-        center.add(UNNotificationRequest(identifier: event.identifier, content: content, trigger: nil)) { error in
+        return UNNotificationRequest(identifier: event.notificationPrefix + token, content: content, trigger: nil)
+    }
+
+    func group(for token: String) -> String? { tokenGroups[token] }
+
+    /// Reuses one opaque token per session, so replacement, grouping and click routing agree.
+    func post(_ event: AttentionEvent, sound: Bool = false) {
+        center.add(request(for: event, sound: sound)) { error in
             if let error { NSLog(loc("TokenCat 알림 요청 실패: %@", "TokenCat notification request failed: %@"), error.localizedDescription) }
         }
     }
@@ -179,7 +193,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     /// The group no longer waits for input: its "입력 필요" notification goes away.
     func removeInput(_ group: String) {
-        let identifier = AttentionEvent.inputIdentifier(group)
+        guard let token = groupTokens[group] else { return }
+        let identifier = "input-" + token
         center.removePendingNotificationRequests(withIdentifiers: [identifier])
         center.removeDeliveredNotifications(withIdentifiers: [identifier])
     }
@@ -189,11 +204,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         status != nil && status != .notDetermined && (status == .denied || sound == .disabled || sound == .notSupported)
     }
 
-    /// At launch: "입력 필요" notifications an earlier run delivered for groups no longer waiting go away.
-    func removeStaleInput(keeping: Set<String>) {
+    /// At launch: input-needed notifications from earlier runs have no live routing token and are removed.
+    func removeStaleInput() {
         center.getDeliveredNotifications { [weak self] delivered in
-            let stale = delivered.map(\.request.identifier).filter { $0.hasPrefix(AttentionEvent.inputIdentifier("")) && !keeping.contains($0) }
-            if !stale.isEmpty { self?.center.removeDeliveredNotifications(withIdentifiers: stale) }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let current = Set(self.groupTokens.values.map { "input-" + $0 })
+                let stale = delivered.map(\.request.identifier).filter { $0.hasPrefix("input-") && !current.contains($0) }
+                if !stale.isEmpty { self.center.removeDeliveredNotifications(withIdentifiers: stale) }
+            }
         }
     }
 
@@ -204,8 +223,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
-        let group = response.notification.request.content.userInfo["group"] as? String
-        DispatchQueue.main.async { self.onOpen?(group) }
+        let token = response.notification.request.content.userInfo["token"] as? String
+        DispatchQueue.main.async { self.onOpen?(token.flatMap { self.group(for: $0) }) }
         completionHandler()
     }
 

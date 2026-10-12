@@ -859,13 +859,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             model.popoverShownAt = Date()
             makePanel().orderFront(nil)
         }
-        if CommandLine.arguments.contains("--open-popover") {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.togglePopover() }
-        }
-        if let index = CommandLine.arguments.firstIndex(of: "--open-settings") {
-            let focus = CommandLine.arguments.indices.contains(index + 1) ? SettingsFocus(rawValue: CommandLine.arguments[index + 1]) : nil
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.openSettings(focus: focus) }
-        }
         if let index = CommandLine.arguments.firstIndex(of: "--status-readback"),
            CommandLine.arguments.indices.contains(index + 1) {
             let path = CommandLine.arguments[index + 1]
@@ -980,8 +973,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
             preferences: preferences, sources: model.listedSources, hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
         statusView.update(metrics: metrics, layout: preferences.statusBarLayout, showRunner: preferences.showRunner)
         if statusItem.length != statusView.requiredWidth { statusItem.length = statusView.requiredWidth }
-        statusView.frame = NSRect(x: 0, y: 0, width: statusView.requiredWidth,
+        let frame = NSRect(x: 0, y: 0, width: statusView.requiredWidth,
             height: button.bounds.height > 0 ? button.bounds.height : NSStatusBar.system.thickness)
+        if statusView.frame != frame { statusView.frame = frame }
         // Reassigning an unchanged tooltip makes a hovering tooltip flicker; live values live in the AX value.
         let tip = StatusBarContent.tooltip(system: model.system, counts: model.sessions.counts, ai: ai,
                                            hasSample: model.hasSample, hasTokenSample: model.tokensSampledAt != nil)
@@ -1002,7 +996,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSW
         // baseline also those an earlier run left behind.
         if !clearedStaleInput {
             clearedStaleInput = true
-            notifier.removeStaleInput(keeping: Set(signals.filter(\.input).map { AttentionEvent.inputIdentifier($0.id) }))
+            notifier.removeStaleInput()
         }
         for (id, before) in latestSignals where before.input && next[id]?.input != true { notifier.removeInput(id) }
         latestSignals = next

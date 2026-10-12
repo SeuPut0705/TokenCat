@@ -156,11 +156,23 @@ public static class KimiChecks
 
             // Titles: only generated or user-set ones; never the prompt copy, never an imported kimi-cli fallback.
             static JsonElement E(string json) => JsonDocument.Parse(json).RootElement;
+            // Repair a mid-rewrite snapshot without changing its stamp: the failed parse must be retried.
+            var statePath = Path.Combine(session, "state.json");
+            var renamedState = Encoding.UTF8.GetBytes("""{"cwd":"/tmp/KimiProject","title":"Kimi renamed","titleKind":"custom"}""" + "\n");
+            var partialState = renamedState.ToArray();
+            partialState[0] = (byte)'!';
+            File.WriteAllBytes(statePath, partialState);
+            var stateModified = File.GetLastWriteTimeUtc(statePath);
+            tracker.Sample();
+            File.WriteAllBytes(statePath, renamedState);
+            File.SetLastWriteTimeUtc(statePath, stateModified);
+            var retriedTitle = tracker.Sample().FirstOrDefault(r => !r.IsSubagent)?.Title;
             check(KimiLog.Title(E("""{"title":"Fix login","titleKind":"custom"}""")) == "Fix login"
                   && KimiLog.Title(E("""{"title":"PRIVATE_PROMPT","titleKind":"replaceable"}""")) is null
                   && KimiLog.Title(E("""{"title":"PRIVATE_PROMPT","isCustomTitle":false}""")) is null
                   && KimiLog.Title(E("""{"title":"Renamed","isCustomTitle":true}""")) == "Renamed"
                   && KimiLog.Title(E("""{"title":"PRIVATE_PROMPT","titleKind":"generated","custom":{"imported_from_kimi_cli":true}}""")) is null
+                  && retriedTitle == "Kimi renamed"
                   && KimiLog.ModelName("kimi-code/kimi-for-coding") == "kimi-for-coding" && KimiLog.ModelName("__kimi_env_model__") is null,
                   "Kimi Code: a prompt-copy or imported title was shown, a generated or renamed one was not, or a model id was misread");
 
@@ -240,9 +252,18 @@ public static class KimiChecks
                 Status(6, 30, "m1"),
                 Legacy("ToolCall", 7, """{"type":"function","id":"tc2","function":{"name":"Shell","arguments":"PRIVATE"}}"""),
                 Legacy("ApprovalRequest", 7, """{"id":"ap1","tool_call_id":"tc2","sender":"Shell","action":"PRIVATE","description":"PRIVATE_DESCRIPTION"}"""));
+            // Crossing the per-step cap forgets only the oldest response, not the newest repeated StatusUpdate.
+            var cappedWire = Path.Combine(root, "dedupe-cap", ".kimi", "sessions", "cap-group", "cap-session", "wire.jsonl");
+            Write(cappedWire, Legacy("TurnBegin", 1), Legacy("StepBegin", 2));
+            Append(cappedWire, [.. Enumerable.Range(0, 1_025).Select(index => Status(4, 1, $"cap-{index}"))]);
+            var cappedReader = new KimiCLILogReader(cappedWire);
+            cappedReader.Read(4_194_304, Start.AddSeconds(5));
+            Append(cappedWire, Status(4, 1, "cap-1024"), Status(4, 1, "cap-0"));
+            cappedReader.Read(4_194_304, Start.AddSeconds(5));
+            var cappedOutput = cappedReader.Readings("dedupe-cap", Start.AddSeconds(5)).FirstOrDefault()?.CurrentTurnOutputTokens;
             now = Start.AddSeconds(3_600);
             row = tracker.Sample().FirstOrDefault(r => !r.IsSubagent);
-            check(row is { ActivityState: TokenActivityState.Input, Active: true, CurrentTurnOutputTokens: 30 },
+            check(row is { ActivityState: TokenActivityState.Input, Active: true, CurrentTurnOutputTokens: 30 } && cappedOutput == 1_026,
                   "kimi-cli: an approval request was not live input, or a repeated StatusUpdate was counted twice");
             // The next step's response reuses the id "m1", as some OpenAI-compatible gateways do for every response.
             Append(mainWire,

@@ -85,13 +85,13 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
     /// Codex writes token_usage_record right after each response, before the tool
     /// output that precedes the matching token_count. Once present it is authoritative.
     bool usageRecords;
-    readonly HashSet<string> seenResponses = new(StringComparer.Ordinal);
+    readonly RecentKeys seenResponses = new(4_096);
     (string TurnID, int Output)? turnUsage;
     bool identityLocked;
     /// Claude: a final reply (end_turn without tool use) or an API error closes the turn unless
     /// later records continue it, e.g. a blocking Stop hook. Subagents write no stop markers.
     bool softClosed;
-    readonly HashSet<string> seenRecords = new(StringComparer.Ordinal);
+    readonly RecentKeys seenRecords = new(8_192);
     readonly HashSet<string> requestIDs = new(StringComparer.Ordinal);
     string? outputMessageID;
 
@@ -623,12 +623,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
         var current = turnID ?? metadataTurnID;
         // A record for a different turn than the open one is replayed history, not this turn's output.
         if (id is not null && current is not null && id != current) return;
-        if (payload?.Field("response_id")?.Text is { } response)
-        {
-            if (seenResponses.Contains(response)) return;
-            if (seenResponses.Count >= 4_096) seenResponses.Clear();
-            seenResponses.Add(response);
-        }
+        if (payload?.Field("response_id")?.Text is { } response && !seenResponses.Insert(response)) return;
         usageRecords = true;
         if (id is not null && id == current && LogFields.Count(payload?.Field("turn_token_usage")?.Field("output_tokens")) is { } total)
             turnUsage = (id, total);
@@ -650,12 +645,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
         var type = record.Field("type")?.Text;
         // Restored or branched sessions re-append earlier records with their original uuids
         // and timestamps; replaying them would rewind the turn.
-        if (record.Field("uuid")?.Text is { } uuid)
-        {
-            if (seenRecords.Contains(uuid)) return;
-            if (seenRecords.Count >= 8_192) seenRecords.Clear();
-            seenRecords.Add(uuid);
-        }
+        if (record.Field("uuid")?.Text is { } uuid && !seenRecords.Insert(uuid)) return;
         if (date is { } written && previousLog is { } previous && written < previous.AddSeconds(-600)) return;
         SessionID = record.Field("sessionId")?.Text ?? SessionID;
         var message = record.Field("message");

@@ -60,8 +60,8 @@ public sealed class GrokLogReader : ITokenLogReader
     string? summaryModel;
     string? effort;
     string? title;
-    /// The generated title last compared with the first prompt, and whether the comparison could be made.
-    (string? Generated, bool Verified)? checkedTitle;
+    /// Only the in-memory hash of the title compared with the first prompt is retained: a copied title is prompt text.
+    (int? Generated, bool Verified)? checkedTitle;
     int? windowTokens;
     bool isSubagent;
     string? parentSessionID;
@@ -283,18 +283,20 @@ public sealed class GrokLogReader : ITokenLogReader
             }
             var current = (info.CreationTimeUtc.Ticks, info.Length, info.LastWriteTimeUtc.Ticks);
             if (current == summaryStamp) return;
+            if (info.Length > 1_048_576) { summaryStamp = current; return; }
+            if (Json.Parse(ReadAll(info.FullName)) is not { ValueKind: JsonValueKind.Object } summary) return;
             summaryStamp = current;
-            if (info.Length > 1_048_576 || Json.Parse(ReadAll(info.FullName)) is not { ValueKind: JsonValueKind.Object } summary) return;
             if (LogFields.Text(summary.Field("info")?.Field("cwd")) is { Length: <= 4_096 } path) cwd = path;
             cwd ??= GroupCwd(System.IO.Path.GetDirectoryName(directory)!);
             summaryModel = ModelName(summary.Field("current_model_id")) ?? summaryModel;
             effort = TokenLogParser.Label(summary.Field("reasoning_effort"));
             var generated = SessionTitle.Clean(summary.Field("generated_title"));
+            var generatedHash = generated?.GetHashCode(StringComparison.Ordinal);
             if (summary.Field("title_is_manual")?.Bool == true) title = generated;
-            else if (generated != checkedTitle?.Generated || checkedTitle?.Verified == false)
+            else if (generatedHash != checkedTitle?.Generated || checkedTitle?.Verified == false)
             {
                 var copy = generated is null ? null : CopiesFirstPrompt(generated);
-                checkedTitle = (generated, copy is not null);
+                checkedTitle = (generatedHash, copy is not null);
                 title = copy == false ? generated : null;
             }
             windowTokens = LogFields.Count(summary.Field("context_window"));
@@ -385,7 +387,9 @@ public sealed class GrokLogReader : ITokenLogReader
         {
             var file = new FileInfo(System.IO.Path.Combine(group, ".cwd"));
             if (!file.Exists || file.Length > 4_096) return null;
-            var text = Encoding.UTF8.GetString(ReadAll(file.FullName)).Trim();
+            var data = ReadAll(file.FullName);
+            if (data.Length > 4_096) return null;
+            var text = Encoding.UTF8.GetString(data).Trim();
             return text.Length == 0 ? null : text;
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }

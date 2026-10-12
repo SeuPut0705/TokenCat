@@ -156,20 +156,22 @@ public static class SessionPresentationChecks
               && retryCounts.Phase == SessionCounts.PhaseOf(S.Retrying) && retryCounts.Phase == A.Working,
               "group state and menu-bar phase follow the same order");
 
-        // The flow-card caption: retry > tool category > progress > waiting, only after 30 s without a record; input keeps the base.
+        // The flow caption explains retry, tools and progress after 30 s; input and log waiting stay in the header.
         FlowCaption caption(SessionCounts value, double? last) => Caption(value, last is { } offset ? at(offset) : null, now);
         var noticeCounts = new SessionCounts(Groups([command, reading("claude:w", session: "W", state: A.Stale, last: -200)], now));
         check(caption(noticeCounts, -40).Text == "명령 실행 중 · 응답 후 기록" && !caption(noticeCounts, -40).Emphasized
               && caption(noticeCounts, -10).Text == "마지막 기록" && caption(noticeCounts, -10).Glyph == null, "tool category caption after 30 s");
         noticeCounts = noticeCounts with { Tool = 0 };
-        check(caption(noticeCounts, null).Text == "로그 대기 · 3분째 기록 없음", "waiting caption");
+        check(caption(noticeCounts, null).Text == "마지막 기록" && caption(noticeCounts, -40).Text == "마지막 기록"
+              && caption(noticeCounts, null).Glyph == null && !caption(noticeCounts, null).Emphasized,
+              "log waiting leaves the caption to the header");
         var urgent = new SessionCounts(Groups([command, retrying, question], now));
         var retryOnly = new SessionCounts(Groups([command, retrying], now));
         check(caption(urgent, -2).Text == "마지막 기록" && caption(urgent, -40).Text == "마지막 기록"
               && caption(urgent, -40).Glyph == null && !caption(urgent, -40).Emphasized
               && caption(retryOnly, -40).Text == "API 재시도 2/10 · 4초 후" && caption(retryOnly, -40).Glyph == StateGlyphKind.Retry
               && caption(retryOnly, -40).Emphasized,
-              "a turn waiting for input keeps the base caption (the header says it); retry captions follow the 30 s rule and are emphasized");
+              "input leaves the caption to the header; retry captions follow the 30 s rule and are emphasized");
         var offlineCounts = retryOnly with { Retry = retryOnly.Retry! with { NetworkDown = true } };
         check(caption(offlineCounts, null).Text == "API 재시도 · 네트워크 끊김" && caption(new SessionCounts(), null).Text == "마지막 기록",
               "network-down retry; nothing live keeps the default");
@@ -179,7 +181,7 @@ public static class SessionPresentationChecks
         var mixedInput = new SessionCounts(Groups([plan, question3], now));
         check(plans.InputPlansOnly && caption(plans, null).Text == "마지막 기록"
               && !mixedInput.InputPlansOnly && caption(mixedInput, null).Text == "마지막 기록",
-              "plan approvals and questions alike keep the base caption");
+              "plan approvals and questions are said by the header, not repeated in the caption");
 
         // Header sentence (H-2) and head echo (H-3): one sentence per top state.
         HeaderStatus header(SessionCounts value, bool loading = false, bool spoken = false) => Header(value, loading, now, spoken: spoken);
@@ -237,8 +239,9 @@ public static class SessionPresentationChecks
               "running, waiting, measured, then recent idle; stable when activity changes");
         check(make([.. input, question]).Blocks.FirstOrDefault()?.Id == "claude:q", "a turn waiting for input goes first");
         check(first.HiddenGroups == 6 && first.HiddenChildren == 0 && first.Counts.Groups == 12, "collapsed list fills to six rows");
-        check(first.ContentHeight == 44 * 3 + 28 * 3 + 5 + 1 + SessionListModel.OlderHeight,
-              "quiet live rows fold to 44pt; the toggle adds a 1 pt rule and its 28 pt row; heights stay deterministic");
+        check(first.ContentHeight == 44 * 3 + 28 * 3 + 5 + 1 + SessionListModel.OlderHeight
+              && first.Entries(false)[^1].Id == SessionListModel.ToggleID && first.ToggleText == "세션 12개 모두 보기",
+              "quiet live rows fold to 44pt; heights stay deterministic; the toggle closes the list");
         // One disclosure at the end of the list (#6): last entry, last navigation stop, 28 pt, named by what it does.
         check(first.ShowsToggle && first.Entries(false)[^1] is SessionListEntry.Toggle && first.Entries(false)[^1].Id == SessionListModel.ToggleID
               && first.Entries(false)[^2] is SessionListEntry.Divider { Key: SessionListModel.ToggleID } && first.Entries(false)[^2].Id == "divider:toggle"
@@ -307,8 +310,9 @@ public static class SessionPresentationChecks
         check(floodBlock?.MoreCount == 9 && floodBlock?.MoreText == "+9 하위 로그 대기 · 마지막 1분 전"
               && floodCollapsed.HiddenGroups == 0 && floodCollapsed.HiddenChildren == 9
               && floodCollapsed.ContentHeight == 28 + 24 + 24 && !floodCollapsed.ShowsToggle
-              && !floodCollapsed.Entries(false).OfType<SessionListEntry.Toggle>().Any(),
-              "cut children are summarised with their newest record; no closing toggle repeats what the +N row offers");
+              && !floodCollapsed.Entries(false).OfType<SessionListEntry.Toggle>().Any()
+              && family.Entries(false)[^1].Id == SessionListModel.ToggleID && family.ToggleText == "하위 1개 더 보기",
+              "cut children are summarised with their newest record and need no closing row; a hidden finished child does");
         var quietBlock = make([floodParent, .. flood.SkipLast(1)]).Blocks.FirstOrDefault();
         check(ids(quietBlock?.Children).SequenceEqual(["claude:S1/a0", "claude:S1/a1", "claude:S1/a2"]) && quietBlock?.MoreCount == 6,
               "with nothing running, up to three waiting children show");
@@ -355,8 +359,9 @@ public static class SessionPresentationChecks
         var floodNavigation = make([reading("claude:S1", session: "S1", project: "TokenCat", state: A.Complete, last: -600),
                                     .. Enumerable.Range(0, 5).Select(i => reading($"claude:S1/a{i}", session: "S1", agent: $"a0{i}xxxxx", subagent: true,
                                                                                   state: A.Stale, last: -100))]);
-        check(floodNavigation.Navigation(false).SequenceEqual(["claude:S1", "claude:S1/a0", "claude:S1/a1", "claude:S1/a2", "more:claude:S1"]),
-              "children and the +N row are navigable; all hidden children in the +N row leave no toggle");
+        check(floodNavigation.Navigation(false).SequenceEqual(["claude:S1", "claude:S1/a0", "claude:S1/a1", "claude:S1/a2", "more:claude:S1"])
+              && family.Navigation(false)[^1] == SessionListModel.ToggleID,
+              "children, the +N row and the closing row are navigable");
         // Frozen order (S-8): known blocks keep their place, new ones go to the end, heights follow.
         var frozen = make([beta, alpha, waiting]).Reordered(["claude:wait", "claude:beta"]);
         check(frozen.Blocks.Select(block => block.Id).SequenceEqual(["claude:wait", "claude:beta", "claude:alpha"])
@@ -850,11 +855,11 @@ public static class SessionPresentationChecks
                   && header(new SessionCounts(Groups([claudeParent, claudeChild, codexParent, codexChild], now))).Spoken
                      == "2 sessions working · 1 tool · 2 subagents"
                   && caption(urgent, -40).Text == "Last record" && caption(plans, null).Text == "Last record"
-                  && caption(retryOnly, -40).Text == "API retry 2/10 · in 4s" && caption(noticeCounts, null).Text == "Waiting for log · no record for 3m"
+                  && caption(retryOnly, -40).Text == "API retry 2/10 · in 4s" && caption(noticeCounts, null).Text == "Last record"
                   && ProviderSplits(new Dictionary<TokenSource, int>
                          { [TokenSource.Codex] = 1_200, [TokenSource.Claude] = 6_600, [TokenSource.OpenCode] = 300, [TokenSource.Omp] = 70_000 })
                      .Skip(1).SequenceEqual(["omp 70k · Claude Code 6.6k · Codex 1.2k · +1 more", "omp 70k · Claude Code 6.6k · +2 more", "omp 70k · +3 more"]),
-                  "English header, flow caption and provider fold");
+                  "English header, flow caption and folded provider count");
             var englishFlood = make([floodParent, .. flood]).Blocks.FirstOrDefault();
             check(ChildGroupText(S.Input, 1) == "1 subagent needs input" && ChildGroupText(S.Waiting, 4) == "4 subagents waiting for log"
                   && SpokenLabel(modelled, S.Input) == "Input needed, TokenCat, Claude Code claude-opus-5-5"

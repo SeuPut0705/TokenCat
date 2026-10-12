@@ -116,9 +116,8 @@ file sealed class ChatTurnState(TokenSource source)
     int? lastOutputDelta;
     readonly List<TokenOutputEvent> recentOutputs = [];
     /// Output already counted per message: Gemini appends a message again when its tokens or tool calls arrive. At most
-    /// `CountedLimit` messages, the oldest dropped first (`countedOrder`): a message re-recorded long after is the least likely.
-    readonly Dictionary<string, int> counted = new(StringComparer.Ordinal);
-    readonly Queue<string> countedOrder = new();
+    /// `CountedLimit` messages, the oldest dropped first: a message re-recorded long after is the least likely.
+    readonly RecentKeys<int> counted = new(CountedLimit);
     public const int CountedLimit = 4_096;
     /// Tools that wait for the person (Qwen's question and plan approval; Gemini's ask_user).
     static readonly HashSet<string> InputTools = new(["ask_user_question", "ask_user", "exit_plan_mode"], StringComparer.Ordinal);
@@ -231,14 +230,9 @@ file sealed class ChatTurnState(TokenSource source)
     /// `tokens` is the message's whole output; only the growth since it was last seen counts.
     public void Output(string id, int tokens, DateTimeOffset? date)
     {
-        var prior = counted.GetValueOrDefault(id);
+        var prior = counted[id];
         if (tokens <= prior) return;
-        if (!counted.ContainsKey(id))
-        {
-            if (counted.Count >= CountedLimit) counted.Remove(countedOrder.Dequeue());
-            countedOrder.Enqueue(id);
-        }
-        counted[id] = tokens;
+        counted.Set(id, tokens);
         var delta = tokens - prior;
         if (startSeen)
         {
@@ -332,7 +326,7 @@ file sealed class GeminiChatReader : ITokenLogReader
     readonly LogLineTail tail;
     ChatTurnState state = new(TokenSource.Gemini);
     (long Modified, long Size)? snapshot;
-    readonly HashSet<string> seen = new(StringComparer.Ordinal);
+    readonly RecentKeys seen = new(8_192);
     string? lastMessageID;
     readonly string? subagentParent;
     /// From `.project_root`; the metadata's directories are used only without it.
@@ -412,12 +406,13 @@ file sealed class GeminiChatReader : ITokenLogReader
             var info = new FileInfo(path);
             if (!info.Exists) return;
             var current = (info.LastWriteTimeUtc.Ticks, info.Length);
-            if (snapshot == current || current.Length > 33_554_432) return;
-            snapshot = current;
+            if (snapshot == current) return;
+            if (current.Length > 33_554_432) { snapshot = current; return; }
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
             var data = new byte[stream.Length];
             stream.ReadExactly(data);
             if (TokenLogParser.Record(data) is not { } record) return;
+            snapshot = current;
             Reset();
             Metadata(record);
             if (record.Field("messages") is { ValueKind: JsonValueKind.Array } messages)
@@ -474,13 +469,8 @@ file sealed class GeminiChatReader : ITokenLogReader
     {
         if (record.Field("id")?.Text is not { } id || record.Field("type")?.Text is not { } type) return;
         var date = LogFields.Date(record.Field("timestamp"));
-        var isNew = !seen.Contains(id);
-        if (isNew)
-        {
-            if (seen.Count >= 8_192) seen.Clear();
-            seen.Add(id);
-            lastMessageID = id;
-        }
+        var isNew = seen.Insert(id);
+        if (isNew) lastMessageID = id;
         var isLatest = id == lastMessageID;
         var continuing = state.Continues(date);
         state.Note(date);
@@ -550,7 +540,7 @@ file sealed class QwenChatReader : ITokenLogReader
     readonly string path;
     readonly LogLineTail tail;
     ChatTurnState state = new(TokenSource.Qwen);
-    readonly HashSet<string> seen = new(StringComparer.Ordinal);
+    readonly RecentKeys seen = new(8_192);
     readonly (string Session, string Agent)? subagent;
     bool sidecarRead;
 
@@ -617,12 +607,7 @@ file sealed class QwenChatReader : ITokenLogReader
             state.Title = title;
         // /branch copies the parent's records into the new session; they were counted there.
         if (record.Field("forkedFrom") is not null) return;
-        if (record.Field("uuid")?.Text is { } uuid)
-        {
-            if (seen.Contains(uuid)) return;
-            if (seen.Count >= 8_192) seen.Clear();
-            seen.Add(uuid);
-        }
+        if (record.Field("uuid")?.Text is { } uuid && !seen.Insert(uuid)) return;
         if (record.Field("sessionId")?.Text is { Length: > 0 } session)
         {
             state.SessionID = session;

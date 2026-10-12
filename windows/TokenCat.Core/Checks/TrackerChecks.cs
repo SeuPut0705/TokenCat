@@ -62,6 +62,20 @@ public static class TrackerChecks
         var c = new Check("Tracker");
         void check(bool valid, string description) => c.That(valid, description);
 
+        // Passing the cap forgets only the oldest id; touching an existing one never changes its insertion order.
+        var recent = new RecentKeys<int>(4_096);
+        for (var index = 0; index <= 4_096; index++) recent.Set($"m{index}", index);
+        recent.Set("m1", 1);
+        var dedupeBounded = recent.Count == 4_096 && !recent.Contains("m0") && recent["m1"] == 1 && recent["m4096"] == 4_096;
+        recent.Set("m4097", 4_097);
+        var seen = new RecentKeys(4_096);
+        for (var index = 0; index <= 4_096; index++) seen.Insert($"m{index}");
+        var duplicate = seen.Insert("m1");
+        seen.Insert("m4097");
+        check(dedupeBounded && !recent.Contains("m1") && recent.Contains("m2")
+              && !duplicate && !seen.Contains("m0") && !seen.Contains("m1") && seen.Contains("m2") && seen.Count == 4_096,
+              "Dedupe history: past its cap the oldest id was not the one forgotten, or everything was");
+
         var parser = new TokenLogParser(TokenSource.Codex);
         Feed(parser, Usage(1_000, 30, "2026-10-04T01:00:00Z"));
         Feed(parser, Codex("task_started", "2026-10-04T01:00:01Z", """{"turn_id":"turn-a"}"""));
@@ -658,7 +672,7 @@ public static class TrackerChecks
                 ClaudeReply("f-2", 300, "2026-10-04T04:00:21Z", "f-b", """[{"type":"tool_use","id":"f-tool"}]""", stop: "tool_use")));
             futureNow = At("2026-10-04T04:00:22Z");
             check(futureTracker.Sample().FirstOrDefault() is { Active: true, ActivityState: TokenActivityState.Tool, CurrentTurnOutputTokens: 300 },
-                  "A record stamped in the future hid the next turn or kept it from being live");
+                  "A future-stamped record froze the session: the next turn was dropped as a replay");
 
             var abortedHome = Path.Combine(root, "restored-interruption");
             var abortedFolder = Path.Combine(abortedHome, ".codex", "sessions", "2026", "10", "04");
@@ -1086,7 +1100,7 @@ public static class TrackerChecks
                   && SyncRow("session-patch.jsonl")?.ActivityState == TokenActivityState.Interrupted,
                   "Gemini: a cancelled request rolled back with $rewindTo or $patch did not read as interrupted");
             check(SyncRow("session-rewind.jsonl")?.RecentOutputs.Select(e => e.Tokens).SequenceEqual([1]) == true,
-                  "Gemini: token counts past int.MaxValue were accepted");
+                  "Gemini: token counts past Int32.max were accepted (Swift sums could trap)");
             check(SyncRow("session-compress.jsonl") is { Active: true, CurrentTurnOutputTokens: 20 } compress
                   && compress.CurrentTurnStartedAt == gqStart.AddSeconds(2_090),
                   "Gemini: mid-turn compression restarted or closed the turn");
@@ -1391,6 +1405,20 @@ public static class TrackerChecks
                     "Account switches: unattributed Codex limits appeared before the final legacy fallback");
             }
             else check(false, "Account switches: historical Codex fixture was not discovered");
+            // A dropped reader must lose its pin; its pre-switch history cannot attach to the new login when it returns.
+            var pinsBefore = tracker.PinnedAccountCount;
+            File.Delete(oldCodex);
+            File.Delete(oldClaude);
+            var evicted = tracker.Sample();
+            var pinsAfter = tracker.PinnedAccountCount;
+            Write(CodexRecords("codex-a", start.AddSeconds(-10), 93, start.AddSeconds(10_000)), oldCodex);
+            Write(ClaudeRecords("claude-a", start.AddSeconds(-10)), oldClaude);
+            var returned = tracker.Sample();
+            check(pinsAfter == pinsBefore - 2 && tracker.PinnedAccountCount == pinsAfter
+                  && !evicted.Any(row => row.SessionID is "codex-a" or "claude-a")
+                  && returned.FirstOrDefault(row => row.SessionID == "codex-a") is { LimitAccount: null }
+                  && returned.FirstOrDefault(row => row.SessionID == "claude-a") is { LimitAccount: null },
+                  "Account switches: an evicted log kept its account pin, or came back attributed to the new login");
         }
         catch (Exception error) { check(false, $"Account switches fixture error: {error.Message}"); }
     }

@@ -179,6 +179,46 @@ public sealed class LogLineAssembler
     }
 }
 
+/// Bounded insertion-ordered history: updating a key never moves it, and only the oldest is forgotten at the cap.
+internal class RecentKeys<T>(int capacity)
+{
+    readonly Dictionary<string, T> values = new(StringComparer.Ordinal);
+    readonly Queue<string> order = new();
+
+    public int Count => values.Count;
+    public T? this[string key] => values.GetValueOrDefault(key);
+    public bool Contains(string key) => values.ContainsKey(key);
+
+    public void Set(string key, T value)
+    {
+        if (values.ContainsKey(key))
+        {
+            values[key] = value;
+            return;
+        }
+        values.Add(key, value);
+        order.Enqueue(key);
+        if (values.Count > capacity) values.Remove(order.Dequeue());
+    }
+
+    public void Clear()
+    {
+        values.Clear();
+        order.Clear();
+    }
+}
+
+internal sealed class RecentKeys(int capacity) : RecentKeys<bool>(capacity)
+{
+    /// True only when the key was not remembered yet.
+    public bool Insert(string key)
+    {
+        if (Contains(key)) return false;
+        Set(key, true);
+        return true;
+    }
+}
+
 /// LogFields (LogLineTail.swift): field parsing shared by the provider readers. Values that do not parse are null, never zero.
 public static class LogFields
 {
