@@ -252,11 +252,13 @@ public sealed record SessionListModel
     }
 
     /// `restart`: clients waiting for a relaunch, whose rows show no speed cell. `calendar` defaults to `DayCalendar.Current`.
+    /// `groups`: `SessionPresentation.Groups(readings, now)` when the caller already built it (the monitor publishes both).
     public static SessionListModel Make(IReadOnlyList<TokenReading> readings, DateTimeOffset now, bool expanded,
-                                        IReadOnlySet<TokenSource>? restart = null, DayCalendar? calendar = null)
+                                        IReadOnlySet<TokenSource>? restart = null, DayCalendar? calendar = null,
+                                        IReadOnlyList<SessionGroup>? groups = null)
     {
         var restarting = restart ?? new HashSet<TokenSource>();
-        var groups = SessionPresentation.Groups(readings, now);
+        groups ??= SessionPresentation.Groups(readings, now);
         var stable = Comparer<SessionGroup>.Create((a, b) =>
         {
             var order = SessionPresentation.StandardCompare(a.Lead.Reading.Project ?? "", b.Lead.Reading.Project ?? "");

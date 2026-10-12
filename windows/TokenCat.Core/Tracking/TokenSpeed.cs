@@ -10,19 +10,23 @@ public static class TokenSpeed
     public static List<TokenReading> Apply(IReadOnlyList<TokenReading> readings, IReadOnlyList<TelemetryReading> measurements)
     {
         var result = readings.ToList();
+        if (measurements.Count == 0) return result;
         var latest = new Dictionary<string, TelemetryReading>(StringComparer.Ordinal);
         // Claude also sends unlogged side requests on the session's model right after a turn (a few tokens each); a request
         // missing from a log that has its session and agent is one of them. Dropped before the newest-per-identity pick below,
-        // which would otherwise let it replace the real response.
-        var logged = readings.Where(r => r.Source == TokenSource.Claude && r.RequestIDs.Count > 0)
-            .Select(r => $"{r.SessionID}|{r.AgentID}").ToHashSet(StringComparer.Ordinal);
-        var known = readings.SelectMany(r => r.RequestIDs).ToHashSet(StringComparer.Ordinal);
+        // which would otherwise let it replace the real response. Built on the first Claude request id only.
+        HashSet<string>? logged = null, known = null;
         foreach (var received in measurements)
         {
             var measurement = (received.ServerTokenIntervalSampleCount ?? 1) > 1
                 ? received with { SessionID = null, AgentID = null, RequestID = null } : received;
-            if (measurement.Provider == TokenSource.Claude && measurement.RequestID is { } request && !known.Contains(request)
-                && logged.Contains($"{measurement.SessionID}|{measurement.AgentID}")) continue;
+            if (measurement.Provider == TokenSource.Claude && measurement.RequestID is { } request)
+            {
+                logged ??= readings.Where(r => r.Source == TokenSource.Claude && r.RequestIDs.Count > 0)
+                    .Select(r => $"{r.SessionID}|{r.AgentID}").ToHashSet(StringComparer.Ordinal);
+                known ??= readings.SelectMany(r => r.RequestIDs).ToHashSet(StringComparer.Ordinal);
+                if (!known.Contains(request) && logged.Contains($"{measurement.SessionID}|{measurement.AgentID}")) continue;
+            }
             var key = string.Join('\u001f', measurement.Provider.Id, measurement.SessionID ?? "", measurement.AgentID ?? "", measurement.Model ?? "");
             if (latest.TryGetValue(key, out var prior))
             {
@@ -33,12 +37,19 @@ public static class TokenSpeed
             }
             latest[key] = measurement;
         }
+        // Log rows by session, in reading order: each measurement looks up its session instead of scanning every row.
+        var bySession = new Dictionary<(TokenSource, string), List<int>>();
+        for (var index = 0; index < readings.Count; index++)
+            if (readings[index].SessionID is { } session)
+            {
+                if (!bySession.TryGetValue((readings[index].Source, session), out var indices)) bySession[(readings[index].Source, session)] = indices = [];
+                indices.Add(index);
+            }
         foreach (var measurement in latest.Values.OrderBy(m => m.At))
         {
             var speed = new TokenSpeedMeasurement(measurement);
             // Logs only: a telemetry row appended earlier in this loop must not capture a later measurement.
-            var sessionMatches = Enumerable.Range(0, readings.Count).Where(index => measurement.SessionID is { } session
-                && result[index].Source == measurement.Provider && result[index].SessionID == session).ToList();
+            List<int> sessionMatches = measurement.SessionID is { } wanted && bySession.TryGetValue((measurement.Provider, wanted), out var found) ? found : [];
             List<int> matches;
             if ((measurement.ServerTokenIntervalSampleCount ?? 1) > 1) matches = [];
             else if (measurement.AgentID is { } agent) matches = [.. sessionMatches.Where(index => result[index].AgentID == agent)];

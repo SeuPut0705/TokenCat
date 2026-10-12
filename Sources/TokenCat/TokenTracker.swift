@@ -12,7 +12,15 @@ final class TokenTracker {
     private let initialTailBytes: Int
     private let discoveryInterval: TimeInterval
     private var lastDiscovery: Date?
-    private var files: [String: (source: TokenSource, reader: TokenLogReader)] = [:]
+    private struct TrackedLog {
+        let source: TokenSource
+        let reader: TokenLogReader
+        /// The stable row id, "<source>:<path relative to home>".
+        let id: String
+        /// The product of a `TokenClientRoots` folder holding the log, if any.
+        let client: String?
+    }
+    private var files: [String: TrackedLog] = [:]
     private struct LogAccountKey: Hashable {
         var id: String
         var sessionID: String?
@@ -94,8 +102,16 @@ final class TokenTracker {
     func noteChanged(paths: [String]) {
         for path in paths where files[path] == nil {
             guard let root = logRoot(of: path) else { continue }
-            if known.contains(path) { files[path] = (root.source, root.format.open(URL(fileURLWithPath: path))) } else { lastDiscovery = nil }
+            if known.contains(path) { files[path] = entry(path, root.source, root.format.open(URL(fileURLWithPath: path))) } else { lastDiscovery = nil }
         }
+    }
+
+    /// What a tracked log's readings need besides its reader; fixed for the path, so worked out once.
+    private func entry(_ path: String, _ source: TokenSource, _ reader: TokenLogReader) -> TrackedLog {
+        let prefix = home.path + "/"
+        let relative = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
+        return TrackedLog(source: source, reader: reader, id: "\(source.rawValue):\(relative)",
+                          client: clientRoots.first(where: { $0.prefixes.contains(where: path.hasPrefix) })?.name)
     }
 
     /// Runs discovery on the next sample: a client folder appeared, and logs written before it was watched sent no event.
@@ -110,14 +126,11 @@ final class TokenTracker {
         // One pool per file: a cold start parses MBs of tails, and without it every temporary lives until the sample ends.
         accountReader.refresh(now: now)
         for file in files.values { autoreleasepool { file.reader.read(tailLimit: initialTailBytes, now: now) } }
-        let prefix = home.path + "/"
-        return files.flatMap { path, file -> [TokenReading] in
-            let relative = path.hasPrefix(prefix) ? String(path.dropFirst(prefix.count)) : path
-            let readings = file.reader.readings(id: "\(file.source.rawValue):\(relative)", now: now)
-            let client = clientRoots.first(where: { $0.prefixes.contains(where: path.hasPrefix) })?.name
-            return readings.map {
-                var reading = $0
-                if let client {
+        var result: [TokenReading] = []
+        result.reserveCapacity(files.count)
+        for (path, file) in files {
+            for var reading in file.reader.readings(id: file.id, now: now) {
+                if let client = file.client {
                     reading.clientName = reading.clientName ?? client
                     if reading.source != .omp { reading.rateLimit = nil }
                 }
@@ -143,15 +156,19 @@ final class TokenTracker {
                     reading.limitAccount = nil
                     reading.rateLimit?.account = nil
                 }
-                return reading
+                result.append(reading)
             }
-        }.sorted {
-            if $0.active != $1.active { return $0.active }
-            if $0.lastActivity != $1.lastActivity {
-                return ($0.lastActivity ?? .distantPast) > ($1.lastActivity ?? .distantPast)
-            }
-            return $0.id < $1.id
         }
+        // Sorting indices moves Ints: a TokenReading is a large struct, and sorting the readings themselves copied them
+        // (with every retain) on each comparison swap.
+        let keys = result.map { (active: $0.active, last: $0.lastActivity, id: $0.id) }
+        let order = keys.indices.sorted { a, b in
+            let x = keys[a], y = keys[b]
+            if x.active != y.active { return x.active }
+            if x.last != y.last { return (x.last ?? .distantPast) > (y.last ?? .distantPast) }
+            return x.id < y.id
+        }
+        return order.map { result[$0] }
     }
 
     private func discover(now: Date) {
@@ -163,7 +180,7 @@ final class TokenTracker {
             guard !roots.isEmpty else { continue }
             for url in format.files(roots, discovery) {
                 retained.insert(url.path)
-                if files[url.path] == nil { files[url.path] = (provider.source, format.open(url)) }
+                if files[url.path] == nil { files[url.path] = entry(url.path, provider.source, format.open(url)) }
             }
         }
         known = discovery.known
@@ -180,6 +197,9 @@ final class TokenTracker {
         }.prefix(Self.retentionLimit)
         retained.formUnion(kept.map(\.path))
         files = files.filter { retained.contains($0.key) }
+        // An evicted log's account pin goes with it; if the log returns it is attributed again by the same switch rule.
+        let ids = Set(files.values.map(\.id))
+        pinnedLogAccounts = pinnedLogAccounts.filter { ids.contains($0.key.id) }
     }
 }
 
@@ -241,9 +261,8 @@ private final class TokenFileCursor: TokenLogReader {
     private var offset: UInt64 = 0
     private var identity: String?
     private var initialized = false
-    private var pending = Data()
-    private var droppingLine = false
-    private let maximumLineBytes = 1_048_576
+    private var lines = LogLineAssembler()
+    private let maximumLineBytes = LogLineAssembler.maximumLineBytes
     /// Claude subagent type from `<log>.meta.json`; only `agentType` is kept.
     private(set) var sidecarRole: String?
     /// Codex: the thread-name index of this rollout's Codex home.
@@ -332,8 +351,7 @@ private final class TokenFileCursor: TokenLogReader {
         if initialized && (identity != currentIdentity || size < offset) {
             offset = 0
             initialized = false
-            pending.removeAll(keepingCapacity: false)
-            droppingLine = false
+            lines.reset()
             parser = Self.parser(for: url, source: parser.source)
         }
         // Unchanged logs are polled every tick; avoid reopening them.
@@ -356,12 +374,12 @@ private final class TokenFileCursor: TokenLogReader {
                 restoreCodexMetadata(handle: handle, size: size)
             }
             offset = size > UInt64(tailLimit) ? size - UInt64(tailLimit) : 0
-            droppingLine = offset > 0
+            lines.dropping = offset > 0
             // An open Claude turn that began before the tail is read from its human input,
             // so the whole turn's output is counted rather than reported as unknown.
             if parser.source == .claude, offset > 0, let start = claudeTurnStart(handle: handle, size: size), start < offset {
                 offset = start
-                droppingLine = false
+                lines.dropping = false
             }
             identity = currentIdentity
             initialized = true
@@ -377,7 +395,7 @@ private final class TokenFileCursor: TokenLogReader {
                 offset += UInt64(data.count)
                 budget -= data.count
                 // Per chunk, so a long open turn read at once does not pile up its parsed objects.
-                autoreleasepool { consume(data) }
+                autoreleasepool { lines.consume(data, oversized: parser.consumeOversizedPrefix, line: parser.consume) }
             }
         } catch { return }
     }
@@ -475,31 +493,6 @@ private final class TokenFileCursor: TokenLogReader {
             parser.restoreCodexMetadata(context: matchingContext(), lifecycle: lifecycle, opener: opener, usage: latestUsage)
         } catch { return }
     }
-
-    private func consume(_ data: Data) {
-        var start = data.startIndex
-        while start < data.endIndex {
-            let newline = data[start...].firstIndex(of: 10)
-            let end = newline ?? data.endIndex
-            if !droppingLine {
-                if pending.count + data.distance(from: start, to: end) <= maximumLineBytes {
-                    pending.append(contentsOf: data[start..<end])
-                } else {
-                    // An oversized tool result still names the call it completes near its start.
-                    var head = pending.prefix(16_384)
-                    head.append(contentsOf: data[start..<end].prefix(16_384 - head.count))
-                    parser.consumeOversizedPrefix(Data(head))
-                    pending.removeAll(keepingCapacity: false)
-                    droppingLine = true
-                }
-            }
-            guard let newline else { break }
-            if !droppingLine { parser.consume(pending) }
-            pending.removeAll(keepingCapacity: true)
-            droppingLine = false
-            start = data.index(after: newline)
-        }
-    }
 }
 
 /// A fully observed completed turn. Output and the client-reported duration are never divided.
@@ -583,14 +576,14 @@ final class TokenLogParser {
     /// Codex writes token_usage_record right after each response, before the tool
     /// output that precedes the matching token_count. Once present it is authoritative.
     private var usageRecords = false
-    private var seenResponses = Set<String>()
+    private var seenResponses = RecentKeys<Void>(limit: 4_096)
     private var turnUsage: (turnID: String, output: Int)?
     private let ownSessionID: String?
     private var identityLocked = false
     /// Claude: a final reply (end_turn without tool use) or an API error closes the turn unless
     /// later records continue it, e.g. a blocking Stop hook. Subagents write no stop markers.
     private var softClosed = false
-    private var seenRecords = Set<String>()
+    private var seenRecords = RecentKeys<Void>(limit: 8_192)
     /// Claude: request IDs of logged responses, so telemetry for an unlogged side request is not taken as this log's.
     private(set) var requestIDs = Set<String>()
     private var outputMessageID: String?
@@ -794,7 +787,7 @@ final class TokenLogParser {
         let id = payload["turn_id"] as? String
         if record["type"] as? String == "token_usage_record" {
             guard let id, let turn = payload["turn_token_usage"] as? [String: Any],
-                  let output = Self.integer(turn["output_tokens"]) else { return nil }
+                  let output = LogFields.count(turn["output_tokens"]) else { return nil }
             return CodexMetadataCheckpoint(turnID: id, model: nil, cwd: nil, opensTurn: nil,
                 timestamp: Self.date(record["timestamp"]), isInherited: false, actualStart: nil,
                 activityState: .idle, turnOutputTokens: output)
@@ -989,11 +982,11 @@ final class TokenLogParser {
             if ignoringInheritedTurn || usageRecords { return }
             guard let info = payload["info"] as? [String: Any] else { return }
             guard let total = info["total_token_usage"] as? [String: Any],
-                  let count = Self.integer(total["output_tokens"]) else {
+                  let count = LogFields.count(total["output_tokens"]) else {
                 if startedAt != nil { accurate = false }
                 return
             }
-            let last = (info["last_token_usage"] as? [String: Any]).flatMap { Self.integer($0["output_tokens"]) }
+            let last = (info["last_token_usage"] as? [String: Any]).flatMap { LogFields.count($0["output_tokens"]) }
             let delta: Int?
             if let previous = cumulativeOutput {
                 delta = count >= previous ? count - previous : last
@@ -1054,17 +1047,17 @@ final class TokenLogParser {
            let window = ["primary", "secondary"].compactMap({ key -> TokenRateLimit? in
                guard let limit = limits[key] as? [String: Any], let used = Self.number(limit["used_percent"]),
                      used >= 0, used <= 1_000 else { return nil }
-               return TokenRateLimit(usedPercent: used, windowMinutes: Self.integer(limit["window_minutes"]),
+               return TokenRateLimit(usedPercent: used, windowMinutes: LogFields.count(limit["window_minutes"]),
                                      resetsAt: Self.date(limit["resets_at"]), recordedAt: date)
            }).max(by: { ($0.usedPercent, $0.windowMinutes ?? 0) < ($1.usedPercent, $1.windowMinutes ?? 0) }) {
             rateLimit = window
         }
         // input_tokens already includes cached input; the window comes from the same record.
         if let info = payload["info"] as? [String: Any],
-           let last = info["last_token_usage"] as? [String: Any], let input = Self.integer(last["input_tokens"]),
+           let last = info["last_token_usage"] as? [String: Any], let input = LogFields.count(last["input_tokens"]),
            contextUsage.map({ date >= $0.recordedAt }) ?? true {
             contextUsage = TokenContextUsage(usedTokens: input,
-                windowTokens: Self.integer(info["model_context_window"]).flatMap { $0 > 0 ? $0 : nil },
+                windowTokens: LogFields.count(info["model_context_window"]).flatMap { $0 > 0 ? $0 : nil },
                 recordedAt: date, compactedAt: nil)
         }
     }
@@ -1077,19 +1070,17 @@ final class TokenLogParser {
     private func consumeCodexUsageRecord(_ payload: [String: Any], date: Date?) {
         if ignoringInheritedTurn { return }
         guard let usage = payload["usage"] as? [String: Any],
-              let delta = Self.integer(usage["output_tokens"]) else { return }
+              let delta = LogFields.count(usage["output_tokens"]) else { return }
         let id = payload["turn_id"] as? String
         let current = turnID ?? metadataTurnID
         // A record for a different turn than the open one is replayed history, not this turn's output.
         if let id, let current, id != current { return }
         if let response = payload["response_id"] as? String {
-            guard !seenResponses.contains(response) else { return }
-            if seenResponses.count >= 4_096 { seenResponses.removeAll(keepingCapacity: true) }
-            seenResponses.insert(response)
+            guard seenResponses.insert(response) else { return }
         }
         usageRecords = true
         if let id, id == current, let turn = payload["turn_token_usage"] as? [String: Any],
-           let total = Self.integer(turn["output_tokens"]) {
+           let total = LogFields.count(turn["output_tokens"]) {
             turnUsage = (id, total)
         }
         if delta > 0 {
@@ -1108,9 +1099,7 @@ final class TokenLogParser {
         // Restored or branched sessions re-append earlier records with their original uuids
         // and timestamps; replaying them would rewind the turn.
         if let uuid = record["uuid"] as? String {
-            guard !seenRecords.contains(uuid) else { return }
-            if seenRecords.count >= 8_192 { seenRecords.removeAll(keepingCapacity: true) }
-            seenRecords.insert(uuid)
+            guard seenRecords.insert(uuid) else { return }
         }
         if let date, let previousLog, date < previousLog.addingTimeInterval(-600) { return }
         sessionID = record["sessionId"] as? String ?? sessionID
@@ -1144,7 +1133,7 @@ final class TokenLogParser {
                 requestIDs.insert(request)
             }
             guard let usage = message["usage"] as? [String: Any],
-                  let count = Self.integer(usage["output_tokens"]),
+                  let count = LogFields.count(usage["output_tokens"]),
                   let id = message["id"] as? String, !previousMessages.contains(id) else { return }
             let errored = record["isApiErrorMessage"] as? Bool == true || message["model"] as? String == "<synthetic>"
             // A response (or the final failure) ends any API retry in progress.
@@ -1152,8 +1141,8 @@ final class TokenLogParser {
             if !errored {
                 model = message["model"] as? String ?? model
                 // Context occupied by this request: all input-side counts. Claude logs no window size.
-                if let date, let input = Self.integer(usage["input_tokens"]), contextUsage.map({ date >= $0.recordedAt }) ?? true {
-                    let cached = ["cache_creation_input_tokens", "cache_read_input_tokens"].compactMap { Self.integer(usage[$0]) }
+                if let date, let input = LogFields.count(usage["input_tokens"]), contextUsage.map({ date >= $0.recordedAt }) ?? true {
+                    let cached = ["cache_creation_input_tokens", "cache_read_input_tokens"].compactMap { LogFields.count(usage[$0]) }
                     contextUsage = TokenContextUsage(usedTokens: cached.reduce(input, +), windowTokens: nil,
                                                      recordedAt: date, compactedAt: nil)
                 }
@@ -1206,9 +1195,9 @@ final class TokenLogParser {
                 closeTurn(.complete, at: date, duration: Self.number(record["durationMs"], max: Self.maxDurationMs).map { $0 / 1_000 })
             case "api_error":
                 // Counts, delay and the network flag only; error messages are never read.
-                guard turnOpen, let date, let attempt = Self.integer(record["retryAttempt"]) else { break }
+                guard turnOpen, let date, let attempt = LogFields.count(record["retryAttempt"]) else { break }
                 let delay = Self.number(record["retryInMs"], max: 86_400_000)
-                retry = TokenRetryState(attempt: attempt, maxAttempts: Self.integer(record["maxRetries"]),
+                retry = TokenRetryState(attempt: attempt, maxAttempts: LogFields.count(record["maxRetries"]),
                                         retryAt: delay.map { date.addingTimeInterval($0 / 1_000) },
                                         networkDown: (record["error"] as? [String: Any])?["isNetworkDown"] as? Bool == true,
                                         at: date)
@@ -1305,13 +1294,6 @@ final class TokenLogParser {
         }
         if text != nil || blocks?.isEmpty == false { return .human }
         return .none
-    }
-
-    private static func integer(_ value: Any?) -> Int? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-        let double = number.doubleValue
-        guard double.isFinite, double >= 0, double < Double(Int.max), double.rounded(.towardZero) == double else { return nil }
-        return Int(double)
     }
 
     private static func number(_ value: Any?) -> Double? {

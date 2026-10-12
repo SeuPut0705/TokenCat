@@ -67,7 +67,6 @@ public sealed class LiveMonitor : IDisposable
     /// File events can arrive many times per second while a client streams tool output.
     public const double MinimumTokenInterval = 0.25;
     const string PendingRestartKey = "telemetryPendingRestart";
-    static readonly string[] Tick = [];
 
     readonly MonitorOptions options;
     readonly Func<DateTimeOffset> clock;
@@ -103,8 +102,10 @@ public sealed class LiveMonitor : IDisposable
     IReadOnlyList<UsageLimitSummary> usageLimits = [];
     MonitorState current;
     CancellationTokenSource? running;
-    Channel<string[]>? wake;
+    SampleWake? wake;
     LogWatcher? watcher;
+    /// Both loops of the latest Start(); a later Start() begins only after they ended, so two loops never share the tracker.
+    Task loops = Task.CompletedTask;
 
     public LiveMonitor(MonitorOptions options)
     {
@@ -113,12 +114,13 @@ public sealed class LiveMonitor : IDisposable
         clock = options.Clock ?? (() => DateTimeOffset.UtcNow);
         store = new SettingsStore(Path.Combine(options.SupportDirectory, "settings.json"));
         tracker = new TokenTracker(options.Home, clock);
-        limitAccounts = new LimitAccountReader(options.Home, Environment.GetEnvironmentVariable);
-        limitAccounts.Refresh();
+        // One account reader for the tracker, the limit rows and the omp/Pi records: the tracker refreshes it once a sample.
+        limitAccounts = tracker.AccountReader;
+        limitAccounts.Refresh(clock());
         defaultLimitAccounts = DefaultAccounts();
         knownLimitAccounts = KnownAccounts();
         desktop = new ClaudeUsage.DesktopReader(AppPaths.ClaudeDesktopHistory());
-        agentUsage = new AgentUsageHistoryReader(options.Home, Environment.GetEnvironmentVariable);
+        agentUsage = new AgentUsageHistoryReader(options.Home, Environment.GetEnvironmentVariable, limitAccounts);
         foreach (var (id, seconds) in store.Get<Dictionary<string, double>>(PendingRestartKey) ?? new Dictionary<string, double>())
             foreach (var source in TokenSource.TelemetryClients.Where(value => value.Id == id))
                 pendingRestart[source] = DateTimeOffset.FromUnixTimeMilliseconds((long)(seconds * 1_000));
@@ -155,22 +157,30 @@ public sealed class LiveMonitor : IDisposable
         lock (gate)
         {
             if (running is not null) return;
-            running = new CancellationTokenSource();
-            var token = running.Token;
-            var channel = wake = Channel.CreateUnbounded<string[]>(new UnboundedChannelOptions { SingleReader = true });
+            var cancellation = running = new CancellationTokenSource();
+            var token = cancellation.Token;
+            var signal = wake = new SampleWake();
             // Filtered on the watcher's thread: the watched roots also hold tool output, lock files and OpenCode's snapshot
-            // git store, whose bursts would otherwise wake a full sample each. The 1 s tick covers the rest.
+            // git store, whose bursts would otherwise wake a full sample each. The 1 s tick covers the rest. Lost events
+            // (a buffer overflow) rescan every client on the next sample.
             watcher = new LogWatcher(paths =>
             {
                 var logs = Array.FindAll(paths, tracker.WakesSampling);
-                if (logs.Length > 0) channel.Writer.TryWrite(logs);
-            });
+                if (logs.Length > 0) signal.Add(logs);
+            }, signal.Overflow);
             watcher.Start(tracker.WatchedDirectories);
-            _ = Task.Run(() => SystemLoop(channel.Writer, token));
-            _ = Task.Run(() => TokenLoop(channel.Reader, token));
+            var previous = loops;
+            loops = Task.Run(async () =>
+            {
+                // A Stop() then Start() waits for the stopped loops, which end at their next cancellation check.
+                await previous.ConfigureAwait(false);
+                await Task.WhenAll(Task.Run(() => SystemLoop(signal, token)), Task.Run(() => TokenLoop(signal, token))).ConfigureAwait(false);
+            });
+            _ = loops.ContinueWith(_ => cancellation.Dispose(), TaskScheduler.Default);
         }
     }
 
+    /// Cancels the loops and returns at once; no Updated is raised after it returns. `Stopped` completes when they have ended.
     public void Stop()
     {
         lock (gate)
@@ -178,19 +188,23 @@ public sealed class LiveMonitor : IDisposable
             if (running is null) return;
             running.Cancel();
             running = null;
-            wake?.Writer.TryComplete();
+            wake?.Complete();
             wake = null;
             watcher?.Stop();
             watcher = null;
         }
     }
 
+    /// The loops of the latest Start() have ended (immediately true when never started). For tests and orderly shutdown; never
+    /// wait for it on the UI thread or while holding a lock a publish needs.
+    public Task Stopped { get { lock (gate) return loops; } }
+
     public void Dispose() => Stop();
 
     /// Samples the logs now instead of at the next tick; the system keeps its 1 s cadence.
     public void Refresh()
     {
-        lock (gate) wake?.Writer.TryWrite(Tick);
+        lock (gate) wake?.Tick();
     }
 
     /// "지금 다시 시도" (T-3): the collector's scheduled retry runs now; the new state shows on the next publish.
@@ -232,14 +246,14 @@ public sealed class LiveMonitor : IDisposable
     IReadOnlyDictionary<TokenSource, IReadOnlyList<LimitAccount>> KnownAccounts() =>
         TokenSource.DefaultClients.ToDictionary(source => source, source => limitAccounts.KnownAccounts(source));
 
-    async Task SystemLoop(ChannelWriter<string[]> wakeTokens, CancellationToken token)
+    async Task SystemLoop(SampleWake wakeTokens, CancellationToken token)
     {
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(SamplingInterval));
         try
         {
             do
             {
-                wakeTokens.TryWrite(Tick);
+                wakeTokens.Tick();
                 try
                 {
                     var sample = options.SampleSystem();
@@ -265,19 +279,18 @@ public sealed class LiveMonitor : IDisposable
         catch (OperationCanceledException) { }
     }
 
-    async Task TokenLoop(ChannelReader<string[]> reader, CancellationToken token)
+    async Task TokenLoop(SampleWake wakes, CancellationToken token)
     {
         long lastStart = 0, lastFolderCheck = 0;
         HashSet<string>? foldersSeen = null;
         try
         {
-            while (await reader.WaitToReadAsync(token).ConfigureAwait(false))
+            while (await wakes.WaitAsync(token).ConfigureAwait(false))
             {
                 var wait = MinimumTokenInterval - Stopwatch.GetElapsedTime(lastStart).TotalSeconds;
                 if (wait > 0) await Task.Delay(TimeSpan.FromSeconds(wait), token).ConfigureAwait(false);
-                var paths = new List<string>();
-                while (reader.TryRead(out var batch)) paths.AddRange(batch.Take(64));
-                if (paths.Count > 256) paths.RemoveRange(0, paths.Count - 256);
+                var (paths, rediscover) = wakes.Take();
+                if (rediscover) tracker.Rediscover();
                 lastStart = Stopwatch.GetTimestamp();
                 try
                 {
@@ -309,8 +322,8 @@ public sealed class LiveMonitor : IDisposable
     void SampleTokens(List<string> paths, bool? foldersFound, IReadOnlySet<TokenSource>? detected, CancellationToken token)
     {
         tracker.NoteChanged(paths);
+        // The tracker refreshed the shared account reader for this sample.
         var logs = tracker.Sample();
-        limitAccounts.Refresh();
         var defaults = DefaultAccounts();
         var known = new Dictionary<TokenSource, IReadOnlyList<LimitAccount>>(KnownAccounts());
         var telemetry = options.Telemetry;
@@ -347,7 +360,10 @@ public sealed class LiveMonitor : IDisposable
             foreach (var (source, at) in received) Later(lastReceived, source, at);
             foreach (var (source, at) in batchAt) Later(batches, source, at);
             codexRecorded = agent.Codex;
-            var merged = ClaudeLimitsByAccount.Merged(claudeLimits, limits);
+            // An account no longer configured, recorded or in a session keeps its limits only while they are still shown.
+            var current = known.GetValueOrDefault(TokenSource.Claude, []).Append(defaultClaude)
+                .Concat(readings.Select(reading => reading.LimitAccount)).OfType<LimitAccount>().Select(account => account.StorageKey);
+            var merged = ClaudeLimitsByAccount.Pruned(ClaudeLimitsByAccount.Merged(claudeLimits, limits), current.ToHashSet(StringComparer.Ordinal), measuredAt);
             if (!merged.Count.Equals(claudeLimits.Count) || merged.Any(pair => claudeLimits.GetValueOrDefault(pair.Key) != pair.Value))
             {
                 claudeLimits = merged;
@@ -426,8 +442,8 @@ public sealed class LiveMonitor : IDisposable
     {
         var now = tokensSampledAt is { } sampled && sampled > system.SampledAt ? sampled : system.SampledAt;
         usageLimits = SessionPresentation.UsageLimits(tokens, [.. codexLive, .. codexRecorded], claudeLimits, defaultLimitAccounts, knownLimitAccounts, now);
-        current = State(now, FlowSeries.Make(tokens, now), SessionPresentation.Groups(tokens, now),
-                        SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed));
+        var groups = SessionPresentation.Groups(tokens, now);
+        current = State(now, FlowSeries.Make(tokens, now), groups, SessionListModel.Make(tokens, now, sessionsExpanded, restart.Needed, groups: groups));
         if (running is { IsCancellationRequested: false }) Updated?.Invoke(current);
     }
 
@@ -443,4 +459,58 @@ public sealed class LiveMonitor : IDisposable
         current = State(current.Now, current.Flow, current.Groups, current.Sessions);
         if (running is { IsCancellationRequested: false }) Updated?.Invoke(current);
     }
+}
+
+/// What wakes the token loop: the 1 s tick, file events naming logs, and lost events. Paths are coalesced into a set of at most
+/// `MaximumPaths`; more (a burst while a sample runs) or a watcher overflow asks for a full rescan instead, so the queue never
+/// grows with the event rate. The signal holds one pending wake.
+sealed class SampleWake
+{
+    public const int MaximumPaths = 256;
+    readonly Lock gate = new();
+    readonly HashSet<string> paths = new(StringComparer.Ordinal);
+    bool rediscover;
+    readonly Channel<bool> signal = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
+        { FullMode = BoundedChannelFullMode.DropWrite, SingleReader = true });
+
+    public void Tick() => signal.Writer.TryWrite(true);
+
+    public void Add(IEnumerable<string> logs)
+    {
+        lock (gate)
+            foreach (var path in logs)
+            {
+                if (paths.Count >= MaximumPaths && !paths.Contains(path))
+                {
+                    rediscover = true;
+                    break;
+                }
+                paths.Add(path);
+            }
+        Tick();
+    }
+
+    /// The watcher lost events: no path names what changed.
+    public void Overflow()
+    {
+        lock (gate) rediscover = true;
+        Tick();
+    }
+
+    public ValueTask<bool> WaitAsync(CancellationToken token) => signal.Reader.WaitToReadAsync(token);
+
+    /// The paths and rescan request gathered since the last call; clears the pending wake.
+    public (List<string> Paths, bool Rediscover) Take()
+    {
+        signal.Reader.TryRead(out _);
+        lock (gate)
+        {
+            var taken = (Paths: paths.ToList(), Rediscover: rediscover);
+            paths.Clear();
+            rediscover = false;
+            return taken;
+        }
+    }
+
+    public void Complete() => signal.Writer.TryComplete();
 }

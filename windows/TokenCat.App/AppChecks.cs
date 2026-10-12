@@ -35,12 +35,158 @@ static class AppChecks
         guarded("automation", () => Automation(check));
         guarded("widget", () => WidgetChecks(check));
         guarded("widget settings", () => WidgetSettings(check));
+        guarded("rendering cost", RenderingCost);
+        guarded("native presentation", () => NativePresentation(check));
         guarded("detach", () => Detach(check)); // last: its windows must not move the handle counts above
         return c.Done();
     }
 
     static IEnumerable<DependencyObject> Tree(DependencyObject root) =>
         LogicalTreeHelper.GetChildren(root).OfType<DependencyObject>().SelectMany(child => Tree(child).Prepend(child));
+
+    // Warm retained views first: counts exclude first-use WPF/font/sprite caches and the snapshot harness's bitmaps.
+    // Diagnostic, not a timing assertion: CI hardware and installed fonts vary.
+    static void RenderingCost()
+    {
+        static void Measure(string name, Action tick)
+        {
+            for (var i = 0; i < 20; i++) tick();
+            var before = GC.GetAllocatedBytesForCurrentThread();
+            for (var i = 0; i < 100; i++) tick();
+            var bytes = GC.GetAllocatedBytesForCurrentThread() - before;
+            Console.WriteLine($"Rendering allocations: {name} {bytes / 100} B/tick (100 warm ticks)");
+        }
+        var input = Fixtures.Input(Fixtures.All().First(fixture => fixture.Name == "tool-categories"));
+        var dashboard = new Dashboard(DashboardActions.None, snapshot: true);
+        Measure("dashboard", () => dashboard.Show(input));
+        var path = Path.Combine(Path.GetTempPath(), $"tokencat-renderchecks-{Guid.NewGuid():N}.json");
+        try
+        {
+            var settingsInput = Fixtures.Settings();
+            var actions = new SettingsActions(new Preferences(new SettingsStore(path)), () => { }, _ => { }, () => { }, _ => { }, _ => { });
+            foreach (var page in Enum.GetValues<SettingsPage>())
+            {
+                var view = new SettingsView(settingsInput, actions, page, _ => { }, snapshot: true);
+                Measure($"settings-{page}", () => view.Refresh(settingsInput));
+            }
+            Measure("brush", () => Theme.Brush(Theme.Secondary));
+            using var menu = new System.Windows.Forms.ContextMenuStrip();
+            using var tray = new TrayIcon(menu);
+            var frame = 0;
+            Measure("tray-animation", () => tray.Render(RunnerCharacter.Cat, RunnerPose.Walk, frame++ % 4, null, StateDot.None));
+        }
+        finally { File.Delete(path); }
+    }
+
+    static void NativePresentation(Action<bool, string> check)
+    {
+        var color = Theme.Secondary;
+        check(Theme.Brush(color).IsFrozen && ReferenceEquals(Theme.Brush(color), Theme.Brush(color)),
+            "resolved palette brushes are frozen and reused");
+        var box = new Rect(0, 0, 8, 8);
+        var glyph = GlyphView.Drawing(StateGlyphKind.Input, box, Theme.Attention, 1);
+        check(glyph.IsFrozen && ReferenceEquals(glyph, GlyphView.Drawing(StateGlyphKind.Input, box, Theme.Attention, 1)),
+            "state glyph drawings are frozen and reused at the same palette and DPI");
+        using (var menu = new System.Windows.Forms.ContextMenuStrip())
+        {
+            var resources = Native.GuiResources();
+            using (var tray = new TrayIcon(menu))
+            {
+                var handles = new IntPtr[4];
+                for (var i = 0; i < 4; i++) { tray.Render(RunnerCharacter.Cat, RunnerPose.Walk, i, null, StateDot.None); handles[i] = tray.DrawnHandle; }
+                var reused = true;
+                for (var i = 0; i < 100; i++)
+                {
+                    var frame = i % 4;
+                    tray.Render(RunnerCharacter.Cat, RunnerPose.Walk, frame, null, StateDot.None);
+                    reused &= tray.DrawnHandle == handles[frame];
+                }
+                check(reused, "tray animation reuses each cached frame's native icon");
+            }
+            var released = Native.GuiResources();
+            check(released.Gdi <= resources.Gdi + 2 && released.User <= resources.User + 2,
+                "disposing the tray frame cache releases its native icons");
+        }
+        var contrast = Theme.HighContrastOverride;
+        try
+        {
+            Theme.HighContrastOverride = true;
+            _ = GlyphView.Shape(StateGlyphKind.Unfinished, box, out var stroke);
+            check(Theme.Label == SystemColors.WindowTextColor && Theme.Background == SystemColors.WindowColor
+                && Theme.Secondary == Theme.Label && !Theme.Materials && Theme.Surface == Theme.Background
+                && stroke?.DashStyle.Dashes.Count == 0 && Ui.Container(new Border()).BorderThickness == new Thickness(1),
+                "High Contrast uses the system palette, solid state rings and outlined surfaces without materials");
+        }
+        finally { Theme.HighContrastOverride = contrast; }
+
+        var path = Path.Combine(Path.GetTempPath(), $"tokencat-nativechecks-{Guid.NewGuid():N}.json");
+        try
+        {
+            var input = Fixtures.Settings();
+            var preferences = new Preferences(new SettingsStore(path));
+            var actions = new SettingsActions(preferences, () => { }, _ => { }, () => { }, _ => { }, _ => { });
+            var retained = true;
+            foreach (var page in Enum.GetValues<SettingsPage>())
+            {
+                var view = new SettingsView(input, actions, page, _ => { }, snapshot: true);
+                var host = Tree(view).OfType<ScrollViewer>().Single(scroll => scroll.Width == SettingsView.PageWidth);
+                var content = host.Content;
+                view.Refresh(input);
+                retained &= ReferenceEquals(content, host.Content);
+            }
+            check(retained, "unchanged settings presentation retains every page's controls instead of rebuilding them");
+            var general = new SettingsView(input, actions, SettingsPage.General, _ => { }, snapshot: true);
+            var generalHost = Tree(general).OfType<ScrollViewer>().Single(scroll => scroll.Width == SettingsView.PageWidth);
+            var old = generalHost.Content;
+            preferences.NotifyInput = !preferences.NotifyInput;
+            general.Refresh(input);
+            check(!ReferenceEquals(old, generalHost.Content), "preference changes invalidate a retained settings page");
+            var presented = new SettingsView.TelemetryPresentation((SettingsView.StatusRow.Listening, "Listening"), null, true, "first.exe", null,
+                [new SettingsView.ClientPresentation(TokenSource.Codex, SettingsView.StatusRow.Waiting, "Waiting", null, "first.toml")],
+                (SettingsView.StatusRow.Waiting, "Waiting", null), null, false, false);
+            check(presented.Equals(presented with { Clients = [.. presented.Clients] })
+                && !presented.Equals(presented with { OtherPath = "second.exe" })
+                && !presented.Equals(presented with { Clients = [presented.Clients[0] with { Config = "second.toml" }] }),
+                "telemetry presentation keys compare client content and include every File Explorer action target");
+            try
+            {
+                Theme.HighContrastOverride = true;
+                var widget = new SettingsView(input, actions, SettingsPage.Widget, _ => { }, snapshot: true);
+                var selectedPage = Tree(widget).OfType<Button>().Single(button => AutomationProperties.GetItemStatus(button).Length > 0);
+                var pageChrome = ((Border)selectedPage.Content).Child as Border;
+                var selectedLayout = Tree(widget).OfType<RadioButton>().Single(button => button.IsChecked == true);
+                var layoutChrome = ((Border)selectedLayout.Content).Child as Border;
+                check(pageChrome?.BorderThickness.Left == 3 && layoutChrome?.BorderThickness == new Thickness(1),
+                    "High Contrast settings show the selected page and layout with visible outlines");
+            }
+            finally { Theme.HighContrastOverride = contrast; }
+        }
+        finally { File.Delete(path); }
+
+        var fixture = Fixtures.Input(Fixtures.All().First(item => item.Name == "input-needed"));
+        var dashboard = new Dashboard(DashboardActions.None, snapshot: true);
+        dashboard.Show(fixture);
+        var row = Tree(dashboard).OfType<LiveRow>().First();
+        var peer = UIElementAutomationPeer.CreatePeerForElement(row);
+        var invoke = peer?.GetPattern(PatternInterface.Invoke) as IInvokeProvider;
+        var expand = peer?.GetPattern(PatternInterface.ExpandCollapse) as IExpandCollapseProvider;
+        expand?.Expand();
+        var expanded = expand?.ExpandCollapseState == ExpandCollapseState.Expanded;
+        expand?.Collapse();
+        check(invoke is not null && expanded && expand?.ExpandCollapseState == ExpandCollapseState.Collapsed,
+            "session rows expose Invoke and ExpandCollapse patterns for inline details");
+        var called = false;
+        var disclosure = new DisclosureRow(() => called = true);
+        (UIElementAutomationPeer.CreatePeerForElement(disclosure)?.GetPattern(PatternInterface.Invoke) as IInvokeProvider)?.Invoke();
+        check(called, "session disclosures expose their action through UI Automation");
+        var button = Tree(dashboard).OfType<Button>().Single(control => AutomationProperties.GetName(control).Contains("Task Manager", StringComparison.Ordinal)
+            || AutomationProperties.GetName(control).Contains("작업 관리자", StringComparison.Ordinal));
+        check(button.Focusable && UIElementAutomationPeer.CreatePeerForElement(button)?.GetPattern(PatternInterface.Invoke) is IInvokeProvider,
+            "the system metrics action is keyboard reachable and exposes Invoke");
+        var welcome = OnboardingCard.Build(new OnboardingOutcome.Added(false), DashboardActions.None);
+        check(Tree(welcome).OfType<TextBlock>().Any(text => text.Text.Contains("^", StringComparison.Ordinal)),
+            "the first-run notification-area hint is shown inside the welcome card");
+    }
 
     /// Dragging the flyout out (§4.2), without a mouse: the header and the System area's edge start a drag, the session list and
     /// the Task Manager area don't; a press released in place or within the drag distance stays a click, a longer drag along one
@@ -462,7 +608,7 @@ static class AppChecks
             var texts = about.OfType<TextBlock>().Select(text => text.Text.Replace("⁠", "")).ToList();
             var bullets = AppInfo.PrivacyLines.Count == 3 && AppInfo.PrivacyLines.All(texts.Contains)
                           && AppInfo.PrivacyLines[0] == "로컬 로그·실측의 메타데이터만 읽고, 프롬프트·응답 본문은 저장하거나 표시하지 않습니다"
-                          && With(AppLanguage.En, () => AppInfo.PrivacyLines[1]) == "Never calls a model or signs in; goes online only to check GitHub for updates and download them";
+                          && With(AppLanguage.En, () => AppInfo.PrivacyLines[1]) == "Never calls a model or signs in. Update checks and downloads connect only to GitHub";
             List<Button> updateButtons(List<DependencyObject> page) => [.. page.OfType<Button>().Where(button => AutomationProperties.GetName(button) is "업데이트" or "지금 확인")];
             var installable = updateButtons(about) is [{ IsDefault: true } only] && AutomationProperties.GetName(only) == "업데이트";
             var installing = updateButtons(Descendants(new SettingsView(fixture with { Dashboard = fixture.Dashboard with { Update = Fixtures.Update("downloading", Fixtures.Now) } },

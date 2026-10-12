@@ -76,6 +76,15 @@ func runTokenSpeedChecks() -> [String] {
     let logless = TokenSpeed.apply([], measurements: [sideRequest, mainRequest])
     check("a session without a log keeps one telemetry row per model", logless.count == 2
           && Set(logless.compactMap { $0.speedMeasurement?.model }) == ["main-model", "side-model"])
+    // Gemini CLI and Qwen Code subagent logs carry the parent's session ID; main-conversation requests attach to the main log only.
+    for source in [TokenSource.gemini, .qwen] {
+        let main = TokenReading(source: source, id: "\(source.rawValue)-main", sessionID: "g", model: "main-model")
+        let subagent = TokenReading(source: source, id: "\(source.rawValue)-subagent", sessionID: "g", model: "main-model", isSubagent: true)
+        let response = reading(["provider": source.rawValue, "sessionID": "g", "model": "main-model", "outputTokens": 150, "requestDurationMs": 2_000])
+        let applied = TokenSpeed.apply([main, subagent], measurements: [response])
+        check("an untagged \(source.title) request attaches to the main log, not its subagent or a new row",
+              applied.count == 2 && applied[0].speedMeasurement?.tokensPerSecond == 75 && applied[1].speedMeasurement == nil)
+    }
     var agent = server
     agent.agentID = "worker"
     let identified = TokenSpeed.apply([a, child], measurements: [agent])

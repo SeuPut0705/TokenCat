@@ -3,15 +3,17 @@ using Forms = System.Windows.Forms;
 
 namespace TokenCat;
 
-/// The notification-area icon (DESIGN §4.1): TrayFrame pixels at exactly SM_CXSMICON for the taskbar's DPI, one HICON alive
-/// at a time. Below 30 px the cat head stands in for the body (head + 1 art-px bob).
+/// The notification-area icon (DESIGN §4.1): exactly SM_CXSMICON at the taskbar DPI. A bounded frame cache reuses native
+/// icons through animation cycles; DPI/palette changes and disposal release every owned HICON.
 sealed class TrayIcon : IDisposable
 {
     readonly Forms.NotifyIcon icon = new() { Text = "TokenCat" };
-    Drawing.Icon? current;
-    object? drawn;
+    readonly record struct FrameKey(int Size, bool Light, RunnerCharacter Character, RunnerPose Pose, int Frame, int? Fx, StateDot Dot);
+    readonly Dictionary<FrameKey, Drawing.Icon> frames = [];
+    FrameKey? drawn;
     bool lightTaskbar;
     public int Size { get; private set; }
+    internal IntPtr DrawnHandle => icon.Icon?.Handle ?? IntPtr.Zero;
 
     public TrayIcon(Forms.ContextMenuStrip menu)
     {
@@ -33,17 +35,25 @@ sealed class TrayIcon : IDisposable
     /// Re-read after DPI, display or theme changes (not per frame: the animation can run at 14 fps).
     public void Resize()
     {
-        Size = Native.SmallIconSize(Native.TaskbarDpi());
-        lightTaskbar = Theme.TaskbarUsesLightTheme();
+        var size = Native.SmallIconSize(Native.TaskbarDpi());
+        var light = Theme.TaskbarUsesLightTheme();
+        if (size != Size || light != lightTaskbar) ClearFrames();
+        Size = size;
+        lightTaskbar = light;
     }
 
-    /// A new HICON only when the drawn frame changes.
+    /// A new HICON only for an unseen frame; unchanged values do not even touch NotifyIcon.
     public void Render(RunnerCharacter character, RunnerPose pose, int frame, int? fxStep, StateDot dot)
     {
-        var key = (Size, lightTaskbar, character, pose, frame, fxStep, dot);
-        if (Equals(key, drawn)) return;
+        var key = new FrameKey(Size, lightTaskbar, character, pose, frame, fxStep, dot);
+        if (key == drawn) return;
+        if (!frames.TryGetValue(key, out var next))
+        {
+            if (frames.Count >= 64) ClearFrames();
+            frames[key] = next = Native.IconFromBgra(Pixels(Size, character, pose, frame, fxStep, dot, lightTaskbar), Size);
+        }
+        icon.Icon = next;
         drawn = key;
-        SetIcon(Native.IconFromBgra(Pixels(Size, character, pose, frame, fxStep, dot, lightTaskbar), Size));
     }
 
     /// Body at ≥ 30 px (`k = N / 30` of the @1x sheet), else the cat head chosen by HeadScale.
@@ -58,15 +68,15 @@ sealed class TrayIcon : IDisposable
         return TrayFrame.Head(Sprites.Sheet(Sprites.HeadName(head, TrayFrame.HeadScale(size))), bob,
             fxStep is null ? null : Sprites.Art(RunnerCharacter.Cat).Fx.GetValueOrDefault(pose), fxStep ?? 0, size, dot, lightTaskbar);
     }
-
-    /// Assign the new icon, then dispose the old one and destroy its HICON (Icon.FromHandle doesn't own it).
-    public void SetIcon(Drawing.Icon next)
+    void ClearFrames()
     {
-        var old = current;
-        icon.Icon = next;
-        current = next;
-        Release(old);
+        if (frames.Count > 0) icon.Icon = null;
+        foreach (var frame in frames.Values) Release(frame);
+        frames.Clear();
+        drawn = null;
     }
+
+
 
     public static void Release(Drawing.Icon? old)
     {
@@ -106,9 +116,8 @@ sealed class TrayIcon : IDisposable
     public void Dispose()
     {
         icon.Visible = false;
+        ClearFrames();
         icon.Dispose();
-        Release(current);
-        current = null;
     }
 }
 

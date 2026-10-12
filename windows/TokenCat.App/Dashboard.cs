@@ -59,7 +59,7 @@ sealed class Dashboard : UserControl
 
         // The usage limits get their own container right under the header, above the output-token card.
         limitsBox = Ui.Container(new Border { Child = limits, Padding = new Thickness(Inset, InsetVertical, Inset, InsetVertical) });
-        var root = new Grid { Width = PanelWidth, Margin = new Thickness(0), Background = Theme.Brush(Theme.Background) };
+        var root = new Grid { Width = PanelWidth, Margin = new Thickness(0), Background = Theme.Brush(snapshot ? Theme.Background : Theme.Surface) };
         var content = new Grid { Margin = new Thickness(Gutter, 12, Gutter, 12) };
         UIElement[] rows =
         [
@@ -217,10 +217,23 @@ static class Reconcile
     public static Entry Item<T>(string key, Func<T> create, Action<T> update) where T : FrameworkElement =>
         new(key, create, element => update((T)element));
 
+    // Scratch belongs to the panel, not to a global pool: nested reconciliation cannot overwrite its parent's list.
+    sealed class Scratch
+    {
+        public readonly List<FrameworkElement> Wanted = [];
+        public readonly HashSet<string> Used = new(StringComparer.Ordinal);
+        public readonly List<string> Removed = [];
+    }
+    static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Panel, Scratch> scratch = new();
+
     public static void Panel(Panel panel, Dictionary<string, FrameworkElement> cache, IEnumerable<Entry> items)
     {
-        var wanted = new List<FrameworkElement>();
-        var used = new HashSet<string>(StringComparer.Ordinal);
+        var work = scratch.GetValue(panel, static _ => new Scratch());
+        var wanted = work.Wanted;
+        var used = work.Used;
+        wanted.Clear();
+        used.Clear();
+        work.Removed.Clear();
         foreach (var item in items)
         {
             if (!used.Add(item.Key)) continue;
@@ -228,7 +241,9 @@ static class Reconcile
             item.Update(element);
             wanted.Add(element);
         }
-        foreach (var key in cache.Keys.Where(key => !used.Contains(key)).ToList()) cache.Remove(key);
+        foreach (var key in cache.Keys)
+            if (!used.Contains(key)) work.Removed.Add(key);
+        foreach (var key in work.Removed) cache.Remove(key);
         for (var i = 0; i < wanted.Count; i++)
         {
             if (i < panel.Children.Count && ReferenceEquals(panel.Children[i], wanted[i])) continue;
@@ -236,6 +251,10 @@ static class Reconcile
             panel.Children.Insert(i, wanted[i]);
         }
         while (panel.Children.Count > wanted.Count) panel.Children.RemoveAt(panel.Children.Count - 1);
+        // Do not retain removed visuals or account/session keys in scratch between ticks.
+        wanted.Clear();
+        used.Clear();
+        work.Removed.Clear();
     }
 }
 
@@ -245,6 +264,7 @@ sealed class Header : Grid
     readonly Image head = Sprites.HeadImage(RunnerHead.Normal, 24, 22);
     readonly GlyphView glyph = new(StateGlyphKind.Idle) { Margin = new Thickness(0, 0, 4, 0) };
     readonly TextBlock sentence = Ui.Line();
+    readonly Run sentenceWords = Ui.Run("", Font.Title), suffixWords = Ui.Run("", Font.Meta, Theme.Secondary);
     readonly TrimLine status;
     readonly bool interactive;
     RunnerHead current = RunnerHead.Normal;
@@ -254,6 +274,8 @@ sealed class Header : Grid
     {
         this.interactive = interactive;
         Height = 28;
+        sentence.Inlines.Add(sentenceWords);
+        sentence.Inlines.Add(suffixWords);
         ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         ColumnDefinitions.Add(new ColumnDefinition());
         ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -286,9 +308,9 @@ sealed class Header : Grid
         if (current != value.Head) { current = value.Head; if (!blinking) head.Source = Sprites.Head(current); }
         glyph.Visibility = value.Glyph is null ? Visibility.Collapsed : Visibility.Visible;
         if (value.Glyph is { } kind) glyph.Kind = kind;
-        sentence.Inlines.Clear();
-        sentence.Inlines.Add(Ui.Run(value.Sentence, Font.Title, value.Muted ? Theme.Secondary : Theme.Label));
-        sentence.Inlines.Add(Ui.Run(value.Suffix, Font.Meta, Theme.Secondary));
+        sentenceWords.Text = value.Sentence;
+        sentenceWords.Foreground = Theme.Brush(value.Muted ? Theme.Secondary : Theme.Label);
+        suffixWords.Text = value.Suffix;
         Ui.Help(status, value.Help);
         System.Windows.Automation.AutomationProperties.SetHelpText(status, value.Spoken);
     }
@@ -344,6 +366,9 @@ static class OnboardingCard
         var title = Dashboard.Row(6, Sprites.HeadImage(RunnerHead.Normal, 12, 11), Ui.Text(Loc("TokenCat이 하는 일", "What TokenCat does"), Font.MetaMedium));
         title.VerticalAlignment = VerticalAlignment.Center;
         stack.Children.Add(Dashboard.Spread(title, close));
+        stack.Children.Add(Line(Ui.InfoIcon, Loc("알림 영역의 ^를 열면 TokenCat이 보입니다", "Open ^ in the notification area to find TokenCat"),
+            Loc("고양이를 작업 표시줄로 끌어 놓으면 항상 보입니다. 위젯을 눌러도 상세 화면을 열 수 있습니다.",
+                "Drag the cat onto the taskbar to keep it visible. You can also open the dashboard by clicking the widget.")));
         stack.Children.Add(Line(Ui.Shield, Loc("대화 본문은 저장하지 않습니다", "Doesn't store conversation text"),
             Loc("모델·토큰 수·도구 종류·프로젝트 폴더 같은 메타데이터만 읽습니다", "Reads only metadata such as models, token counts, tool types and project folders")));
         var telemetry = Telemetry(outcome, clients ?? TokenSource.DefaultClients);
@@ -424,6 +449,7 @@ sealed class FlowCard : Border
     readonly Border splitSlot = new() { Margin = new Thickness(6, 0, 0, 0), VerticalAlignment = VerticalAlignment.Center };
     readonly TextBlock total = Ui.Line();
     readonly FrameworkElement trailing;
+    readonly Run totalAmount = Ui.Run("", Font.Metric);
     readonly Border metaSlot = new() { Height = 16, Margin = new Thickness(0, 6, 0, 0) };
     readonly FlowChart chart = new() { Height = FlowChart.ChartHeight, Margin = new Thickness(0, 8, 0, 0) };
     object? splitKey, metaKey;
@@ -431,6 +457,8 @@ sealed class FlowCard : Border
     public FlowCard()
     {
         Padding = new Thickness(Dashboard.Inset, Dashboard.InsetVertical, Dashboard.Inset, Dashboard.InsetVertical);
+        total.Inlines.Add(totalAmount);
+        total.Inlines.Add(Ui.Run(" tok", Font.Micro, Theme.Secondary));
         // One line, so the caption sits on the title's baseline.
         var collapsedTitle = Ui.Line(Ui.Run(Loc("출력 토큰", "Output tokens"), Font.Title),
             Ui.Run("  " + Loc("최근 5분 기록 없음", "None in the last 5 min"), Font.Meta, Theme.Secondary));
@@ -504,9 +532,8 @@ sealed class FlowCard : Border
 
         var flow = state.Flow;
         var sum = flow.Total;
-        total.Inlines.Clear();
-        total.Inlines.Add(Ui.Run(loading ? "0,000" : Format.Tokens(sum), Font.Metric, sum == 0 && !loading ? Theme.Secondary : Theme.Label));
-        total.Inlines.Add(Ui.Run(" tok", Font.Micro, Theme.Secondary));
+        totalAmount.Text = loading ? "0,000" : Format.Tokens(sum);
+        totalAmount.Foreground = Theme.Brush(sum == 0 && !loading ? Theme.Secondary : Theme.Label);
         total.Opacity = loading ? 0.25 : 1;
 
         // `SessionPresentation.ProviderSplits`: the first candidate that fits beside the total; none when even one does not.
@@ -571,7 +598,7 @@ sealed class FlowCard : Border
     static FrameworkElement SpeedHeadlineView(SpeedHeadline headline, double room)
     {
         FrameworkElement view;
-        if (!headline.Known) view = Ui.Text(Loc("속도 실측 없음", "No measured speed"), Font.Meta, Theme.Tertiary);
+        if (!headline.Known) view = Ui.Text(Loc("속도 실측 없음", "No measured speed"), Font.Meta, Theme.Secondary);
         else
         {
             // The label is the line's first run, so it shares the value's baseline.
@@ -624,8 +651,9 @@ sealed class FlowChart : FrameworkElement
         InvalidateVisual();
     }
 
+    static readonly Typeface AxisFace = new(Ui.Family, FontStyles.Normal, FontWeights.Medium, FontStretches.Normal);
     FormattedText Label(string text) => new(text, Lang.Culture, FlowDirection.LeftToRight,
-        new Typeface(Ui.Family, FontStyles.Normal, FontWeights.Medium, FontStretches.Normal), 10, Theme.Brush(Theme.Secondary), VisualTreeHelper.GetDpi(this).PixelsPerDip);
+        AxisFace, 10, Theme.Brush(Theme.Secondary), VisualTreeHelper.GetDpi(this).PixelsPerDip);
 
     protected override void OnRender(DrawingContext context)
     {
@@ -682,7 +710,7 @@ sealed class LimitRow : StackPanel
     readonly Border rule = Ui.Hairline();
     readonly Grid block = new(), who = new(), basis = new();
     readonly TextBlock provider = Ui.Text("", Font.MetaMedium), account = Ui.Text("", Font.Meta, Theme.Secondary);
-    readonly TextBlock provenance = Ui.Text("", Font.MetaMono, Theme.Tertiary);
+    readonly TextBlock provenance = Ui.Text("", Font.MetaMono, Theme.Secondary);
     readonly Ellipse live = Dashboard.Dot(Theme.Activity, 5);
     readonly LimitWindow main = new(), other = new() { Margin = new Thickness(0, 4, 0, 0) };
     string spoken = "";
@@ -762,12 +790,15 @@ sealed class LimitWindow : Grid
 {
     readonly TextBlock title = Ui.Text("", Font.Meta, Theme.Secondary);
     readonly TextBlock value = Ui.Line(), reset = Ui.Text("", Font.MetaMono, Theme.Secondary);
+    readonly Run percentAmount = Ui.Run("", Font.Value), percentUnit = Ui.Run("%", Font.Micro, Theme.Secondary);
     readonly TextBlock arrow = Ui.Icon(Ui.Refresh, 8, Theme.Tertiary);
     readonly Meter meter = new() { Height = 4, VerticalAlignment = VerticalAlignment.Center };
 
     public LimitWindow()
     {
         Height = 16;
+        value.Inlines.Add(percentAmount);
+        value.Inlines.Add(percentUnit);
         foreach (var width in new[] { 34d, 8, double.NaN, 8, 38, 8, 78 })
             ColumnDefinitions.Add(new ColumnDefinition { Width = double.IsNaN(width) ? new GridLength(1, GridUnitType.Star) : new GridLength(width) });
         value.TextAlignment = TextAlignment.Right;
@@ -790,13 +821,9 @@ sealed class LimitWindow : Grid
     public void Update(UsageLimitSummary.WindowLine line, DateTimeOffset now)
     {
         title.Text = line.WindowLabel;
-        value.Inlines.Clear();
-        if (line.Expired) value.Inlines.Add(Ui.Run("—", Font.Value, Theme.Tertiary));
-        else
-        {
-            value.Inlines.Add(Ui.Run(line.PercentText, Font.Value, line.Old ? Theme.Secondary : Theme.Label));
-            value.Inlines.Add(Ui.Run("%", Font.Micro, Theme.Secondary));
-        }
+        percentAmount.Text = line.Expired ? "—" : line.PercentText;
+        percentAmount.Foreground = Theme.Brush(line.Expired ? Theme.Tertiary : line.Old ? Theme.Secondary : Theme.Label);
+        percentUnit.Text = line.Expired ? "" : "%";
         var countdown = line.Reset(now);
         reset.Text = countdown ?? "";
         arrow.Visibility = !line.Expired && countdown is not null ? Visibility.Visible : Visibility.Collapsed;
@@ -868,24 +895,22 @@ sealed class SystemArea : StackPanel
         arrow.VerticalAlignment = VerticalAlignment.Top;
         arrow.Margin = new Thickness(6);
         arrow.Visibility = Visibility.Hidden;
-        var area = new Grid { Margin = new Thickness(0, 4, 0, 0), Background = Brushes.Transparent, Cursor = System.Windows.Input.Cursors.Hand };
-        var hover = new Border { CornerRadius = new CornerRadius(10) };
-        area.Children.Add(hover);
+        var area = new Grid { Background = Brushes.Transparent, Cursor = System.Windows.Input.Cursors.Hand };
         cells.Margin = new Thickness(Dashboard.Inset, 6, Dashboard.Inset, 6);
         area.Children.Add(cells);
         area.Children.Add(arrow);
-        area.MouseEnter += (_, _) => { hover.Background = Theme.Brush(Theme.Hover); arrow.Visibility = Visibility.Visible; };
-        area.MouseLeave += (_, _) => { hover.Background = null; arrow.Visibility = Visibility.Hidden; };
-        area.MouseLeftButtonUp += (_, _) => open();
-        area.ToolTip = Loc("작업 관리자에서 자세히 보기", "Show details in Task Manager");
-        System.Windows.Automation.AutomationProperties.SetName(area, Loc("시스템", "System"));
+        area.MouseEnter += (_, _) => arrow.Visibility = Visibility.Visible;
+        area.MouseLeave += (_, _) => arrow.Visibility = Visibility.Hidden;
+        var button = Ui.HoverButton(area, open, Loc("작업 관리자에서 자세히 보기", "Show details in Task Manager"));
+        button.Margin = new Thickness(0, 4, 0, 0);
+        System.Windows.Automation.AutomationProperties.SetName(button, Loc("시스템 · 작업 관리자 열기", "System · Open Task Manager"));
         peak.Fill = Theme.Brush(Theme.Primary(0.5));
         cpu.Aux.Children.Add(peak);
         cpu.Meter.Margin = new Thickness(0, 1, 0, 0);
         network.Aux.Children.Clear();
         network.Aux.Children.Add(upload);
         Typography.SetNumeralAlignment(upload, FontNumeralAlignment.Tabular);
-        Children.Add(area);
+        Children.Add(button);
     }
 
     void Layout(bool hasBattery)

@@ -11,16 +11,15 @@ final class LogLineTail {
     private(set) var modified: Date?
     private var offset: UInt64 = 0
     private var identity: String?
-    private var pending = Data()
-    private var dropping = false
-    private let maximumLineBytes = 1_048_576
+    private var lines = LogLineAssembler()
 
     init(url: URL) { self.url = url }
 
     /// Reads what was appended since the last call. `reset` runs before a replaced or truncated file is read again;
-    /// `line` gets each complete new line without its newline. Returns false when the file is missing.
+    /// `header` gets the first line (within 64 KB) before the tail when the first read skips the head (session metadata
+    /// only); `line` gets each complete new line without its newline. Returns false when the file is missing.
     @discardableResult
-    func read(tailLimit: Int, reset: () -> Void, line: (Data) -> Void) -> Bool {
+    func read(tailLimit: Int, reset: () -> Void, header: ((Data) -> Void)? = nil, line: (Data) -> Void) -> Bool {
         // stat(2), not attributesOfItem: this runs for every tracked log on every tick.
         var info = stat()
         guard stat(url.path, &info) == 0 else { return false }
@@ -31,8 +30,7 @@ final class LogLineTail {
             self.identity = nil
             offset = 0
             skippedHead = false
-            pending.removeAll(keepingCapacity: false)
-            dropping = false
+            lines.reset()
             reset()
         }
         if identity != nil && size == offset { return true }
@@ -41,9 +39,12 @@ final class LogLineTail {
         if identity == nil {
             identity = currentIdentity
             if size > UInt64(max(128, tailLimit)) {
+                if let header, let head = try? handle.read(upToCount: 65_536), let newline = head.firstIndex(of: 10) {
+                    header(Data(head[head.startIndex..<newline]))
+                }
                 offset = size - UInt64(max(128, tailLimit))
                 skippedHead = true
-                dropping = true
+                lines.dropping = true
             }
         }
         // Bursts are caught up within one sample.
@@ -55,7 +56,7 @@ final class LogLineTail {
                 guard !data.isEmpty else { break }
                 offset += UInt64(data.count)
                 budget -= data.count
-                autoreleasepool { consume(data, line: line) }
+                autoreleasepool { lines.consume(data, line: line) }
             }
         } catch { return true }
         return true
@@ -69,25 +70,51 @@ final class LogLineTail {
         return Data(head[head.startIndex..<newline])
     }
 
-    private func consume(_ data: Data, line: (Data) -> Void) {
-        var start = data.startIndex
-        while start < data.endIndex {
-            let newline = data[start...].firstIndex(of: 10)
-            let end = newline ?? data.endIndex
-            if !dropping {
-                if pending.count + data.distance(from: start, to: end) <= maximumLineBytes {
-                    pending.append(contentsOf: data[start..<end])
-                } else {
-                    pending.removeAll(keepingCapacity: false)
-                    dropping = true
+}
+
+/// Splits appended bytes into complete lines (without the newline) for every JSONL reader: a line still being written waits
+/// in `pending`, a line over `maximumLineBytes` is skipped, and a line that ran long releases its buffer afterwards.
+struct LogLineAssembler {
+    static let maximumLineBytes = 1_048_576
+    /// Lines up to this size keep the buffer's capacity for the next one; a longer one must not pin up to 1 MB per reader.
+    static let retainedCapacity = 65_536
+    private(set) var pending = Data()
+    /// True while the rest of a skipped line (an oversized one, or the partial first line of a tail) is passing.
+    var dropping = false
+
+    mutating func reset() {
+        pending = Data()
+        dropping = false
+    }
+
+    /// `oversized` gets the first 16 KB of a line that passes the limit, once (an oversized tool result still names the
+    /// call it completes near its start).
+    mutating func consume(_ data: Data, oversized: ((Data) -> Void)? = nil, line: (Data) -> Void) {
+        data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            guard let base = buffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
+            var start = 0
+            while start < buffer.count {
+                let found = memchr(base + start, 10, buffer.count - start)
+                let end = found.map { UnsafeRawPointer(base).distance(to: UnsafeRawPointer($0)) } ?? buffer.count
+                if !dropping {
+                    if pending.count + (end - start) <= Self.maximumLineBytes {
+                        pending.append(base + start, count: end - start)
+                    } else {
+                        if let oversized {
+                            var head = pending.prefix(16_384)
+                            head.append(base + start, count: min(end - start, 16_384 - head.count))
+                            oversized(Data(head))
+                        }
+                        pending.removeAll(keepingCapacity: false)
+                        dropping = true
+                    }
                 }
+                guard found != nil else { break }
+                if !dropping, !pending.isEmpty { line(pending) }
+                pending.removeAll(keepingCapacity: pending.count <= Self.retainedCapacity)
+                dropping = false
+                start = end + 1
             }
-            guard let newline else { break }
-            if !dropping, !pending.isEmpty { line(pending) }
-            // One long line must not pin up to 1 MB per reader for good.
-            pending.removeAll(keepingCapacity: pending.count <= 65_536)
-            dropping = false
-            start = data.index(after: newline)
         }
     }
 }
@@ -123,5 +150,48 @@ enum LogFields {
     /// A non-empty string.
     static func text(_ value: Any?) -> String? {
         (value as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+}
+
+/// Ids a reader remembers to count each record once, up to `limit`: past it the oldest is forgotten first. Clearing
+/// everything at the cap would let every replayed record count again.
+struct RecentKeys<Value> {
+    let limit: Int
+    private var values: [String: Value] = [:]
+    private var order: [String] = []
+    private var head = 0
+
+    init(limit: Int) { self.limit = limit }
+
+    var count: Int { values.count }
+    subscript(key: String) -> Value? { values[key] }
+    func contains(_ key: String) -> Bool { values[key] != nil }
+
+    mutating func set(_ key: String, _ value: Value) {
+        guard values.updateValue(value, forKey: key) == nil else { return }
+        order.append(key)
+        guard values.count > limit else { return }
+        values[order[head]] = nil
+        head += 1
+        // The forgotten prefix of `order` is dropped in one move once it is as long as the kept part.
+        if head >= limit {
+            order.removeFirst(head)
+            head = 0
+        }
+    }
+
+    mutating func removeAll() {
+        values.removeAll(keepingCapacity: true)
+        order.removeAll(keepingCapacity: true)
+        head = 0
+    }
+}
+
+extension RecentKeys where Value == Void {
+    /// True when `key` was not remembered yet.
+    mutating func insert(_ key: String) -> Bool {
+        guard !contains(key) else { return false }
+        set(key, ())
+        return true
     }
 }

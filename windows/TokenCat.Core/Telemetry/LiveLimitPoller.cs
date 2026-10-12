@@ -1,17 +1,23 @@
 namespace TokenCat;
 
 /// Independent per-account cadence, in-flight exclusion and failure backoff. The reader owns rejected token hashes.
+/// A slot that has not been eligible (passed to `Tick`) for `LiveLimits.IdleInterval` is forgotten, so accounts that come and
+/// go do not accumulate; a slot that drops out briefly keeps its cadence and backoff.
 public sealed class LiveLimitPoller(Func<LimitSlot, CancellationToken, Task<LiveLimitResult>> read)
 {
     sealed class State
     {
         public DateTimeOffset? Last, RetryAt;
+        public DateTimeOffset Eligible;
         public int Failures;
         public bool InFlight;
     }
     readonly object gate = new();
     readonly Dictionary<LimitSlot, State> states = [];
     bool wasOpen;
+
+    /// Slots with a cadence or backoff held (the bound C4d checks).
+    internal int Held { get { lock (gate) return states.Count; } }
 
     public Task Tick(DateTimeOffset now, bool open, IReadOnlySet<LimitSlot> slots, Func<LimitSlot, bool> live,
         Action<LiveLimitResult> deliver, CancellationToken token = default)
@@ -24,11 +30,14 @@ public sealed class LiveLimitPoller(Func<LimitSlot, CancellationToken, Task<Live
             foreach (var slot in slots)
             {
                 if (!states.TryGetValue(slot, out var state)) states[slot] = state = new();
+                state.Eligible = now;
                 if (state.InFlight || !LiveLimits.Due(state.Last, state.RetryAt, now, live(slot), open, opened)) continue;
                 state.Last = now;
                 state.InFlight = true;
                 started.Add(slot);
             }
+            foreach (var (slot, state) in states.ToArray())
+                if (!state.InFlight && Math.Abs((now - state.Eligible).TotalSeconds) > LiveLimits.IdleInterval) states.Remove(slot);
         }
         return Task.WhenAll(started.Select(slot => Finish(slot, token, deliver)));
     }

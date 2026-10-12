@@ -57,10 +57,11 @@ private final class ClineLogReader: TokenLogReader {
             let manifestURL = folder.appendingPathComponent("\(folder.lastPathComponent).json")
             let current = [ClineLogStamp(url), ClineLogStamp(manifestURL)]
             guard let messagesStamp = current[0], messagesStamp != stamp || current[1] != manifestStamp else { return }
-            stamp = messagesStamp
-            manifestStamp = current[1]
+            // Stamps are kept only after a successful parse, so a file caught mid-write is read again on the next sample.
             guard let messages = Self.messages(url) else { return }
             let manifest = Self.object(manifestURL, limit: 1_048_576)
+            stamp = messagesStamp
+            manifestStamp = current[1] == nil || manifest != nil ? current[1] : nil
             cwd = Self.path(manifest?["cwd"]) ?? cwd
             summary = ClineLogSummary(cli: messages, manifest: manifest)
             return
@@ -68,9 +69,9 @@ private final class ClineLogReader: TokenLogReader {
         guard let current = ClineLogStamp(url), current != stamp else { return }
         // A large task rewritten while it streams is summarised at most every 5 s.
         if current.size > 8_388_608, let parsedAt, now.timeIntervalSince(parsedAt) < 5 { return }
-        stamp = current
         parsedAt = now
         guard let messages = Self.messages(url) else { return }
+        stamp = current
         summary = ClineLogSummary(task: messages)
         if summary?.model == nil { readTaskMetadata(folder) }
         if (cwd == nil && !cwdSearched) || (summary?.model == nil && metadataModel == nil) { readHistory(folder) }

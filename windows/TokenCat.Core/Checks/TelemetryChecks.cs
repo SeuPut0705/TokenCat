@@ -117,7 +117,7 @@ public static class TelemetryChecks
         foreach (var service in new[] { "arbitrary-codex-service", "arbitrary codex service", "Codex Desktop arbitrary", string.Concat(Enumerable.Repeat("codex", 100)), "claude-code" })
             unknownService.Ingest(Metric(serviceTBT, service: service), "/v1/metrics");
         check(unknownService.Snapshot().Count == 0, "Unknown or cross-provider service was classified by a metric name alone");
-        check(unknownService.Diagnostics().Entries.Any(entry => entry.ResourceServiceName == "arbitrary codex service" && entry.MetricName == serviceTBT && !entry.Recognized),
+        check(unknownService.Diagnostics().Entries.Any(entry => entry.ResourceServiceName == TelemetryDecoder.UnknownMetadata && entry.MetricName == serviceTBT && !entry.Recognized),
               "Diagnostics lost the rejected resource service/name pair");
 
         var diagnostics = new TelemetryCollector();
@@ -133,17 +133,24 @@ public static class TelemetryChecks
               "Signal diagnostic counts confused rejected batches or decoded readings");
         check(diagnosticSnapshot.Entries.Any(entry => entry is { ResourceServiceName: "Codex Desktop", MetricName: serviceTBT, Unit: "ms", Recognized: true })
               && diagnosticSnapshot.Entries.Any(entry => entry is { Unit: "s", Recognized: false })
-              && diagnosticSnapshot.Entries.Any(entry => entry is { MetricName: "unknown.metric", Recognized: false }),
+              && diagnosticSnapshot.Entries.Any(entry => entry is { MetricName: TelemetryDecoder.UnknownMetadata, Recognized: false }),
               "Diagnostics did not separate known metadata from unsupported units/names");
         var diagnosticJSON = Json(diagnosticSnapshot);
         check(!diagnosticJSON.Contains("PRIVATE") && !diagnosticJSON.Contains("output_tokens") && !diagnosticJSON.Contains("\"duration_ms\":"),
               "Diagnostic output retained event bodies or other attributes");
         const int bound = TelemetryCollector.MaximumDiagnostics;
-        for (var index = 0; index < bound + 8; index++) diagnostics.Ingest(Metric($"unknown.metric.{index}"), "/v1/metrics");
-        check(diagnostics.Diagnostics().Entries.Count == bound && diagnostics.Diagnostics().Entries[^1].MetricName == $"unknown.metric.{bound + 7}",
+        for (var index = 0; index < bound + 8; index++)
+            diagnostics.Ingest(Logs(new() { ["event.name"] = $"unknown.event.{index}" }, service: "unknown-service"), "/v1/logs");
+        check(diagnostics.Diagnostics().Entries.Count == bound && diagnostics.Diagnostics().Entries[^1].Name == $"unknown.event.{bound + 7}",
               "Diagnostic metadata did not evict entries at its memory bound");
         diagnostics.Ingest(Metric(new string('x', 1000)), "/v1/metrics");
         check(diagnostics.Diagnostics().Entries[^1].MetricName == "__invalid_metadata__", "Oversized diagnostic metadata was retained");
+        var echoed = new TelemetryCollector();
+        echoed.Ingest(Metric("person@example.com", unit: "C:/Users/person", service: "person@example.com"), "/v1/metrics");
+        var echoedJSON = Json(echoed.Diagnostics());
+        check(!echoedJSON.Contains("person") && echoed.Diagnostics().Entries.Any(entry => entry is
+                  { ResourceServiceName: TelemetryDecoder.UnknownMetadata, MetricName: TelemetryDecoder.UnknownMetadata, Unit: TelemetryDecoder.UnknownMetadata, Recognized: false }),
+              "diagnostics echo only known service, metric and unit names");
         const string iapiTBT = "codex.responses_api_engine_iapi_tbt.duration_ms";
         foreach (var reverseOrder in new[] { false, true })
         {

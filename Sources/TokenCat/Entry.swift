@@ -79,6 +79,9 @@ enum TokenCatMain {
             notificationStatus()
             return
         }
+        if CommandLine.arguments.contains("--bench-sample") {
+            exit(SampleBench.run(CommandLine.arguments))
+        }
         if CommandLine.arguments.contains("--diagnose") {
             let sampler = SystemSampler()
             _ = sampler.sample()

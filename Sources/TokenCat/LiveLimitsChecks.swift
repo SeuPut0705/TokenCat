@@ -58,6 +58,44 @@ func runLiveLimitChecks() -> [String] {
           && LiveLimits.codexLimits(["rateLimits": ["primary": NSNull(), "secondary": ["usedPercent": 12, "windowDurationMins": 300]]], at: now)
               == [TokenRateLimit(usedPercent: 12, windowMinutes: 300, resetsAt: nil, recordedAt: now, live: true)],
           "Codex windows: another limit id is ignored, a missing reset is not invented")
+    // Notifications before and between the answers, a server request reusing id 2 and a non-JSON line are all skipped.
+    let talkative = server("talkative-server", #"""
+        echo '{"jsonrpc":"2.0","method":"remoteControl/status/changed","params":{"status":"off"}}'
+        read -r line
+        echo '{"jsonrpc":"2.0","id":1,"result":{"userAgent":"fake"}}'
+        read -r line
+        read -r line
+        echo '{"jsonrpc":"2.0","method":"account/updated","params":{"authMode":"chatgpt"}}'
+        echo '{"jsonrpc":"2.0","id":2,"method":"item/tool/requestUserInput","params":{}}'
+        echo 'not json'
+        echo '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1791580427},"secondary":{"usedPercent":12.5,"windowDurationMins":300,"resetsAt":1791500000},"credits":{"hasCredits":false},"planType":"pro","rateLimitReachedType":null}}}'
+        exec sleep 30
+        """#)
+    let before = Date()
+    let chatty = LiveLimits.readCodex(executable: talkative, timeout: 5) ?? []
+    let weekly = chatty.first { $0.windowMinutes == 10_080 }
+    check(chatty.count == 2 && weekly?.usedPercent == 31 && chatty.contains { $0.windowMinutes == 300 && $0.usedPercent == 12.5 }
+          && weekly?.resetsAt == Date(timeIntervalSince1970: 1_791_580_427) && (weekly?.recordedAt ?? .distantPast) >= before.addingTimeInterval(-1),
+          "codex app-server windows are not read past interleaved notifications and a server request with the same id")
+    let refused = server("refused-server", #"""
+        read -r line
+        echo '{"jsonrpc":"2.0","id":1,"result":{}}'
+        read -r line
+        read -r line
+        echo '{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"not signed in"}}'
+        exec sleep 30
+        """#)
+    let otherLimit = server("other-server", #"""
+        read -r line
+        echo '{"jsonrpc":"2.0","id":1,"result":{}}'
+        read -r line
+        read -r line
+        echo '{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"other","primary":{"usedPercent":90}}}}'
+        exec sleep 30
+        """#)
+    check(LiveLimits.readCodex(executable: refused, timeout: 5) == nil && LiveLimits.readCodex(executable: otherLimit, timeout: 5) == nil
+          && LiveLimits.readCodex(executable: folder.appendingPathComponent("missing"), timeout: 5) == nil,
+          "a JSON-RPC error, another limit or a missing executable reads as an answer")
 
     // Claude: the saved credential, the expiry margin and a refused token; nothing here goes online.
     let credential = LiveLimits.claudeCredential(Data(#"{"claudeAiOauth":{"accessToken":"test-token","refreshToken":"r","expiresAt":1790000600000}}"#.utf8))
@@ -215,6 +253,28 @@ func runLiveLimitChecks() -> [String] {
           && snapshot[oneSlot]?.dropFirst().allSatisfy { $0.0 == [7, 8] && !$0.1 } == true
           && delivered[oneSlot] == 11 && delivered[twoSlot] == 22 && delivered[nilSlot] == 33,
           "live poller mixes account slots, per-token rejection sets, attributed numbers, or per-slot backoff")
+    // Turned off (or paused, or stopped) while a read runs: it finishes without being delivered. A slot that left the
+    // eligible set keeps its cadence for the retention, then its state and refused token hashes are forgotten.
+    let quiet = LiveLimitPoller { slot, _, _ in
+        Thread.sleep(forTimeInterval: 0.05)
+        var outcome = LiveLimits.Outcome()
+        outcome.claude = ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: slot == oneSlot ? 11 : 22, resetsAt: at(300), receivedAt: now, live: true))
+        return outcome
+    }
+    var quietDelivered: [LimitSlot] = []
+    func quietTick(_ offset: TimeInterval, _ slots: Set<LimitSlot>) {
+        quiet.tick(now: at(offset), open: false, slots: slots, live: { _ in false }) { if let slot = $0.slot { quietDelivered.append(slot) } }
+    }
+    quietTick(0, [oneSlot])
+    quiet.cancel()
+    RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+    check(quietDelivered.isEmpty, "a live read finishing after live usage limits were turned off is delivered")
+    quietTick(1, [twoSlot])
+    RunLoop.main.run(until: Date().addingTimeInterval(0.4))
+    let kept = quiet.trackedSlots
+    quietTick(1 + LiveLimitPoller.retention, [])
+    check(quietDelivered == [twoSlot] && kept == [oneSlot, twoSlot] && quiet.trackedSlots.isEmpty,
+          "live poller keeps the state of slots no longer eligible past the retention, or drops it too early")
 
     // Codex merge: a live read overrides older records of its window and keeps "실시간" against a later equal record.
     let reset5d = at(5 * 86_400 + 2 * 3_600 + 30)

@@ -277,8 +277,9 @@ final class KimiCodeLogReader: TokenLogReader {
     /// `state.json` is rewritten whole on every metadata change (title, agents); read again when its file, size or time changed.
     private func readState() {
         guard let current = KimiLog.stamp(stateURL), current != stateStamp else { return }
-        stateStamp = current
+        // Kept only after a successful parse: a state.json caught mid-rewrite is read again on the next sample.
         guard let state = KimiLog.object(stateURL) else { return }
+        stateStamp = current
         cwd = LogFields.text(state["cwd"]) ?? LogFields.text(state["workDir"]) ?? cwd
         title = KimiLog.title(state)
         let agent = (state["agents"] as? [String: Any])?[agentID] as? [String: Any]
@@ -392,7 +393,7 @@ final class KimiCLILogReader: TokenLogReader {
     private var context: TokenContextUsage?
     /// `StatusUpdate`s already counted in the current step, by `message_id`: a step makes one model call, and some
     /// OpenAI-compatible gateways reuse one response id for every call, so ids are only compared within a step.
-    private var counted = Set<String>()
+    private var counted = RecentKeys<Void>(limit: 1_024)
     /// Open `QuestionRequest`s by tool call; its tool result answers it.
     private var questions: [String: String] = [:]
     private var workDirsStamp: String?
@@ -527,8 +528,7 @@ final class KimiCLILogReader: TokenLogReader {
             }
             guard let usage = payload?["token_usage"] as? [String: Any], let output = LogFields.count(usage["output"]) else { break }
             if let id = LogFields.text(payload?["message_id"]) {
-                guard counted.insert(id).inserted else { break }
-                if counted.count > 1_024 { counted.removeAll() }
+                guard counted.insert(id) else { break }
             }
             if turn.lastActivity == nil { turn.resume(at: at) }
             turn.addOutput(output, at: at)

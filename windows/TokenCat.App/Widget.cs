@@ -173,7 +173,10 @@ sealed class WidgetView : FrameworkElement
     int percent = 100;
     (RunnerCharacter Character, RunnerPose Pose, int Frame, int? Fx) runner = (RunnerCharacter.Cat, RunnerPose.Sit, 0, null);
     BitmapSource? sprite;
-    bool spriteDark;
+    bool spriteLight;
+    readonly Dictionary<(int Size, RunnerCharacter Character, RunnerPose Pose, int Frame, int? Fx, bool Light), BitmapSource> sprites = [];
+    Pen? outline;
+    (Color Color, double Width) outlineKey;
     Color label, secondary, tertiary;
 
     /// Device pixels per point.
@@ -209,7 +212,7 @@ sealed class WidgetView : FrameworkElement
         new LeafPeer(this, System.Windows.Automation.Peers.AutomationControlType.Text);
 
     /// Called on the tray animator's frames: the widget shares its one timer. A hidden character only keeps the frame.
-    /// ponytail: a frame redraws the cells' text too (cheap at this size); move the runner to its own DrawingVisual if it shows in a profile.
+    /// Text layouts, glyph drawings and sprite bitmaps survive frame redraws.
     public void UpdateRunner(RunnerCharacter character, RunnerPose pose, int frame, int? fx)
     {
         if (runner == (character, pose, frame, fx)) return;
@@ -244,7 +247,7 @@ sealed class WidgetView : FrameworkElement
     }
 
     /// The label colour at the bar's alphas (NSColor.withAlphaComponent replaces the alpha).
-    static Color Tone(double alpha) => Color.FromArgb((byte)Math.Round(255 * alpha), Theme.Label.R, Theme.Label.G, Theme.Label.B);
+    static Color Tone(double alpha) => Theme.HighContrast ? Theme.Label : Color.FromArgb((byte)Math.Round(255 * alpha), Theme.Label.R, Theme.Label.G, Theme.Label.B);
 
     static int Group(MetricID id) => id switch { MetricID.Network => 1, MetricID.Ai or MetricID.AverageSpeed or MetricID.WeeklyLimit => 2, _ => 0 };
 
@@ -283,6 +286,16 @@ sealed class WidgetView : FrameworkElement
             }
             x += cell.Width;
         }
+        // Opaque backing plus a one-device-pixel edge keeps either app theme readable on either wallpaper.
+        var edge = (Tone(0.26), 1 / PixelsPerPoint);
+        if (outline is null || outlineKey != edge)
+        {
+            outlineKey = edge;
+            outline = new Pen(Theme.Brush(edge.Item1), edge.Item2);
+            outline.Freeze();
+        }
+        var half = edge.Item2 / 2;
+        context.DrawRoundedRectangle(null, outline, new Rect(half, half, PointSize.Width - 2 * half, PointSize.Height - 2 * half), 8, 8);
         context.Pop();
     }
 
@@ -292,13 +305,20 @@ sealed class WidgetView : FrameworkElement
     void DrawRunner(DrawingContext context, Rect box)
     {
         var art = (int)Math.Ceiling(PixelsPerPoint);
-        if (sprite is null || spriteDark != Theme.Dark)
+        var light = Theme.HighContrast ? Theme.Background.R + Theme.Background.G + Theme.Background.B > 382 : !Theme.Dark;
+        if (sprite is null || spriteLight != light)
         {
             var size = RunnerManifest.CellWidth * art;
-            sprite = BitmapSource.Create(size, size, 96, 96, PixelFormats.Bgra32, null,
-                TrayIcon.Pixels(size, runner.Character, runner.Pose, runner.Frame, runner.Fx, StateDot.None, !Theme.Dark), size * 4);
-            sprite.Freeze();
-            spriteDark = Theme.Dark;
+            var key = (size, runner.Character, runner.Pose, runner.Frame, runner.Fx, light);
+            if (!sprites.TryGetValue(key, out sprite))
+            {
+                sprite = BitmapSource.Create(size, size, 96, 96, PixelFormats.Bgra32, null,
+                    TrayIcon.Pixels(size, runner.Character, runner.Pose, runner.Frame, runner.Fx, StateDot.None, light), size * 4);
+                sprite.Freeze();
+                if (sprites.Count >= 64) sprites.Clear();
+                sprites[key] = sprite;
+            }
+            spriteLight = light;
         }
         SpriteScaling = art == PixelsPerPoint ? BitmapScalingMode.NearestNeighbor : BitmapScalingMode.HighQuality;
         // A drawing group carries its own scaling mode; the view's stays nearest-neighbour.
@@ -398,11 +418,7 @@ sealed class WidgetView : FrameworkElement
         var side = StatusBarContent.MarkWidth(state);
         if (side == 0 || StateGlyphKind.From(state) is not { } kind) return;
         var box = new Rect(Snap(center.X - side / 2), Snap(center.Y - side / 2), side, side);
-        var shape = GlyphView.Shape(kind, box, out var stroke);
-        var brush = Theme.Brush(kind == StateGlyphKind.Waiting ? secondary : Theme.GlyphColor(kind));
-        if (stroke is not null) { stroke.Brush = brush; context.DrawGeometry(null, stroke, shape); }
-        else context.DrawGeometry(brush, null, shape);
-        if (kind == StateGlyphKind.Input) context.DrawGeometry(Brushes.Black, null, GlyphView.InputMark(box));
+        context.DrawDrawing(GlyphView.Drawing(kind, box, kind == StateGlyphKind.Waiting ? secondary : Theme.GlyphColor(kind), PixelsPerPoint));
     }
 
     /// Fixed arrow column, numbers right-aligned to one column, units smaller and secondary.
@@ -444,8 +460,9 @@ sealed class WidgetView : FrameworkElement
     /// very large value shrinks to fit.
     void Draw(DrawingContext context, TextRun[] runs, double centerY, Rect rect, TextAlignment alignment = TextAlignment.Center, double? capSize = null)
     {
-        runs = [.. runs.Where(run => run.Text.Length > 0)];
-        if (runs.Length == 0) return;
+        var hasText = false;
+        foreach (var run in runs) if (run.Text.Length > 0) { hasText = true; break; }
+        if (!hasText) return;
         var text = Format(runs, 1);
         var fit = 1.0;
         if (text.WidthIncludingTrailingWhitespace > rect.Width && rect.Width > 0)
@@ -460,17 +477,28 @@ sealed class WidgetView : FrameworkElement
         context.DrawText(text, new Point(left, centerY + cap / 2 - text.Baseline));
     }
 
+    readonly record struct TextKey(TextRun First, TextRun Second, int Count, double Fit, double Pixels);
+    readonly Dictionary<TextKey, FormattedText> textLayouts = [];
+
     FormattedText Format(TextRun[] runs, double fit)
     {
+        var key = new TextKey(runs[0], runs.Length > 1 ? runs[1] : default, runs.Length, fit, PixelsPerPoint);
+        if (runs.Length <= 2 && textLayouts.TryGetValue(key, out var cached)) return cached;
         var text = new FormattedText(string.Concat(runs.Select(run => run.Text)), CultureInfo.InvariantCulture, FlowDirection.LeftToRight, Face,
             Math.Max(7, runs[0].Size * fit), Theme.Brush(runs[0].Color), PixelsPerPoint);
         var start = 0;
         foreach (var run in runs)
         {
+            if (run.Text.Length == 0) continue;
             text.SetFontSize(Math.Max(7, run.Size * fit), start, run.Text.Length);
             text.SetFontWeight(run.Weight, start, run.Text.Length);
             text.SetForegroundBrush(Theme.Brush(run.Color), start, run.Text.Length);
             start += run.Text.Length;
+        }
+        if (runs.Length <= 2)
+        {
+            if (textLayouts.Count >= 128) textLayouts.Clear();
+            textLayouts[key] = text;
         }
         return text;
     }

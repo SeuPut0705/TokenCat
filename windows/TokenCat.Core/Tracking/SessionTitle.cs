@@ -66,15 +66,28 @@ public static class SessionTitle
 /// CodexThreadNames (SessionTitle.swift): `<CODEX_HOME>\session_index.jsonl`, append-only `{id, thread_name, updated_at}`
 /// lines written on every rename or generated name (the rollout's `thread_name_updated` event is not persisted). The newest
 /// non-empty name of an id wins, as in Codex's own lookup; a rewrite that removes names (the file shrinks or is replaced) is
-/// read again. One index per file, shared by every rollout reader of that Codex home.
+/// read again. One index per file, shared by every rollout reader of that Codex home; the tracker refreshes each once a sample.
+/// Names of threads no reader asked for within `Retention` are dropped every `PruneInterval`, so the index does not grow with
+/// every thread ever named; a pruned thread whose rollout returns is found by reading the index again on the next refresh.
 public sealed class CodexThreadNames
 {
+    public const double PruneInterval = 60, Retention = 600;
     static readonly object Gate = new();
     static readonly Dictionary<string, CodexThreadNames> Indexes = [];
-    readonly LogLineTail tail;
+    readonly string path;
+    LogLineTail tail;
     readonly Dictionary<string, string> names = [];
+    /// Thread ids readers asked for, with the newest time they asked.
+    readonly Dictionary<string, DateTimeOffset> asked = [];
+    DateTimeOffset? lastPrune;
+    /// A prune dropped names since the index was last read whole, and a thread asked for the first time may be one of them.
+    bool pruned, rescan;
 
-    CodexThreadNames(string path) => tail = new LogLineTail(path);
+    CodexThreadNames(string path)
+    {
+        this.path = path;
+        tail = new LogLineTail(path);
+    }
 
     /// The index beside the `sessions` folder holding a rollout (`sessions\YYYY\MM\DD\rollout-….jsonl`).
     public static CodexThreadNames ForRollout(string rollout)
@@ -91,23 +104,56 @@ public sealed class CodexThreadNames
         }
     }
 
+    /// Names held now (the bound C4b checks).
+    internal int Count { get { lock (Gate) return names.Count; } }
+
     /// Reads lines appended since the last call; a stat when nothing changed.
-    public void Refresh()
+    public void Refresh(DateTimeOffset now)
     {
         lock (Gate)
         {
-            tail.Read(4_194_304, names.Clear, line =>
+            if (lastPrune is not { } last || Math.Abs((now - last).TotalSeconds) >= PruneInterval)
             {
-                if (Json.Parse(line) is not { ValueKind: JsonValueKind.Object } record || LogFields.Text(record.Field("id")) is not { } id
-                    || SessionTitle.Clean(record.Field("thread_name")) is not { } name) return;
-                names[id.ToLowerInvariant()] = name;
-            });
+                lastPrune = now;
+                foreach (var (id, at) in asked.ToArray())
+                    if ((now - at).TotalSeconds > Retention) asked.Remove(id);
+                foreach (var id in names.Keys.Where(id => !asked.ContainsKey(id)).ToArray())
+                {
+                    names.Remove(id);
+                    pruned = true;
+                }
+            }
+            if (rescan)
+            {
+                // Read whole again, keeping only what readers ask for, so the next prune drops nothing.
+                rescan = pruned = false;
+                tail = new LogLineTail(path);
+                names.Clear();
+                Read(keep: asked.ContainsKey);
+                return;
+            }
+            Read(keep: null);
         }
     }
 
-    public string? Name(string? thread)
+    void Read(Func<string, bool>? keep) =>
+        tail.Read(4_194_304, names.Clear, line =>
+        {
+            if (Json.Parse(line) is not { ValueKind: JsonValueKind.Object } record || LogFields.Text(record.Field("id")) is not { } id
+                || SessionTitle.Clean(record.Field("thread_name")) is not { } name) return;
+            id = id.ToLowerInvariant();
+            if (keep is null || keep(id)) names[id] = name;
+        });
+
+    public string? Name(string? thread, DateTimeOffset now)
     {
         if (thread is null) return null;
-        lock (Gate) return names.GetValueOrDefault(thread.ToLowerInvariant());
+        var id = thread.ToLowerInvariant();
+        lock (Gate)
+        {
+            if (!asked.ContainsKey(id) && pruned && !names.ContainsKey(id)) rescan = true;
+            asked[id] = now;
+            return names.GetValueOrDefault(id);
+        }
     }
 }

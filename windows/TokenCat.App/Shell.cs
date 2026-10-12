@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Threading;
 using Microsoft.Win32;
 using static TokenCat.Lang;
+using Color = System.Windows.Media.Color;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
 
@@ -15,8 +16,6 @@ namespace TokenCat;
 sealed class Shell
 {
     public const string OnboardingSeenKey = "onboardingSeen";
-    /// The first-run balloon about the ^ overflow (§4.6) is shown once.
-    const string TrayTipKey = "trayTipShown";
 
     readonly Application app;
     readonly Dispatcher dispatcher = Dispatcher.CurrentDispatcher;
@@ -31,6 +30,8 @@ sealed class Shell
     readonly DispatcherTimer frameTimer = new(DispatcherPriority.Render), replanTimer = new();
     readonly AttentionTracker attention = new();
     readonly Flyout flyout;
+    bool highContrast = Theme.HighContrast, materials = Theme.Materials;
+    (Color, Color, Color, Color, Color, Color, Color, Color) highContrastPalette = SystemPalette();
     readonly Widget widget = new();
     readonly DashboardActions actions;
     readonly List<string> playedContent = [];
@@ -138,14 +139,8 @@ sealed class Shell
         updater.Start(preferences.AutoCheckUpdates);
         Publish(monitor.Current);
 
-        if (SettingsStore.Shared.Get<bool?>(TrayTipKey) != true)
-        {
-            SettingsStore.Shared.Set(TrayTipKey, true);
-            balloonGroup = null;
-            tray.Balloon("TokenCat", Loc("TokenCat이 알림 영역에 있습니다. 보이지 않으면 ^를 열고 고양이를 작업 표시줄로 끌어 놓으세요.",
-                "TokenCat is in the notification area. If you don't see it, open ^ and drag the cat onto the taskbar"));
-            if (SettingsStore.Shared.Get<bool?>(OnboardingSeenKey) != true) OpenAtCorner();
-        }
+        // The first-run hint belongs in the welcome card, not an unsolicited notification (all alerts default off).
+        if (SettingsStore.Shared.Get<bool?>(OnboardingSeenKey) != true) OpenAtCorner();
     }
 
     /// A second launch (payload-free hand-off) opens the dashboard at the primary work area's corner on the taskbar's side
@@ -161,12 +156,20 @@ sealed class Shell
     internal static Drawing.Point Corner(Drawing.Rectangle area, Drawing.Rectangle bounds) =>
         new(area.Left > bounds.Left ? area.Left : area.Right, area.Top > bounds.Top ? area.Top : area.Bottom);
 
+    static (Color, Color, Color, Color, Color, Color, Color, Color) SystemPalette() =>
+        (SystemColors.WindowColor, SystemColors.WindowTextColor, SystemColors.ControlColor, SystemColors.GrayTextColor,
+            SystemColors.HighlightColor, SystemColors.HighlightTextColor, SystemColors.HotTrackColor, SystemColors.ControlDarkColor);
+
     void OnPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e) => dispatcher.BeginInvoke(() =>
     {
         var dark = !Theme.AppsUseLightTheme();
-        if (dark != Theme.Dark)
+        var palette = SystemPalette();
+        if (dark != Theme.Dark || highContrast != Theme.HighContrast || materials != Theme.Materials || Theme.HighContrast && palette != highContrastPalette)
         {
             Theme.Dark = dark;
+            highContrast = Theme.HighContrast;
+            materials = Theme.Materials;
+            highContrastPalette = palette;
             // WinForms menus read the mode once per call; Theme.Dark is already set, so the re-entrant change skips this.
             Forms.Application.SetColorMode(Forms.SystemColorMode.System);
             flyout.Rebuild(actions);

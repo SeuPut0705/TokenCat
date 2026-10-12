@@ -169,7 +169,7 @@ struct SmallBorderedButton: View {
     @Environment(\.tokenCatSnapshot) private var snapshot
     var body: some View {
         if snapshot {
-            Text(title).font(.system(size: 11)).padding(.horizontal, 8).frame(height: 20)
+            Text(title).font(TCFont.meta).padding(.horizontal, 8).frame(height: 20)
                 .background(TCColor.primary(0.1), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .fixedSize()
         } else {
@@ -263,7 +263,7 @@ struct DashboardView: View {
                                                                               restart: model.telemetryRestartNeeded))
                 .container()
                 .padding(.top, DashboardLayout.block)
-            SessionsHeader(model: model).padding(.top, DashboardLayout.block)
+            SessionsHeader(showsSpeedColumn: model.sessions.showsSpeedColumn).padding(.top, DashboardLayout.block)
             SessionList(model: model, scrolls: scrollsSessions, presentation: presentation, selection: selection, detail: detail)
                 .padding(.top, DashboardLayout.titleGap)
             SystemArea(system: model.system, cpuHistory: model.cpuHistory, hasSample: model.hasSample, open: actions.activityMonitor)
@@ -339,7 +339,7 @@ struct DashboardHeader: View {
             .accessibilityValue(header(spoken: true).spoken)
             .accessibilityAddTraits(.updatesFrequently)
             Spacer(minLength: 8)
-            Button(action: actions.settings) { Image(systemName: "gearshape").font(.system(size: 14)).frame(width: 24, height: 24) }
+            Button(action: actions.settings) { Image(systemName: "gearshape").font(TCFont.body).frame(width: 24, height: 24) }
                 .buttonStyle(HoverButtonStyle(circle: true))
                 .help(loc("설정 (⌘,)", "Settings (⌘,)")).accessibilityLabel(loc("설정", "Settings"))
             menu.padding(.leading, 4)
@@ -348,6 +348,9 @@ struct DashboardHeader: View {
         .onAppear(perform: scheduleBlink)
         .onChange(of: model.popoverShownAt) { _ in scheduleBlink() }
         .onDisappear { blink?.cancel(); blinking = false }
+        .onChange(of: reduceMotion) { reduced in
+            if reduced { blink?.cancel(); blinking = false }
+        }
     }
 
     private func header(spoken: Bool) -> HeaderStatus {
@@ -362,7 +365,7 @@ struct DashboardHeader: View {
     }
 
     @ViewBuilder private var menu: some View {
-        let icon = Image(systemName: "ellipsis.circle").font(.system(size: 14))
+        let icon = Image(systemName: "ellipsis.circle").font(TCFont.body)
         if interactive {
             Menu {
                 if presentation == .popover { Button(loc("패널로 분리", "Detach as Panel"), action: actions.detach) }
@@ -470,7 +473,7 @@ struct OnboardingCard: View {
                     .frame(width: 12, height: 11).accessibilityHidden(true)
                 Text(loc("TokenCat이 하는 일", "What TokenCat does")).font(TCFont.title).accessibilityAddTraits(.isHeader)
                 Spacer(minLength: 6)
-                Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).frame(width: 18, height: 18) }
+                Button(action: dismiss) { Image(systemName: "xmark").font(TCFont.micro).frame(width: 18, height: 18) }
                     .buttonStyle(HoverButtonStyle(circle: true))
                     .help(loc("안내 닫기", "Close welcome")).accessibilityLabel(loc("안내 닫기", "Close welcome"))
             }
@@ -756,7 +759,7 @@ private struct SpeedHeadlineView: View {
                     value
                 }
             } else {
-                Text(loc("속도 실측 없음", "No measured speed")).font(TCFont.meta).toneTertiary().lineLimit(1).fixedSize()
+                Text(loc("속도 실측 없음", "No measured speed")).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize()
             }
         }
         .help(headline.help)
@@ -939,7 +942,7 @@ struct UsageLimitAccount: View {
     private var provenance: some View {
         HStack(spacing: 4) {
             if limit.allLive(now: now) { Circle().fill(TCColor.activity).frame(width: 5, height: 5) }
-            Text(limit.provenance(now: now)).font(TCFont.metaMono).foregroundColor(TCColor.textTertiary(contrast: high))
+            Text(limit.provenance(now: now)).font(TCFont.metaMono).foregroundColor(TCColor.textSecondary(contrast: high))
                 .lineLimit(1).truncationMode(.tail)
         }
         .frame(height: 13)
@@ -969,7 +972,7 @@ struct UsageLimitWindow: View {
             .lineLimit(1).fixedSize().frame(width: UsageLimitsCard.Column.percent, alignment: .trailing)
             HStack(spacing: 3) {
                 if let reset = line.reset(now: now) {
-                    if !line.expired { Image(systemName: "arrow.clockwise").font(.system(size: 8, weight: .semibold)).foregroundColor(tertiary) }
+                    if !line.expired { Image(systemName: "arrow.clockwise").font(TCFont.micro).imageScale(.small).foregroundColor(tertiary) }
                     Text(reset).font(TCFont.metaMono).foregroundColor(secondary).lineLimit(1).fixedSize()
                 }
             }
@@ -983,7 +986,7 @@ struct UsageLimitWindow: View {
 
 /// The list's title; its one disclosure control is the last row of the list (`SessionListEntry.toggle`).
 struct SessionsHeader: View {
-    @ObservedObject var model: DashboardModel
+    var showsSpeedColumn: Bool
     static var keyboardHint: String {
         loc("↑↓ 이동 · Return 상세 · ⌘C ID 복사 · ⌘⇧C 재개 명령 복사", "↑↓ move · Return details · ⌘C copy ID · ⌘⇧C copy resume command")
     }
@@ -991,7 +994,7 @@ struct SessionsHeader: View {
     var body: some View {
         Text(loc("세션", "Sessions")).font(TCFont.title).accessibilityAddTraits(.isHeader)
             .help(Self.keyboardHint
-                  + (model.sessions.showsSpeedColumn ? "" : loc("\n속도 실측 없음 · 로그 시각으로 추정하지 않습니다",
+                  + (showsSpeedColumn ? "" : loc("\n속도 실측 없음 · 로그 시각으로 추정하지 않습니다",
                                                                 "\nNo measured speed · not estimated from log times")))
             .frame(height: 18)
     }
@@ -1034,6 +1037,8 @@ struct SessionList: View {
     @State private var menuTracking = false
     /// While the pointer is over the list or a row menu is open, blocks keep this order (S-8).
     @State private var frozenOrder: [String]?
+    /// Updated only for a new presentation or freeze order, never for selection, focus or detail state.
+    @State private var frozenList: SessionListModel?
     @FocusState private var keyboardFocus: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.tokenCatHighContrast) private var high
@@ -1048,7 +1053,7 @@ struct SessionList: View {
     }
 
     var body: some View {
-        let list = frozenOrder.map { model.sessions.reordered($0) } ?? model.sessions
+        let list = frozenList ?? model.sessions
         Group {
             if model.tokensSampledAt == nil {
                 SkeletonRows()
@@ -1059,6 +1064,9 @@ struct SessionList: View {
             }
         }
         .container()
+        .onReceive(model.$sessions) { sessions in
+            if let order = frozenOrder { frozenList = sessions.reordered(order) }
+        }
     }
 
     private func detailExtra(_ list: SessionListModel) -> CGFloat {
@@ -1082,7 +1090,7 @@ struct SessionList: View {
                             viewportFloor = 0
                             // A focused group folded into "이전" opens that section so the scroll can reach it.
                             showOlder = focus.flatMap { id in model.sessions.blocks.first { $0.id == id }?.older } ?? false
-                            if frozenOrder != nil { frozenOrder = model.sessions.blocks.map(\.id) }
+                            if frozenOrder != nil { setFrozenOrder(model.sessions.blocks.map(\.id)) }
                             // The closing row expands in place, so the rows it opened follow where the reader is; folding
                             // goes back to the top.
                             let anchor = focus ?? (model.sessionsExpanded ? nil : "session-list-top")
@@ -1098,6 +1106,12 @@ struct SessionList: View {
                             guard let id else { return }
                             DispatchQueue.main.async { proxy.scrollTo("detail:" + id) }
                         }
+                }
+            } else if presentation == .panel {
+                // A panel snapshot uses the actual remaining viewport, just like the interactive scroll surface.
+                GeometryReader { geometry in
+                    content(list, overflows: false).fixedSize(horizontal: false, vertical: true)
+                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .top).clipped()
                 }
             } else {
                 // ImageRenderer cannot rasterize AppKit's scroll surface; export the same viewport.
@@ -1241,7 +1255,7 @@ struct SessionList: View {
     }
 
     private func unfreeze() {
-        frozenOrder = nil
+        setFrozenOrder(nil)
         pointerInside = false
         menuTracking = false
     }
@@ -1297,10 +1311,16 @@ struct SessionList: View {
     private func updateFreeze() {
         let freeze = scrolls && (pointerInside || menuTracking)
         if freeze, frozenOrder == nil {
-            frozenOrder = model.sessions.blocks.map(\.id)
+            setFrozenOrder(model.sessions.blocks.map(\.id))
         } else if !freeze, frozenOrder != nil {
-            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { frozenOrder = nil }
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { setFrozenOrder(nil) }
         }
+    }
+
+    private func setFrozenOrder(_ order: [String]?) {
+        guard order != frozenOrder else { return }
+        frozenOrder = order
+        frozenList = order.map { model.sessions.reordered($0) }
     }
 
     /// A notification or quick-menu request: select that group and scroll to it, once.
@@ -1308,7 +1328,7 @@ struct SessionList: View {
         guard scrolls, model.focusRequest != nil else { return }
         DispatchQueue.main.async {
             guard let id = model.consumeFocusRequest() else { return }
-            frozenOrder = nil
+            setFrozenOrder(nil)
             if !model.sessions.blocks.contains(where: { $0.id == id }) {
                 // The expand handler scrolls to `focus` and opens "이전" when the group sits there.
                 focus = id
@@ -1427,7 +1447,7 @@ private struct EmptySessions: View {
         }
         .frame(maxWidth: .infinity, minHeight: 120)
         .padding(.vertical, DashboardLayout.insetVertical)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -1647,7 +1667,7 @@ struct LiveSessionRow: View {
             // The state's words lead line 2 in primary (the glyph carries the colour), then client and model.
             HStack(alignment: .firstTextBaseline, spacing: 0) {
                 Text(SessionPresentation.chipText(item.state, reading)).font(TCFont.metaMedium).lineLimit(1).fixedSize()
-                Text(" · " + SessionPresentation.clientLine(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.middle)
+                clientMetadata
                 Spacer(minLength: 8)
                 Text(trailing).font(TCFont.metaMono).lineLimit(1).fixedSize()
                     .foregroundStyle(item.state == .input || item.state == .retrying ? AnyShapeStyle(HierarchicalShapeStyle.primary)
@@ -1674,6 +1694,8 @@ struct LiveSessionRow: View {
         .help(RowText.help(reading, context))
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(context.detailID == item.id ? loc("상세를 닫습니다", "Closes details") : loc("상세를 엽니다", "Opens details"))
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: item.state))
         .accessibilityValue(spokenValue(contextSlot, SessionPresentation.speed(reading, now: now)))
         .accessibilityAction { context.tap(item.id) }
@@ -1688,6 +1710,20 @@ struct LiveSessionRow: View {
                 SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { loc("턴 경과 \($0)", "Turn elapsed \($0)") },
                 RowText.output(reading), RowText.children(childCount), contextSlot?.spoken,
                 speed.known || item.state.expectsSpeed ? speed.spoken : nil].compactMap { $0 }.joined(separator: ", ")
+    }
+
+    /// Keep the client identifiable; only the project and model may truncate in a dense state line.
+    private var clientMetadata: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            if let project = SessionPresentation.rowProject(reading) {
+                Text(" · " + project).lineLimit(1).truncationMode(.tail)
+            }
+            Text(" · " + reading.clientTitle).fixedSize().layoutPriority(1)
+            Text(" · " + [reading.model ?? loc("모델 기록 대기", "waiting for model"), SessionPresentation.effortLabel(reading)]
+                .compactMap { $0 }.joined(separator: " · "))
+                .lineLimit(1).truncationMode(.middle)
+        }
+        .font(TCFont.meta).toneSecondary()
     }
 
     /// Starts at the glyph column: the last-record dot hangs there, its text sits on the text column.
@@ -1773,7 +1809,7 @@ struct IdleSessionRow: View {
                 names(client: true, id: context.showsID(reading), word: true)
                 names(client: true, id: context.showsID(reading), word: false)
                 names(client: true, id: false, word: false)
-                names(client: false, id: false, word: false)
+                names(client: true, id: false, word: false, project: false)
             }
             .padding(.leading, 6)
             .layoutPriority(1)
@@ -1796,6 +1832,8 @@ struct IdleSessionRow: View {
         .help(RowText.help(reading, context))
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(context.detailID == item.id ? loc("상세를 닫습니다", "Closes details") : loc("상세를 엽니다", "Opens details"))
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: state))
         .accessibilityValue([loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now, spoken: true), followsGroup ? trailing : nil, RowText.children(childCount), SessionPresentation.lastTurnSummary(reading),
                              SessionPresentation.speed(reading, now: now).spoken].compactMap { $0 }.joined(separator: ", "))
@@ -1803,11 +1841,11 @@ struct IdleSessionRow: View {
         .rowActions(reading)
     }
 
-    /// A titled row keeps its project beside the title; the title is cut before it.
-    private func names(client: Bool, id: Bool, word: Bool) -> some View {
+    /// Keep a titled row's project whole when it fits; long projects move to help before the client disappears.
+    private func names(client: Bool, id: Bool, word: Bool, project showsProject: Bool = true) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
             Text(SessionPresentation.rowTitle(reading)).font(TCFont.body).lineLimit(1).truncationMode(.tail).layoutPriority(2)
-            if let project = SessionPresentation.rowProject(reading) {
+            if showsProject, let project = SessionPresentation.rowProject(reading) {
                 Text(project).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize()
             }
             if client { Text(reading.clientTitle).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
@@ -1851,7 +1889,7 @@ struct ChildSessionRow: View {
                 Text(SessionPresentation.childName(reading)).lineLimit(1).truncationMode(.middle)
             }
             .font(TCFont.meta).padding(.leading, 6).layoutPriority(1)
-            if let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).fixedSize().padding(.leading, 6) }
+            if let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).truncationMode(.tail).padding(.leading, 6) }
             Spacer(minLength: 8)
             if live {
                 recordAge.frame(minWidth: 44, alignment: .trailing)
@@ -1869,6 +1907,8 @@ struct ChildSessionRow: View {
         .help(RowText.help(reading, context))
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(context.selectedID == item.id ? .isSelected : [])
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint(context.detailID == item.id ? loc("상세를 닫습니다", "Closes details") : loc("상세를 엽니다", "Opens details"))
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: item.state))
         .accessibilityValue([SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { loc("턴 경과 \($0)", "Turn elapsed \($0)") },
                              live ? RowText.output(reading) : loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now, spoken: true),
@@ -1959,6 +1999,7 @@ struct SessionDetail: View {
                         // A full UUID needs ~266 pt; it shrinks slightly (Latin only, never Korean) before it truncates.
                         Text(detail.value).font(TCFont.metaMono).lineLimit(1).minimumScaleFactor(detail.copy == nil ? 1 : 0.9)
                             .truncationMode(.middle).textSelection(.enabled)
+                            .help(detail.value)
                         if let copy = detail.copy {
                             Button { copyToPasteboard(copy) } label: { Image(systemName: "doc.on.doc").font(TCFont.meta).frame(width: 18, height: 15) }
                                 .buttonStyle(HoverButtonStyle(ring: false))
@@ -2046,22 +2087,26 @@ struct SystemArea: View {
         let widths: [CGFloat] = battery ? [58, 58, 58, 58, 84] : [72, 72, 72, 112]
         VStack(spacing: 0) {
             Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5).padding(.horizontal, -DashboardLayout.gutter)
-            HStack(alignment: .top, spacing: 12) {
-                cpu.frame(width: widths[0], alignment: .leading)
-                memory.frame(width: widths[1], alignment: .leading)
-                disk.frame(width: widths[2], alignment: .leading)
-                if battery { batteryCell.frame(width: widths[3], alignment: .leading) }
-                network.frame(width: widths[widths.count - 1], alignment: .leading)
+            Button(action: open) {
+                HStack(alignment: .top, spacing: 12) {
+                    cpu.frame(width: widths[0], alignment: .leading)
+                    memory.frame(width: widths[1], alignment: .leading)
+                    disk.frame(width: widths[2], alignment: .leading)
+                    if battery { batteryCell.frame(width: widths[3], alignment: .leading) }
+                    network.frame(width: widths[widths.count - 1], alignment: .leading)
+                }
+                .frame(height: 44, alignment: .top)
+                .padding(.horizontal, DashboardLayout.inset).padding(.vertical, 6)
+                .foregroundStyle(.primary)
+                .overlay(alignment: .topTrailing) {
+                    if hovering { Image(systemName: "arrow.up.forward").font(TCFont.micro).toneSecondary().padding(6) }
+                }
+                .contentShape(Rectangle())
+                .onHover { hovering = $0 }
             }
-            .frame(height: 44, alignment: .top)
-            .padding(.horizontal, DashboardLayout.inset).padding(.vertical, 6)
-            .background(hovering ? TCColor.hover(contrast: high) : .clear, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(alignment: .topTrailing) {
-                if hovering { Image(systemName: "arrow.up.forward").font(TCFont.micro).toneSecondary().padding(6) }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture(perform: open)
-            .onHover { hovering = $0 }
+            .buttonStyle(HoverButtonStyle())
+            .accessibilityElement(children: .combine)
+            .accessibilityHint(loc("활성 상태 보기를 엽니다", "Opens Activity Monitor"))
             .padding(.top, 4)
         }
         .help(loc("활성 상태 보기에서 자세히 보기", "Show details in Activity Monitor"))
@@ -2074,7 +2119,9 @@ struct SystemArea: View {
     private func percentText(_ value: Double?) -> Text {
         guard hasSample else { return Text("00").font(TCFont.value) + Text("%").font(TCFont.micro) }
         guard let value, value.isFinite else { return Text("—").font(TCFont.value).foregroundColor(TCColor.textTertiary(contrast: high)) }
-        return Text(String(format: "%.0f", value)).font(TCFont.value) + Text("%").font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
+        let percent = Format.percent(value)
+        return Text(String(percent.dropLast())).font(TCFont.value)
+            + Text(String(percent.suffix(1))).font(TCFont.micro).foregroundColor(TCColor.textSecondary(contrast: high))
     }
 
     /// Label 12, 2, value 16, 3, aux 11. Help is static so the tooltip does not reset every second; live values go to VoiceOver.
@@ -2095,8 +2142,8 @@ struct SystemArea: View {
         let value = hasSample ? system.cpuPercent : nil
         let peak = hasSample ? cpuHistory.suffix(30).max() : nil
         return cell("CPU", help: loc("CPU 전체 코어 사용률", "CPU usage across all cores")
-                        + (peak.map { String(format: loc("\n최근 30초 최고 %.0f%%", "\nPeak %.0f%% in the last 30 s"), $0) } ?? ""),
-                    spoken: Format.percent(value) + (peak.map { String(format: loc(", 최근 30초 최고 %.0f퍼센트", ", peak %.0f percent in the last 30 s"), $0) } ?? "")) {
+                        + (peak.map { loc("\n최근 30초 최고 \(Format.percent($0))", "\nPeak \(Format.percent($0)) in the last 30 s") } ?? ""),
+                    spoken: Format.percent(value) + (peak.map { loc(", 최근 30초 최고 \(Format.percent($0))", ", peak \(Format.percent($0)) in the last 30 s") } ?? "")) {
             percentText(value)
         } aux: {
             GeometryReader { geometry in
@@ -2313,7 +2360,7 @@ struct UpdateFooterItem: View {
 
     private func close(_ label: String) -> some View {
         Button { action(.dismiss) } label: {
-            Image(systemName: "xmark").font(.system(size: 10, weight: .semibold)).frame(width: 18, height: 18)
+            Image(systemName: "xmark").font(TCFont.micro).frame(width: 18, height: 18)
         }
         .buttonStyle(HoverButtonStyle(circle: true))
         .help(label).accessibilityLabel(label)

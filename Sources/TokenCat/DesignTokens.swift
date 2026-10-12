@@ -245,7 +245,17 @@ enum StateGlyph {
         }
     }
 
-    static func color(_ kind: Kind) -> Color { Color(nsColor: nsColor(kind)) }
+    static func color(_ kind: Kind) -> Color {
+        switch kind {
+        case .recordEvent: return TCColor.activity
+        case .tool: return TCColor.tool
+        case .working: return TCColor.working
+        case .input: return TCColor.attention
+        case .retry: return TCColor.warning
+        case .waiting, .interrupted, .unfinished: return TCColor.neutral
+        case .idle: return TCColor.idle
+        }
+    }
 
     /// Draws the glyph into a flipped (y-down) `context`. Colours resolve against the current drawing appearance.
     /// `highlighted` (open menu-bar item or menu) drops the state colour and draws the shape in the label colour;

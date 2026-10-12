@@ -103,13 +103,11 @@ public static class TelemetryHttp
             if (!found) return bytes.Length - index > 1_024 ? new HttpDecision.Response(400) : new HttpDecision.Waiting();
             var semicolon = sizeLine.IndexOf((byte)';');
             var digits = semicolon < 0 ? sizeLine : sizeLine[..semicolon];
-            if (digits.Length is < 1 or > 8) return new HttpDecision.Response(400);
-            var size = 0L;
-            foreach (var digit in digits)
-            {
-                if (!char.IsAsciiHexDigit((char)digit)) return new HttpDecision.Response(400);
-                size = size * 16 + Convert.ToInt32(((char)digit).ToString(), 16);
-            }
+            // 1–8 hex digits and nothing else (no sign, space or 0x): at most 4 GiB, bounded by `limit` below.
+            if (digits.Length is < 1 or > 8
+                || !uint.TryParse(digits, System.Globalization.NumberStyles.AllowHexSpecifier, System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+                return new HttpDecision.Response(400);
+            long size = parsed;
             if (size == 0) break;
             if (body.Count + size > limit) return new HttpDecision.Response(413);
             if (index + size + 2 > bytes.Length) return new HttpDecision.Waiting();

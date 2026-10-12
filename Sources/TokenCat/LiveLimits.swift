@@ -410,15 +410,31 @@ final class LiveLimitPoller {
     private var states: [LimitSlot: State] = [:]
     private var wasOpen = false
     private var keychainRefused = false
+    /// Bumped by `cancel`: a read started before it is finished quietly, never delivered.
+    private var generation = 0
     private let read: (LimitSlot, Set<Int>, Bool) -> LiveLimits.Outcome
+    /// A slot that left the eligible set keeps its cadence and backoff this long, so a session that stops and starts again
+    /// does not trigger an early read; after that its state (and the token hashes it refused) is forgotten.
+    static let retention: TimeInterval = 3_600
 
     /// `read` is replaced only by the self-test.
     init(read: @escaping (LimitSlot, Set<Int>, Bool) -> LiveLimits.Outcome = LiveLimits.read) { self.read = read }
+
+    /// Slots with a cadence or backoff state, for the eviction check.
+    var trackedSlots: Set<LimitSlot> { Set(states.keys) }
+
+    /// Live usage limits were turned off, paused or stopped: reads already running finish without being delivered.
+    func cancel() { generation &+= 1 }
 
     /// `live`: whether the account has a running session. `deliver` gets each successful read on the main thread.
     func tick(now: Date, open: Bool, slots: Set<LimitSlot>, live: (LimitSlot) -> Bool, deliver: @escaping (LiveLimits.Outcome) -> Void) {
         let opened = open && !wasOpen
         wasOpen = open
+        states = states.filter { slot, state in
+            slots.contains(slot) || state.inFlight
+                || (state.last.map { now.timeIntervalSince($0) < Self.retention } ?? false)
+                || (state.retryAt.map { $0 > now } ?? false)
+        }
         for accountSlot in slots {
             var state = states[accountSlot] ?? State()
             guard !state.inFlight, LiveLimits.due(last: state.last, retryAt: state.retryAt, now: now, live: live(accountSlot), open: open, opened: opened)
@@ -426,17 +442,21 @@ final class LiveLimitPoller {
             state.last = now
             state.inFlight = true
             states[accountSlot] = state
-            let rejected = state.rejected, keychain = !keychainRefused, read = read
+            let rejected = state.rejected, keychain = !keychainRefused, read = read, started = generation
             DispatchQueue.global(qos: .utility).async { [weak self] in
                 let outcome = read(accountSlot, rejected, keychain)
-                DispatchQueue.main.async { self?.finish(accountSlot, outcome, deliver) }
+                DispatchQueue.main.async { self?.finish(accountSlot, outcome, started: started, deliver) }
             }
         }
     }
 
-    private func finish(_ accountSlot: LimitSlot, _ result: LiveLimits.Outcome, _ deliver: (LiveLimits.Outcome) -> Void) {
+    private func finish(_ accountSlot: LimitSlot, _ result: LiveLimits.Outcome, started: Int, _ deliver: (LiveLimits.Outcome) -> Void) {
         var state = states[accountSlot] ?? State()
         state.inFlight = false
+        guard started == generation else {
+            states[accountSlot] = state
+            return
+        }
         state.failures = result.failed ? state.failures + 1 : 0
         // Counted from the read's start, on the clock `tick` was given.
         state.retryAt = result.failed ? (state.last ?? Date()).addingTimeInterval(UpdateThrottle.backoff(state.failures)) : nil

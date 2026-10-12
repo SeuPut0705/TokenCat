@@ -32,10 +32,10 @@ static class AppInfo
     [
         Loc("로컬 로그·실측의 메타데이터만 읽고, 프롬프트·응답 본문은 저장하거나 표시하지 않습니다",
             "Reads only metadata from local logs and telemetry; never stores or shows prompts or responses"),
-        Loc("모델을 호출하거나 계정에 로그인하지 않으며, 인터넷은 GitHub 업데이트 확인과 내려받기에만 씁니다",
-            "Never calls a model or signs in; goes online only to check GitHub for updates and download them"),
-        Loc("실시간 한도 확인이 켜져 있으면 저장된 Codex·Claude Code 로그인으로 OpenAI·Anthropic 사용량을 묻습니다. 토큰은 저장하지 않습니다",
-            "With Live usage limits on, asks OpenAI and Anthropic for usage with Codex and Claude Code's saved sign-in. Tokens are never stored"),
+        Loc("모델을 호출하거나 계정에 로그인하지 않습니다. 업데이트 확인과 내려받기는 GitHub에만 연결합니다",
+            "Never calls a model or signs in. Update checks and downloads connect only to GitHub"),
+        Loc("실시간 한도 확인이 켜져 있으면 Codex·Claude Code·omp·Pi에 저장된 로그인으로 OpenAI·Anthropic 사용량을 묻습니다. 토큰은 저장하지 않습니다",
+            "With Live usage limits on, asks OpenAI and Anthropic for usage with sign-ins saved by Codex, Claude Code, omp or Pi. Tokens are never stored"),
     ];
 
     /// The release zip puts LICENSE next to TokenCat.exe.
@@ -67,7 +67,11 @@ sealed class SettingsWindow : Window
         ResizeMode = ResizeMode.CanMinimize;
         SizeToContent = SizeToContent.WidthAndHeight;
         WindowStartupLocation = WindowStartupLocation.CenterScreen;
-        SourceInitialized += (_, _) => Native.StyleWindow(this, round: false);
+        SourceInitialized += (_, _) => Native.StyleWindow(this, round: false, material: true);
+        KeyboardNavigation.SetTabNavigation(this, KeyboardNavigationMode.Cycle);
+        KeyDown += (_, e) => { if (e.Key == Key.Escape) { e.Handled = true; Close(); } };
+        Loaded += (_, _) => MoveFocus(new TraversalRequest(FocusNavigationDirection.First));
+        AutomationProperties.SetName(this, Loc("TokenCat 설정", "TokenCat settings"));
         view = Build();
     }
 
@@ -105,7 +109,7 @@ sealed class SettingsWindow : Window
     public void Rebuild()
     {
         view = Build();
-        if (IsLoaded) Native.StyleWindow(this, round: false);
+        if (IsLoaded) Native.StyleWindow(this, round: false, material: true);
     }
 }
 
@@ -121,8 +125,11 @@ sealed class SettingsView : Grid
     readonly ScrollViewer host = new() { VerticalScrollBarVisibility = ScrollBarVisibility.Auto, MaxHeight = MaximumHeight, Width = PageWidth };
     SettingsInput input;
     SettingsPage page;
-    string? signature;
+    object? presentationKey;
+    TelemetryPresentation? telemetryPresentation;
     string? loginError;
+    long preferenceRevision;
+    (long Revision, LoginItem.State Login, bool Animation, double Dpi)? retainedInputs;
     /// The shown Widget page's live preview, and the one the last build made.
     WidgetView? preview, builtPreview;
     /// The item being dragged in the Widget page's list.
@@ -139,9 +146,12 @@ sealed class SettingsView : Grid
         this.actions = actions;
         this.page = page;
         this.selected = selected;
+        // Weak subscription: replaced views must not stay alive through the long-lived Preferences instance.
+        System.ComponentModel.PropertyChangedEventManager.AddHandler(actions.Preferences, (_, _) => preferenceRevision++, string.Empty);
+        UseLayoutRounding = SnapsToDevicePixels = true;
         ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(NavWidth) });
         ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        Background = Theme.Brush(Theme.Background);
+        Background = Theme.Brush(snapshot ? Theme.Background : Theme.Surface);
         var navHost = new Border { Child = nav, Background = Theme.Brush(Theme.Primary(0.03)), BorderBrush = Theme.Brush(Theme.Hairline), BorderThickness = new Thickness(0, 0, 0.5, 0) };
         Children.Add(navHost);
         SetColumn(host, 1);
@@ -164,23 +174,57 @@ sealed class SettingsView : Grid
                 _ => Ui.InfoIcon,
             };
             var row = Dashboard.Row(10, Ui.Icon(icon, 14, item == page ? Theme.Accent : Theme.Secondary), Ui.Text(SettingsWindow.Titles(item), Font.Body));
-            var button = Ui.HoverButton(new Border { Child = row, Padding = new Thickness(10, 7, 10, 7), CornerRadius = new CornerRadius(5),
-                Background = item == page ? Theme.Brush(Theme.Selection) : null }, () => Select(item), SettingsWindow.Titles(item));
+            var button = Ui.HoverButton(new Border { Child = row, Padding = new Thickness(10, 7, 10, 7), CornerRadius = new CornerRadius(Ui.ControlRadius),
+                Background = item == page ? Theme.Brush(Theme.Selection) : null,
+                BorderBrush = Theme.HighContrast && item == page ? Theme.Brush(Theme.Accent) : Brushes.Transparent,
+                BorderThickness = new Thickness(Theme.HighContrast ? 3 : 0, 0, 0, 0) }, () => Select(item), SettingsWindow.Titles(item));
             button.HorizontalContentAlignment = HorizontalAlignment.Stretch;
+            button.PreviewKeyDown += (_, e) =>
+            {
+                if (Keyboard.Modifiers != ModifierKeys.None) return;
+                var pages = Enum.GetValues<SettingsPage>();
+                var index = Array.IndexOf(pages, item);
+                var target = e.Key switch { Key.Up => Math.Max(0, index - 1), Key.Down => Math.Min(pages.Length - 1, index + 1),
+                    Key.Home => 0, Key.End => pages.Length - 1, _ => -1 };
+                if (target < 0) return;
+                e.Handled = true;
+                Select(pages[target]);
+            };
             // The current page is drawn only as a fill: say it too.
             System.Windows.Automation.AutomationProperties.SetItemStatus(button, item == page ? Loc("현재 페이지", "Current page") : "");
             nav.Children.Add(button);
             if (item == page) current = button;
         }
         if (hadFocus) current?.Focus();
-        signature = null;
+        presentationKey = null;
         selected(chosen);
         Refresh(input);
     }
 
     public void Refresh(SettingsInput next)
     {
+        var inputs = (preferenceRevision, next.Login, SystemParameters.ClientAreaAnimation, VisualTreeHelper.GetDpi(this).DpiScaleX);
         input = next;
+        // The three static pages retain controls and focus while the Widget preview alone follows changing metrics.
+        var staticPage = page is SettingsPage.General or SettingsPage.Widget or SettingsPage.Character;
+        if (staticPage && presentationKey is not null && retainedInputs == inputs)
+        {
+            if (preview is not null) Preview(preview);
+            return;
+        }
+        var update = next.Dashboard.Update;
+        object key = page switch
+        {
+            SettingsPage.Telemetry => (inputs, telemetryPresentation = PresentTelemetry()),
+            SettingsPage.About => (inputs, update.Status(next.Dashboard.State.Now), update.InstallFailure, update.CanInstall, update.CanCheck, update.Disabled),
+            _ => inputs,
+        };
+        // A press in progress keeps its button until the next tick. Compare inputs before allocating any WPF tree.
+        if (Equals(key, presentationKey) || host.IsMouseCaptureWithin)
+        {
+            if (preview is not null) Preview(preview);
+            return;
+        }
         builtPreview = null;
         var content = page switch
         {
@@ -190,15 +234,8 @@ sealed class SettingsView : Grid
             SettingsPage.Telemetry => Telemetry(),
             _ => About(),
         };
-        var built = Signature(content);
-        // A press in progress keeps its button until the next tick; swapping it now would lose the click. The kept page's
-        // preview still follows the values.
-        if (built == signature || host.IsMouseCaptureWithin)
-        {
-            if (preview is not null) Preview(preview);
-            return;
-        }
-        signature = built;
+        presentationKey = key;
+        retainedInputs = inputs;
         // Keyboard focus moves to the element at the same position in the new page, or with the item a key just moved.
         var focused = host.IsKeyboardFocusWithin && host.Content is DependencyObject old && Keyboard.FocusedElement is UIElement focus
             ? Focusables(old).IndexOf(focus) : -1;
@@ -226,23 +263,6 @@ sealed class SettingsView : Grid
         return found;
     }
 
-    /// Every text, state and enabled flag in the tree: equal signatures draw the same page.
-    static string Signature(DependencyObject root)
-    {
-        var text = new System.Text.StringBuilder();
-        void Walk(object node)
-        {
-            switch (node)
-            {
-                case TextBlock block: text.Append(block.Text).Append('|'); break;
-                case FrameworkElement element when element.Tag is string tag: text.Append(tag).Append('|'); break;
-            }
-            if (node is UIElement { IsEnabled: false }) text.Append("!disabled|");
-            if (node is DependencyObject dependency) foreach (var child in LogicalTreeHelper.GetChildren(dependency)) Walk(child);
-        }
-        Walk(root);
-        return text.ToString();
-    }
 
     // MARK: Building blocks
 
@@ -292,18 +312,8 @@ sealed class SettingsView : Grid
 
     static FrameworkElement Labeled(FrameworkElement label, UIElement? trailing)
     {
-        var grid = new Grid();
-        grid.ColumnDefinitions.Add(new ColumnDefinition());
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        grid.Children.Add(label);
-        if (trailing is FrameworkElement right)
-        {
-            right.Margin = new Thickness(12, 0, 0, 0);
-            right.VerticalAlignment = VerticalAlignment.Center;
-            SetColumn(right, 1);
-            grid.Children.Add(right);
-        }
-        return grid;
+        if (trailing is FrameworkElement right) right.VerticalAlignment = VerticalAlignment.Center;
+        return Dashboard.Spread(label, trailing, gap: 12);
     }
 
     static FrameworkElement Toggle(string title, string? subtitle, bool on, Action<bool> set, bool enabled = true, string? help = null) =>
@@ -312,10 +322,12 @@ sealed class SettingsView : Grid
     /// A switch drawn with the theme tokens (WPF's own controls don't follow dark mode).
     public static FrameworkElement Switch(bool on, Action<bool> set, string name, bool enabled = true, string? help = null)
     {
-        var knob = new Border { Width = 14, Height = 14, CornerRadius = new CornerRadius(7), Background = Brushes.White,
+        var knob = new Border { Width = 14, Height = 14, CornerRadius = new CornerRadius(7),
+            Background = Theme.HighContrast ? Theme.Brush(on ? SystemColors.HighlightTextColor : Theme.Label) : Brushes.White,
             HorizontalAlignment = on ? HorizontalAlignment.Right : HorizontalAlignment.Left, Margin = new Thickness(3, 0, 3, 0) };
         var track = new Border { Width = 36, Height = 20, CornerRadius = new CornerRadius(10), Child = knob,
-            Background = Theme.Brush(on ? Theme.Accent : Theme.Primary(0.25)) };
+            Background = Theme.Brush(Theme.HighContrast ? on ? SystemColors.HighlightColor : Theme.Background : on ? Theme.Accent : Theme.Primary(0.25)),
+            BorderBrush = Theme.Brush(Theme.Label), BorderThickness = new Thickness(Theme.HighContrast ? 1 : 0) };
         // A ToggleButton, so UI Automation reports on/off (a plain Button only invokes).
         var button = Ui.Hover(new System.Windows.Controls.Primitives.ToggleButton { IsChecked = on }, track, () => set(!on), help ?? name);
         button.IsEnabled = enabled;
@@ -377,7 +389,7 @@ sealed class SettingsView : Grid
                     {
                         loginError = Loc($"시작 프로그램을 바꾸지 못했습니다: {error.Message}", $"Couldn't change the startup app: {error.Message}");
                     }
-                    signature = null;
+                    presentationKey = null;
                     Refresh(input);
                 }, enabled: !temporary || LoginItem.IsOn(login),
                     help: Loc("켜면 Windows 시작 프로그램에 등록하고, 끄면 해제합니다. 켜기 전에는 등록하지 않습니다.",
@@ -469,12 +481,13 @@ sealed class SettingsView : Grid
     /// no Click, changes it too. `help` is the tooltip, shown on a disabled box as well.
     static CheckBox ItemCheck(bool on, UIElement content, string name, Action<bool> set, bool enabled, string help)
     {
-        var mark = Ui.Icon(Ui.Check, 10, on ? (Theme.Dark ? Colors.Black : Colors.White) : Colors.Transparent);
+        var mark = Ui.Icon(Ui.Check, 10, on ? Theme.HighContrast ? SystemColors.HighlightTextColor : Theme.Dark ? Colors.Black : Colors.White : Colors.Transparent);
         mark.HorizontalAlignment = HorizontalAlignment.Center;
         var box = new Border
         {
-            Width = 16, Height = 16, CornerRadius = new CornerRadius(4), Child = mark, Background = on ? Theme.Brush(Theme.Accent) : null,
-            BorderBrush = Theme.Brush(on ? Theme.Accent : Theme.Primary(0.45)), BorderThickness = new Thickness(1),
+            Width = 16, Height = 16, CornerRadius = new CornerRadius(Ui.ControlRadius), Child = mark,
+            Background = on ? Theme.Brush(Theme.HighContrast ? SystemColors.HighlightColor : Theme.Accent) : null,
+            BorderBrush = Theme.Brush(Theme.HighContrast ? Theme.Label : on ? Theme.Accent : Theme.Primary(0.45)), BorderThickness = new Thickness(1),
         };
         var check = Ui.Hover(new CheckBox { IsChecked = on }, Dashboard.Row(8, box, content), () => { }, name);
         check.Checked += (_, _) => set(true);
@@ -640,6 +653,8 @@ sealed class SettingsView : Grid
                 {
                     Child = Ui.Text(title(value), Font.Meta, chosen ? Theme.Label : Theme.Secondary), Padding = new Thickness(10, 3, 10, 3),
                     CornerRadius = new CornerRadius(4), Background = chosen ? Theme.Brush(Theme.Selection) : null,
+                    BorderBrush = Theme.HighContrast && chosen ? Theme.Brush(Theme.Label) : Brushes.Transparent,
+                    BorderThickness = new Thickness(Theme.HighContrast ? 1 : 0),
                 }, () => choose(value), title(value));
             segment.Tag = chosen ? "chosen" : null;
             row.Children.Add(segment);
@@ -828,62 +843,95 @@ sealed class SettingsView : Grid
     /// The executable of another running TokenCat, so the person can find the copy holding the port.
     static string? OtherTokenCat()
     {
-        foreach (var process in Process.GetProcessesByName("TokenCat"))
+        var processes = Process.GetProcessesByName("TokenCat");
+        try
         {
-            using (process)
+            foreach (var process in processes)
             {
                 if (process.Id == Environment.ProcessId) continue;
                 try { if (process.MainModule?.FileName is { } path) return path; }
                 catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException) { }
             }
+            return null;
         }
-        return null;
+        finally { foreach (var process in processes) process.Dispose(); }
     }
 
-    FrameworkElement Telemetry()
+    internal sealed record ClientPresentation(TokenSource Source, StatusRow Row, string Text, string? Detail, string? Config);
+    internal sealed record TelemetryPresentation((StatusRow Row, string Text) Collector, int? RetrySeconds, bool RetryEnabled, string? OtherPath,
+        string? SetupNote, ClientPresentation[] Clients, (StatusRow Row, string Text, string? Detail) Limits, string? Backup,
+        bool OptedOut, bool SetupInFlight)
+    {
+        public bool Equals(TelemetryPresentation? other) => other is not null
+            && (Collector, RetrySeconds, RetryEnabled, OtherPath, SetupNote, Limits, Backup, OptedOut, SetupInFlight)
+                == (other.Collector, other.RetrySeconds, other.RetryEnabled, other.OtherPath, other.SetupNote, other.Limits, other.Backup, other.OptedOut, other.SetupInFlight)
+            && Clients.SequenceEqual(other.Clients);
+        public override int GetHashCode() => HashCode.Combine(Collector, RetrySeconds, OtherPath, Backup, OptedOut, SetupInFlight, Clients.Length);
+    }
+
+    static readonly Dictionary<TokenSource, string> Configs = new()
+    {
+        [TokenSource.Codex] = AppPaths.CodexConfig(AppPaths.Home), [TokenSource.Claude] = AppPaths.ClaudeSettings(AppPaths.Home),
+        [TokenSource.Gemini] = Path.Combine(AppPaths.Home, ".gemini", "settings.json"), [TokenSource.Qwen] = Path.Combine(AppPaths.Home, ".qwen", "settings.json"),
+    };
+
+    TelemetryPresentation PresentTelemetry()
     {
         var dashboard = input.Dashboard;
         var state = dashboard.State;
         var now = state.Now;
-        var collectorStatus = CollectorStatus(state.TelemetryState);
+        var clients = TokenSource.TelemetryClients.Where(state.ListedSources.Contains).Select(source =>
+        {
+            var skipped = dashboard.ConnectNotes.OfType<TelemetrySetupNote.ClientSkipped>().FirstOrDefault(skip => skip.Source == source)?.Reason;
+            var status = ClientStatus(state.TelemetryRestartNeeded.Contains(source), state.TelemetryRestartExpired.Contains(source),
+                state.TelemetryLastReceived.TryGetValue(source, out var received) ? received : null,
+                input.Batches.TryGetValue(source, out var batch) ? batch : null, now, skipped);
+            var config = !snapshot && Configs.TryGetValue(source, out var path) && File.Exists(path) ? path : null;
+            return new ClientPresentation(source, status.Row, status.Text, status.Detail, config);
+        }).ToArray();
+        var shownLimits = state.ShownClaudeLimits;
+        var newest = new[] { shownLimits.FiveHour, shownLimits.SevenDay }.OfType<ClaudeLimitWindow>().MaxBy(window => window.ReceivedAt);
+        var limits = ClaudeLimitsStatus(dashboard.ConnectNotes, dashboard.ClaudeBridged, newest?.ReceivedAt, newest is { ResetsAt: null }, now,
+            newest is { Live: true }, newest?.RecordedBy);
+        var backups = Path.Combine(AppPaths.Support, "telemetry-backups");
+        return new TelemetryPresentation(CollectorStatus(state.TelemetryState),
+            state.TelemetryNextRetryAt is { } retry ? Math.Max(0, (int)Math.Ceiling((retry - now).TotalSeconds)) : null,
+            state.TelemetryState != TelemetryCollectorState.Starting,
+            state.TelemetryState == TelemetryCollectorState.BusyTokenCat && !snapshot ? OtherTokenCat() : null,
+            dashboard.SetupNote, clients, limits, !snapshot && Directory.Exists(backups) ? backups : null, dashboard.OptedOut, input.SetupInFlight);
+    }
+
+    FrameworkElement Telemetry()
+    {
+        var presented = telemetryPresentation!;
+        var collectorStatus = presented.Collector;
         var rows = new List<UIElement?> { Labeled(Label(Loc("수집기", "Collector")), StatusLine(collectorStatus.Row, collectorStatus.Text, null)) };
         // The retry and the other copy's location on their own trailing row, so the status stays on one line.
         var collectorActions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
-        if (state.TelemetryNextRetryAt is { } next)
+        if (presented.RetrySeconds is { } seconds)
         {
             var retry = Ui.SmallButton(Loc("지금 다시 시도", "Retry Now"), actions.RetryTelemetry);
-            retry.IsEnabled = state.TelemetryState != TelemetryCollectorState.Starting;
-            var clock = Ui.Text(Loc("다음 자동 재시도 ", "Automatic retry in ") + SessionPresentation.Clock(Math.Max(0, (int)Math.Ceiling((next - now).TotalSeconds))),
-                Font.MetaMono, Theme.Secondary);
+            retry.IsEnabled = presented.RetryEnabled;
+            var clock = Ui.Text(Loc("다음 자동 재시도 ", "Automatic retry in ") + SessionPresentation.Clock(seconds), Font.MetaMono, Theme.Secondary);
             clock.VerticalAlignment = VerticalAlignment.Center;
             clock.Margin = new Thickness(0, 0, 6, 0);
             collectorActions.Children.Add(clock);
             collectorActions.Children.Add(retry);
         }
-        if (state.TelemetryState == TelemetryCollectorState.BusyTokenCat && !snapshot && OtherTokenCat() is { } other)
+        if (presented.OtherPath is { } other)
         {
             var show = Ui.SmallButton(Loc("탐색기에서 보기", "Show in File Explorer"), () => Shell.Reveal(other), other);
             if (collectorActions.Children.Count > 0) show.Margin = new Thickness(6, 0, 0, 0);
             collectorActions.Children.Add(show);
         }
         if (collectorActions.Children.Count > 0) rows.Add(collectorActions);
-        if (dashboard.SetupNote is { } note) rows.Add(Caption(note, Theme.Warning));
-        // Each client's config file, shown in File Explorer from its row when it exists (never in snapshots).
-        var configs = new Dictionary<TokenSource, string>
-        {
-            [TokenSource.Codex] = AppPaths.CodexConfig(AppPaths.Home), [TokenSource.Claude] = AppPaths.ClaudeSettings(AppPaths.Home),
-            [TokenSource.Gemini] = Path.Combine(AppPaths.Home, ".gemini", "settings.json"), [TokenSource.Qwen] = Path.Combine(AppPaths.Home, ".qwen", "settings.json"),
-        };
+        if (presented.SetupNote is { } note) rows.Add(Caption(note, Theme.Warning));
         var revealed = false;
         // Gemini CLI and Qwen Code once their folder is detected, like every list.
-        foreach (var source in TokenSource.TelemetryClients.Where(state.ListedSources.Contains))
+        foreach (var client in presented.Clients)
         {
-            var skipped = dashboard.ConnectNotes.OfType<TelemetrySetupNote.ClientSkipped>().FirstOrDefault(skip => skip.Source == source)?.Reason;
-            var status = ClientStatus(state.TelemetryRestartNeeded.Contains(source), state.TelemetryRestartExpired.Contains(source),
-                state.TelemetryLastReceived.TryGetValue(source, out var received) ? received : null,
-                input.Batches.TryGetValue(source, out var batch) ? batch : null, now, skipped);
-            FrameworkElement trailing = StatusLine(status.Row, status.Text, status.Detail);
-            if (!snapshot && configs.TryGetValue(source, out var config) && File.Exists(config))
+            FrameworkElement trailing = StatusLine(client.Row, client.Text, client.Detail);
+            if (client.Config is { } config)
             {
                 revealed = true;
                 var shown = config.StartsWith(AppPaths.Home, StringComparison.OrdinalIgnoreCase) ? "%USERPROFILE%" + config[AppPaths.Home.Length..] : config;
@@ -893,23 +941,18 @@ sealed class SettingsView : Grid
                 folder.VerticalAlignment = VerticalAlignment.Center;
                 trailing = Dashboard.Row(6, trailing, folder);
             }
-            rows.Add(Labeled(Label(source.Title), trailing));
+            rows.Add(Labeled(Label(client.Source.Title), trailing));
         }
-        // Whether the bridge delivers: the newer of the two windows' receipts (no reset time: the desktop app).
-        var shownLimits = state.ShownClaudeLimits;
-        var newest = new[] { shownLimits.FiveHour, shownLimits.SevenDay }.OfType<ClaudeLimitWindow>().MaxBy(window => window.ReceivedAt);
-        var limits = ClaudeLimitsStatus(dashboard.ConnectNotes, dashboard.ClaudeBridged, newest?.ReceivedAt, newest is { ResetsAt: null }, now, newest is { Live: true },
-            newest?.RecordedBy);
+        var limits = presented.Limits;
         rows.Add(Labeled(Label(Loc("Claude 한도", "Claude limits")), StatusLine(limits.Row, limits.Text, limits.Detail)));
-        var backups = Path.Combine(AppPaths.Support, "telemetry-backups");
-        var backupsShown = !snapshot && Directory.Exists(backups);
+        var backupsShown = presented.Backup is not null;
         // The folder note only beside a folder button (the rows' or the backups'); the backups' button under the text.
         var footer = new StackPanel();
         footer.Children.Add(Caption(Loc("실측은 출력 토큰·요청 시간 같은 수치만, Claude 한도는 상태 표시줄 JSON과 Claude 데스크톱 앱·omp·Pi 사용량 기록의 사용률만 받습니다. 이미 실행 중인 클라이언트는 새로 실행해야 적용됩니다.",
             "Telemetry receives only numbers such as output tokens and request times. Claude limits use only the usage percentage from the status line JSON and the usage history of the Claude desktop app, omp and Pi. Restart running clients to apply.")
             + (revealed || backupsShown ? Loc(" 폴더 단추는 탐색기에서 위치만 보여 주며 파일을 열거나 바꾸지 않습니다.",
                 " Folder buttons only show where the files are in File Explorer; they never open or change them.") : "")));
-        if (backupsShown)
+        if (presented.Backup is { } backups)
         {
             var backup = Ui.SmallButton(Loc("백업 폴더 보기", "Show Backup Folder"), () => Shell.Reveal(backups), backups);
             backup.HorizontalAlignment = HorizontalAlignment.Left;
@@ -921,7 +964,7 @@ sealed class SettingsView : Grid
             Loc("Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic 사용량을 사용 중에는 1분, 평소에는 10분마다 확인합니다. 토큰은 저장하지 않습니다.",
                 "Checks usage with OpenAI and Anthropic using Codex and Claude Code's saved sign-in, every minute while in use and every 10 minutes otherwise. Tokens are never stored."),
             preferences.LiveUsageLimits, on => preferences.LiveUsageLimits = on);
-        return Page(Section(null, rows, footer), Section(null, [Connection(dashboard.OptedOut), live]));
+        return Page(Section(null, rows, footer), Section(null, [Connection(presented.OptedOut), live]));
     }
 
     /// The second section's first row, above 실시간 한도 확인: disconnect (behind a confirmation) while connected, reconnect once

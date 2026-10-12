@@ -53,6 +53,17 @@ static class Snapshot
                     foreach (var page in Enum.GetValues<SettingsPage>())
                         Save($"settings-{page.ToString().ToLowerInvariant()}-{code}.png", () => new SettingsView(Fixtures.Settings(), actions, page, _ => { }, snapshot: true));
                     Save($"widget-{code}.png", Widgets);
+                    Save($"widget-wallpapers-{code}.png", WallpaperWidgets);
+                    var contrast = Theme.HighContrastOverride;
+                    try
+                    {
+                        Theme.HighContrastOverride = true;
+                        Save($"high-contrast-dashboard-{code}.png", () => Dashboard(Fixtures.All().First(fixture => fixture.Name == "input-needed")));
+                        foreach (var page in new[] { SettingsPage.General, SettingsPage.Widget, SettingsPage.Telemetry })
+                            Save($"high-contrast-settings-{page.ToString().ToLowerInvariant()}-{code}.png",
+                                () => new SettingsView(Fixtures.Settings(), actions, page, _ => { }, snapshot: true));
+                    }
+                    finally { Theme.HighContrastOverride = contrast; }
                 });
             }
             try
@@ -119,6 +130,30 @@ static class Snapshot
         Add("input-needed", StatusBarLayout.Compact, RunnerPose.Alert, items: Enum.GetValues<MetricID>());
         Add("context-limit", StatusBarLayout.Inline, RunnerPose.Walk, items: Enum.GetValues<MetricID>());
         stack.Children.Add(new System.Windows.Controls.Border { Height = 12 });
+        return stack;
+    }
+
+    /// Every basic layout against very light and very dark wallpapers, independent of the app's own theme.
+    static FrameworkElement WallpaperWidgets()
+    {
+        var stack = new System.Windows.Controls.StackPanel();
+        var state = Fixtures.Input(Fixtures.All().First(fixture => fixture.Name == "input-needed")).State;
+        foreach (var wallpaper in new[] { Color.FromRgb(0xEA, 0xEF, 0xF5), Color.FromRgb(0x10, 0x18, 0x21) })
+        {
+            var group = new System.Windows.Controls.StackPanel { Background = Theme.Brush(wallpaper) };
+            foreach (var layout in Enum.GetValues<StatusBarLayout>())
+            {
+                var view = new WidgetView();
+                view.Update(StatusBarContent.Metrics(state, layout, MetricID.Standard), layout);
+                view.UpdateRunner(RunnerCharacter.Cat, RunnerPose.Alert, 0, null);
+                group.Children.Add(new System.Windows.Controls.Border
+                {
+                    Child = view, Background = Theme.Brush(Theme.Background), CornerRadius = new CornerRadius(Ui.ContainerRadius),
+                    Margin = new Thickness(12), HorizontalAlignment = HorizontalAlignment.Left,
+                });
+            }
+            stack.Children.Add(group);
+        }
         return stack;
     }
 

@@ -180,7 +180,7 @@ func runSessionPresentationChecks() -> [String] {
           && retryCounts.phase == SessionCounts.phase(.retrying) && retryCounts.phase == .working,
           "group state and menu-bar phase follow the same order")
 
-    // The flow-card caption: input > retry > tool category > progress > waiting, only after 30 s without a record.
+    // The flow caption explains retry, tools and progress after 30 s; input and log waiting stay in the header.
     func caption(_ counts: SessionCounts, _ last: TimeInterval?) -> FlowCaption {
         SessionPresentation.flowCaption(counts: counts, last: last.map(at), now: now)
     }
@@ -188,7 +188,9 @@ func runSessionPresentationChecks() -> [String] {
     check(caption(noticeCounts, -40).text == "명령 실행 중 · 응답 후 기록" && !caption(noticeCounts, -40).emphasized
           && caption(noticeCounts, -10).text == "마지막 기록" && caption(noticeCounts, -10).glyph == nil, "tool category caption after 30 s")
     noticeCounts.tool = 0
-    check(caption(noticeCounts, nil).text == "로그 대기 · 3분째 기록 없음", "waiting caption")
+    check(caption(noticeCounts, nil).text == "마지막 기록" && caption(noticeCounts, -40).text == "마지막 기록"
+          && caption(noticeCounts, nil).glyph == nil && !caption(noticeCounts, nil).emphasized,
+          "log waiting leaves the caption to the header")
     let urgent = SessionCounts(SessionPresentation.groups([command, retrying, question], now: now))
     let retryOnly = SessionCounts(SessionPresentation.groups([command, retrying], now: now))
     // A session waiting for the person keeps the base caption: the header and the row already say it.
@@ -1024,7 +1026,7 @@ func runSessionPresentationChecks() -> [String] {
               && header(SessionCounts(SessionPresentation.groups([claudeParent, claudeChild, codexParent, codexChild], now: now))).spoken
                 == "2 sessions working · 1 tool · 2 subagents"
               && caption(urgent, -40).text == "Last record" && caption(plans, nil).text == "Last record"
-              && caption(retryOnly, -40).text == "API retry 2/10 · in 4s" && caption(noticeCounts, nil).text == "Waiting for log · no record for 3m"
+              && caption(retryOnly, -40).text == "API retry 2/10 · in 4s" && caption(noticeCounts, nil).text == "Last record"
               && SessionPresentation.providerSplits([.codex: 3_200, .claude: 900]) == ["Codex 3.2k · Claude Code 900", "Codex 3.2k · +1 more"],
               "English header, flow caption and folded provider count")
         check(SessionPresentation.childGroupText(.input, count: 1) == "1 subagent needs input"

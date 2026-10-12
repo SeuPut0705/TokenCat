@@ -89,7 +89,7 @@ public sealed class CopilotLogReader : ITokenLogReader
         model ??= LogFields.Text(payload.Field("selectedModel"));
     }
 
-    void Consume(byte[] data)
+    void Consume(ReadOnlySpan<byte> data)
     {
         if (Json.Parse(data) is not { } record || record.Field("type")?.Text is not { } type || record.Field("ephemeral")?.Bool == true) return;
         var payload = record.Field("data") ?? default;

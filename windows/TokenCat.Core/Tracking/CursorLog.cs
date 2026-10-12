@@ -220,7 +220,7 @@ public sealed class CursorLogReader : ITokenLogReader
         Enrich(now);
     }
 
-    static Event? JsonEvent(byte[] data)
+    static Event? JsonEvent(ReadOnlySpan<byte> data)
     {
         if (Json.Parse(data) is not { ValueKind: JsonValueKind.Object } record) return null;
         if (record.Field("type")?.Text == "turn_ended") return new Event(Kind.Ended, Success: record.Field("status")?.Text == "success");
@@ -241,7 +241,7 @@ public sealed class CursorLogReader : ITokenLogReader
         }
     }
 
-    static Event? LegacyEvent(byte[] data)
+    static Event? LegacyEvent(ReadOnlySpan<byte> data)
     {
         var right = Encoding.UTF8.GetString(data).TrimEnd();
         if (right == "user:") return new Event(Kind.LegacyUser);
@@ -410,10 +410,16 @@ sealed class CursorIDEStore
         {
             sampledAt = now;
             wanted = wanted.Where(entry => (now - entry.Value).TotalSeconds <= 600).ToDictionary(StringComparer.Ordinal);
+            // A composer nobody asked about for 10 minutes is read again when asked (`known` is false then).
+            foreach (var stale in composers.Keys.Where(key => !wanted.ContainsKey(key)).ToArray()) composers.Remove(stale);
+            foreach (var stale in dataStamps.Keys.Where(key => !wanted.ContainsKey(key)).ToArray()) dataStamps.Remove(stale);
             Refresh(known ? null : id);
         }
         return composers.GetValueOrDefault(id);
     }
+
+    /// Composers and data stamps held (C4c's bound: only those asked about within 10 minutes).
+    internal (int Composers, int DataStamps) Held => (composers.Count, dataStamps.Count);
 
     /// `onlyNew`: a composer asked about for the first time, queried alone when nothing else changed.
     void Refresh(string? onlyNew)

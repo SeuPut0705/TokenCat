@@ -87,7 +87,7 @@ public sealed class DroidLogReader(string path) : ITokenLogReader
         start.Field("isSessionTitleManuallySet")?.Bool == true || start.Field("sessionTitleAutoStage")?.ValueKind == JsonValueKind.String
             ? SessionTitle.Clean(start.Field("title")) : null;
 
-    void Consume(byte[] data)
+    void Consume(ReadOnlySpan<byte> data)
     {
         if (Json.Parse(data) is not { } record) return;
         var date = LogFields.Date(record.Field("timestamp"));

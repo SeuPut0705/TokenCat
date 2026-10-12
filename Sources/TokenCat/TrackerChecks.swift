@@ -1305,8 +1305,45 @@ func runTrackerChecks() -> [String] {
     kimiChecks { check($0, $1) }
     gooseLogChecks { check($0, $1) }
     sessionTitleChecks { check($0, $1) }
+    cacheBoundChecks(root: root) { check($0, $1) }
     print("Tracker checks: \(checks - failures.count) PASS / \(failures.count) FAIL / 0 SKIP")
     return failures
+}
+
+/// Memory held for ids and logs stays bounded, and what it forgets is the oldest or the unasked, never what is in use.
+private func cacheBoundChecks(root: URL, check: (Bool, String) -> Void) {
+    var recent = RecentKeys<Int>(limit: 4_096)
+    for index in 0...4_096 { recent.set("m\(index)", index) }
+    recent.set("m1", 1)
+    check(recent.count == 4_096 && recent["m0"] == nil && recent["m1"] == 1 && recent["m4096"] == 4_096,
+          "Dedupe history: past its cap the oldest id was not the one forgotten, or everything was")
+
+    // Codex thread names: 3,000 names in the index, none asked for yet.
+    let codexHome = root.appendingPathComponent("thread-names")
+    let rollout = codexHome.appendingPathComponent("sessions/2026/10/04/rollout-x.jsonl")
+    var index = Data()
+    for number in 0..<3_000 { index.append(Data(#"{"id":"t\#(number)","thread_name":"Name \#(number)","updated_at":"2026-10-04T00:00:00Z"}"#.utf8) + [10]) }
+    do {
+        try FileManager.default.createDirectory(at: codexHome, withIntermediateDirectories: true)
+        try index.write(to: codexHome.appendingPathComponent("session_index.jsonl"))
+        let names = CodexThreadNames.index(forRollout: rollout)
+        names.refresh()
+        let held = names.heldNames
+        let newest = names.name(for: "t2999"), oldest = names.name(for: "T0")
+        names.sweep()
+        names.sweep()
+        check(held <= CodexThreadNames.unaskedLimit && newest == "Name 2999" && oldest == "Name 0"
+              && names.heldNames <= CodexThreadNames.unaskedLimit,
+              "Codex thread names: names no reader asked for were not bounded, or an older thread's name was not found again")
+    } catch {
+        check(false, "Codex thread names fixture error: \(error.localizedDescription)")
+    }
+
+    // The omp pin scans of earlier checks' logs: kept while asked for, dropped after a sweep window without a reader.
+    let held = OmpPinStore.shared.count
+    OmpPinStore.shared.sweep()
+    OmpPinStore.shared.sweep()
+    check(held > 0 && OmpPinStore.shared.count == 0, "omp credential pins: the scan state of logs no reader asks for was kept")
 }
 
 /// Synthetic credentials only; the metadata reader must work even when access/refresh values cannot be decoded as strings.
@@ -1562,6 +1599,17 @@ private func runAccountSwitchChecks(root: URL, check: (Bool, String) -> Void) {
                   && legacyRows.first?.account == nil && legacyRows.first?.usedPercent == 99,
                   "Account switches: unattributed Codex limits appeared before the final legacy fallback")
         } else { check(false, "Account switches: historical Codex fixture was not discovered") }
+        // An evicted log's pin goes with it: back after the switch, its pre-switch records are no longer the old login's.
+        try FileManager.default.removeItem(at: oldCodex)
+        try FileManager.default.removeItem(at: oldClaude)
+        let evicted = tracker.sample()
+        try write(codexRecords("codex-a", at: start.addingTimeInterval(-10), used: 93, reset: start.addingTimeInterval(10_000)), to: oldCodex)
+        try write(claudeRecords("claude-a", at: start.addingTimeInterval(-10)), to: oldClaude)
+        let returned = tracker.sample()
+        check(!evicted.contains { $0.sessionID == "codex-a" || $0.sessionID == "claude-a" }
+              && returned.first { $0.sessionID == "codex-a" }.map { $0.limitAccount == nil } == true
+              && returned.first { $0.sessionID == "claude-a" }.map { $0.limitAccount == nil } == true,
+              "Account switches: an evicted log kept its account pin, or came back attributed to the new login")
     } catch {
         check(false, "Account switches fixture error: \(error.localizedDescription)")
     }

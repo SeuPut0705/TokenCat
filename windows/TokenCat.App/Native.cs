@@ -21,6 +21,9 @@ static class Native
     [DllImport("user32.dll")] public static extern bool DestroyIcon(IntPtr icon);
     [DllImport("user32.dll")] static extern uint GetGuiResources(IntPtr process, uint flags);
     [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+    [DllImport("dwmapi.dll")] static extern int DwmExtendFrameIntoClientArea(IntPtr hwnd, ref Margins margins);
+    [StructLayout(LayoutKind.Sequential)]
+    struct Margins { public int Left, Right, Top, Bottom; }
     [DllImport("user32.dll")] static extern int GetWindowLongW(IntPtr hwnd, int index);
     [DllImport("user32.dll")] static extern int SetWindowLongW(IntPtr hwnd, int index, int value);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
@@ -96,8 +99,8 @@ static class Native
     /// GR_GDIOBJECTS + GR_USEROBJECTS of this process.
     public static (uint Gdi, uint User) GuiResources()
     {
-        var process = System.Diagnostics.Process.GetCurrentProcess().Handle;
-        return (GetGuiResources(process, 0), GetGuiResources(process, 1));
+        using var process = System.Diagnostics.Process.GetCurrentProcess();
+        return (GetGuiResources(process.Handle, 0), GetGuiResources(process.Handle, 1));
     }
 
     /// An icon from `size × size` BGRA. The caller owns the HICON: dispose the Icon, then DestroyIcon(Handle).
@@ -112,14 +115,24 @@ static class Native
         finally { handle.Free(); }
     }
 
-    /// Windows 11 rounded corners (DWMWA_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND) and the dark title bar
-    /// (DWMWA_USE_IMMERSIVE_DARK_MODE). Both are ignored where unsupported.
-    public static void StyleWindow(Window window, bool round)
+    /// Supported Windows 11 DWM materials without a layered/software-rendered WPF window. Attribute failures on Windows 10
+    /// leave the solid background intact. High Contrast and disabled Transparency effects always use the solid fallback.
+    public static void StyleWindow(Window window, bool round, bool material = false)
     {
         var hwnd = new WindowInteropHelper(window).EnsureHandle();
-        int dark = Theme.Dark ? 1 : 0, corner = 2;
+        window.UseLayoutRounding = true;
+        window.SnapsToDevicePixels = true;
+        int dark = Theme.Dark && !Theme.HighContrast ? 1 : 0, corner = Theme.HighContrast ? 1 : round ? 2 : 0;
         DwmSetWindowAttribute(hwnd, 20, ref dark, sizeof(int));
-        if (round) DwmSetWindowAttribute(hwnd, 33, ref corner, sizeof(int));
+        DwmSetWindowAttribute(hwnd, 33, ref corner, sizeof(int));
+        // DWMSBT_TRANSIENTWINDOW (acrylic) for the flyout; DWMSBT_MAINWINDOW (Mica) for ordinary windows.
+        int backdrop = material && Theme.Materials ? window is Flyout ? 3 : 2 : 1;
+        var supported = DwmSetWindowAttribute(hwnd, 38, ref backdrop, sizeof(int)) == 0 && backdrop != 1;
+        var margins = supported ? new Margins { Left = -1, Right = -1, Top = -1, Bottom = -1 } : new Margins();
+        supported &= DwmExtendFrameIntoClientArea(hwnd, ref margins) == 0;
+        if (HwndSource.FromHwnd(hwnd)?.CompositionTarget is { } target)
+            target.BackgroundColor = supported ? System.Windows.Media.Colors.Transparent : Theme.Background;
+        window.Background = supported ? System.Windows.Media.Brushes.Transparent : Theme.Brush(Theme.Background);
     }
 
     /// Physical pixels throughout (PerMonitorV2): move onto the anchor's monitor first so WPF rescales for its DPI, then

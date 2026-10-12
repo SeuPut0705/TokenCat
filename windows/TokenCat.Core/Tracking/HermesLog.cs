@@ -422,11 +422,11 @@ public sealed class HermesLog(string path) : ITokenLogReader
 
     /// `YYYY-MM-DD HH:MM:SS,mmm LEVEL [<session id>] <logger>: <message>`. Only the first 512 bytes are decoded; only times,
     /// counts, model and provider names are kept.
-    void Consume(byte[] line)
+    void Consume(ReadOnlySpan<byte> line)
     {
         if (line.Length <= 30 || line[23] != 32) return;
         // Python's text-mode log handler ends lines in CRLF on Windows.
-        var head = Encoding.UTF8.GetString(line, 0, Math.Min(line.Length, 512)).Trim('\r');
+        var head = Encoding.UTF8.GetString(line[..Math.Min(line.Length, 512)]).Trim('\r');
         // Python logging's local `asctime`; kept as UTC like every other time (rule 4).
         if (!DateTimeOffset.TryParseExact(head[..23], "yyyy-MM-dd HH:mm:ss,fff", CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var local)) return;
         var date = local.ToUniversalTime();

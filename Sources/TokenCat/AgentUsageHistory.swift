@@ -24,26 +24,34 @@ enum AgentUsageHistory {
         var accounts: [TokenSource: [LimitAccount]] = [:]
     }
 
-    /// The same agent folders the omp provider reads: `$PI_CODING_AGENT_DIR`, ~/.omp/agent and ~/.pi/agent.
+    /// The agent folders of the omp provider's roots (`$PI_CODING_AGENT_DIR`, `$PI_CONFIG_DIR`, ~/.omp/agent and its named
+    /// profiles, `$XDG_DATA_HOME/omp[/profiles/*]`, ~/.pi/agent): each sessions root's parent, except Pi's
+    /// `$PI_CODING_AGENT_SESSION_DIR`, which moves only the sessions, so its agent.db stays in the agent folder.
     static func databases(home: URL, environment: [String: String]) -> [URL] {
         var seen = Set<String>()
-        return [environment.path("PI_CODING_AGENT_DIR"), home.appendingPathComponent(".omp/agent"), home.appendingPathComponent(".pi/agent")]
-            .compactMap { $0?.appendingPathComponent("agent.db") }
-            .filter { seen.insert($0.standardizedFileURL.path).inserted }
+        let piSessions = environment.path("PI_CODING_AGENT_SESSION_DIR")?.standardizedFileURL
+        let roots = TokenProvider.all.first { $0.source == .omp }?.roots(home, environment) ?? []
+        let folders = roots.map { root -> URL in
+            root.standardizedFileURL == piSessions
+                ? environment.path("PI_CODING_AGENT_DIR") ?? home.appendingPathComponent(".pi/agent") : root.deletingLastPathComponent()
+        } + [home.appendingPathComponent(".omp/agent"), home.appendingPathComponent(".pi/agent")]
+        return folders.map { $0.appendingPathComponent("agent.db") }.filter { seen.insert($0.standardizedFileURL.path).inserted }
     }
 
     /// The client named as the record's source, as `OmpLog` names its sessions.
     static func recorder(_ database: URL) -> String { database.path.contains("/.pi/agent/") ? "Pi" : "omp" }
 
-    /// "5 Hour", "7 Day", "7 days", "5 hours" (omp's labels) → minutes; nil for any other label.
+    /// "5 Hour", "7 Day", "7 days", "5 hours" (omp's labels) → minutes; nil for any other label or one past `Int`.
     static func windowMinutes(_ label: String?) -> Int? {
         let words = (label ?? "").lowercased().split(separator: " ")
         guard words.count == 2, let count = Int(words[0]), count > 0 else { return nil }
+        let minutes: (partialValue: Int, overflow: Bool)
         switch words[1] {
-        case "hour", "hours": return count * 60
-        case "day", "days": return count * 1_440
+        case "hour", "hours": minutes = count.multipliedReportingOverflow(by: 60)
+        case "day", "days": minutes = count.multipliedReportingOverflow(by: 1_440)
         default: return nil
         }
+        return minutes.overflow ? nil : minutes.partialValue
     }
 
     static let query = """
@@ -95,12 +103,13 @@ final class AgentUsageHistoryReader {
     private let databases: [URL]
     private let accounts: LimitAccountReader
     private var cache: [URL: (stamp: [Int64], rows: [AgentUsageHistory.Row])] = [:]
-    /// Shared cap for account config metadata.
-    static let maximumConfigBytes = 16 << 20
 
-    init(home: URL = FileManager.default.homeDirectoryForCurrentUser, environment: [String: String] = ProcessInfo.processInfo.environment) {
+    /// `accounts` may be shared with the tracker (same home and environment); its refresh is stat-gated, so calling it
+    /// again here costs a few stats.
+    init(home: URL = FileManager.default.homeDirectoryForCurrentUser, environment: [String: String] = ProcessInfo.processInfo.environment,
+         accounts: LimitAccountReader? = nil) {
         databases = AgentUsageHistory.databases(home: home, environment: environment)
-        accounts = LimitAccountReader(home: home, environment: environment)
+        self.accounts = accounts ?? LimitAccountReader(home: home, environment: environment)
     }
 
     func read() -> AgentUsageHistory.Limits {

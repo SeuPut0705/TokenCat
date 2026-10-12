@@ -5,8 +5,10 @@ using TokenCat;
 // (Lang.Culture, ko-KR). The App's Main does the same.
 CultureInfo.DefaultThreadCurrentCulture = CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
 
-// dotnet run --project windows/TokenCat.Checks -c Release [-- --diagnose-tokens [home] | -- --telemetry-lifecycle-checks [port] | -- --live-limits]
+// dotnet run --project windows/TokenCat.Checks -c Release [-- --diagnose-tokens [home] | -- --telemetry-lifecycle-checks [port] | -- --live-limits
+//   | -- --bench-sample [home] [--synthetic] [--iterations N]]
 if (args is ["--diagnose-tokens", .. var home]) return TokenDiagnostics.Run(home is [var path, ..] ? path : AppPaths.Home);
+if (args is ["--bench-sample", .. var benchArgs]) return Bench.Run(benchArgs);
 // Read-only: account-scoped live sources and omp/Pi records. Only redacted account suffixes and numeric windows are printed.
 if (args is ["--live-limits"])
 {

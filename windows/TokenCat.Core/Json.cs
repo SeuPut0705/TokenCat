@@ -33,14 +33,18 @@ public static class Json
 
     /// Foundation nests about 512 levels; the default 64 would drop a deep tool input or a whole batch.
     public static readonly JsonDocumentOptions Depth = new() { MaxDepth = 512 };
+    static readonly JsonReaderOptions ReaderDepth = new() { MaxDepth = 512 };
 
-    /// `try? JSONSerialization.jsonObject(with:)`: null when the bytes are not JSON.
+    /// `try? JSONSerialization.jsonObject(with:)`: null when the bytes are not JSON. Accepts exactly what `JsonDocument.Parse`
+    /// with `Depth` accepts (one value, surrounding whitespace only), but copies the bytes once instead of twice (a copy to parse
+    /// and a `Clone` to keep): every log line goes through here.
     public static JsonElement? Parse(ReadOnlySpan<byte> bytes)
     {
         try
         {
-            using var document = JsonDocument.Parse(StripBom(bytes).ToArray(), Depth);
-            return document.RootElement.Clone();
+            var reader = new Utf8JsonReader(StripBom(bytes), ReaderDepth);
+            var value = JsonElement.ParseValue(ref reader);
+            return reader.Read() ? null : value; // a second value after the first: not one JSON text
         }
         catch (JsonException) { return null; }
     }

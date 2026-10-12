@@ -14,6 +14,14 @@ func runTelemetryChecks() -> [String] {
         values.sorted { $0.key < $1.key }.map { attribute($0.key, $0.value) }
     }
     func json(_ value: [String: Any]) -> Data { (try? JSONSerialization.data(withJSONObject: value)) ?? Data() }
+    /// What a privacy check searches; an encoding failure fails it rather than leaving an empty, trivially clean text.
+    func encodedText<T: Encodable>(_ value: T) -> String {
+        guard let data = try? JSONEncoder().encode(value) else {
+            check(false, "A privacy check could not encode what it inspects")
+            return ""
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
     func logs(_ values: [String: Any], time: String = "1750000000000000000", service: String = "claude-code") -> Data {
         json(["resourceLogs": [["resource": ["attributes": attrs(["service.name": service])],
             "scopeLogs": [["logRecords": [["timeUnixNano": time, "body": ["stringValue": "claude_code.api_request"],
@@ -137,8 +145,9 @@ func runTelemetryChecks() -> [String] {
     _ = unknownService.ingest(metric(serviceTBT, service: "claude-code"), path: "/v1/metrics")
     check(unknownService.snapshot().isEmpty, "Unknown or cross-provider service was classified by a metric name alone")
     check(unknownService.diagnostics().entries.contains(where: {
-        $0.resourceServiceName == "arbitrary codex service" && $0.metricName == serviceTBT && !$0.recognized
-    }), "Diagnostics lost the rejected resource service/name pair")
+        $0.resourceServiceName == LocalTelemetryCollector.unknownMetadata && $0.metricName == serviceTBT && !$0.recognized
+    }) && !unknownService.diagnostics().entries.contains { $0.resourceServiceName?.contains("arbitrary") == true },
+          "Diagnostics lost the rejected resource service/name pair")
 
     let diagnostics = LocalTelemetryCollector()
     _ = diagnostics.ingest(metric(serviceTBT, service: "Codex Desktop"), path: "/v1/metrics")
@@ -155,17 +164,25 @@ func runTelemetryChecks() -> [String] {
     check(diagnosticSnapshot.entries.contains(where: { $0.resourceServiceName == "Codex Desktop"
           && $0.metricName == serviceTBT && $0.unit == "ms" && $0.recognized })
           && diagnosticSnapshot.entries.contains(where: { $0.unit == "s" && !$0.recognized })
-          && diagnosticSnapshot.entries.contains(where: { $0.metricName == "unknown.metric" && !$0.recognized }),
+          && diagnosticSnapshot.entries.contains(where: { $0.metricName == LocalTelemetryCollector.unknownMetadata && !$0.recognized }),
           "Diagnostics did not separate known metadata from unsupported units/names")
-    let diagnosticJSON = String(data: (try? JSONEncoder().encode(diagnosticSnapshot)) ?? Data(), encoding: .utf8) ?? ""
-    check(!diagnosticJSON.contains("PRIVATE") && !diagnosticJSON.contains("output_tokens")
+    let diagnosticData = try? JSONEncoder().encode(diagnosticSnapshot)
+    let diagnosticJSON = diagnosticData.map { String(decoding: $0, as: UTF8.self) } ?? ""
+    check(diagnosticData != nil && !diagnosticJSON.contains("PRIVATE") && !diagnosticJSON.contains("output_tokens")
           && !diagnosticJSON.contains("\"duration_ms\":"), "Diagnostic output retained event bodies or other attributes")
+    // Distinct known service × metric × unit slots, more than the bound; the oldest leave first.
     let bound = LocalTelemetryCollector.maximumDiagnostics
-    for index in 0..<(bound + 8) {
-        _ = diagnostics.ingest(metric("unknown.metric.\(index)"), path: "/v1/metrics")
+    let slots = ["codex_cli_rs", "codex_exec", "codex-app-server", "codex_desktop", "codex-tui", "codex_vscode", "codex_mcp_server",
+                 "codex_sdk_ts", "codex-app-server-sdk", "Codex Desktop"].flatMap { service in
+        [serviceTBT, "codex.responses_api_engine_iapi_tbt.duration_ms", "codex.responses_api_inference_time.duration_ms"]
+            .flatMap { name in ["s", "1", "By"].map { (service, name, $0) } }
+    }.prefix(bound + 8)
+    for (service, name, unit) in slots {
+        _ = diagnostics.ingest(metric(name, unit: unit, service: service), path: "/v1/metrics")
     }
+    let lastSlot = diagnostics.diagnostics().entries.last
     check(diagnostics.diagnostics().entries.count == bound
-          && diagnostics.diagnostics().entries.last?.metricName == "unknown.metric.\(bound + 7)",
+          && lastSlot?.resourceServiceName == slots.last?.0 && lastSlot?.metricName == slots.last?.1 && lastSlot?.unit == slots.last?.2,
           "Diagnostic metadata did not evict entries at its memory bound")
     _ = diagnostics.ingest(metric(String(repeating: "x", count: 1000)), path: "/v1/metrics")
     check(diagnostics.diagnostics().entries.last?.metricName == "__invalid_metadata__",
@@ -235,7 +252,7 @@ func runTelemetryChecks() -> [String] {
     _ = unknownApp.ingest(logs(["event.name": "codex.sse_event", "output_token_count": 7, "conversation.id": "PRIVATE_CONV"],
                                service: "codex-app-server"), path: "/v1/logs")
     let appEntries = unknownApp.diagnostics().entries
-    let appJSON = String(decoding: (try? JSONEncoder().encode(unknownApp.diagnostics())) ?? Data(), as: UTF8.self)
+    let appJSON = encodedText(unknownApp.diagnostics())
     check(appEntries.count == 3 && unknownApp.snapshot().isEmpty
           && appEntries.contains(where: { $0.name == "__invalid_metadata__" && $0.attributeKeys == [] })
           && appEntries.contains(where: { $0.signal == "traces" && $0.name == "handle_request" && !$0.recognized
@@ -309,7 +326,7 @@ func runTelemetryChecks() -> [String] {
           && geminiReading.first?.requestDurationMs == 2_000 && geminiReading.first?.agentID == nil
           && gemini.lastBatchAt[.gemini] != nil && gemini.diagnostics().entries.allSatisfy(\.recognized),
           "A Gemini CLI api_response did not decode to one main-session reading with thoughts counted")
-    let geminiKept = String(decoding: (try? JSONEncoder().encode(geminiReading)) ?? Data(), as: UTF8.self)
+    let geminiKept = encodedText(geminiReading)
     check(!["person@example.com", "install-1", "private-prompt-id", "oauth-personal"].contains(where: geminiKept.contains),
           "A Gemini CLI reading kept an identity or prompt attribute")
     let geminiOld = LocalTelemetryCollector()
@@ -332,7 +349,7 @@ func runTelemetryChecks() -> [String] {
           && qwenReading.first?.requestID == "chatcmpl-main-1" && qwenReading.first?.outputTokens == 80
           && qwenReading.first?.requestDurationMs == 1_600 && qwenReading.first?.ttftMs == 300 && qwen.lastBatchAt[.qwen] != nil,
           "A Qwen Code api_response did not decode to one main-session reading, or a subagent request was kept")
-    check(!String(decoding: (try? JSONEncoder().encode(qwenReading)) ?? Data(), as: UTF8.self).contains("Code Reviewer"),
+    check(!encodedText(qwenReading).contains("Code Reviewer"),
           "A Qwen Code subagent name was kept")
     let impostor = LocalTelemetryCollector()
     _ = impostor.ingest(Data(qwenBatch.replacingOccurrences(of: #""stringValue":"qwen-code"}}"#, with: #""stringValue":"gemini-cli"}}"#).utf8), path: "/v1/logs")
@@ -452,7 +469,7 @@ func runTelemetryChecks() -> [String] {
           && statusLimits().fiveHour?.resetsAt == Date(timeIntervalSince1970: 1_790_007_980)
           && (statusLimits().fiveHour?.receivedAt ?? .distantPast) >= before,
           "Claude status line limits were not decoded")
-    let kept = String(decoding: (try? JSONEncoder().encode(status.claudeLimits(tokens: []))) ?? Data(), as: UTF8.self)
+    let kept = encodedText(status.claudeLimits(tokens: []))
     check(!["private-project", "status-session", "claude-opus", "cost", "transcript", "spend"].contains(where: kept.contains)
           && status.snapshot().isEmpty && status.lastBatchAt.isEmpty && status.lastReceivedAt == nil && status.state == .waiting
           && status.diagnostics().entries.isEmpty, "The status line copy kept more than the limits or posed as an OTLP export")
@@ -487,7 +504,7 @@ func runTelemetryChecks() -> [String] {
           && status.claudeLimits(tokens: [readingA, readingB])[accountA.storageKey]?.fiveHour?.usedPercent == 42
           && status.claudeLimits(tokens: [readingA, readingB])[accountB.storageKey]?.fiveHour?.usedPercent == 11,
           "Claude status line receipts mixed windows from two session accounts")
-    let routedJSON = String(decoding: (try? JSONEncoder().encode(routed)) ?? Data(), as: UTF8.self)
+    let routedJSON = encodedText(routed)
     check(!["account-a", "account-b", "example.test", "status-session"].contains(where: routedJSON.contains),
           "Encoded Claude status line limits exposed account or session identity")
     let statusWire = "POST /v1/claude/status HTTP/1.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"

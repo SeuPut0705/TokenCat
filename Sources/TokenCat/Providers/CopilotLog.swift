@@ -166,8 +166,10 @@ final class CopilotLogReader: TokenLogReader {
         guard stat(file.path, &info) == 0 else { return }
         let current = "\(info.st_ino)-\(info.st_size)-\(info.st_mtimespec.tv_sec)-\(info.st_mtimespec.tv_nsec)"
         guard current != workspaceStamp else { return }
+        // An oversized file stays rejected until it changes; a failed read keeps no stamp and is tried again.
+        guard info.st_size <= 65_536 else { workspaceStamp = current; return }
+        guard let data = try? Data(contentsOf: file) else { return }
         workspaceStamp = current
-        guard info.st_size <= 65_536, let data = try? Data(contentsOf: file) else { return }
         let values = Self.yamlValues(String(decoding: data, as: UTF8.self), keys: ["cwd", "name", "summary"])
         if cwd == nil, let path = values["cwd"], !path.isEmpty { cwd = path }
         title = SessionTitle.clean(values["name"]) ?? SessionTitle.clean(values["summary"])

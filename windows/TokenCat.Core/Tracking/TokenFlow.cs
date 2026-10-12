@@ -13,7 +13,8 @@ public sealed record FlowSeries(DateTimeOffset Newest, IReadOnlyList<int> Hero, 
     public static FlowSeries Empty { get; } = new(DateTimeOffset.MinValue, new int[HeroCount], new bool[HeroCount],
         new Dictionary<TokenSource, int>(), null);
 
-    public int Total => Hero.Sum();
+    /// Saturates at int.MaxValue: LINQ's int `Sum` throws on overflow, and a throw here would abort the publish.
+    public int Total => Hero.Aggregate(0, LogFields.Add);
 
     /// Start of the newest bucket: `floor(now / 5) * 5`.
     public static DateTimeOffset BucketStart(DateTimeOffset now)
@@ -45,12 +46,12 @@ public sealed record FlowSeries(DateTimeOffset Newest, IReadOnlyList<int> Hero, 
             foreach (var record in reading.RecentOutputs)
             {
                 if (record.Tokens <= 0 || Offset(record.At, now, newest, HeroCount) is not { } offset) continue;
-                hero[HeroCount - 1 - offset] += record.Tokens;
+                hero[HeroCount - 1 - offset] = LogFields.Add(hero[HeroCount - 1 - offset], record.Tokens);
                 if ((now - record.At).TotalSeconds <= FreshSeconds) fresh[HeroCount - 1 - offset] = true;
-                byProvider[reading.Source] = byProvider.GetValueOrDefault(reading.Source) + record.Tokens;
+                byProvider[reading.Source] = LogFields.Add(byProvider.GetValueOrDefault(reading.Source), record.Tokens);
                 if (last is { } previous && previous.At >= record.At)
                 {
-                    if (previous.At == record.At) last = previous with { Tokens = previous.Tokens + record.Tokens };
+                    if (previous.At == record.At) last = previous with { Tokens = LogFields.Add(previous.Tokens, record.Tokens) };
                 }
                 else last = record;
             }

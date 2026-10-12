@@ -379,6 +379,8 @@ final class CursorIDEStore {
     private(set) var workspaces: [String] = []
 
     private init(path: String) { self.path = path }
+    /// Composers and data stamps held, for the eviction check.
+    var cachedComposers: Int { composers.count + dataStamps.count }
 
     func composer(_ id: String, now: Date) -> CursorComposer? {
         let known = wanted[id] != nil
@@ -386,6 +388,9 @@ final class CursorIDEStore {
         if sampledAt != now || !known {
             sampledAt = now
             wanted = wanted.filter { now.timeIntervalSince($0.value) <= 600 }
+            // A composer no reader asked about for 10 minutes is forgotten with its data stamp; asked again, it is read again.
+            composers = composers.filter { wanted[$0.key] != nil }
+            dataStamps = dataStamps.filter { wanted[$0.key] != nil }
             refresh(now: now, onlyNew: known ? nil : id)
         }
         return composers[id]

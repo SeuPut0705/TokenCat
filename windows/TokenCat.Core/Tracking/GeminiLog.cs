@@ -115,8 +115,11 @@ file sealed class ChatTurnState(TokenSource source)
     DateTimeOffset? lastOutputAt;
     int? lastOutputDelta;
     readonly List<TokenOutputEvent> recentOutputs = [];
-    /// Output already counted per message: Gemini appends a message again when its tokens or tool calls arrive.
+    /// Output already counted per message: Gemini appends a message again when its tokens or tool calls arrive. At most
+    /// `CountedLimit` messages, the oldest dropped first (`countedOrder`): a message re-recorded long after is the least likely.
     readonly Dictionary<string, int> counted = new(StringComparer.Ordinal);
+    readonly Queue<string> countedOrder = new();
+    public const int CountedLimit = 4_096;
     /// Tools that wait for the person (Qwen's question and plan approval; Gemini's ask_user).
     static readonly HashSet<string> InputTools = new(["ask_user_question", "ask_user", "exit_plan_mode"], StringComparer.Ordinal);
 
@@ -230,7 +233,11 @@ file sealed class ChatTurnState(TokenSource source)
     {
         var prior = counted.GetValueOrDefault(id);
         if (tokens <= prior) return;
-        if (counted.Count >= 4_096) counted.Clear();
+        if (!counted.ContainsKey(id))
+        {
+            if (counted.Count >= CountedLimit) counted.Remove(countedOrder.Dequeue());
+            countedOrder.Enqueue(id);
+        }
         counted[id] = tokens;
         var delta = tokens - prior;
         if (startSeen)
@@ -315,107 +322,6 @@ file sealed class ChatTurnState(TokenSource source)
         "ask_user_question" or "ask_user" or "exit_plan_mode" => TokenCat.ToolCategory.Question,
         _ => TokenLogParser.Category(name),
     };
-
-    public static int? Integer(JsonElement? value) =>
-        value?.Number is { } number && number >= 0 && number <= int.MaxValue && Math.Truncate(number) == number ? (int)number : null;
-
-    /// ISO 8601 as the clients write it (`toISOString()`), with an optional fraction and Z or an offset.
-    public static DateTimeOffset? Date(JsonElement? value) =>
-        value?.Text is { } text && DateTimeOffset.TryParseExact(text, ["yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK", "yyyy-MM-dd'T'HH:mm:ssK"],
-            CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var parsed)
-        && parsed.Year is > 1 and < 9999 ? parsed : null;
-}
-
-/// New complete lines of an append-only JSONL log: a bounded first read, line reassembly, a 1 MB line cap, and a restart
-/// when the file is replaced or truncated.
-file sealed class ChatLineTail(string path)
-{
-    long offset;
-    long identity;
-    bool initialized;
-    MemoryStream pending = new();
-    bool dropping;
-    const int MaximumLineBytes = 1_048_576;
-    const FileShare Sharing = FileShare.ReadWrite | FileShare.Delete; // never block the writer's appends or renames
-
-    /// `restart` runs before a replaced or truncated log is read again; `header` gets the first line when the first read
-    /// starts past it (session metadata only).
-    public void Read(int tailLimit, Action restart, Action<ReadOnlySpan<byte>> header, Action<ReadOnlySpan<byte>> line)
-    {
-        var info = new FileInfo(path);
-        if (!info.Exists) return;
-        var size = info.Length;
-        var currentIdentity = info.CreationTimeUtc.Ticks;
-        if (initialized && (identity != currentIdentity || size < offset))
-        {
-            offset = 0;
-            initialized = false;
-            pending = new();
-            dropping = false;
-            restart();
-        }
-        if (initialized && size == offset) return;
-        try
-        {
-            using var handle = new FileStream(path, FileMode.Open, FileAccess.Read, Sharing, bufferSize: 0);
-            if (!initialized)
-            {
-                if (size > tailLimit)
-                {
-                    var head = ReadAt(handle, 0, 65_536);
-                    if (head.AsSpan().IndexOf((byte)10) is var newline and >= 0) header(head.AsSpan(0, newline));
-                }
-                offset = size > tailLimit ? size - tailLimit : 0;
-                dropping = offset > 0;
-                identity = currentIdentity;
-                initialized = true;
-            }
-            long budget = 16_777_216 + tailLimit;
-            while (offset < size && budget > 0)
-            {
-                var data = ReadAt(handle, offset, (int)Math.Min(1_048_576, size - offset));
-                if (data.Length == 0) break;
-                offset += data.Length;
-                budget -= data.Length;
-                Split(data, line);
-            }
-        }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
-    }
-
-    static byte[] ReadAt(FileStream handle, long position, int count)
-    {
-        var buffer = new byte[count];
-        handle.Position = position;
-        var read = handle.ReadAtLeast(buffer, count, throwOnEndOfStream: false);
-        return read == count ? buffer : buffer[..read];
-    }
-
-    void Split(byte[] data, Action<ReadOnlySpan<byte>> line)
-    {
-        var start = 0;
-        while (start < data.Length)
-        {
-            var found = data.AsSpan(start).IndexOf((byte)10);
-            var end = found < 0 ? data.Length : start + found;
-            if (!dropping)
-            {
-                if (pending.Length + end - start <= MaximumLineBytes) pending.Write(data, start, end - start);
-                else
-                {
-                    pending = new();
-                    dropping = true;
-                }
-            }
-            if (found < 0) break;
-            if (!dropping && pending.Length > 0) line(pending.GetBuffer().AsSpan(0, (int)pending.Length));
-            // One long line must not pin up to 1 MB per reader for good.
-            if (pending.Length > 65_536) pending = new();
-            else pending.SetLength(0);
-            dropping = false;
-            start = end + 1;
-        }
-    }
 }
 
 /// One Gemini CLI chat: a JSONL log, or a legacy JSON snapshot rewritten in place.
@@ -423,7 +329,7 @@ file sealed class GeminiChatReader : ITokenLogReader
 {
     readonly string path;
     readonly bool legacy;
-    readonly ChatLineTail tail;
+    readonly LogLineTail tail;
     ChatTurnState state = new(TokenSource.Gemini);
     (long Modified, long Size)? snapshot;
     readonly HashSet<string> seen = new(StringComparer.Ordinal);
@@ -437,7 +343,7 @@ file sealed class GeminiChatReader : ITokenLogReader
     {
         this.path = path;
         legacy = Path.GetExtension(path) == ".json";
-        tail = new ChatLineTail(path);
+        tail = new LogLineTail(path);
         var folder = Path.GetDirectoryName(path) ?? "";
         var parent = Path.GetFileName(folder);
         var chats = parent == "chats" ? folder : Path.GetDirectoryName(folder) ?? "";
@@ -494,8 +400,8 @@ file sealed class GeminiChatReader : ITokenLogReader
             return;
         }
         tail.Read(tailLimit, Reset,
-            line => { if (TokenLogParser.Record(line) is { } record) Metadata(record); },
-            line => { if (TokenLogParser.Record(line) is { } record) Consume(record); });
+            line => { if (TokenLogParser.Record(line) is { } record) Consume(record); },
+            header: line => { if (TokenLogParser.Record(line) is { } record) Metadata(record); });
     }
 
     /// Legacy snapshots are rewritten whole: reread (up to 32 MB) when the size or modification time changes.
@@ -554,7 +460,7 @@ file sealed class GeminiChatReader : ITokenLogReader
             state.IsSubagent = true;
             state.AgentID = state.SessionID;
         }
-        state.Note(ChatTurnState.Date(record.Field("lastUpdated")));
+        state.Note(LogFields.Date(record.Field("lastUpdated")));
         if (projectRoot is null && record.Field("directories") is { ValueKind: JsonValueKind.Array } directories
             && directories.GetArrayLength() > 0 && directories[0].Text is { } directory) state.SetProject(directory);
         if (SessionTitle.Clean(record.Field("summary")) is { } summary) state.Title = summary;
@@ -567,7 +473,7 @@ file sealed class GeminiChatReader : ITokenLogReader
     void Message(JsonElement record)
     {
         if (record.Field("id")?.Text is not { } id || record.Field("type")?.Text is not { } type) return;
-        var date = ChatTurnState.Date(record.Field("timestamp"));
+        var date = LogFields.Date(record.Field("timestamp"));
         var isNew = !seen.Contains(id);
         if (isNew)
         {
@@ -603,14 +509,14 @@ file sealed class GeminiChatReader : ITokenLogReader
                 if (record.Field("model")?.Text is { Length: > 0 } model) state.Model = model;
                 if (record.Field("tokens") is { ValueKind: JsonValueKind.Object } tokens)
                 {
-                    var input = ChatTurnState.Integer(tokens.Field("input"));
-                    state.Output(id, GeminiTokens.Output(ChatTurnState.Integer(tokens.Field("output")),
-                        ChatTurnState.Integer(tokens.Field("thoughts")), input, ChatTurnState.Integer(tokens.Field("total"))), date);
+                    var input = LogFields.Count(tokens.Field("input"));
+                    state.Output(id, GeminiTokens.Output(LogFields.Count(tokens.Field("output")),
+                        LogFields.Count(tokens.Field("thoughts")), input, LogFields.Count(tokens.Field("total"))), date);
                     state.Context(input, null, date);
                 }
                 var calls = record.Field("toolCalls") is { ValueKind: JsonValueKind.Array } list
                     ? list.EnumerateArray().Where(call => call.ValueKind == JsonValueKind.Object).ToList() : [];
-                var finished = calls.Select(call => ChatTurnState.Date(call.Field("timestamp"))).Max();
+                var finished = calls.Select(call => LogFields.Date(call.Field("timestamp"))).Max();
                 // An earlier message appended again (late tokens) does not move the turn.
                 if (!isLatest)
                 {
@@ -642,7 +548,7 @@ file sealed class GeminiChatReader : ITokenLogReader
 file sealed class QwenChatReader : ITokenLogReader
 {
     readonly string path;
-    readonly ChatLineTail tail;
+    readonly LogLineTail tail;
     ChatTurnState state = new(TokenSource.Qwen);
     readonly HashSet<string> seen = new(StringComparer.Ordinal);
     readonly (string Session, string Agent)? subagent;
@@ -651,7 +557,7 @@ file sealed class QwenChatReader : ITokenLogReader
     public QwenChatReader(string path)
     {
         this.path = path;
-        tail = new ChatLineTail(path);
+        tail = new LogLineTail(path);
         var name = Path.GetFileNameWithoutExtension(path);
         var folder = Path.GetDirectoryName(path) ?? "";
         subagent = Path.GetFileName(Path.GetDirectoryName(folder)) == "subagents" && name.StartsWith("agent-", StringComparison.Ordinal)
@@ -681,7 +587,7 @@ file sealed class QwenChatReader : ITokenLogReader
     {
         state.Clamp(now.AddSeconds(5));
         ReadSidecar();
-        tail.Read(tailLimit, Reset, _ => { }, line => { if (TokenLogParser.Record(line) is { } record) Consume(record); });
+        tail.Read(tailLimit, Reset, line => { if (TokenLogParser.Record(line) is { } record) Consume(record); });
     }
 
     /// The subagent type from `agent-<id>.meta.json`, retried until present; its other keys are never kept.
@@ -723,7 +629,7 @@ file sealed class QwenChatReader : ITokenLogReader
             if (subagent is not null) state.ParentSessionID = session;
         }
         if (subagent is not null && state.AgentRole is null) state.AgentRole = TokenLogParser.Label(record.Field("agentName"));
-        var date = ChatTurnState.Date(record.Field("timestamp"));
+        var date = LogFields.Date(record.Field("timestamp"));
         state.Note(date);
         var subtype = record.Field("subtype")?.Text;
         var parts = record.Field("message")?.Field("parts") is { ValueKind: JsonValueKind.Array } array
@@ -738,11 +644,11 @@ file sealed class QwenChatReader : ITokenLogReader
                 if (record.Field("model")?.Text is { Length: > 0 } model) state.Model = model;
                 if (record.Field("usageMetadata") is { ValueKind: JsonValueKind.Object } usage)
                 {
-                    var prompt = ChatTurnState.Integer(usage.Field("promptTokenCount"));
+                    var prompt = LogFields.Count(usage.Field("promptTokenCount"));
                     state.Output(record.Field("uuid")?.Text ?? Guid.NewGuid().ToString(), GeminiTokens.Output(
-                        ChatTurnState.Integer(usage.Field("candidatesTokenCount")), ChatTurnState.Integer(usage.Field("thoughtsTokenCount")),
-                        prompt, ChatTurnState.Integer(usage.Field("totalTokenCount"))), date);
-                    state.Context(prompt, ChatTurnState.Integer(record.Field("contextWindowSize")), date);
+                        LogFields.Count(usage.Field("candidatesTokenCount")), LogFields.Count(usage.Field("thoughtsTokenCount")),
+                        prompt, LogFields.Count(usage.Field("totalTokenCount"))), date);
+                    state.Context(prompt, LogFields.Count(record.Field("contextWindowSize")), date);
                 }
                 var calls = parts.Select(part => part.Field("functionCall")).Where(call => call?.ValueKind == JsonValueKind.Object).ToList();
                 for (var index = 0; index < calls.Count; index++)

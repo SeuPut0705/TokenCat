@@ -197,6 +197,8 @@ public sealed class LiveLimits(string home, string version, HttpMessageHandler? 
         }
         candidatesFromConfigs.AddRange(agents);
         var candidates = ClaudeCandidates(saved, codeAccount, candidatesFromConfigs, slot.Account);
+        // A refused token no longer offered (rotated, signed out) can never be offered again: forget its hash.
+        rejected.IntersectWith(candidates.Select(candidate => TokenHash(candidate.Access)));
         var refused = new HashSet<string>(StringComparer.Ordinal);
         var usableAfter = DateTimeOffset.UtcNow.AddSeconds(60).ToUnixTimeMilliseconds();
         foreach (var (access, expires) in candidates)

@@ -27,6 +27,8 @@ enum SnapshotFixtures {
         var update = UpdateState()
         /// Claude usage-limit windows as the status line bridge would have delivered them.
         var claudeLimits: ClaudeLimitsByAccount = [:]
+        var presentation: DashboardPresentation = .popover
+        var panelHeight: CGFloat?
     }
 
     /// Thursday 15:00:03 local time, so 오늘/어제/이번 주/이전 all have members.
@@ -60,6 +62,7 @@ enum SnapshotFixtures {
         print("Fixture snapshots saved: \(written)")
         return written == fixtures().count + components().count ? 0 : 1
     }
+
 
     /// Component sheets: the five first-run outcomes (never part of a dashboard snapshot) and the limit row states (Codex seven, the last an omp record; Claude four, the last ones live reads).
     @MainActor
@@ -158,7 +161,9 @@ enum SnapshotFixtures {
         // The model republishes its presentation (clock, flow, list) whenever the toggle changes.
         model.sessionsExpanded = !fixture.expanded
         model.sessionsExpanded = fixture.expanded
-        return DashboardView(model: model, actions: .none, scrollsSessions: false, selection: fixture.selection, detail: fixture.detail)
+        return DashboardView(model: model, presentation: fixture.presentation, actions: .none, scrollsSessions: false,
+                             selection: fixture.selection, detail: fixture.detail)
+            .frame(height: fixture.panelHeight, alignment: .top)
     }
 
     @MainActor
@@ -462,7 +467,23 @@ enum SnapshotFixtures {
         secondMember.limitAccount = secondAccount
         secondMember.rateLimit?.usedPercent = 34
         let multipleAccounts = Fixture(name: "multiple-accounts", tokens: [firstMember, secondMember])
+        // Long metadata and large counters exercise the fixed dashboard width without hiding the client.
+        var long = reading("long01", .claude, project: "an-extremely-long-project-folder-name", model: "claude-opus-with-a-long-model-identifier",
+                           state: .input, last: -180, output: 123_456_789, outputs: [-60: 123_456])
+        long.title = loc("아주 긴 세션 이름에서도 클라이언트와 상태를 알아볼 수 있어야 합니다",
+                         "A very long session title must keep its client and state identifiable")
+        var longIdle = idle("long02", project: "another-extremely-long-project-folder-name", ago: -3_600)
+        longIdle.title = loc("완료된 세션의 아주 긴 제목", "A very long completed session title")
+        let longText = Fixture(name: "long-text", tokens: [long, longIdle], selection: long.id, detail: long.id)
+        var shortPanel = detail
+        shortPanel.name = "panel-detail"
+        shortPanel.presentation = .panel
+        shortPanel.panelHeight = 510
+        var tallPanel = grouped
+        tallPanel.name = "panel-tree"
+        tallPanel.presentation = .panel
+        tallPanel.panelHeight = 740
         return [input, retry, tools, context, grouped, dates, empty, noFolders, loading, restart, port, busy, contrast,
-                logWait, rest, detail, selected, claudeOnly, available, downloading, failed, multipleAccounts]
+                logWait, rest, detail, selected, claudeOnly, available, downloading, failed, multipleAccounts, longText, shortPanel, tallPanel]
     }
 }

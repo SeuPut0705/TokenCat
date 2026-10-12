@@ -1157,6 +1157,7 @@ public static class TrackerChecks
         KimiChecks.Run(check);
         GooseLogChecks.Run(check);
         SessionTitleChecks.Run(check);
+        ResourceChecks.Run(check);
         return c.Done();
     }
 

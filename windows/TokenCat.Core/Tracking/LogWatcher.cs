@@ -2,8 +2,9 @@ namespace TokenCat;
 
 /// Wakes token sampling as soon as Codex/Claude logs change. Only paths are delivered; TokenTracker still reads the
 /// files. A wake-up hint only (rule 8): on NTFS an open writer's appends may not raise events until the cache flushes,
-/// so the 1 s sample with a fresh size query stays the source of truth.
-public sealed class LogWatcher(Action<string[]> changed) : IDisposable
+/// so the 1 s sample with a fresh size query stays the source of truth. `overflowed` reports lost events (a full buffer):
+/// no path then names what changed, so the caller rescans every client.
+public sealed class LogWatcher(Action<string[]> changed, Action? overflowed = null) : IDisposable
 {
     readonly Lock gate = new();
     List<FileSystemWatcher> watchers = [];
@@ -25,9 +26,7 @@ public sealed class LogWatcher(Action<string[]> changed) : IDisposable
                 watcher.Changed += (_, change) => Deliver(watcher, change.FullPath);
                 watcher.Created += (_, change) => Deliver(watcher, change.FullPath);
                 watcher.Renamed += (_, change) => Deliver(watcher, change.FullPath);
-                // Lost events (buffer overflow): an untracked-looking log path makes the tracker rediscover on its next
-                // sample. `*` can't appear in a Windows file name, so it never names a real log.
-                watcher.Error += (_, _) => Deliver(watcher, Path.Combine(directory, "*.jsonl"));
+                watcher.Error += (_, _) => Overflowed(watcher);
                 try
                 {
                     watcher.EnableRaisingEvents = true;
@@ -46,6 +45,12 @@ public sealed class LogWatcher(Action<string[]> changed) : IDisposable
     {
         lock (gate)
             if (watchers.Contains(source)) changed([path]);
+    }
+
+    void Overflowed(FileSystemWatcher source)
+    {
+        lock (gate)
+            if (watchers.Contains(source)) overflowed?.Invoke();
     }
 
     /// Waits for an in-flight callback, so the handler never runs after this returns.

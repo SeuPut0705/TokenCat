@@ -189,6 +189,10 @@ final class LocalTelemetryCollector {
     static let maximumLatest = 128
     static let maximumDiagnostics = 64
     static let maximumDiagnosticKeys = 48
+    /// What diagnostics show for a service, metric or unit name TokenCat does not know.
+    static let unknownMetadata = "__unknown_metadata__"
+    /// Units echoed in diagnostics; any other unit shows as `unknownMetadata`.
+    static let knownUnits: Set<String> = ["", "ms", "s", "us", "ns", "1", "By", "{token}"]
     /// Waits before retrying a listener that could not start (for example a busy port).
     static let retryDelays: [TimeInterval] = [5, 30, 120]
     static let health: [String: Any] = ["owner": "TokenCat", "appIdentifier": "dev.seuput.TokenCat",
@@ -595,8 +599,9 @@ private enum TelemetryDecoder {
                     for log in logs {
                         let attrs = base.merging(attributes(log["attributes"]), uniquingKeysWith: { _, value in value })
                         if attrs["success"] as? Bool == false { continue }
-                        let body = (log["body"] as? [String: Any])?["stringValue"] as? String
-                        let name = attrs["event.name"] as? String ?? attrs["event_name"] as? String ?? body
+                        // The body is only a fallback event name, read when neither attribute names the event.
+                        let name = attrs["event.name"] as? String ?? attrs["event_name"] as? String
+                            ?? (log["body"] as? [String: Any])?["stringValue"] as? String
                         if let client = name.flatMap({ responseEvents[$0] }) {
                             if let record = response(attrs, source: client, base: base, name: name, at: timestamp(log["timeUnixNano"], attrs: attrs)) {
                                 result.append(record)
@@ -745,10 +750,12 @@ private enum TelemetryDecoder {
         let resourceKey = path == "/v1/logs" ? "resourceLogs" : path == "/v1/metrics" ? "resourceMetrics" : "resourceSpans"
         let scopeKey = path == "/v1/logs" ? "scopeLogs" : path == "/v1/metrics" ? "scopeMetrics" : "scopeSpans"
         var result: [TelemetryDiagnosticEntry] = []
-        func bounded(_ value: Any?) -> String? {
+        /// Known service, metric and unit names are echoed verbatim; any other string becomes `unknownMetadata` (an exporter
+        /// could put an e-mail, a path or a token there), and a non-string or oversized value `__invalid_metadata__`.
+        func bounded(_ value: Any?, known: (String) -> Bool) -> String? {
             guard let string = value as? String else { return value == nil ? nil : "__invalid_metadata__" }
             guard string.utf8.count <= 256, string.utf8.allSatisfy({ (32...126).contains($0) }) else { return "__invalid_metadata__" }
-            return string
+            return known(string) ? string : LocalTelemetryCollector.unknownMetadata
         }
         func append(_ entry: TelemetryDiagnosticEntry) { merge(entry, into: &result) }
         // Span/event names and attribute keys are code-defined identifiers; anything else is dropped.
@@ -758,7 +765,7 @@ private enum TelemetryDecoder {
         }
         for resource in root[resourceKey] as? [[String: Any]] ?? [] {
             let base = attributes((resource["resource"] as? [String: Any])?["attributes"])
-            let service = bounded(base["service.name"])
+            let service = bounded(base["service.name"]) { source(["service.name": $0], fallback: nil) != nil }
             if signal != "metrics" {
                 // Logs: Claude Code, Gemini CLI and Qwen Code records decode; spans only Claude Code's.
                 let client = source(base, fallback: nil)
@@ -790,7 +797,9 @@ private enum TelemetryDecoder {
                     let recognized = name.flatMap { metricKinds[$0] } != nil
                         && source(base, fallback: name) == .codex && (unit == nil || unit == "" || unit == "ms")
                     append(TelemetryDiagnosticEntry(signal: signal, resourceServiceName: service,
-                        metricName: bounded(metric["name"]), unit: bounded(metric["unit"]), recognized: recognized))
+                        metricName: bounded(metric["name"]) { metricKinds[$0] != nil },
+                        unit: bounded(metric["unit"]) { LocalTelemetryCollector.knownUnits.contains($0) },
+                        recognized: recognized))
                 }
             }
         }

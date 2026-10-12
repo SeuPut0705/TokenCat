@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text;
 using System.Text.Json;
 
@@ -51,8 +52,8 @@ sealed class OmpLogReader(string path) : ITokenLogReader
         {
             state = new OmpLogState(path);
             headerRead = false;
-        }, line => state.Consume(line, tail.SkippedHead));
-        credentialPins = pinReader.Read();
+        }, line => state.Consume(line.ToArray(), tail.SkippedHead));
+        credentialPins = pinReader.Read(tail.Stamp);
         // The header (a title line, then the session line) is lost when the first read starts mid-file.
         if (!tail.SkippedHead || headerRead) return;
         try
@@ -498,21 +499,21 @@ sealed class OmpCredentialPinReader(string path)
     {
         public (long Identity, long Length, long Written)? Stamp;
         public long Offset;
-        public readonly MemoryStream Pending = new();
-        public bool Dropping;
+        public readonly LogLineAssembler Lines = new();
         public readonly Dictionary<TokenSource, string> Pins = [];
         public string? Parent;
     }
     readonly Dictionary<string, FileState> files = new(LimitAccountReader.PathComparer);
-    const int MaximumLineBytes = 1_048_576;
 
-    public IReadOnlyDictionary<TokenSource, string> Read() => Inherited(path, new HashSet<string>(LimitAccountReader.PathComparer));
+    /// `ownStamp`: the log's stamp from the usage tail's stat of this sample, so the log is not queried twice.
+    public IReadOnlyDictionary<TokenSource, string> Read((long Identity, long Length, long Written)? ownStamp = null) =>
+        Inherited(path, new HashSet<string>(LimitAccountReader.PathComparer), ownStamp);
 
-    Dictionary<TokenSource, string> Inherited(string path, HashSet<string> visited)
+    Dictionary<TokenSource, string> Inherited(string path, HashSet<string> visited, (long Identity, long Length, long Written)? knownStamp = null)
     {
         path = Path.GetFullPath(path);
         if (!visited.Add(path)) return [];
-        var own = Metadata(path);
+        var own = Metadata(path, knownStamp);
         var directory = Path.GetDirectoryName(path);
         string? parent = null;
         while (directory is not null && Path.GetDirectoryName(directory) is not null
@@ -520,7 +521,8 @@ sealed class OmpCredentialPinReader(string path)
         {
             var name = Path.GetFileName(directory);
             var candidate = directory + ".jsonl";
-            if (File.Exists(candidate) || (name.Length > 25 && name[..4].All(char.IsAsciiDigit) && name[10] == 'T' && name.Contains('_')))
+            // The name test first: a subagent folder named like its session needs no existence query.
+            if ((name.Length > 25 && name[..4].All(char.IsAsciiDigit) && name[10] == 'T' && name.Contains('_')) || File.Exists(candidate))
             {
                 parent = candidate;
                 break;
@@ -534,37 +536,36 @@ sealed class OmpCredentialPinReader(string path)
         return pins;
     }
 
-    FileState Metadata(string path)
+    FileState Metadata(string path, (long Identity, long Length, long Written)? knownStamp)
     {
         try
         {
-            var info = new FileInfo(path);
-            if (!info.Exists) { files.Remove(path); return new FileState(); }
-            var stamp = (Identity: info.CreationTimeUtc.Ticks, Length: info.Length, Written: info.LastWriteTimeUtc.Ticks);
+            (long Identity, long Length, long Written) stamp;
+            if (knownStamp is { } known) stamp = known;
+            else
+            {
+                var info = new FileInfo(path);
+                if (!info.Exists) { files.Remove(path); return new FileState(); }
+                stamp = (info.CreationTimeUtc.Ticks, info.Length, info.LastWriteTimeUtc.Ticks);
+            }
             if (!files.TryGetValue(path, out var state)) state = new FileState();
             if (state.Stamp == stamp) return state;
             if (state.Stamp is { } old && (old.Identity != stamp.Identity || stamp.Length < state.Offset
                 || (stamp.Length == state.Offset && old != stamp)))
-            {
-                state.Pending.Dispose();
                 state = new FileState();
-            }
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 0);
             stream.Position = state.Offset;
-            var chunk = new byte[65_536];
-            int count;
-            while ((count = stream.Read(chunk)) > 0)
+            var chunk = ArrayPool<byte>.Shared.Rent(65_536);
+            try
             {
-                state.Offset += count;
-                var start = 0;
-                for (var index = 0; index < count; index++)
+                int count;
+                while ((count = stream.Read(chunk, 0, 65_536)) > 0)
                 {
-                    if (chunk[index] != 10) continue;
-                    Consume(chunk.AsSpan(start, index - start), true, state);
-                    start = index + 1;
+                    state.Offset += count;
+                    state.Lines.Consume(chunk.AsSpan(0, count), line => Consume(line, state));
                 }
-                Consume(chunk.AsSpan(start, count - start), false, state);
             }
+            finally { ArrayPool<byte>.Shared.Return(chunk); }
             state.Stamp = stamp;
             files[path] = state;
             return state;
@@ -572,23 +573,11 @@ sealed class OmpCredentialPinReader(string path)
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return files.GetValueOrDefault(path) ?? new FileState(); }
     }
 
-    static void Consume(ReadOnlySpan<byte> bytes, bool complete, FileState state)
+    static void Consume(ReadOnlySpan<byte> line, FileState state)
     {
-        if (!state.Dropping)
-        {
-            if (state.Pending.Length + bytes.Length > MaximumLineBytes)
-            {
-                state.Pending.SetLength(0);
-                state.Dropping = true;
-            }
-            else state.Pending.Write(bytes);
-        }
-        if (!complete) return;
+        if (line.IndexOf("credential_pin"u8) < 0 && line.IndexOf("parentSession"u8) < 0) return;
         try
         {
-            var line = state.Pending.GetBuffer().AsSpan(0, (int)state.Pending.Length);
-            if (state.Dropping || (line.IndexOf("credential_pin"u8) < 0
-                && line.IndexOf("parentSession"u8) < 0)) return;
             var record = JsonSerializer.Deserialize<Record>(Json.StripBom(line), Json.Options);
             if (record?.Type == "session") state.Parent = record.ParentSession;
             if (record?.Type != "credential_pin" || record.Hash is not { Length: 64 } hash
@@ -600,11 +589,5 @@ sealed class OmpCredentialPinReader(string path)
             }
         }
         catch (JsonException) { }
-        finally
-        {
-            state.Pending.SetLength(0);
-            state.Pending.Position = 0;
-            state.Dropping = false;
-        }
     }
 }

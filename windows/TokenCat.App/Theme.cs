@@ -8,11 +8,15 @@ using Microsoft.Win32;
 namespace TokenCat;
 
 /// DesignTokens.swift for WPF (DESIGN §4.5): the TCColor values for light and dark, picked by `AppsUseLightTheme`.
-/// "primary x" is the macOS label colour at x of its own opacity. Views read the tokens while building, so a theme change
-/// rebuilds them (Shell). ponytail: High Contrast keeps these tokens; switch to SystemColors if a HC user asks.
+/// Views read the tokens while building, so appearance changes rebuild them (Shell). High Contrast uses the user's
+/// system palette, not approximations of a dark/light theme; state shapes keep the meaning when colours coincide.
 static class Theme
 {
     public static bool Dark { get; set; } = !AppsUseLightTheme();
+    internal static bool? HighContrastOverride { get; set; }
+    public static bool HighContrast => HighContrastOverride ?? SystemParameters.HighContrast;
+    public static bool Materials => !HighContrast && OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22621)
+        && Registry.GetValue(Personalize, "EnableTransparency", 1) is not 0;
 
     const string Personalize = @"HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
     /// Flyout, dashboard window and Settings.
@@ -24,38 +28,43 @@ static class Theme
     static Color Alpha(Color color, double opacity) => Color.FromArgb((byte)Math.Round(color.A * opacity), color.R, color.G, color.B);
 
     /// NSColor.labelColor: black / white at 0.85.
-    public static Color Label => Dark ? Rgb(0xFFFFFF, 217) : Rgb(0x000000, 217);
-    public static Color Primary(double opacity) => Alpha(Label, opacity);
+    public static Color Label => HighContrast ? SystemColors.WindowTextColor : Dark ? Rgb(0xFFFFFF, 217) : Rgb(0x000000, 217);
+    public static Color Primary(double opacity) => HighContrast ? opacity >= 0.3 ? Label : SystemColors.ControlColor : Alpha(Label, opacity);
 
-    public static Color Attention => Dark ? Rgb(0xFFD60A) : Rgb(0xFFCC00);
+    public static Color Attention => HighContrast ? Label : Dark ? Rgb(0xFFD60A) : Rgb(0xFFCC00);
     /// Light #C86400 (systemOrange is 2.2:1 on the light container), dark systemOrange.
-    public static Color Warning => Dark ? Rgb(0xFF9F0A) : Rgb(0xC86400);
-    public static Color Critical => Dark ? Rgb(0xFF453A) : Rgb(0xFF3B30);
-    public static Color Activity => Dark ? Rgb(0x30D158) : Rgb(0x248A3D);
-    public static Color Tool => Dark ? Rgb(0x0A84FF) : Rgb(0x007AFF);
-    public static Color Working => Dark ? Rgb(0xBF5AF2) : Rgb(0xAF52DE);
-    public static Color Neutral => Primary(0.50);
-    public static Color Track => Primary(0.08);
-    public static Color Idle => Primary(0.30);
-    public static Color Hairline => Primary(0.10);
-    /// Dark: secondaryLabelColor (white 0.55); light: primary 0.66 (0.62 measured 4.3:1).
-    public static Color Secondary => Dark ? Rgb(0xFFFFFF, 140) : Primary(0.66);
-    /// tertiaryLabelColor: decoration only.
-    public static Color Tertiary => Dark ? Rgb(0xFFFFFF, 64) : Rgb(0x000000, 66);
-    public static Color Hover => Primary(0.05);
-    /// Windows 11's default accent. ponytail: fixed; read the user's accent (UISettings) if anyone asks.
-    public static Color Accent => Dark ? Rgb(0x60CDFF) : Rgb(0x005FB8);
-    public static Color Selection => Alpha(Accent, 0.16);
-    public static Color Background => Dark ? Rgb(0x202020) : Rgb(0xF9F9F9);
-    /// The two containers (A0-4): dark white 0.05; light white 0.72 with a black 0.06 rule. The first-run card: accent 0.08.
-    public static Color ContainerFill => Dark ? Rgb(0xFFFFFF, 13) : Rgb(0xFFFFFF, 184);
-    public static Color ContainerRule => Dark ? Colors.Transparent : Rgb(0x000000, 15);
-    public static Color TintFill => Alpha(Accent, 0.08);
+    public static Color Warning => HighContrast ? Label : Dark ? Rgb(0xFF9F0A) : Rgb(0xC86400);
+    public static Color Critical => HighContrast ? Label : Dark ? Rgb(0xFF453A) : Rgb(0xFF3B30);
+    public static Color Activity => HighContrast ? Label : Dark ? Rgb(0x30D158) : Rgb(0x248A3D);
+    public static Color Tool => HighContrast ? Label : Dark ? Rgb(0x0A84FF) : Rgb(0x007AFF);
+    public static Color Working => HighContrast ? Label : Dark ? Rgb(0xBF5AF2) : Rgb(0xAF52DE);
+    public static Color Neutral => HighContrast ? Label : Primary(0.50);
+    public static Color Track => HighContrast ? SystemColors.ControlDarkColor : Primary(0.08);
+    public static Color Idle => HighContrast ? Label : Primary(0.30);
+    public static Color Hairline => HighContrast ? Label : Primary(0.10);
+    /// Informational secondary text remains fully opaque in High Contrast.
+    public static Color Secondary => HighContrast ? Label : Dark ? Rgb(0xFFFFFF, 140) : Primary(0.66);
+    public static Color Tertiary => HighContrast ? SystemColors.GrayTextColor : Dark ? Rgb(0xFFFFFF, 64) : Rgb(0x000000, 66);
+    public static Color Hover => HighContrast ? SystemColors.ControlColor : Primary(0.05);
+    public static Color Pressed => HighContrast ? SystemColors.ControlColor : Primary(0.12);
+    public static Color Accent => HighContrast ? SystemColors.HotTrackColor : Dark ? Rgb(0x60CDFF) : Rgb(0x005FB8);
+    public static Color Selection => HighContrast ? SystemColors.ControlColor : Alpha(Accent, 0.16);
+    public static Color Background => HighContrast ? SystemColors.WindowColor : Dark ? Rgb(0x202020) : Rgb(0xF9F9F9);
+    /// A conservative tint over the native material keeps the dense dashboard legible on any wallpaper.
+    public static Color Surface => Materials ? Alpha(Background, 0.92) : Background;
+    public static Color ContainerFill => HighContrast ? Background : Dark ? Rgb(0xFFFFFF, 13) : Rgb(0xFFFFFF, 184);
+    public static Color ContainerRule => HighContrast ? Label : Dark ? Colors.Transparent : Rgb(0x000000, 15);
+    public static Color TintFill => HighContrast ? Background : Alpha(Accent, 0.08);
 
+    // Palette-sized, bounded cache: charts may request arbitrary opacity values. Frozen brushes are safe to share.
+    static readonly Dictionary<Color, SolidColorBrush> brushes = [];
     public static SolidColorBrush Brush(Color color)
     {
+        if (brushes.TryGetValue(color, out var cached)) return cached;
         var brush = new SolidColorBrush(color);
         brush.Freeze();
+        if (brushes.Count >= 512) brushes.Clear();
+        brushes[color] = brush;
         return brush;
     }
 
@@ -105,6 +114,7 @@ enum Font { Metric, Title, Body, Value, Meta, MetaMedium, MetaMono, MetaMonoSemi
 /// Small builders shared by the flyout, the dashboard window and Settings.
 static class Ui
 {
+    public const double ContainerRadius = 8, ControlRadius = 4;
     public static readonly FontFamily Family = new("Segoe UI Variable Text, Segoe UI, Malgun Gothic");
     public static readonly FontFamily IconFamily = new("Segoe Fluent Icons, Segoe MDL2 Assets");
 
@@ -164,7 +174,7 @@ static class Ui
     /// HoverButton on any button kind: a ToggleButton reports on/off and a RadioButton its selection to UI Automation.
     public static T Hover<T>(T button, UIElement content, Action click, string help, bool circle = false) where T : ButtonBase
     {
-        var chrome = new Border { Child = content, CornerRadius = new CornerRadius(circle ? 99 : 5), Background = Brushes.Transparent };
+        var chrome = new Border { Child = content, CornerRadius = new CornerRadius(circle ? 99 : ControlRadius), Background = Brushes.Transparent };
         button.Content = chrome;
         button.Cursor = System.Windows.Input.Cursors.Hand;
         button.Focusable = true;
@@ -172,9 +182,15 @@ static class Ui
         button.Padding = new Thickness(0);
         button.Template = PlainTemplate();
         button.FocusVisualStyle = FocusRing();
+        System.Windows.Automation.AutomationProperties.SetHelpText(button, help);
         System.Windows.Automation.AutomationProperties.SetName(button, help);
         button.MouseEnter += (_, _) => chrome.Background = Theme.Brush(Theme.Hover);
         button.MouseLeave += (_, _) => chrome.Background = Brushes.Transparent;
+        button.PreviewMouseLeftButtonDown += (_, _) => chrome.Background = Theme.Brush(Theme.Pressed);
+        button.PreviewMouseLeftButtonUp += (_, _) => chrome.Background = button.IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent;
+        button.LostMouseCapture += (_, _) => chrome.Background = button.IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent;
+        button.PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) chrome.Background = Theme.Brush(Theme.Pressed); };
+        button.PreviewKeyUp += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) chrome.Background = button.IsMouseOver ? Theme.Brush(Theme.Hover) : Brushes.Transparent; };
         button.Click += (_, _) => click();
         return button;
     }
@@ -202,31 +218,42 @@ static class Ui
         }
         var chrome = new Border
         {
-            Child = content, Padding = new Thickness(8, 2, 8, 2), CornerRadius = new CornerRadius(5),
+            Child = content, Padding = new Thickness(8, 2, 8, 2), CornerRadius = new CornerRadius(ControlRadius),
             Background = Theme.Brush(Theme.Primary(0.1)),
         };
         var button = new Button { Content = chrome, Template = PlainTemplate(), FocusVisualStyle = FocusRing(), Cursor = System.Windows.Input.Cursors.Hand, ToolTip = help };
         // The content is a Border, which gives UI Automation no text: name it by its title.
         System.Windows.Automation.AutomationProperties.SetName(button, title);
+        System.Windows.Automation.AutomationProperties.SetHelpText(button, help ?? title);
         button.MouseEnter += (_, _) => chrome.Background = Theme.Brush(Theme.Primary(0.15));
         button.MouseLeave += (_, _) => chrome.Background = Theme.Brush(Theme.Primary(0.1));
+        button.PreviewMouseLeftButtonDown += (_, _) => chrome.Background = Theme.Brush(Theme.Pressed);
+        button.PreviewMouseLeftButtonUp += (_, _) => chrome.Background = Theme.Brush(button.IsMouseOver ? Theme.Primary(0.15) : Theme.Primary(0.1));
+        button.LostMouseCapture += (_, _) => chrome.Background = Theme.Brush(button.IsMouseOver ? Theme.Primary(0.15) : Theme.Primary(0.1));
+        button.PreviewKeyDown += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) chrome.Background = Theme.Brush(Theme.Pressed); };
+        button.PreviewKeyUp += (_, e) => { if (e.Key == System.Windows.Input.Key.Space) chrome.Background = Theme.Brush(Theme.Primary(0.1)); };
         button.Click += (_, _) => click();
         return button;
     }
 
-    /// Keyboard focus in the label colour: Aero2's default black dotted ring can't be seen on the dark background. Built per
-    /// call, so a theme change (which rebuilds the views) picks up the new colour.
+    /// A visible Fluent-style two-pixel focus outline. Cache by resolved colour; rebuilt views pick up palette changes.
+    static Style? focusRing;
+    static Color focusColor;
     static Style FocusRing()
     {
+        if (focusRing is not null && focusColor == Theme.Label) return focusRing;
+        focusColor = Theme.Label;
         var ring = new FrameworkElementFactory(typeof(System.Windows.Shapes.Rectangle));
         ring.SetValue(System.Windows.Shapes.Shape.StrokeProperty, Theme.Brush(Theme.Label));
-        ring.SetValue(System.Windows.Shapes.Shape.StrokeThicknessProperty, 1.5);
+        ring.SetValue(System.Windows.Shapes.Shape.StrokeThicknessProperty, 2.0);
+        ring.SetValue(UIElement.SnapsToDevicePixelsProperty, true);
         ring.SetValue(System.Windows.Shapes.Rectangle.RadiusXProperty, 4.0);
         ring.SetValue(System.Windows.Shapes.Rectangle.RadiusYProperty, 4.0);
         ring.SetValue(FrameworkElement.MarginProperty, new Thickness(-2));
         var style = new Style();
         style.Setters.Add(new Setter(Control.TemplateProperty, new ControlTemplate { VisualTree = ring }));
-        return style;
+        style.Seal();
+        return focusRing = style;
     }
 
     /// Korean wraps between words as on the mac; WPF would break between any two syllables. A WORD JOINER (U+2060) between
@@ -245,13 +272,13 @@ static class Ui
         return plain;
     }
 
-    /// Radius 10 container (A0-4).
+    /// Fluent surface corners, with the mac's information layout.
     public static Border Container(UIElement child, bool tint = false) => new()
     {
-        Child = child, CornerRadius = new CornerRadius(10),
+        Child = child, CornerRadius = new CornerRadius(ContainerRadius),
         Background = Theme.Brush(tint ? Theme.TintFill : Theme.ContainerFill),
-        BorderBrush = Theme.Brush(tint ? Colors.Transparent : Theme.ContainerRule),
-        BorderThickness = new Thickness(tint || Theme.Dark ? 0 : 1),
+        BorderBrush = Theme.Brush(Theme.HighContrast ? Theme.ContainerRule : tint ? Colors.Transparent : Theme.ContainerRule),
+        BorderThickness = new Thickness(Theme.HighContrast ? 1 : tint || Theme.Dark ? 0 : 1),
     };
 
     public static Border Hairline(double left = 0, double right = 0) => new()
@@ -283,10 +310,15 @@ sealed class Meter : FrameworkElement
 
     protected override void OnRender(DrawingContext context)
     {
-        double width = ActualWidth, height = ActualHeight, radius = height / 2;
+        var dpi = VisualTreeHelper.GetDpi(this);
+        double width = Math.Round(ActualWidth * dpi.DpiScaleX) / dpi.DpiScaleX;
+        double height = Math.Round(ActualHeight * dpi.DpiScaleY) / dpi.DpiScaleY, radius = height / 2;
         context.DrawRoundedRectangle(Theme.Brush(Theme.Track), null, new Rect(0, 0, width, height), radius, radius);
         if (fraction > 0)
-            context.DrawRoundedRectangle(Theme.Brush(color), null, new Rect(0, 0, Math.Max(height, width * Math.Min(1, fraction)), height), radius, radius);
+        {
+            var fillWidth = Math.Round(Math.Max(height, width * Math.Min(1, fraction)) * dpi.DpiScaleX) / dpi.DpiScaleX;
+            context.DrawRoundedRectangle(Theme.Brush(color), null, new Rect(0, 0, fillWidth, height), radius, radius);
+        }
     }
 }
 
@@ -332,7 +364,7 @@ sealed class GlyphView : FrameworkElement
             case StateGlyphKind.Working or StateGlyphKind.Unfinished:
                 stroke = new Pen(Brushes.Black, LineWidth);
                 // WPF dashes are in stroke widths: 2 and 1.5 DIP.
-                if (kind == StateGlyphKind.Unfinished) stroke.DashStyle = new DashStyle([2 / LineWidth, 1.5 / LineWidth], 0);
+                if (kind == StateGlyphKind.Unfinished && !Theme.HighContrast) stroke.DashStyle = new DashStyle([2 / LineWidth, 1.5 / LineWidth], 0);
                 return new EllipseGeometry(center, ring, ring);
             case StateGlyphKind.Waiting:
                 // Disc minus the right half of the hole: a ring with its left half filled.
@@ -352,12 +384,15 @@ sealed class GlyphView : FrameworkElement
         }
     }
 
+    static readonly Typeface InputFace = new(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Black, FontStretches.Normal);
+    static readonly Typeface RetryFace = new(Ui.IconFamily, FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal);
+
     /// The input glyph's "?": heavy, 7/8 of the box, centred.
     public static Geometry InputMark(Rect box)
     {
         var side = Math.Min(box.Width, box.Height);
         var text = new FormattedText("?", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-            new Typeface(new FontFamily("Segoe UI"), FontStyles.Normal, FontWeights.Black, FontStretches.Normal), side * 7 / 8, Brushes.Black, 1);
+            InputFace, side * 7 / 8, Brushes.Black, 1);
         var geometry = text.BuildGeometry(new Point(0, 0));
         var bounds = geometry.Bounds;
         if (bounds.IsEmpty) return Geometry.Empty;
@@ -365,23 +400,40 @@ sealed class GlyphView : FrameworkElement
         return geometry;
     }
 
-    protected override void OnRender(DrawingContext context)
+    static readonly Dictionary<(StateGlyphKind Kind, Rect Box, Color Color, double Dpi, bool Contrast, Color Ink), DrawingGroup> drawings = [];
+
+    /// Frozen, palette/DPI-aware glyph drawings are shared by dashboard rows and the animated widget.
+    internal static DrawingGroup Drawing(StateGlyphKind kind, Rect box, Color color, double dpi)
     {
-        var box = new Rect(0, 0, ActualWidth, ActualHeight);
-        var color = Theme.Brush(Theme.GlyphColor(kind));
-        if (kind == StateGlyphKind.Retry)
+        var ink = Theme.HighContrast ? Theme.Background : Colors.Black;
+        var key = (kind, box, color, dpi, Theme.HighContrast, ink);
+        if (drawings.TryGetValue(key, out var cached)) return cached;
+        var drawing = new DrawingGroup();
+        using (var context = drawing.Open())
         {
-            var text = new FormattedText(Ui.Refresh.ToString(), System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                new Typeface(Ui.IconFamily, FontStyles.Normal, FontWeights.SemiBold, FontStretches.Normal), box.Height, color,
-                VisualTreeHelper.GetDpi(this).PixelsPerDip);
-            context.DrawText(text, new Point((box.Width - text.Width) / 2, (box.Height - text.Height) / 2));
-            return;
+            var brush = Theme.Brush(color);
+            if (kind == StateGlyphKind.Retry)
+            {
+                var text = new FormattedText(Ui.Refresh.ToString(), System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                    RetryFace, box.Height, brush, dpi);
+                context.DrawText(text, new Point(box.X + (box.Width - text.Width) / 2, box.Y + (box.Height - text.Height) / 2));
+            }
+            else
+            {
+                var shape = Shape(kind, box, out var stroke);
+                if (stroke is not null) { stroke.Brush = brush; context.DrawGeometry(null, stroke, shape); }
+                else context.DrawGeometry(brush, null, shape);
+                if (kind == StateGlyphKind.Input) context.DrawGeometry(Theme.Brush(ink), null, InputMark(box));
+            }
         }
-        var shape = Shape(kind, box, out var stroke);
-        if (stroke is not null) { stroke.Brush = color; context.DrawGeometry(null, stroke, shape); }
-        else context.DrawGeometry(color, null, shape);
-        if (kind == StateGlyphKind.Input) context.DrawGeometry(Brushes.Black, null, InputMark(box));
+        drawing.Freeze();
+        if (drawings.Count >= 256) drawings.Clear();
+        drawings[key] = drawing;
+        return drawing;
     }
+
+    protected override void OnRender(DrawingContext context) =>
+        context.DrawDrawing(Drawing(kind, new Rect(0, 0, ActualWidth, ActualHeight), Theme.GlyphColor(kind), VisualTreeHelper.GetDpi(this).PixelsPerDip));
 
     /// A session row's glyph; null for measurement rows (they keep their own symbol).
     public static StateGlyphKind? For(SessionDisplayState state) => state switch

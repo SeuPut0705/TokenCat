@@ -104,7 +104,7 @@ private final class ChatTurnState {
     private var lastOutputDelta: Int?
     private var recentOutputs: [TokenOutputEvent] = []
     /// Output already counted per message: Gemini appends a message again when its tokens or tool calls arrive.
-    private var counted: [String: Int] = [:]
+    private var counted = RecentKeys<Int>(limit: 4_096)
     /// Tools that wait for the person (Qwen's question and plan approval; Gemini's ask_user).
     private static let inputTools: Set<String> = ["ask_user_question", "ask_user", "exit_plan_mode"]
 
@@ -214,8 +214,7 @@ private final class ChatTurnState {
     func output(message id: String, tokens: Int, at date: Date?) {
         let prior = counted[id] ?? 0
         guard tokens > prior else { return }
-        if counted.count >= 4_096 { counted.removeAll(keepingCapacity: true) }
-        counted[id] = tokens
+        counted.set(id, tokens)
         let delta = tokens - prior
         if startSeen {
             output += delta
@@ -308,103 +307,16 @@ private final class ChatTurnState {
         default: return TokenLogParser.category(name)
         }
     }
-
-    /// Counts are capped at Int32.max as everywhere else (`LogFields.count`, the Windows build), so sums cannot overflow.
-    static func integer(_ value: Any?) -> Int? {
-        guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
-        let double = number.doubleValue
-        guard double.isFinite, double >= 0, double <= Double(Int32.max), double.rounded(.towardZero) == double else { return nil }
-        return Int(double)
-    }
-}
-
-/// New complete lines of an append-only JSONL log: a bounded first read, line reassembly, a 1 MB line cap, and a restart
-/// when the file is replaced or truncated.
-private final class ChatLineTail {
-    let url: URL
-    private var offset: UInt64 = 0
-    private var identity: String?
-    private var initialized = false
-    private var pending = Data()
-    private var dropping = false
-    private let maximumLineBytes = 1_048_576
-
-    init(url: URL) { self.url = url }
-
-    /// `restart` runs before a replaced or truncated log is read again; `header` gets the first line when the first read
-    /// starts past it (session metadata only).
-    func read(tailLimit: Int, restart: () -> Void, header: (Data) -> Void, line: (Data) -> Void) {
-        var info = stat()
-        guard stat(url.path, &info) == 0 else { return }
-        let size = UInt64(info.st_size)
-        let currentIdentity = "\(info.st_dev)-\(info.st_ino)"
-        if initialized && (identity != currentIdentity || size < offset) {
-            offset = 0
-            initialized = false
-            pending.removeAll(keepingCapacity: false)
-            dropping = false
-            restart()
-        }
-        if initialized && size == offset { return }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return }
-        defer { try? handle.close() }
-        if !initialized {
-            if size > UInt64(tailLimit), let head = try? handle.read(upToCount: 65_536), let newline = head.firstIndex(of: 10) {
-                header(Data(head[head.startIndex..<newline]))
-            }
-            offset = size > UInt64(tailLimit) ? size - UInt64(tailLimit) : 0
-            dropping = offset > 0
-            identity = currentIdentity
-            initialized = true
-        }
-        var budget = 16_777_216 + tailLimit
-        do {
-            while offset < size, budget > 0 {
-                try handle.seek(toOffset: offset)
-                let data = try handle.read(upToCount: min(1_048_576, Int(min(size - offset, UInt64(Int.max))))) ?? Data()
-                guard !data.isEmpty else { break }
-                offset += UInt64(data.count)
-                budget -= data.count
-                autoreleasepool { split(data, line: line) }
-            }
-        } catch { return }
-    }
-
-    private func split(_ data: Data, line: (Data) -> Void) {
-        var start = data.startIndex
-        while start < data.endIndex {
-            let newline = data[start...].firstIndex(of: 10)
-            let end = newline ?? data.endIndex
-            if !dropping {
-                if pending.count + data.distance(from: start, to: end) <= maximumLineBytes {
-                    pending.append(contentsOf: data[start..<end])
-                } else {
-                    pending.removeAll(keepingCapacity: false)
-                    dropping = true
-                }
-            }
-            guard let newline else { break }
-            if !dropping, !pending.isEmpty { line(pending) }
-            // One long line must not pin up to 1 MB per reader for good.
-            pending.removeAll(keepingCapacity: pending.count <= 65_536)
-            dropping = false
-            start = data.index(after: newline)
-        }
-    }
-}
-
-private func jsonObject(_ data: Data) -> [String: Any]? {
-    (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
 }
 
 /// One Gemini CLI chat: a JSONL log, or a legacy JSON snapshot rewritten in place.
 private final class GeminiChatReader: TokenLogReader {
     let url: URL
     private let legacy: Bool
-    private let tail: ChatLineTail
+    private let tail: LogLineTail
     private var state: ChatTurnState
     private var snapshot: (modified: TimeInterval, size: Int64)?
-    private var seen = Set<String>()
+    private var seen = RecentKeys<Void>(limit: 8_192)
     private var lastMessageID: String?
     /// From `.project_root`; the metadata's directories are used only without it.
     private let projectRoot: String?
@@ -413,7 +325,7 @@ private final class GeminiChatReader: TokenLogReader {
     init(url: URL) {
         self.url = url
         legacy = url.pathExtension == "json"
-        tail = ChatLineTail(url: url)
+        tail = LogLineTail(url: url)
         var chats = url.deletingLastPathComponent()
         let parent = chats.lastPathComponent
         if parent != "chats" { chats = chats.deletingLastPathComponent() }
@@ -460,9 +372,9 @@ private final class GeminiChatReader: TokenLogReader {
         state.clamp(to: now.addingTimeInterval(5))
         if legacy { readSnapshot(); return }
         let parent = subagentParent
-        tail.read(tailLimit: tailLimit, restart: { reset(subagentParent: parent) },
-                  header: { jsonObject($0).map(metadata) },
-                  line: { jsonObject($0).map(consume) })
+        tail.read(tailLimit: tailLimit, reset: { reset(subagentParent: parent) },
+                  header: { LogFields.object($0).map(self.metadata) },
+                  line: { LogFields.object($0).map(consume) })
     }
 
     /// Legacy snapshots are rewritten whole: reread (up to 32 MB) when the size or modification time changes.
@@ -471,8 +383,9 @@ private final class GeminiChatReader: TokenLogReader {
         guard stat(url.path, &info) == 0 else { return }
         let current = (TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9, Int64(info.st_size))
         guard snapshot.map({ $0 != current }) ?? true, current.1 <= 33_554_432 else { return }
+        // The stamp is kept only after a successful parse: a snapshot caught mid-write is read again on the next sample.
+        guard let data = try? Data(contentsOf: url), let record = LogFields.object(data) else { return }
         snapshot = current
-        guard let data = try? Data(contentsOf: url), let record = jsonObject(data) else { return }
         reset(subagentParent: subagentParent)
         metadata(record)
         for message in record["messages"] as? [[String: Any]] ?? [] { autoreleasepool { self.message(message) } }
@@ -523,12 +436,8 @@ private final class GeminiChatReader: TokenLogReader {
     private func message(_ record: [String: Any]) {
         guard let id = record["id"] as? String, let type = record["type"] as? String else { return }
         let date = TokenLogParser.date(record["timestamp"])
-        let isNew = !seen.contains(id)
-        if isNew {
-            if seen.count >= 8_192 { seen.removeAll(keepingCapacity: true) }
-            seen.insert(id)
-            lastMessageID = id
-        }
+        let isNew = seen.insert(id)
+        if isNew { lastMessageID = id }
         let isLatest = id == lastMessageID
         let continuing = state.continues(at: date)
         state.note(date)
@@ -553,10 +462,10 @@ private final class GeminiChatReader: TokenLogReader {
             guard !(record["content"] is [Any]) else { return }
             if let model = record["model"] as? String, !model.isEmpty { state.model = model }
             if let tokens = record["tokens"] as? [String: Any] {
-                let input = ChatTurnState.integer(tokens["input"])
+                let input = LogFields.count(tokens["input"])
                 state.output(message: id, tokens: GeminiTokens.output(
-                    candidates: ChatTurnState.integer(tokens["output"]), thoughts: ChatTurnState.integer(tokens["thoughts"]),
-                    prompt: input, total: ChatTurnState.integer(tokens["total"])), at: date)
+                    candidates: LogFields.count(tokens["output"]), thoughts: LogFields.count(tokens["thoughts"]),
+                    prompt: input, total: LogFields.count(tokens["total"])), at: date)
                 state.context(used: input, window: nil, at: date)
             }
             let calls = record["toolCalls"] as? [[String: Any]] ?? []
@@ -592,15 +501,15 @@ private final class GeminiChatReader: TokenLogReader {
 /// One Qwen Code chat or background subagent transcript.
 private final class QwenChatReader: TokenLogReader {
     let url: URL
-    private let tail: ChatLineTail
+    private let tail: LogLineTail
     private var state: ChatTurnState
-    private var seen = Set<String>()
+    private var seen = RecentKeys<Void>(limit: 8_192)
     private let subagent: (session: String, agent: String)?
     private var sidecarRead = false
 
     init(url: URL) {
         self.url = url
-        tail = ChatLineTail(url: url)
+        tail = LogLineTail(url: url)
         let name = url.deletingPathExtension().lastPathComponent
         let folder = url.deletingLastPathComponent()
         subagent = folder.deletingLastPathComponent().lastPathComponent == "subagents" && name.hasPrefix("agent-")
@@ -628,7 +537,7 @@ private final class QwenChatReader: TokenLogReader {
     func read(tailLimit: Int, now: Date) {
         state.clamp(to: now.addingTimeInterval(5))
         readSidecar()
-        tail.read(tailLimit: tailLimit, restart: reset, header: { _ in }, line: { jsonObject($0).map(consume) })
+        tail.read(tailLimit: tailLimit, reset: reset, line: { LogFields.object($0).map(consume) })
     }
 
     /// The subagent type from `agent-<id>.meta.json`, retried until present; its other keys are never kept.
@@ -636,7 +545,7 @@ private final class QwenChatReader: TokenLogReader {
         guard subagent != nil, !sidecarRead, state.agentRole == nil else { return }
         let sidecar = url.deletingPathExtension().appendingPathExtension("meta.json")
         guard let size = (try? FileManager.default.attributesOfItem(atPath: sidecar.path))?[.size] as? NSNumber,
-              size.intValue <= 65_536, let data = try? Data(contentsOf: sidecar), let object = jsonObject(data) else { return }
+              size.intValue <= 65_536, let data = try? Data(contentsOf: sidecar), let object = LogFields.object(data) else { return }
         sidecarRead = true
         state.agentRole = TokenLogParser.label(object["agentType"]) ?? state.agentRole
     }
@@ -651,9 +560,7 @@ private final class QwenChatReader: TokenLogReader {
         // /branch copies the parent's records into the new session; they were counted there.
         guard record["forkedFrom"] == nil else { return }
         if let uuid = record["uuid"] as? String {
-            guard !seen.contains(uuid) else { return }
-            if seen.count >= 8_192 { seen.removeAll(keepingCapacity: true) }
-            seen.insert(uuid)
+            guard seen.insert(uuid) else { return }
         }
         if let id = record["sessionId"] as? String, !id.isEmpty {
             state.sessionID = id
@@ -675,12 +582,12 @@ private final class QwenChatReader: TokenLogReader {
         case "assistant":
             if let model = record["model"] as? String, !model.isEmpty { state.model = model }
             if let usage = record["usageMetadata"] as? [String: Any] {
-                let prompt = ChatTurnState.integer(usage["promptTokenCount"])
+                let prompt = LogFields.count(usage["promptTokenCount"])
                 state.output(message: record["uuid"] as? String ?? UUID().uuidString, tokens: GeminiTokens.output(
-                    candidates: ChatTurnState.integer(usage["candidatesTokenCount"]),
-                    thoughts: ChatTurnState.integer(usage["thoughtsTokenCount"]),
-                    prompt: prompt, total: ChatTurnState.integer(usage["totalTokenCount"])), at: date)
-                state.context(used: prompt, window: ChatTurnState.integer(record["contextWindowSize"]), at: date)
+                    candidates: LogFields.count(usage["candidatesTokenCount"]),
+                    thoughts: LogFields.count(usage["thoughtsTokenCount"]),
+                    prompt: prompt, total: LogFields.count(usage["totalTokenCount"])), at: date)
+                state.context(used: prompt, window: LogFields.count(record["contextWindowSize"]), at: date)
             }
             let calls = parts.compactMap { $0["functionCall"] as? [String: Any] }
             for (index, call) in calls.enumerated() {

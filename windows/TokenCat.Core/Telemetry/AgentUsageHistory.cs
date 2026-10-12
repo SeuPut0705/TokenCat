@@ -97,20 +97,22 @@ public static class AgentUsageHistory
 /// Database and WAL signatures cache numeric rows, while refreshed credential metadata resolves missing emails each read.
 public sealed class AgentUsageHistoryReader
 {
-    public const int MaximumConfigBytes = 16 << 20;
     readonly IReadOnlyList<string> databases;
     readonly LimitAccountReader accounts;
+    /// Whether `Read` refreshes `accounts`; a shared reader is refreshed by its owner (the tracker, once a sample).
+    readonly bool ownsAccounts;
     readonly Dictionary<string, (long[] Stamp, IReadOnlyList<AgentUsageHistory.Row> Rows)> cache = [];
 
-    public AgentUsageHistoryReader(string home, Func<string, string?> env)
+    public AgentUsageHistoryReader(string home, Func<string, string?> env, LimitAccountReader? sharedAccounts = null)
     {
         databases = AgentUsageHistory.Databases(home, env);
-        accounts = new(home, env);
+        accounts = sharedAccounts ?? new(home, env);
+        ownsAccounts = sharedAccounts is null;
     }
 
     public AgentUsageHistory.Limits Read()
     {
-        accounts.Refresh();
+        if (ownsAccounts) accounts.Refresh();
         IReadOnlyDictionary<string, ClaudeUsageLimits> claude = new Dictionary<string, ClaudeUsageLimits>();
         var codex = new List<TokenRateLimit>();
         var identities = new Dictionary<TokenSource, List<LimitAccount>>();

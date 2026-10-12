@@ -22,7 +22,9 @@ public partial class Flyout : Window
     {
         InitializeComponent();
         Rebuild(actions);
-        SourceInitialized += (_, _) => Native.StyleWindow(this, round: true);
+        SourceInitialized += (_, _) => Native.StyleWindow(this, round: true, material: true);
+        KeyboardNavigation.SetTabNavigation(this, KeyboardNavigationMode.Cycle);
+        System.Windows.Automation.AutomationProperties.SetName(this, Loc("TokenCat 상세 화면", "TokenCat dashboard"));
     }
 
     /// A theme change rebuilds the view with the new tokens.
@@ -35,7 +37,7 @@ public partial class Flyout : Window
             Content = Dashboard, VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto, Focusable = false,
         };
         Background = Theme.Brush(Theme.Background);
-        if (IsLoaded) Native.StyleWindow(this, round: true);
+        if (IsLoaded) Native.StyleWindow(this, round: true, material: true);
     }
 
     /// Buttons, links and the scroll bar take their own presses, so this sees the rest; the session list (rows open on release)
@@ -112,7 +114,7 @@ sealed class DashboardWindow : Window
         SizeToContent = SizeToContent.Width;
         Height = 560;
         MinHeight = 510;
-        SourceInitialized += (_, _) => Native.StyleWindow(this, round: false);
+        SourceInitialized += (_, _) => Native.StyleWindow(this, round: false, material: true);
         Loaded += (_, _) => MinWidth = MaxWidth = ActualWidth;
         LocationChanged += (_, _) => Remember();
         SizeChanged += (_, _) => Remember();
@@ -132,7 +134,7 @@ sealed class DashboardWindow : Window
         Dashboard = new Dashboard(actions, panel: true);
         Content = Dashboard;
         Background = Theme.Brush(Theme.Background);
-        if (IsLoaded) Native.StyleWindow(this, round: false);
+        if (IsLoaded) Native.StyleWindow(this, round: false, material: true);
     }
 
     void Remember()

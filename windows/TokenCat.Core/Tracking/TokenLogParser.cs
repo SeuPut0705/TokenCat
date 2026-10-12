@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Globalization;
 using System.Text;
 using System.Text.Json;
@@ -48,6 +49,9 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
     public IReadOnlyList<TokenOutputEvent> RecentOutputs => recentOutputs;
     /// Claude: request IDs of logged responses, so telemetry for an unlogged side request is not taken as this log's.
     public IReadOnlySet<string> RequestIDs => requestIDs;
+    /// `RequestIDs` as the reading carries it, built once per change instead of once per sample (up to 256 ids per log).
+    public ImmutableHashSet<string> RequestIDsSnapshot => requestIDsSnapshot ??= [.. requestIDs];
+    ImmutableHashSet<string>? requestIDsSnapshot;
 
     readonly string? ownSessionID = ownSessionID;
     TokenContextUsage? contextUsage;
@@ -189,7 +193,8 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
 
     void SetProject(string? cwd)
     {
-        if (string.IsNullOrEmpty(cwd)) return;
+        // Every Claude record repeats its cwd: the same path gives the same project, so only a new one is split.
+        if (string.IsNullOrEmpty(cwd) || cwd == ProjectPath) return;
         // Windows logs hold C:\Users\me\proj, so split on both separators on every OS (rule 7).
         Project = cwd.Split(['/', '\\'], StringSplitOptions.RemoveEmptyEntries) is [.., var last] ? last : cwd;
         ProjectPath = cwd;
@@ -310,7 +315,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
         var timestamp = Date(record.Field("timestamp"));
         if (type == "token_usage_record")
         {
-            if (id is null || Integer(payload.Field("turn_token_usage")?.Field("output_tokens")) is not { } turnOutput) return null;
+            if (id is null || LogFields.Count(payload.Field("turn_token_usage")?.Field("output_tokens")) is not { } turnOutput) return null;
             return new(id, null, null, null, null, timestamp, false, null, TokenActivityState.Idle, turnOutput);
         }
         if (type == "turn_context" && payload.Field("model")?.Text is { } model)
@@ -514,12 +519,12 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
                 // The matching token_usage_record already counted this response.
                 if (ignoringInheritedTurn || usageRecords) return;
                 if (payload?.Field("info") is not { ValueKind: JsonValueKind.Object } info) return;
-                if (Integer(info.Field("total_token_usage")?.Field("output_tokens")) is not { } count)
+                if (LogFields.Count(info.Field("total_token_usage")?.Field("output_tokens")) is not { } count)
                 {
                     if (startedAt is not null) accurate = false;
                     return;
                 }
-                var last = Integer(info.Field("last_token_usage")?.Field("output_tokens"));
+                var last = LogFields.Count(info.Field("last_token_usage")?.Field("output_tokens"));
                 var delta = cumulativeOutput is { } previous ? count >= previous ? count - previous : last : last;
                 cumulativeOutput = count;
                 if (delta is { } tokens && tokens >= 0)
@@ -532,7 +537,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
                     }
                     if (startedAt is not null)
                     {
-                        output += tokens;
+                        output = LogFields.Add(output, tokens);
                         hasUsage = true;
                     }
                 }
@@ -594,7 +599,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
             {
                 var limit = limits.Field(key);
                 if (limit?.Field("used_percent")?.Number is not { } used || used < 0 || used > 1_000) continue;
-                var candidate = new TokenRateLimit(used, Integer(limit?.Field("window_minutes")), Date(limit?.Field("resets_at")), date);
+                var candidate = new TokenRateLimit(used, LogFields.Count(limit?.Field("window_minutes")), Date(limit?.Field("resets_at")), date);
                 // Swift's max(by:) keeps the first of equal windows.
                 if (window is null || (window.UsedPercent, window.WindowMinutes ?? 0).CompareTo((candidate.UsedPercent, candidate.WindowMinutes ?? 0)) < 0)
                     window = candidate;
@@ -603,9 +608,9 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
         }
         // input_tokens already includes cached input; the window comes from the same record.
         var info = payload?.Field("info");
-        if (Integer(info?.Field("last_token_usage")?.Field("input_tokens")) is { } input
+        if (LogFields.Count(info?.Field("last_token_usage")?.Field("input_tokens")) is { } input
             && (contextUsage is null || date >= contextUsage.RecordedAt))
-            contextUsage = new TokenContextUsage(input, Integer(info?.Field("model_context_window")) is { } size && size > 0 ? size : null, date, null);
+            contextUsage = new TokenContextUsage(input, LogFields.Count(info?.Field("model_context_window")) is { } size && size > 0 ? size : null, date, null);
     }
 
     static string? CodexEffort(JsonElement? payload) =>
@@ -613,7 +618,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
 
     void ConsumeCodexUsageRecord(JsonElement? payload, DateTimeOffset? date)
     {
-        if (ignoringInheritedTurn || Integer(payload?.Field("usage")?.Field("output_tokens")) is not { } delta) return;
+        if (ignoringInheritedTurn || LogFields.Count(payload?.Field("usage")?.Field("output_tokens")) is not { } delta) return;
         var id = payload?.Field("turn_id")?.Text;
         var current = turnID ?? metadataTurnID;
         // A record for a different turn than the open one is replayed history, not this turn's output.
@@ -625,7 +630,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
             seenResponses.Add(response);
         }
         usageRecords = true;
-        if (id is not null && id == current && Integer(payload?.Field("turn_token_usage")?.Field("output_tokens")) is { } total)
+        if (id is not null && id == current && LogFields.Count(payload?.Field("turn_token_usage")?.Field("output_tokens")) is { } total)
             turnUsage = (id, total);
         if (delta > 0)
         {
@@ -634,7 +639,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
         }
         if (startedAt is not null)
         {
-            output += delta;
+            output = LogFields.Add(output, delta);
             hasUsage = true;
         }
     }
@@ -684,10 +689,10 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
             if (record.Field("requestId")?.Text is { } request)
             {
                 if (requestIDs.Count >= 256) requestIDs.Clear();
-                requestIDs.Add(request);
+                if (requestIDs.Add(request)) requestIDsSnapshot = null;
             }
             var usage = message?.Field("usage");
-            if (Integer(usage?.Field("output_tokens")) is not { } count || message?.Field("id")?.Text is not { } id
+            if (LogFields.Count(usage?.Field("output_tokens")) is not { } count || message?.Field("id")?.Text is not { } id
                 || previousMessages.Contains(id)) return;
             var errored = record.Field("isApiErrorMessage")?.Bool == true || message?.Field("model")?.Text == "<synthetic>";
             // A response (or the final failure) ends any API retry in progress.
@@ -696,9 +701,10 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
             {
                 Model = message?.Field("model")?.Text ?? Model;
                 // Context occupied by this request: all input-side counts. Claude logs no window size.
-                if (date is { } at && Integer(usage?.Field("input_tokens")) is { } input && (contextUsage is null || at >= contextUsage.RecordedAt))
+                if (date is { } at && LogFields.Count(usage?.Field("input_tokens")) is { } input && (contextUsage is null || at >= contextUsage.RecordedAt))
                 {
-                    var used = input + (Integer(usage?.Field("cache_creation_input_tokens")) ?? 0) + (Integer(usage?.Field("cache_read_input_tokens")) ?? 0);
+                    var used = LogFields.Add(LogFields.Add(input, LogFields.Count(usage?.Field("cache_creation_input_tokens")) ?? 0),
+                        LogFields.Count(usage?.Field("cache_read_input_tokens")) ?? 0);
                     contextUsage = new TokenContextUsage(used, null, at, null);
                 }
             }
@@ -721,7 +727,7 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
             {
                 if (startedAt is not null)
                 {
-                    output += count - prior;
+                    output = LogFields.Add(output, count - prior);
                     hasUsage = true;
                 }
                 LatestOutput = startedAt is null ? count : output;
@@ -763,9 +769,9 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
                     break;
                 case "api_error":
                     // Counts, delay and the network flag only; error messages are never read.
-                    if (!TurnOpen || date is not { } failedAt || Integer(record.Field("retryAttempt")) is not { } attempt) break;
+                    if (!TurnOpen || date is not { } failedAt || LogFields.Count(record.Field("retryAttempt")) is not { } attempt) break;
                     var delay = Number(record.Field("retryInMs"), 86_400_000);
-                    Retry = new TokenRetryState(attempt, Integer(record.Field("maxRetries")),
+                    Retry = new TokenRetryState(attempt, LogFields.Count(record.Field("maxRetries")),
                         delay is { } ms ? failedAt.AddMilliseconds(ms) : null,
                         record.Field("error")?.Field("isNetworkDown")?.Bool == true, failedAt);
                     break;
@@ -874,37 +880,18 @@ public sealed class TokenLogParser(TokenSource source, bool isSubagent = false, 
         value is { ValueKind: JsonValueKind.Array } array && array.EnumerateArray().All(item => item.ValueKind == JsonValueKind.Object)
             ? [.. array.EnumerateArray()] : null;
 
-    /// Non-negative whole numbers. ponytail: capped at int.MaxValue (Swift: Int.max) because the shared models hold int;
-    /// a larger count is dropped as corrupt.
-    static int? Integer(JsonElement? value) =>
-        value?.Number is { } number && number >= 0 && number <= int.MaxValue && Math.Truncate(number) == number ? (int)number : null;
-
     /// A week in milliseconds: longer client durations are treated as corrupt rather than shown.
     const double MaxDurationMs = 604_800_000;
     static double? Number(JsonElement? value, double limit) => value?.Number is { } number && number <= limit ? number : null;
 
-    /// Rule 4: what ISO8601DateFormatter accepts, seconds plus an optional fraction (kept to milliseconds, as Foundation
-    /// does) and Z or ±hh:mm. Numbers are epoch seconds.
+    /// Rule 4: text as `LogFields.Date` reads it (what ISO8601DateFormatter accepts); numbers are epoch seconds.
     static DateTimeOffset? Date(JsonElement? value)
     {
-        if (value?.Text is { } text)
-        {
-            if (IsoDate.Match(text) is not { Success: true } match
-                || !DateTimeOffset.TryParseExact(match.Groups[1].Value + (match.Groups[3].Value == "Z" ? "+00:00" : match.Groups[3].Value),
-                    "yyyy-MM-dd'T'HH:mm:sszzz", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed)) return null;
-            var milliseconds = match.Groups[2].Success ? int.Parse(match.Groups[2].Value.PadRight(3, '0'), CultureInfo.InvariantCulture) : 0;
-            var at = parsed.ToUniversalTime().AddMilliseconds(milliseconds);
-            // ponytail: years 1 and 9999 are dropped (Foundation keeps them) so the day-sized arithmetic on a corrupt
-            // date can't overflow DateTimeOffset and throw out of Sample().
-            return at.Year is > 1 and < 9999 ? at : null;
-        }
-        if (value?.Number is { } seconds && seconds > 0 && seconds < 253_370_764_800) // before 9999-01-01, as above
+        if (value?.Text is { } text) return LogFields.Date(text);
+        if (value?.Number is { } seconds && seconds > 0 && seconds < 253_370_764_800) // before 9999-01-01, as LogFields.Date
             return DateTimeOffset.UnixEpoch.AddTicks((long)(seconds * TimeSpan.TicksPerSecond));
         return null;
     }
-
-    static readonly Regex IsoDate =
-        new(@"^([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.([0-9]{1,3})[0-9]*)?(Z|[+-][0-9]{2}:[0-9]{2})$", RegexOptions.CultureInvariant);
 
     static DateTimeOffset Max(DateTimeOffset? current, DateTimeOffset value) => current is { } existing && existing > value ? existing : value;
 }

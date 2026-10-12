@@ -63,10 +63,12 @@ final class AmpLogReader: TokenLogReader {
         guard stat(url.path, &info) == 0 else { return }
         let current = "\(info.st_dev)-\(info.st_ino)-\(info.st_size)-\(info.st_mtimespec.tv_sec)-\(info.st_mtimespec.tv_nsec)"
         guard current != stamp else { return }
-        stamp = current
         let modified = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1e9)
-        guard Int(info.st_size) <= Self.maximumBytes, let data = try? Data(contentsOf: url),
-              let thread = LogFields.object(data) else { return }
+        // An oversized thread is a deliberate rejection and stays rejected until it changes; a file caught mid-write (or
+        // unreadable) keeps no stamp, so the next sample reads it again.
+        guard Int(info.st_size) <= Self.maximumBytes else { stamp = current; return }
+        guard let data = try? Data(contentsOf: url), let thread = LogFields.object(data) else { return }
+        stamp = current
         autoreleasepool { parse(thread, modified: min(modified, now.addingTimeInterval(5))) }
     }
 

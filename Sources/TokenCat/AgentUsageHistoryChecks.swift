@@ -12,6 +12,10 @@ func runAgentUsageHistoryChecks(_ check: (@autoclosure () -> Bool, String) -> Vo
           && AgentUsageHistory.windowMinutes("7 days") == 10_080 && AgentUsageHistory.windowMinutes("1 hour") == 60
           && AgentUsageHistory.windowMinutes("Primary window") == nil && AgentUsageHistory.windowMinutes(nil) == nil,
           "omp window labels are not turned into minutes")
+    check(AgentUsageHistory.windowMinutes("9223372036854775807 hours") == nil && AgentUsageHistory.windowMinutes("9223372036854775807 days") == nil
+          && AgentUsageHistory.windowMinutes("6405119470038039 days") == nil && AgentUsageHistory.windowMinutes("99999999999999999999 hours") == nil
+          && AgentUsageHistory.windowMinutes("6405119470038038 days") == 9_223_372_036_854_774_720,
+          "omp usage history: an overflowing window label is ignored, not a crash")
     check(TokenSource.limitProvider(model: "claude-opus-5-5") == .claude && TokenSource.limitProvider(model: "anthropic/claude-sonnet-5") == .claude
           && TokenSource.limitProvider(model: "gpt-6.1-sol") == .codex && TokenSource.limitProvider(model: "openai-codex/gpt-5.5") == .codex
           && TokenSource.limitProvider(model: "o3") == .codex && TokenSource.limitProvider(model: "gemini-3-pro") == nil
@@ -96,6 +100,14 @@ func runAgentUsageHistoryChecks(_ check: (@autoclosure () -> Bool, String) -> Vo
           && AgentUsageHistory.recorder(URL(fileURLWithPath: "/Users/x/.pi/agent/agent.db")) == "Pi"
           && AgentUsageHistory.databases(home: home, environment: ["PI_CODING_AGENT_DIR": agent.path]).count == 2,
           "the omp usage reader misses a WAL write, canonical attribution, or Pi's folder")
+    try? FileManager.default.createDirectory(at: home.appendingPathComponent(".omp/profiles/work"), withIntermediateDirectories: true)
+    let profiled = AgentUsageHistory.databases(home: home, environment: ["PI_CONFIG_DIR": ".ompx", "XDG_DATA_HOME": "/srv/xdg",
+                                                                         "PI_CODING_AGENT_SESSION_DIR": "/srv/pi-sessions"]).map(\.path)
+    // A listed profile folder may be spelled /private/var for a temporary home.
+    func lists(_ suffix: String) -> Bool { profiled.contains { $0.hasSuffix("/agent-home/" + suffix) } }
+    check(lists(".ompx/agent/agent.db") && profiled.contains("/srv/xdg/omp/agent.db") && lists(".omp/profiles/work/agent/agent.db")
+          && lists(".pi/agent/agent.db") && !profiled.contains("/srv/agent.db") && !profiled.contains { $0.hasPrefix("/srv/pi-sessions") },
+          "omp usage history: an agent folder the omp provider reads (PI_CONFIG_DIR, XDG, profiles) is not read, or Pi's session folder is taken for one")
 
     // Merge and labels: an omp record is a record, never live; a newer one wins over the bridge, an older one doesn't.
     let bridge = ClaudeUsageLimits(fiveHour: ClaudeLimitWindow(usedPercent: 3, resetsAt: at(15_000), receivedAt: at(-900)))
@@ -119,6 +131,11 @@ func runAgentUsageHistoryChecks(_ check: (@autoclosure () -> Bool, String) -> Vo
               && TelemetryStatusRow.claudeLimits(notes: [], bridged: false, received: at(-240), recordedBy: "Pi", now: now).text == "Pi · recorded 4m ago",
               "English omp labels")
     }
+    // The record label persists (numbers, times and "omp" only); the live mark does not.
+    let stored = try? JSONEncoder().encode(claudeA)
+    check(stored.flatMap { try? JSONDecoder().decode(ClaudeUsageLimits.self, from: $0) } == claudeA
+          && stored.map { !String(decoding: $0, as: UTF8.self).contains("acct") } == true,
+          "an omp Claude record does not keep its recorder across a relaunch")
 
     // Two members share an id. Its missing-email identity must stay separate; a unique credential fills an email.
     run("""

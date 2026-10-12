@@ -76,6 +76,20 @@ sealed record TelemetryRecord(TelemetryReading Reading, int DurationPriority = 0
 static class TelemetryDecoder
 {
     const string InvalidMetadata = "__invalid_metadata__";
+    /// Diagnostics echo only service, metric and unit names TokenCat knows; any other well-formed value becomes this marker,
+    /// so an exporter that puts an e-mail, path or token there never has it repeated (the recognized flag and counts stay).
+    internal const string UnknownMetadata = "__unknown_metadata__";
+    /// Every client service name `Source` classifies.
+    static readonly HashSet<string> KnownServices = new(StringComparer.Ordinal)
+    {
+        "claude-code", "claude_code", "claude-code-desktop",
+        "codex", "codex-cli", "codex_cli_rs", "codex_exec", "codex-app-server", "codex_desktop", "codex-tui",
+        "codex_vscode", "codex_mcp_server", "codex_sdk_ts", "codex-app-server-sdk", "Codex Desktop",
+        "gemini-cli", "qwen-code",
+    };
+    /// OTLP unit strings: UCUM time, dimensionless and byte units, and the curly-brace annotations clients use.
+    static readonly HashSet<string> KnownUnits = new(StringComparer.Ordinal)
+        { "", "ms", "s", "us", "ns", "min", "h", "1", "%", "By", "{token}", "{tokens}", "tokens", "{request}", "{call}" };
     static readonly HashSet<string> AllowedKeys = ["service.name", "session.id", "session_id", "conversation.id", "conversation_id",
         "agent.id", "agent_id", "model", "gen_ai.request.model", "request_id", "request.id", "gen_ai.response.id", "response_id", "event.name",
         "event_name", "event.timestamp", "duration_ms", "ttft_ms", "output_tokens", "success",
@@ -265,19 +279,22 @@ static class TelemetryDecoder
     {
         var (resourceKey, scopeKey, signal) = Keys(path);
         var result = new List<TelemetryDiagnosticEntry>();
-        static string? Bounded(object? value) => value switch
+        static string? Bounded(object? value, HashSet<string>? known = null) => value switch
         {
             null => null,
-            string text => text.Length <= 256 && text.All(c => c is >= ' ' and <= '~') ? text : InvalidMetadata,
-            JsonElement { ValueKind: JsonValueKind.String } element => Bounded(element.GetString()),
+            string text => text.Length <= 256 && text.All(c => c is >= ' ' and <= '~')
+                ? known is null || known.Contains(text) ? text : UnknownMetadata
+                : InvalidMetadata,
+            JsonElement { ValueKind: JsonValueKind.String } element => Bounded(element.GetString(), known),
             _ => InvalidMetadata,
         };
         // Span/event names and attribute keys are code-defined identifiers; anything else is dropped.
         static bool IsName(string text) => text.Length is >= 1 and <= 128 && text.All(c => char.IsAsciiLetterOrDigit(c) || "._-:/".Contains(c));
+        var knownMetrics = MetricKinds.Keys.ToHashSet(StringComparer.Ordinal);
         foreach (var resource in Objects(root.Field(resourceKey)) ?? [])
         {
             var resourceAttributes = Attributes(resource.Field("resource")?.Field("attributes"));
-            var service = Bounded(resourceAttributes.GetValueOrDefault("service.name"));
+            var service = Bounded(resourceAttributes.GetValueOrDefault("service.name"), KnownServices);
             if (signal != "metrics")
             {
                 // Logs: Claude Code, Gemini CLI and Qwen Code records decode; spans only Claude Code's.
@@ -311,8 +328,8 @@ static class TelemetryDecoder
                     var name = metric.Field("name")?.Text;
                     var unit = metric.Field("unit")?.Text;
                     var recognized = name is not null && MetricKinds.ContainsKey(name) && Source(resourceAttributes, name) == Codex && unit is null or "" or "ms";
-                    Merge(new() { Signal = signal, ResourceServiceName = service, MetricName = Bounded(metric.Field("name")),
-                        Unit = Bounded(metric.Field("unit")), Recognized = recognized }, result);
+                    Merge(new() { Signal = signal, ResourceServiceName = service, MetricName = Bounded(metric.Field("name"), knownMetrics),
+                        Unit = Bounded(metric.Field("unit"), KnownUnits), Recognized = recognized }, result);
                 }
             }
         }

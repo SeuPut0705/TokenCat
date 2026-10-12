@@ -423,7 +423,19 @@ private struct OmpRecordHead {
 }
 
 /// Pin metadata must survive bounded tails and discovery caps. Stream only new bytes, and decode no message bodies.
+/// The scans live in one store for every omp reader: a subagent inherits its parent's pins, so a parent log is read once
+/// rather than once per child, and an unchanged chain costs one stat per log.
 private final class OmpCredentialPinReader {
+    private let path: String
+
+    /// Paths are kept lexically normalized: `standardizedFileURL` and `URL(fileURLWithPath:)` touch the file system.
+    init(url: URL) { path = URL(fileURLWithPath: url.path, isDirectory: false).standardized.path }
+
+    func read() -> [TokenSource: String] { OmpPinStore.shared.pins(path) }
+}
+
+final class OmpPinStore {
+    static let shared = OmpPinStore()
     private struct Record: Decodable {
         var type: String
         var provider: String?
@@ -438,30 +450,46 @@ private final class OmpCredentialPinReader {
         var pins: [TokenSource: String] = [:]
         var parent: String?
     }
-    private let url: URL
+    private let lock = NSLock()
     private var files: [String: FileState] = [:]
-    private let pinMarker = Data("credential_pin".utf8)
-    private let parentMarker = Data("parentSession".utf8)
+    /// Logs asked for since the last sweep; a log no reader asked for within `sweepInterval` is dropped.
+    private var touched = Set<String>()
+    private var sweptAt = ProcessInfo.processInfo.systemUptime
+    static let sweepInterval: TimeInterval = 120
+    private static let pinMarker = Array("credential_pin".utf8)
+    private static let parentMarker = Array("parentSession".utf8)
     private let maximumLineBytes = 1_048_576
 
-    init(url: URL) { self.url = url }
+    /// Logs whose scan state is held, for the eviction check.
+    var count: Int { lock.withLock { files.count } }
 
-    func read() -> [TokenSource: String] {
-        var visited = Set<String>()
-        return inherited(url, visited: &visited)
+    func pins(_ path: String) -> [TokenSource: String] {
+        lock.withLock {
+            let uptime = ProcessInfo.processInfo.systemUptime
+            if uptime - sweptAt >= Self.sweepInterval || uptime < sweptAt { sweep(at: uptime) }
+            var visited = Set<String>()
+            return inherited(path, visited: &visited)
+        }
     }
 
-    private func inherited(_ url: URL, visited: inout Set<String>) -> [TokenSource: String] {
-        let path = url.standardizedFileURL.path
+    /// Drops every log no reader asked for since the previous sweep (an evicted reader's log and its parents).
+    func sweep(at uptime: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+        files = files.filter { touched.contains($0.key) }
+        touched.removeAll(keepingCapacity: true)
+        sweptAt = uptime
+    }
+
+    private func inherited(_ path: String, visited: inout Set<String>) -> [TokenSource: String] {
         guard visited.insert(path).inserted else { return [:] }
-        let own = metadata(url)
+        touched.insert(path)
+        let own = metadata(path)
         // Nested subagents inherit their immediate parent's log even when that parent was not discovered.
-        var directory = url.deletingLastPathComponent()
-        var parent: URL?
-        while directory.path != "/", directory.lastPathComponent != "sessions" {
-            let name = directory.lastPathComponent
-            let candidate = directory.appendingPathExtension("jsonl")
-            if FileManager.default.fileExists(atPath: candidate.path) {
+        var directory = (path as NSString).deletingLastPathComponent
+        var parent: String?
+        while directory != "/", !directory.isEmpty, (directory as NSString).lastPathComponent != "sessions" {
+            let name = (directory as NSString).lastPathComponent
+            let candidate = directory + ".jsonl"
+            if access(candidate, F_OK) == 0 {
                 parent = candidate
                 break
             }
@@ -470,11 +498,11 @@ private final class OmpCredentialPinReader {
                 parent = candidate
                 break
             }
-            directory.deleteLastPathComponent()
+            directory = (directory as NSString).deletingLastPathComponent
         }
         if parent != nil, let explicit = own.parent, !explicit.isEmpty {
-            parent = explicit.hasPrefix("/") ? URL(fileURLWithPath: explicit)
-                : url.deletingLastPathComponent().appendingPathComponent(explicit)
+            let joined = explicit.hasPrefix("/") ? explicit : (path as NSString).deletingLastPathComponent + "/" + explicit
+            parent = URL(fileURLWithPath: joined, isDirectory: false).standardized.path
         }
         guard let parent else { return own.pins }
         var pins = inherited(parent, visited: &visited)
@@ -482,8 +510,7 @@ private final class OmpCredentialPinReader {
         return pins
     }
 
-    private func metadata(_ url: URL) -> FileState {
-        let path = url.standardizedFileURL.path
+    private func metadata(_ path: String) -> FileState {
         guard let stamp = OpenCodeDatabase.signature(path), stamp[2] >= 0 else { files[path] = nil; return FileState() }
         var state = files[path] ?? FileState()
         guard state.stamp != stamp else { return state }
@@ -492,18 +519,13 @@ private final class OmpCredentialPinReader {
             || (stamp[2] == Int64(state.offset) && state.stamp != stamp) {
             state = FileState()
         }
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return state }
+        guard let handle = FileHandle(forReadingAtPath: path) else { return state }
         defer { try? handle.close() }
         do {
             try handle.seek(toOffset: state.offset)
-            while let chunk = try handle.read(upToCount: 65_536), !chunk.isEmpty {
+            while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
                 state.offset += UInt64(chunk.count)
-                var start = chunk.startIndex
-                for newline in chunk.indices where chunk[newline] == 10 {
-                    consume(chunk[start..<newline], complete: true, state: &state)
-                    start = chunk.index(after: newline)
-                }
-                consume(chunk[start..<chunk.endIndex], complete: false, state: &state)
+                scan(chunk, state: &state)
             }
             state.stamp = stamp
             files[path] = state
@@ -511,23 +533,50 @@ private final class OmpCredentialPinReader {
         return state
     }
 
-    private func consume(_ bytes: Data.SubSequence, complete: Bool, state: inout FileState) {
-        if !state.dropping {
-            if state.pending.count + bytes.count > maximumLineBytes {
-                state.pending.removeAll(keepingCapacity: true)
-                state.dropping = true
-            } else {
-                state.pending.append(contentsOf: bytes)
+    /// Splits a chunk at newlines with memchr; a line wholly inside the chunk is searched for the markers in place and copied
+    /// only when it holds one, so a multi-MB log is scanned without assembling every line.
+    private func scan(_ chunk: Data, state: inout FileState) {
+        chunk.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+            guard let base = buffer.baseAddress else { return }
+            var start = 0
+            while start < buffer.count {
+                guard let found = memchr(base + start, 10, buffer.count - start) else {
+                    append(UnsafeRawBufferPointer(rebasing: buffer[start...]), state: &state)
+                    return
+                }
+                let newline = base.distance(to: UnsafeRawPointer(found))
+                let line = UnsafeRawBufferPointer(rebasing: buffer[start..<newline])
+                if state.pending.isEmpty && !state.dropping {
+                    if Self.contains(line, Self.pinMarker) || Self.contains(line, Self.parentMarker) { decode(Data(line), state: &state) }
+                } else {
+                    append(line, state: &state)
+                    if !state.dropping { decode(state.pending, state: &state) }
+                    state.pending.removeAll(keepingCapacity: state.pending.count <= 65_536)
+                    state.dropping = false
+                }
+                start = newline + 1
             }
         }
-        guard complete else { return }
-        defer {
-            state.pending.removeAll(keepingCapacity: true)
-            state.dropping = false
+    }
+
+    private func append(_ bytes: UnsafeRawBufferPointer, state: inout FileState) {
+        guard !state.dropping else { return }
+        if state.pending.count + bytes.count > maximumLineBytes {
+            state.pending.removeAll(keepingCapacity: false)
+            state.dropping = true
+        } else {
+            state.pending.append(contentsOf: bytes)
         }
-        guard !state.dropping,
-              state.pending.range(of: pinMarker) != nil || state.pending.range(of: parentMarker) != nil,
-              let record = try? JSONDecoder().decode(Record.self, from: state.pending) else { return }
+    }
+
+    private static func contains(_ line: UnsafeRawBufferPointer, _ marker: [UInt8]) -> Bool {
+        guard let base = line.baseAddress, line.count >= marker.count else { return false }
+        return marker.withUnsafeBytes { memmem(base, line.count, $0.baseAddress, marker.count) != nil }
+    }
+
+    private func decode(_ line: Data, state: inout FileState) {
+        guard line.range(of: Data(Self.pinMarker)) != nil || line.range(of: Data(Self.parentMarker)) != nil,
+              let record = try? JSONDecoder().decode(Record.self, from: line) else { return }
         if record.type == "session" { state.parent = record.parentSession }
         guard record.type == "credential_pin", let hash = record.hash, hash.count == 64,
               hash.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else { return }

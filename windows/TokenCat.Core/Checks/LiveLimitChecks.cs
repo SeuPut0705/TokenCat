@@ -74,6 +74,59 @@ public static class LiveLimitChecks
         var silent = FakeAppServer(folder, "silent", Read, Read, Read);
         var watch = Stopwatch.StartNew();
         check(Run(silent, timeout: 1) is { Failed: true } && watch.Elapsed < TimeSpan.FromSeconds(6), "a silent app-server is not ended at the timeout");
+        // LiveLimitsChecks.swift's ordered server: the order of requests is enforced (a wrong line exits with an error code),
+        // notifications come before each response, and the initialize response arrives in two writes 0.1 s apart. The server
+        // then idles; the reader must end it. (On Windows the cmd script checks the methods without quotes and writes the
+        // response at once: cmd cannot print a partial line with quotes reliably.)
+        var windows = OperatingSystem.IsWindows();
+        var ordered = Path.Combine(folder, "ordered" + (windows ? ".cmd" : ".sh"));
+        const string notice = """{"jsonrpc":"2.0","method":"remoteControl/status/changed","params":{"status":"off"}}""";
+        const string limits = """{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1791580427},"secondary":null,"credits":{"hasCredits":false},"planType":"pro","rateLimitReachedType":null}}}""";
+        File.WriteAllText(ordered, windows
+            ? string.Join("\r\n", "@echo off", "set /p line=", "echo %line% | findstr /c:initialize >nul || exit /b 3", "echo " + notice,
+                """echo {"jsonrpc":"2.0","id":1,"result":{"userAgent":"fake/1.0"}}""", "set /p line=",
+                "echo %line% | findstr /c:initialized >nul || exit /b 4", "set /p line=",
+                "echo %line% | findstr /c:rateLimits/read >nul || exit /b 6",
+                """echo {"jsonrpc":"2.0","method":"account/updated","params":{"authMode":"chatgpt"}}""", "echo " + limits,
+                "ping -n 31 127.0.0.1 >nul") + "\r\n"
+            : $$$"""
+              #!/bin/sh
+              echo $$ > "$0.pid"
+              read -r line
+              case "$line" in *'"initialize"'*) ;; *) exit 3 ;; esac
+              echo '{{{notice}}}'
+              printf '%s' '{"jsonrpc":"2.0","id":1,'
+              sleep 0.1
+              printf '%s\n' '"result":{"userAgent":"fake/1.0"}}'
+              read -r line
+              case "$line" in *'"initialized"'*) ;; *) exit 4 ;; esac
+              read -r line
+              case "$line" in *'"id":2'*) ;; *) exit 5 ;; esac
+              case "$line" in *'"account/rateLimits/read"'*) ;; *) exit 6 ;; esac
+              echo '{"jsonrpc":"2.0","method":"account/updated","params":{"authMode":"chatgpt"}}'
+              echo '{{{limits}}}'
+              exec sleep 30
+
+              """);
+        if (!windows) File.SetUnixFileMode(ordered, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var started = Stopwatch.StartNew();
+        var answered = Run(ordered, timeout: 5);
+        var elapsed = started.Elapsed;
+        bool Ended()
+        {
+            if (windows) return true; // no pid from cmd; the elapsed bound shows the reader did not wait for the idle server
+            if (!int.TryParse(File.ReadAllText(ordered + ".pid").Trim(), out var pid)) return false;
+            try { using var process = Process.GetProcessById(pid); return process.HasExited; }
+            catch (ArgumentException) { return true; }
+        }
+        check(!answered.Failed && answered.Codex is [{ UsedPercent: 31, WindowMinutes: 10_080, Live: true } window]
+              && window.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_791_580_427) && elapsed < TimeSpan.FromSeconds(4) && Ended(),
+              $"the Codex app-server read skips notifications, joins split lines and ends the server ({(answered.Codex is { } got ? string.Join(", ", got) : "nil")})");
+        var now = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
+        check(LiveLimits.DecodeCodex(Json.Parse("""{"limitId":"other","primary":{"usedPercent":10}}"""u8), now) is null
+              && LiveLimits.DecodeCodex(Json.Parse("""{"primary":null,"secondary":{"usedPercent":12,"windowDurationMins":300}}"""u8), now)
+                  is [{ UsedPercent: 12, WindowMinutes: 300, ResetsAt: null, Live: true } secondary] && secondary.RecordedAt == now,
+              "Codex windows: another limit id is ignored, a missing reset is not invented");
     }
 
     static void Claude(string folder, Action<bool, string> check)

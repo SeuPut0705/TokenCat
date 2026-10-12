@@ -2,6 +2,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Automation.Peers;
 using System.Windows.Controls;
+using System.Windows.Automation.Provider;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -443,10 +444,29 @@ sealed class LeafPeer(FrameworkElement owner, AutomationControlType type) : Fram
     protected override List<AutomationPeer>? GetChildrenCore() => null;
 }
 
-/// Hover and keyboard selection for one row: inset 4 each side, radius 6; click opens the detail, right-click the menu.
+/// List rows expose their actual actions to Narrator/Voice Access, not just a label on a non-interactive Grid.
+sealed class ActionPeer(FrameworkElement owner, Action invoke, Func<bool>? expanded = null) : FrameworkElementAutomationPeer(owner),
+    IInvokeProvider, IExpandCollapseProvider
+{
+    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.ListItem;
+    protected override string GetClassNameCore() => Owner.GetType().Name;
+    protected override List<AutomationPeer>? GetChildrenCore() => null;
+    public override object? GetPattern(PatternInterface patternInterface) => patternInterface switch
+    {
+        PatternInterface.Invoke => this,
+        PatternInterface.ExpandCollapse when expanded is not null => this,
+        _ => base.GetPattern(patternInterface),
+    };
+    public void Invoke() => Owner.Dispatcher.Invoke(invoke);
+    public ExpandCollapseState ExpandCollapseState => expanded?.Invoke() == true ? ExpandCollapseState.Expanded : ExpandCollapseState.Collapsed;
+    public void Expand() { if (expanded?.Invoke() == false) Invoke(); }
+    public void Collapse() { if (expanded?.Invoke() == true) Invoke(); }
+}
+
+/// Hover and keyboard selection for one row: inset 4 each side, Fluent control corners; click opens detail, right-click the menu.
 abstract class RowShell : Grid
 {
-    readonly Border fill = new() { CornerRadius = new CornerRadius(6), Margin = new Thickness(4, 0, 4, 0) };
+    readonly Border fill = new() { CornerRadius = new CornerRadius(Ui.ControlRadius), Margin = new Thickness(4, 0, 4, 0) };
     protected readonly Grid Body = new();
     bool selected;
     protected TokenReading? Reading;
@@ -473,10 +493,13 @@ abstract class RowShell : Grid
         selected = context.SelectedId == id;
         Paint();
         Ui.Help(this, help);
+        AutomationProperties.SetHelpText(this, help + (reading is null ? "" : "\n" + (context.DetailId == id
+            ? Loc("상세를 닫습니다", "Closes details") : Loc("상세를 엽니다", "Opens details"))));
         System.Windows.Automation.AutomationProperties.SetName(this, spoken);
     }
 
-    protected override AutomationPeer OnCreateAutomationPeer() => new LeafPeer(this, AutomationControlType.ListItem);
+    void Activate() { if (RowId is { } id) Context?.Tap(id); }
+    protected override AutomationPeer OnCreateAutomationPeer() => new ActionPeer(this, Activate, Reading is null ? null : () => Context?.DetailId == RowId);
 
     /// The selection fill is faint (1.4:1), so the keyboard selection also gets an accent outline (at least 3:1).
     void Paint()
@@ -494,6 +517,8 @@ sealed class BlockView : Grid
     readonly StackPanel rows = new();
     readonly Dictionary<string, FrameworkElement> cache = [];
     readonly Action expand;
+    readonly List<double> tails = [];
+    double[] guideTails = [];
 
     public BlockView(Action expand)
     {
@@ -535,17 +560,19 @@ sealed class BlockView : Grid
         Reconcile.Panel(rows, cache, items);
 
         // 1 DIP primary 0.15 from below the lead glyph (x = 17) to the last child or "+N 하위" row, with a 6 DIP tail to each.
-        if (block.Children.Count == 0 && block.MoreCount == 0) { guide.Data = null; return; }
+        if (block.Children.Count == 0 && block.MoreCount == 0) { guide.Data = null; guideTails = []; return; }
         // Live and idle leads alike put their 8 DIP glyph at y 10–18 (a live row's first line is 18 under 5 of padding).
         const double start = 19;
         var y = lead.Height + context.DetailHeight(lead);
-        var tails = new List<double>();
+        tails.Clear();
         foreach (var child in block.Children)
         {
             tails.Add(y + child.Height / 2);
             y += child.Height + context.DetailHeight(child);
         }
         if (block.MoreCount > 0) tails.Add(y + SessionListModel.MoreHeight / 2);
+        if (guide.Data is not null && tails.SequenceEqual(guideTails)) return;
+        guideTails = [.. tails];
         var x = Dashboard.GuideX + 0.5;
         var geometry = new StreamGeometry();
         using (var g = geometry.Open())
@@ -574,6 +601,7 @@ sealed class LiveRow : RowShell
     readonly TextBlock project = TrimLine.Shrink(Ui.Text("", Font.Title));
     readonly TextBlock shortId = Ui.Text("", Font.Meta, Theme.Secondary);
     readonly TextBlock number = Ui.Line();
+    readonly Run outputAmount = Ui.Run("", Font.Metric), outputUnit = Ui.Run(" tok", Font.Micro, Theme.Secondary);
     readonly TextBlock chipWords = Ui.Text("", Font.MetaMedium);
     readonly TextBlock client = TrimLine.Shrink(Ui.Text("", Font.Meta, Theme.Secondary));
     readonly TextBlock trailing = Ui.Text("", Font.MetaMono);
@@ -586,6 +614,8 @@ sealed class LiveRow : RowShell
         project.Margin = new Thickness(6, 0, 0, 0);
         shortId.Margin = new Thickness(6, 0, 0, 0);
         chipWords.TextTrimming = TextTrimming.None;
+        number.Inlines.Add(outputAmount);
+        number.Inlines.Add(outputUnit);
         number.MinWidth = 86;
         number.TextAlignment = TextAlignment.Right;
         var first = Dashboard.Spread(new TrimLine(glyph, project, shortId), number);
@@ -612,18 +642,20 @@ sealed class LiveRow : RowShell
         shortId.Visibility = context.ShowsID(reading) ? Visibility.Visible : Visibility.Collapsed;
         shortId.Text = SessionPresentation.ShortID(reading);
 
-        number.Inlines.Clear();
         if (reading.CurrentTurnOutputTokens is { } output)
         {
             var quiet = output == 0 || item.State == SessionDisplayState.Waiting;
-            number.Inlines.Add(Ui.Run(Format.Tokens(output), Font.Metric, quiet ? Theme.Secondary : Theme.Label));
-            number.Inlines.Add(Ui.Run(" tok", Font.Micro, Theme.Secondary));
+            outputAmount.Text = Format.Tokens(output);
+            outputAmount.Foreground = Theme.Brush(quiet ? Theme.Secondary : Theme.Label);
+            outputUnit.Text = " tok";
             Ui.Help(number, output == 0 ? Loc("현재 턴에서 아직 기록된 출력이 없습니다", "No output recorded in this turn yet")
                 : Loc("현재 턴에서 기록된 출력 토큰", "Output tokens recorded in this turn"));
         }
         else
         {
-            number.Inlines.Add(Ui.Run("—", Font.Metric, Theme.Tertiary));
+            outputAmount.Text = "—";
+            outputAmount.Foreground = Theme.Brush(Theme.Tertiary);
+            outputUnit.Text = "";
             Ui.Help(number, Loc("현재 턴 시작 부분을 읽지 못해 이번 턴 누적량을 알 수 없습니다", "Couldn't read the start of this turn, so its total is unknown"));
         }
 
@@ -946,10 +978,12 @@ sealed class DisclosureRow : Border
 {
     readonly TextBlock text = Ui.Text("", Font.MetaMedium, Theme.Secondary);
     readonly TextBlock chevron = Ui.Icon(Ui.ChevronDown, 9, Theme.Secondary);
-    bool selected;
+    readonly Action open;
+    bool selected, expanded;
 
     public DisclosureRow(Action open)
     {
+        this.open = open;
         Height = SessionListModel.OlderHeight;
         Background = Brushes.Transparent;
         Cursor = Cursors.Hand;
@@ -966,6 +1000,7 @@ sealed class DisclosureRow : Border
     public void Update(string title, bool up, bool isSelected, string? help, string name)
     {
         selected = isSelected;
+        expanded = up;
         text.Text = title;
         chevron.Text = (up ? Ui.ChevronUp : Ui.ChevronDown).ToString();
         Ui.Help(this, help);
@@ -973,7 +1008,7 @@ sealed class DisclosureRow : Border
         Paint();
     }
 
-    protected override AutomationPeer OnCreateAutomationPeer() => new LeafPeer(this, AutomationControlType.ListItem);
+    protected override AutomationPeer OnCreateAutomationPeer() => new ActionPeer(this, open, () => expanded);
 
     void Paint()
     {
@@ -1010,6 +1045,8 @@ sealed class DetailView : StackPanel
             label.Width = 76;
             var text = TrimLine.Shrink(Ui.Text(detail.Value, Font.MetaMono));
             text.Margin = new Thickness(6, 0, 0, 0);
+            Ui.Help(text, detail.Value);
+            AutomationProperties.SetHelpText(text, detail.Value);
             Button? copy = null;
             if (detail.Copy is { } copied)
             {

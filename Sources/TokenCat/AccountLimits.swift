@@ -26,7 +26,8 @@ struct LimitAccount: Hashable {
         let bytes = Array(value.utf8)
         var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
         CC_SHA256(bytes, CC_LONG(bytes.count), &digest)
-        return digest.map { String(format: "%02x", $0) }.joined()
+        let hex = Array("0123456789abcdef".utf8)
+        return String(decoding: digest.flatMap { [hex[Int($0 >> 4)], hex[Int($0 & 15)]] }, as: UTF8.self)
     }
 
     /// Pin hashes deliberately use the client's original strings, not canonical account values.
@@ -76,6 +77,8 @@ final class LimitAccountReader {
         var prefixes: [String]
         var source: TokenSource
         var metadata: URL
+        /// `metadata.standardizedFileURL`, which touches the file system, computed once with the roots.
+        var key: URL
     }
     struct RootAccount {
         var account: LimitAccount?
@@ -85,6 +88,16 @@ final class LimitAccountReader {
     private let environment: [String: String]
     private var roots: [Root] = []
     private var clones: [(source: TokenSource, prefixes: [String])] = []
+    /// When `roots` were last listed (system uptime). They follow the environment and the omp profile folders, which change
+    /// rarely, so they are listed again at most every `rootsInterval`; resolving them (symlinks, profile listings) every
+    /// sample cost more than the stat-gated config reads.
+    private var rootsListedAt: TimeInterval?
+    static let rootsInterval: TimeInterval = 5
+    /// `root(source:path:)` per log path, valid until the roots are listed again.
+    private var rootIndex: [String: Int?] = [:]
+    private var defaultClaudeConfigURL: URL?
+    /// Whether the accounts were derived at least once; later refreshes derive them again only after an input changed.
+    private var resolved = false
     private var configs: [URL: Config] = [:]
     private var credentials: [URL: (stamp: [Int64], values: [Credential])] = [:]
     /// Observations survive metadata cache invalidation; identity and switch times are memory-only.
@@ -107,36 +120,36 @@ final class LimitAccountReader {
             ? home.appendingPathComponent(".claude.json") : directory.appendingPathComponent(".claude.json")
     }
     private var defaultClaudeConfig: URL {
-        environment.paths("CLAUDE_CONFIG_DIR").first.map(claudeConfig) ?? home.appendingPathComponent(".claude.json")
+        if let defaultClaudeConfigURL { return defaultClaudeConfigURL }
+        let url = environment.paths("CLAUDE_CONFIG_DIR").first.map(claudeConfig) ?? home.appendingPathComponent(".claude.json")
+        defaultClaudeConfigURL = url
+        return url
     }
     private var defaultCodexConfig: URL {
         (environment.path("CODEX_HOME") ?? home.appendingPathComponent(".codex")).appendingPathComponent("auth.json")
     }
 
     func refresh(now: Date = Date()) {
-        roots = TokenProvider.claudeConfigDirectories(home, environment).map {
-            Root(prefixes: Self.prefixes($0.appendingPathComponent("projects")), source: .claude, metadata: claudeConfig($0))
-        }
-        roots += [environment.path("CODEX_HOME"), home.appendingPathComponent(".codex")].compactMap { $0 }.map {
-            Root(prefixes: Self.prefixes($0.appendingPathComponent("sessions")), source: .codex, metadata: $0.appendingPathComponent("auth.json"))
-        }
-        let ompRoots = TokenProvider.all.first { $0.source == .omp }?.roots(home, environment) ?? []
-        let piSessionRoot = environment.path("PI_CODING_AGENT_SESSION_DIR")
-        roots += ompRoots.map {
-            let agent = $0.standardizedFileURL == piSessionRoot?.standardizedFileURL
-                ? (environment.path("PI_CODING_AGENT_DIR") ?? home.appendingPathComponent(".pi/agent")) : $0.deletingLastPathComponent()
-            return Root(prefixes: Self.prefixes($0), source: .omp, metadata: agent.appendingPathComponent("agent.db"))
-        }
-        clones = TokenClientRoots.all.filter { $0.source != .omp }.flatMap { client in
-            client.roots(home, environment).map { (client.source, Self.prefixes($0)) }
+        let uptime = ProcessInfo.processInfo.systemUptime
+        // Accounts are a pure function of the roots, the config files and the credential stores; when none of them
+        // changed since the last call, nothing below would either (a switch time is set only when an account changes).
+        var changed = !resolved
+        if rootsListedAt.map({ uptime - $0 >= Self.rootsInterval || uptime < $0 }) ?? true {
+            rootsListedAt = uptime
+            changed = listRoots() || changed
         }
         let configURLs = Set(roots.filter { $0.source != .omp }.map(\.metadata) + [defaultClaudeConfig, defaultCodexConfig, home.appendingPathComponent(".claude.json")])
-        for url in configURLs { readConfig(url) }
-        configs = configs.filter { configURLs.contains($0.key) }
+        for url in configURLs where readConfig(url) { changed = true }
+        let keptConfigs = configs.filter { configURLs.contains($0.key) }
+        if keptConfigs.count != configs.count { configs = keptConfigs; changed = true }
         let databases = Set(roots.filter { $0.source == .omp }.map(\.metadata))
-        credentials = credentials.filter { databases.contains($0.key) }
+        let keptCredentials = credentials.filter { databases.contains($0.key) }
+        if keptCredentials.count != credentials.count { credentials = keptCredentials; changed = true }
         for database in databases {
-            guard let stamp = OpenCodeDatabase.signature(database.path) else { credentials[database] = nil; continue }
+            guard let stamp = OpenCodeDatabase.signature(database.path) else {
+                if credentials.removeValue(forKey: database) != nil { changed = true }
+                continue
+            }
             guard credentials[database]?.stamp != stamp else { continue }
             guard let connection = OpenCodeDatabase(path: database.path) else { continue }
             var values: [Credential] = []
@@ -149,7 +162,10 @@ final class LimitAccountReader {
                 values.append(Credential(provider: provider, hash: hash, account: LimitAccount(id: id, email: email, organizationName: row.text(5))))
             }) else { continue }
             credentials[database] = (stamp, values)
+            changed = true
         }
+        guard changed else { return }
+        resolved = true
         accounts = [:]
         for credential in credentials.values.flatMap(\.values) { add(credential.account, provider: credential.provider) }
         let claude = (roots.filter { $0.source == .claude }.map(\.metadata) + [defaultClaudeConfig])
@@ -173,7 +189,7 @@ final class LimitAccountReader {
         defaultClaudeOrganizationID = configMetadata(defaultClaudeConfig, provider: .claude)?.organizationID
         for provider in Array(accounts.keys) { accounts[provider]?.sort { $0.key < $1.key } }
         for root in roots where root.source == .claude || root.source == .codex {
-            let key = root.metadata.standardizedFileURL
+            let key = root.key
             let account = configAccount(root.metadata, provider: root.source).flatMap {
                 resolve(provider: root.source, id: $0.id, email: $0.email, organizationName: $0.organizationName)
             }
@@ -189,14 +205,46 @@ final class LimitAccountReader {
         }
     }
 
+    /// Lists the roots again; true when they differ from the previous listing.
+    private func listRoots() -> Bool {
+        let previous = (roots.map(\.metadata), roots.map(\.prefixes), clones.map(\.prefixes))
+        func root(_ prefixes: [String], _ source: TokenSource, _ metadata: URL) -> Root {
+            Root(prefixes: prefixes, source: source, metadata: metadata, key: metadata.standardizedFileURL)
+        }
+        roots = TokenProvider.claudeConfigDirectories(home, environment).map {
+            root(Self.prefixes($0.appendingPathComponent("projects")), .claude, claudeConfig($0))
+        }
+        roots += [environment.path("CODEX_HOME"), home.appendingPathComponent(".codex")].compactMap { $0 }.map {
+            root(Self.prefixes($0.appendingPathComponent("sessions")), .codex, $0.appendingPathComponent("auth.json"))
+        }
+        let ompRoots = TokenProvider.all.first { $0.source == .omp }?.roots(home, environment) ?? []
+        let piSessionRoot = environment.path("PI_CODING_AGENT_SESSION_DIR")
+        roots += ompRoots.map {
+            let agent = $0.standardizedFileURL == piSessionRoot?.standardizedFileURL
+                ? (environment.path("PI_CODING_AGENT_DIR") ?? home.appendingPathComponent(".pi/agent")) : $0.deletingLastPathComponent()
+            return root(Self.prefixes($0), .omp, agent.appendingPathComponent("agent.db"))
+        }
+        clones = TokenClientRoots.all.filter { $0.source != .omp }.flatMap { client in
+            client.roots(home, environment).map { (client.source, Self.prefixes($0)) }
+        }
+        rootIndex = [:]
+        // Switch observations of a root that is no longer listed (a removed profile) are dropped with it.
+        let keys = Set(roots.map(\.key))
+        observedRoots = observedRoots.filter { keys.contains($0.key) }
+        return previous.0 != roots.map(\.metadata) || previous.1 != roots.map(\.prefixes) || previous.2 != clones.map(\.prefixes)
+    }
+
     private func add(_ account: LimitAccount, provider: TokenSource) {
         if !accounts[provider, default: []].contains(account) { accounts[provider, default: []].append(account) }
     }
-    private func readConfig(_ url: URL) {
+    /// True when the config changed (appeared, went away or was rewritten).
+    private func readConfig(_ url: URL) -> Bool {
         var info = stat()
-        guard stat(url.path, &info) == 0, info.st_size >= 0, info.st_size <= Int64(Self.maximumConfigBytes) else { configs[url] = nil; return }
+        guard stat(url.path, &info) == 0, info.st_size >= 0, info.st_size <= Int64(Self.maximumConfigBytes) else {
+            return configs.removeValue(forKey: url) != nil
+        }
         let stamp = [Int64(info.st_dev), Int64(info.st_ino), Int64(info.st_size), Int64(info.st_mtimespec.tv_sec), Int64(info.st_mtimespec.tv_nsec)]
-        guard configs[url]?.stamp != stamp else { return }
+        guard configs[url]?.stamp != stamp else { return false }
         var value = Config(stamp: stamp)
         if let data = try? Data(contentsOf: url) {
             if url.lastPathComponent == "auth.json" {
@@ -211,6 +259,7 @@ final class LimitAccountReader {
             }
         }
         configs[url] = value
+        return true
     }
     private func configMetadata(_ url: URL, provider: TokenSource) -> Config? {
         if let config = configs[url] { return config }
@@ -238,11 +287,21 @@ final class LimitAccountReader {
         }
         return LimitAccount(id: normalizedID, email: normalizedEmail, organizationName: organizationName)
     }
+    /// Resolving a path's symlinks costs a system call per component, so the answer is kept per path until the roots are
+    /// listed again.
     private func root(source: TokenSource, path: String) -> Root? {
+        let cacheKey = source.rawValue + "\u{1f}" + path
+        if let cached = rootIndex[cacheKey] { return cached.map { roots[$0] } }
         let paths = [URL(fileURLWithPath: path).standardizedFileURL.path, URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path]
-        if clones.contains(where: { clone in clone.source == source && clone.prefixes.contains { prefix in paths.contains { $0.hasPrefix(prefix) } } }) { return nil }
-        return roots.filter { root in root.source == source && root.prefixes.contains { prefix in paths.contains { $0.hasPrefix(prefix) } } }
-            .max { ($0.prefixes.map(\.count).max() ?? 0) < ($1.prefixes.map(\.count).max() ?? 0) }
+        let index: Int?
+        if clones.contains(where: { clone in clone.source == source && clone.prefixes.contains { prefix in paths.contains { $0.hasPrefix(prefix) } } }) {
+            index = nil
+        } else {
+            index = roots.indices.filter { roots[$0].source == source && roots[$0].prefixes.contains { prefix in paths.contains { $0.hasPrefix(prefix) } } }
+                .max { (roots[$0].prefixes.map(\.count).max() ?? 0) < (roots[$1].prefixes.map(\.count).max() ?? 0) }
+        }
+        rootIndex[cacheKey] = .some(index)
+        return index.map { roots[$0] }
     }
     func account(source: TokenSource, path: String) -> LimitAccount? {
         guard source == .claude || source == .codex, let root = root(source: source, path: path),
@@ -251,7 +310,7 @@ final class LimitAccountReader {
     }
     func observedAccount(source: TokenSource, path: String) -> RootAccount? {
         guard source == .claude || source == .codex, let root = root(source: source, path: path) else { return nil }
-        return observedRoots[root.metadata.standardizedFileURL]
+        return observedRoots[root.key]
     }
     func claudeAccount(configDirectory: URL) -> LimitAccount? {
         let directory = configDirectory.standardizedFileURL.resolvingSymlinksInPath()

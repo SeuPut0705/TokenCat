@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Globalization;
 using System.Security;
 
@@ -19,10 +20,15 @@ public sealed class TokenTracker
     readonly int initialTailBytes;
     readonly double discoveryInterval;
     DateTimeOffset? lastDiscovery;
-    Dictionary<string, (TokenSource Source, ITokenLogReader Reader)> files = new(StringComparer.Ordinal);
+    /// A tracked log: its reader, its row id ("<source>:<path relative to home>") and the clone client whose root holds it.
+    /// Both are fixed by the path, so they are computed when the reader opens, not on every sample.
+    sealed record Tracked(TokenSource Source, ITokenLogReader Reader, string Id, string? Client);
+    Dictionary<string, Tracked> files = new(StringComparer.Ordinal);
     readonly record struct LogAccountKey(string Id, string? SessionID);
-    sealed record PinnedLogAccount(LimitAccount Account, DateTimeOffset? LimitsNotBefore);
+    /// `Path`: the log the row came from; a pin is dropped when discovery drops that log's reader.
+    sealed record PinnedLogAccount(LimitAccount Account, DateTimeOffset? LimitsNotBefore, string Path);
     readonly Dictionary<LogAccountKey, PinnedLogAccount> pinnedLogAccounts = [];
+    readonly List<CodexThreadNames> refreshedIndexes = [];
     /// Every log the last discovery listed, inside the caps or not: a write to one the caps left out opens its reader
     /// directly (it is now the newest), instead of rerunning discovery on each file event.
     HashSet<string> known = new(StringComparer.Ordinal);
@@ -85,13 +91,27 @@ public sealed class TokenTracker
         foreach (var path in paths)
         {
             if (files.ContainsKey(path) || LogRoot(path) is not { } root) continue;
-            if (known.Contains(path)) files[path] = (root.Source, root.Format.Open(path));
+            if (known.Contains(path)) files[path] = Track(path, root.Source, root.Format);
             else lastDiscovery = null;
         }
     }
 
     /// Runs discovery on the next sample: a client folder appeared, and logs written before it was watched raised no event.
     public void Rediscover() => lastDiscovery = null;
+
+    /// Logs with an open reader.
+    public int TrackedCount => files.Count;
+    /// Account pins held for rows of tracked logs (C4a's bound).
+    internal int PinnedAccountCount => pinnedLogAccounts.Count;
+
+    Tracked Track(string path, TokenSource source, TokenLogFormat format)
+    {
+        var relative = path.Length > home.Length + 1 && path.StartsWith(home, StringComparison.Ordinal) && path[home.Length] is '/' or '\\'
+            ? path[(home.Length + 1)..] : path;
+        var normalized = path.Replace('\\', '/');
+        var client = clientRoots.FirstOrDefault(root => root.Prefixes.Any(prefix => normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))).Name;
+        return new Tracked(source, format.Open(path), $"{source.Id}:{relative.Replace('\\', '/')}", client);
+    }
 
     public List<TokenReading> Sample()
     {
@@ -102,20 +122,25 @@ public sealed class TokenTracker
             lastDiscovery = now;
         }
         AccountReader.Refresh(now);
+        // Every Codex reader of one Codex home shares its thread-name index: one stat of it per sample, not one per rollout.
+        refreshedIndexes.Clear();
+        foreach (var file in files.Values)
+            if (file.Reader is TokenFileCursor { ThreadNames: { } index } && !refreshedIndexes.Contains(index))
+            {
+                refreshedIndexes.Add(index);
+                index.Refresh(now);
+            }
         // One reader that throws (a corrupt or hostile log) keeps its previous state and rows; the others still report.
         foreach (var file in files.Values)
             try { file.Reader.Read(initialTailBytes, now); }
             catch (Exception) { }
-        var readings = new List<TokenReading>();
+        var readings = new List<TokenReading>(files.Count);
         foreach (var (path, file) in files)
         {
-            var relative = path.Length > home.Length + 1 && path.StartsWith(home, StringComparison.Ordinal) && path[home.Length] is '/' or '\\'
-                ? path[(home.Length + 1)..] : path;
             List<TokenReading> rows;
-            try { rows = [.. file.Reader.Readings($"{file.Source.Id}:{relative.Replace('\\', '/')}", now)]; }
+            try { rows = [.. file.Reader.Readings(file.Id, now)]; }
             catch (Exception) { continue; }
-            var normalized = path.Replace('\\', '/');
-            var client = clientRoots.FirstOrDefault(root => root.Prefixes.Any(prefix => normalized.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))).Name;
+            var client = file.Client;
             foreach (var original in rows)
             {
                 var row = client is null ? original : original with { ClientName = original.ClientName ?? client, RateLimit = null };
@@ -132,7 +157,7 @@ public sealed class TokenTracker
                         && AccountReader.ObservedAccount(row.Source, path) is { Account: { } observedAccount } root
                         && (root.SwitchedAt is not { } switchedAt || (row.LastActivity ?? DateTimeOffset.MinValue) >= switchedAt))
                     {
-                        pinned = new PinnedLogAccount(observedAccount, root.SwitchedAt);
+                        pinned = new PinnedLogAccount(observedAccount, root.SwitchedAt, path);
                         pinnedLogAccounts[key] = pinned;
                     }
                     account = pinned?.Account;
@@ -140,7 +165,10 @@ public sealed class TokenTracker
                         && (pinned.LimitsNotBefore is not { } cutoff || limit.RecordedAt >= cutoff))
                         limitAccount = pinned.Account;
                 }
-                readings.Add(row with { LimitAccount = account, RateLimit = row.RateLimit is { } rateLimit ? rateLimit with { Account = limitAccount } : null });
+                // Most rows carry neither an account nor a limit: no copy for them.
+                readings.Add(ReferenceEquals(row.LimitAccount, account) && row.RateLimit is null
+                    ? row
+                    : row with { LimitAccount = account, RateLimit = row.RateLimit is { } rateLimit ? rateLimit with { Account = limitAccount } : null });
             }
         }
         readings.Sort((a, b) =>
@@ -162,7 +190,7 @@ public sealed class TokenTracker
             foreach (var path in format.Files(roots, discovery))
             {
                 retained.Add(path);
-                if (!files.ContainsKey(path)) files[path] = (provider.Source, format.Open(path));
+                if (!files.ContainsKey(path)) files[path] = Track(path, provider.Source, format);
             }
         }
         known = discovery.Known;
@@ -183,6 +211,9 @@ public sealed class TokenTracker
             .Take(RetentionLimit);
         foreach (var candidate in kept) retained.Add(candidate.Path);
         files = files.Where(pair => retained.Contains(pair.Key)).ToDictionary(StringComparer.Ordinal);
+        // A dropped reader's rows are gone; so are their account pins (identity stays memory-only and bounded by the files).
+        foreach (var (key, pin) in pinnedLogAccounts.ToArray())
+            if (!files.ContainsKey(pin.Path)) pinnedLogAccounts.Remove(key);
     }
 }
 
@@ -258,14 +289,13 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
     public TokenLogParser Parser { get; private set; } = NewParser(path, source);
     /// Claude subagent type from `<log>.meta.json`; only `agentType` is kept.
     public string? SidecarRole { get; private set; }
-    /// Codex: the thread-name index of this rollout's Codex home.
-    readonly CodexThreadNames? threadNames = source == TokenSource.Codex ? CodexThreadNames.ForRollout(path) : null;
+    /// Codex: the thread-name index of this rollout's Codex home; the tracker refreshes it once a sample, before the reads.
+    public CodexThreadNames? ThreadNames { get; } = source == TokenSource.Codex ? CodexThreadNames.ForRollout(path) : null;
     long offset;
     long identity;
     bool initialized;
-    MemoryStream pending = new();
-    bool droppingLine;
-    const int MaximumLineBytes = 1_048_576;
+    readonly LogLineAssembler lines = new();
+    const int MaximumLineBytes = LogLineAssembler.MaximumLineBytes;
     const FileShare Sharing = FileShare.ReadWrite | FileShare.Delete; // rule 8: never block the writer's appends or renames
 
     /// The sidecar may be written after the log, so it is retried while the log grows.
@@ -311,7 +341,7 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
             ParentSessionID = parser.ParentSessionID,
             AgentID = parser.AgentID,
             Project = parser.Project,
-            Title = threadNames is { } names ? names.Name(parser.SessionID) : parser.Title,
+            Title = ThreadNames is { } names ? names.Name(parser.SessionID, now) : parser.Title,
             ProjectPath = parser.ProjectPath,
             IsSubagent = parser.IsSubagent,
             AgentRole = SidecarRole ?? parser.AgentRole,
@@ -332,7 +362,7 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
             CurrentTurnOutputTokens = parser.CurrentTurnOutputTokens,
             LastOutputAt = parser.LastOutputAt,
             LastOutputDelta = parser.LastOutputDelta,
-            RequestIDs = [.. parser.RequestIDs],
+            RequestIDs = parser.RequestIDsSnapshot,
             RecentOutputs = [.. parser.RecentOutputs.Where(e => (now - e.At).TotalSeconds is >= -5 and <= TokenTracker.RecentOutputWindow)],
             SampledAt = now,
             // Output of the last fully observed completed turn; its duration is a separate field.
@@ -344,7 +374,6 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
     {
         // A future record (one bad timestamp, or the clock set back) must not keep later records filtered or a live turn stale.
         Parser.Clamp(now.AddSeconds(5));
-        threadNames?.Refresh();
         // A fresh attribute query every tick, never enumeration data: NTFS updates a directory entry's size lazily while
         // a writer keeps the file open (rule 8). The creation time stands in for the mac's dev-ino.
         // ponytail: NTFS can tunnel a creation time for 15 s; use the file ID (GetFileInformationByHandle) if a replaced
@@ -357,8 +386,7 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
         {
             offset = 0;
             initialized = false;
-            pending = new();
-            droppingLine = false;
+            lines.Restart(dropFirst: false);
             Parser = NewParser(Path, Parser.Source);
         }
         // Unchanged logs are polled every tick; avoid reopening them.
@@ -373,9 +401,10 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
                 // token counts, lifecycle events, models or conversation content into parser state.
                 if (size > tailLimit)
                 {
-                    var header = ReadAt(handle, 0, 65_536);
+                    var header = new byte[65_536];
+                    var read = LogLineTail.ReadAt(handle, 0, header);
                     var start = 0;
-                    while (start < header.Length && header.AsSpan(start).IndexOf((byte)10) is var length and >= 0)
+                    while (start < read && header.AsSpan(start, read - start).IndexOf((byte)10) is var length and >= 0)
                     {
                         Parser.ConsumeMetadata(header.AsSpan(start, length));
                         start += length + 1;
@@ -383,38 +412,26 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
                 }
                 if (Parser.Source == TokenSource.Codex && size > tailLimit) RestoreCodexMetadata(handle, size);
                 offset = size > tailLimit ? size - tailLimit : 0;
-                droppingLine = offset > 0;
+                var dropFirst = offset > 0;
                 // An open Claude turn that began before the tail is read from its human input,
                 // so the whole turn's output is counted rather than reported as unknown.
                 if (Parser.Source == TokenSource.Claude && offset > 0 && ClaudeTurnStart(handle, size) is { } turnStart && turnStart < offset)
                 {
                     offset = turnStart;
-                    droppingLine = false;
+                    dropFirst = false;
                 }
+                lines.Restart(dropFirst);
                 identity = currentIdentity;
                 initialized = true;
             }
-            // Bursts (large tool outputs, the initial turn replay) are caught up within one sample.
-            long budget = 16_777_216 + tailLimit;
-            while (offset < size && budget > 0)
-            {
-                var data = ReadAt(handle, offset, (int)Math.Min(1_048_576, size - offset));
-                if (data.Length == 0) break;
-                offset += data.Length;
-                budget -= data.Length;
-                Consume(data);
-            }
+            // An oversized tool result still names the call it completes near its start.
+            LogLineTail.ReadForward(handle, ref offset, size, tailLimit, lines, Parser.Consume, Parser.ConsumeOversizedPrefix);
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
     }
 
-    static byte[] ReadAt(FileStream handle, long position, int count)
-    {
-        var buffer = new byte[count];
-        handle.Position = position;
-        var read = handle.ReadAtLeast(buffer, count, throwOnEndOfStream: false);
-        return read == count ? buffer : buffer[..read];
-    }
+    /// Bytes held for an unfinished line (LogLineAssembler's bound).
+    internal (long Length, long Capacity) PendingLine => lines.Pending;
 
     /// Finds the newest human input of a still-open turn within the last 16 MB.
     /// A completion marker found first means the latest turn is closed and the tail suffices.
@@ -437,41 +454,68 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
         return found;
     }
 
+    /// A line found by `ScanLinesBackward` and its file offset; true stops the scan. The span is valid only during the call.
+    internal delegate bool BackwardLine(ReadOnlySpan<byte> line, long offset);
+
     /// Visits complete lines newest first. Lines over `MaximumLineBytes` (the forward limit; a prompt with a pasted image
-    /// runs past 64 KB) and an unterminated last record are skipped.
-    static void ScanLinesBackward(FileStream handle, long size, long lowerBound, Func<byte[], long, bool> visit)
+    /// runs past 64 KB) and an unterminated last record are skipped. Reads 64 KB chunks into one pooled buffer; a line inside
+    /// a chunk is visited in place, and only a line spanning chunks is assembled (backwards, at the end of a second buffer).
+    internal static void ScanLinesBackward(FileStream handle, long size, long lowerBound, BackwardLine visit)
     {
-        var end = size;
-        byte[] partial = [];
+        var chunk = ArrayPool<byte>.Shared.Rent(65_536);
+        byte[]? carry = null;
+        var carried = 0; // bytes of a line spanning chunks, held at the end of `carry`
         var dropping = true;
-        while (end > lowerBound)
+        try
         {
-            var start = Math.Max(lowerBound, end > 65_536 ? end - 65_536 : 0);
-            var chunk = ReadAt(handle, start, (int)(end - start));
-            if (chunk.Length == 0) return;
-            var cursor = chunk.Length;
-            while (cursor > 0)
+            var end = size;
+            while (end > lowerBound)
             {
-                var newline = chunk.AsSpan(0, cursor).LastIndexOf((byte)10);
-                var lineStart = newline + 1;
-                if (!dropping)
+                var start = Math.Max(lowerBound, end > 65_536 ? end - 65_536 : 0);
+                var length = LogLineTail.ReadAt(handle, start, chunk.AsSpan(0, (int)(end - start)));
+                if (length == 0) return;
+                var cursor = length;
+                while (cursor > 0)
                 {
-                    if (partial.Length + cursor - lineStart <= MaximumLineBytes) partial = [.. chunk.AsSpan(lineStart, cursor - lineStart), .. partial];
-                    else
+                    var newline = chunk.AsSpan(0, cursor).LastIndexOf((byte)10);
+                    var lineStart = newline + 1;
+                    var piece = chunk.AsSpan(lineStart, cursor - lineStart);
+                    if (!dropping && newline >= 0 && carried == 0)
                     {
-                        partial = [];
-                        dropping = true;
+                        // The whole line is in this chunk.
+                        if (piece.Length <= MaximumLineBytes && piece.Length > 0 && visit(piece, start + lineStart)) return;
+                        cursor = newline;
+                        continue;
                     }
+                    if (!dropping)
+                    {
+                        if (carried + piece.Length <= MaximumLineBytes)
+                        {
+                            carry ??= ArrayPool<byte>.Shared.Rent(MaximumLineBytes);
+                            piece.CopyTo(carry.AsSpan(carry.Length - carried - piece.Length));
+                            carried += piece.Length;
+                        }
+                        else
+                        {
+                            carried = 0;
+                            dropping = true;
+                        }
+                    }
+                    if (newline < 0) break;
+                    if (!dropping && carried > 0 && visit(carry.AsSpan(carry!.Length - carried), start + lineStart)) return;
+                    carried = 0;
+                    dropping = false;
+                    cursor = newline;
                 }
-                if (newline < 0) break;
-                if (!dropping && partial.Length > 0 && visit(partial, start + lineStart)) return;
-                partial = [];
-                dropping = false;
-                cursor = newline;
+                end = start;
             }
-            end = start;
+            if (end == 0 && !dropping && carried > 0) visit(carry.AsSpan(carry!.Length - carried), 0);
         }
-        if (end == 0 && !dropping && partial.Length > 0) visit(partial, 0);
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(chunk);
+            if (carry is not null) ArrayPool<byte>.Shared.Return(carry);
+        }
     }
 
     void RestoreCodexMetadata(FileStream handle, long size)
@@ -481,7 +525,7 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
         CodexMetadataCheckpoint? MatchingContext() =>
             lifecycle is { } current ? contexts.FirstOrDefault(context => context.TurnID is null || context.TurnID == current.TurnID) : null;
         bool MetadataReady() => lifecycle is not null && opener is { } found && (found.IsInherited || MatchingContext() is not null);
-        void Inspect(byte[] line)
+        void Inspect(ReadOnlySpan<byte> line)
         {
             if (Parser.CodexMetadataCheckpointOf(line) is not { } checkpoint) return;
             if (checkpoint.TurnOutputTokens is not null)
@@ -512,32 +556,5 @@ sealed class TokenFileCursor(string path, TokenSource source) : ITokenLogReader
             Parser.RestoreCodexMetadata(MatchingContext(), lifecycle, opener, latestUsage);
         }
         catch (IOException) { }
-    }
-
-    void Consume(byte[] data)
-    {
-        var start = 0;
-        while (start < data.Length)
-        {
-            var found = data.AsSpan(start).IndexOf((byte)10);
-            var end = found < 0 ? data.Length : start + found;
-            if (!droppingLine)
-            {
-                if (pending.Length + end - start <= MaximumLineBytes) pending.Write(data, start, end - start);
-                else
-                {
-                    // An oversized tool result still names the call it completes near its start.
-                    var head = pending.GetBuffer().AsSpan(0, (int)Math.Min(pending.Length, 16_384));
-                    Parser.ConsumeOversizedPrefix([.. head, .. data.AsSpan(start, Math.Min(end - start, 16_384 - head.Length))]);
-                    pending = new();
-                    droppingLine = true;
-                }
-            }
-            if (found < 0) break;
-            if (!droppingLine) Parser.Consume(pending.GetBuffer().AsSpan(0, (int)pending.Length));
-            pending.SetLength(0);
-            droppingLine = false;
-            start = end + 1;
-        }
     }
 }

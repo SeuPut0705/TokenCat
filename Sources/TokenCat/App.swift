@@ -261,8 +261,9 @@ final class DashboardModel: ObservableObject {
     @Published var codexLiveLimits: [TokenRateLimit] = [] { didSet { if codexLiveLimits != oldValue { rebuildPresentation() } } }
     /// Codex windows omp or Pi recorded from their own usage checks (`AgentUsageHistory`), weighed like log records.
     private(set) var codexRecordedLimits: [TokenRateLimit] = []
-    private let agentUsage = AgentUsageHistoryReader()
-    private let limitAccounts = LimitAccountReader()
+    /// One account reader for the tracker, the model and the omp usage history (all on the token queue after init).
+    private let agentUsage: AgentUsageHistoryReader
+    private let limitAccounts: LimitAccountReader
     /// Set by the app shell: whether the popover or panel is on screen, and whether the screens or the Mac sleep.
     var dashboardVisible: () -> Bool = { false }
     var livePaused = false
@@ -297,7 +298,7 @@ final class DashboardModel: ObservableObject {
     private let telemetryProvider: (() -> [TelemetryReading])?
     private let telemetryProbe: (() -> Bool)?
     private let sampler = SystemSampler()
-    private let tracker = TokenTracker()
+    private let tracker: TokenTracker
     private let systemQueue = DispatchQueue(label: "dev.seuput.TokenCat.system", qos: .utility)
     private let tokenQueue = DispatchQueue(label: "dev.seuput.TokenCat.tokens", qos: .utility)
     private var timer: Timer?
@@ -319,6 +320,11 @@ final class DashboardModel: ObservableObject {
     static let folderCheckInterval: TimeInterval = 5
     /// File events can arrive many times per second while a client streams tool output.
     static let minimumTokenInterval: TimeInterval = 0.25
+    /// With no live session and the dashboard closed, the 1 s tick samples the logs only this often: a log write still
+    /// samples at once (FSEvents), and nothing time-driven changes while every session is idle.
+    static let idleTokenInterval: TimeInterval = 5
+    /// Whether the last presentation had a live group (running, waiting for input or a log); true until the first one.
+    private var anyLive = true
     private(set) var logEventCount = 0
     var onUpdate: (() -> Void)?
     /// Set by the app shell; nil in fixtures and verification commands, where the update buttons do nothing.
@@ -330,6 +336,9 @@ final class DashboardModel: ObservableObject {
          restoresRestartState: Bool = true) {
         self.telemetryProvider = telemetryProvider
         self.telemetryProbe = telemetryProbe
+        tracker = TokenTracker()
+        limitAccounts = tracker.accountReader
+        agentUsage = AgentUsageHistoryReader(accounts: tracker.accountReader)
         let stored = restoresRestartState
             ? UserDefaults.standard.dictionary(forKey: Self.pendingRestartKey) as? [String: Double] ?? [:] : [:]
         for (key, seconds) in stored { if let source = TokenSource(rawValue: key) { pendingRestart[source] = Date(timeIntervalSince1970: seconds) } }
@@ -427,6 +436,7 @@ final class DashboardModel: ObservableObject {
         tokenRefreshPending = false
         lastFolderCheck = nil
         foldersSeen = nil
+        liveLimits.cancel()
     }
     private func checkLogFolders() {
         guard running, !folderCheckInFlight else { return }
@@ -463,7 +473,10 @@ final class DashboardModel: ObservableObject {
     func refresh() {
         guard running else { return }
         refreshSystem()
-        refreshTokens()
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if anyLive || dashboardVisible() || lastTokenSampleStart.map({ uptime - $0 >= Self.idleTokenInterval || uptime < $0 }) ?? true {
+            refreshTokens()
+        }
         if lastFolderCheck.map({ ProcessInfo.processInfo.systemUptime - $0 >= Self.folderCheckInterval }) ?? true { checkLogFolders() }
         pollLiveLimits()
     }
@@ -471,7 +484,9 @@ final class DashboardModel: ObservableObject {
     /// it (any client running its models, `SessionCounts.limitSources`) or the dashboard is open, otherwise every 10 minutes;
     /// nothing while the screens or the Mac sleep.
     private func pollLiveLimits() {
-        guard ownsTelemetryState, preferences.liveUsageLimits, !livePaused else { return }
+        guard ownsTelemetryState else { return }
+        // Turned off or paused: a read already running is finished without being shown or saved.
+        guard preferences.liveUsageLimits, !livePaused else { return liveLimits.cancel() }
         let active = sessions.counts.limitSources
         var slots = Set(active.filter { $0.provider == .claude && $0.account != nil })
         for row in usageLimits where row.source == .claude && row.account != nil {
@@ -483,7 +498,7 @@ final class DashboardModel: ObservableObject {
         }
         if let account = defaultLimitAccounts[.codex] { slots.insert(LimitSlot(provider: .codex, account: account)) }
         liveLimits.tick(now: Date(), open: dashboardVisible(), slots: slots, live: { active.contains($0) }) { [weak self] outcome in
-            guard let self, self.running else { return }
+            guard let self, self.running, self.preferences.liveUsageLimits, !self.livePaused else { return }
             if let codex = outcome.codex { self.codexLiveLimits = codex }
             if let claude = outcome.claude {
                 let key = outcome.slot?.account?.storageKey ?? ClaudeLimitsByAccount.legacyKey
@@ -630,7 +645,9 @@ final class DashboardModel: ObservableObject {
         let flow = FlowSeries.make(tokens, now: now)
         if flow != self.flow { self.flow = flow }
         groups = SessionPresentation.groups(tokens, now: now)
-        sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow, restart: telemetryRestartNeeded)
+        anyLive = groups.contains { $0.state.isLive }
+        sessions = SessionListModel.make(tokens: tokens, now: now, expanded: sessionsExpanded, flow: flow, restart: telemetryRestartNeeded,
+                                         groups: groups)
         let limits = SessionPresentation.usageLimits(tokens: tokens, codexReads: codexLiveLimits + codexRecordedLimits,
                                                     claudeLimits: claudeLimits, defaults: defaultLimitAccounts,
                                                     known: knownLimitAccounts, now: now)

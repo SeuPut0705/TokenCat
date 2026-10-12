@@ -64,8 +64,9 @@ final class GrokLogReader: TokenLogReader {
     private var summaryModel: String?
     private var effort: String?
     private var title: String?
-    /// The generated title last compared with the first prompt, and whether the comparison could be made.
-    private var checkedTitle: (generated: String?, verified: Bool)?
+    /// The generated title last compared with the first prompt (its in-memory hash only: a title that copies the prompt
+    /// is prompt text), and whether the comparison could be made.
+    private var checkedTitle: (generated: Int?, verified: Bool)?
     private var windowTokens: Int?
     private var isSubagent = false
     private var parentSessionID: String?
@@ -274,8 +275,10 @@ final class GrokLogReader: TokenLogReader {
         }
         let current = "\(info.st_ino)-\(info.st_size)-\(info.st_mtimespec.tv_sec)-\(info.st_mtimespec.tv_nsec)"
         guard current != summaryStamp else { return }
+        guard info.st_size <= 1_048_576 else { summaryStamp = current; return }
+        // Kept only after a successful parse: a summary caught mid-rewrite is read again on the next sample.
+        guard let data = try? Data(contentsOf: url), let summary = LogFields.object(data) else { return }
         summaryStamp = current
-        guard info.st_size <= 1_048_576, let data = try? Data(contentsOf: url), let summary = LogFields.object(data) else { return }
         if let path = LogFields.text((summary["info"] as? [String: Any])?["cwd"]), path.count <= 4_096 { cwd = path }
         if cwd == nil { cwd = Self.groupCwd(directory.deletingLastPathComponent()) }
         summaryModel = Self.modelName(summary["current_model_id"]) ?? summaryModel
@@ -283,9 +286,9 @@ final class GrokLogReader: TokenLogReader {
         let generated = SessionTitle.clean(summary["generated_title"])
         if summary["title_is_manual"] as? Bool == true {
             title = generated
-        } else if generated != checkedTitle?.generated || checkedTitle?.verified == false {
+        } else if generated?.hashValue != checkedTitle?.generated || checkedTitle?.verified == false {
             let copy = generated.map(copiesFirstPrompt)
-            checkedTitle = (generated, copy != nil)
+            checkedTitle = (generated?.hashValue, copy != nil)
             title = copy == false ? generated : nil
         }
         windowTokens = LogFields.count(summary["context_window"])
@@ -347,7 +350,9 @@ final class GrokLogReader: TokenLogReader {
     /// The cwd a session folder group stands for: its URL-decoded name, else the `.cwd` file of a slug-and-hash name.
     static func groupCwd(_ group: URL) -> String? {
         if let decoded = group.lastPathComponent.removingPercentEncoding, decoded.hasPrefix("/") { return decoded }
-        guard let data = try? Data(contentsOf: group.appendingPathComponent(".cwd")), data.count <= 4_096,
+        let file = group.appendingPathComponent(".cwd")
+        var info = stat()
+        guard stat(file.path, &info) == 0, info.st_size <= 4_096, let data = try? Data(contentsOf: file), data.count <= 4_096,
               let text = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else { return nil }
         return text

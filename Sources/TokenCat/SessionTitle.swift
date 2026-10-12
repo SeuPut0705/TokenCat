@@ -47,12 +47,23 @@ enum SessionTitle {
 /// Codex thread names: `<CODEX_HOME>/session_index.jsonl`, append-only `{id, thread_name, updated_at}` lines written on
 /// every rename or generated name (the rollout's `thread_name_updated` event is not persisted). The newest non-empty name
 /// of an id wins, as in Codex's own lookup; a rewrite that removes names (the file shrinks or is replaced) is read again.
-/// One index per file, shared by every rollout reader of that Codex home.
+/// One index per file, shared by every rollout reader of that Codex home. Names are kept for the threads a reader asked
+/// for within `sweepInterval`, plus the `unaskedLimit` newest others; an older id asked for again is looked up in the file.
 final class CodexThreadNames {
     private static let lock = NSLock()
     private static var indexes: [String: CodexThreadNames] = [:]
+    static let unaskedLimit = 2_048
+    static let sweepInterval: TimeInterval = 600
+    private static let tailLimit = 4_194_304
     private let tail: LogLineTail
-    private var names: [String: String] = [:]
+    /// Threads a reader asked for, with their name (nil: none recorded yet).
+    private var asked: [String: String?] = [:]
+    private var askedSinceSweep = Set<String>()
+    private var unasked = RecentKeys<String>(limit: CodexThreadNames.unaskedLimit)
+    /// Whether `unasked` ever forgot a name, so a miss may be an evicted one rather than a thread without a name.
+    private var evicted = false
+    /// Readers that are no longer asking let their thread go at the next sweep.
+    private var sweptAt = ProcessInfo.processInfo.systemUptime
 
     private init(url: URL) { tail = LogLineTail(url: url) }
 
@@ -69,21 +80,82 @@ final class CodexThreadNames {
         return index
     }
 
+    /// Names held in memory (asked and unasked), for the eviction check.
+    var heldNames: Int { Self.lock.withLock { asked.count + unasked.count } }
+
     /// Reads lines appended since the last call; a stat when nothing changed.
     func refresh() {
         Self.lock.lock()
         defer { Self.lock.unlock() }
-        tail.read(tailLimit: 4_194_304, reset: { names.removeAll() }) { line in
-            guard let record = LogFields.object(line), let id = LogFields.text(record["id"])?.lowercased(),
-                  let name = SessionTitle.clean(record["thread_name"]) else { return }
-            names[id] = name
+        let uptime = ProcessInfo.processInfo.systemUptime
+        if uptime - sweptAt >= Self.sweepInterval || uptime < sweptAt { sweepLocked(at: uptime) }
+        tail.read(tailLimit: Self.tailLimit, reset: {
+            for id in asked.keys { asked[id] = .some(nil) }
+            unasked.removeAll()
+            evicted = false
+        }) { line in
+            guard let (id, name) = Self.entry(line) else { return }
+            if asked[id] != nil { asked[id] = name; return }
+            if unasked.count >= Self.unaskedLimit, !unasked.contains(id) { evicted = true }
+            unasked.set(id, name)
         }
     }
 
     func name(for thread: String?) -> String? {
         guard let thread else { return nil }
+        let id = thread.lowercased()
         Self.lock.lock()
         defer { Self.lock.unlock() }
-        return names[thread.lowercased()]
+        askedSinceSweep.insert(id)
+        if let known = asked[id] { return known }
+        var name = unasked[id]
+        if name == nil, evicted { name = lookUp(id) }
+        asked[id] = .some(name)
+        return name
+    }
+
+    /// Threads no reader asked for since the previous sweep go back to being unasked (or are forgotten).
+    func sweep() {
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        sweepLocked(at: ProcessInfo.processInfo.systemUptime)
+    }
+
+    private func sweepLocked(at uptime: TimeInterval) {
+        for (id, name) in asked where !askedSinceSweep.contains(id) {
+            asked[id] = nil
+            if let name {
+                if unasked.count >= Self.unaskedLimit, !unasked.contains(id) { evicted = true }
+                unasked.set(id, name)
+            }
+        }
+        askedSinceSweep.removeAll(keepingCapacity: true)
+        sweptAt = uptime
+    }
+
+    private static func entry(_ line: Data) -> (id: String, name: String)? {
+        guard let record = LogFields.object(line), let id = LogFields.text(record["id"])?.lowercased(),
+              let name = SessionTitle.clean(record["thread_name"]) else { return nil }
+        return (id, name)
+    }
+
+    /// The newest name of `id` within the index's last `tailLimit` bytes (the window the first read covers).
+    private func lookUp(_ id: String) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: tail.url) else { return nil }
+        defer { try? handle.close() }
+        guard let size = try? handle.seekToEnd() else { return nil }
+        let start = size > UInt64(Self.tailLimit) ? size - UInt64(Self.tailLimit) : 0
+        guard (try? handle.seek(toOffset: start)) != nil, let data = try? handle.readToEnd() else { return nil }
+        let needle = Data(id.utf8)
+        var name: String?
+        var lines = LogLineAssembler()
+        lines.dropping = start > 0
+        lines.consume(data) { line in
+            // Ids are written in lower case by Codex; the full parse confirms the match.
+            guard line.range(of: needle) != nil || line.range(of: Data(id.uppercased().utf8)) != nil,
+                  let entry = Self.entry(line), entry.id == id else { return }
+            name = entry.name
+        }
+        return name
     }
 }

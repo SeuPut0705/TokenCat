@@ -199,6 +199,13 @@ func cursorChecks(_ check: (Bool, String) -> Void) {
               && !tracker.isLog(transcripts.appendingPathComponent("cur-main/subagents/notes.txt").path)
               && !tracker.isLog(projects.appendingPathComponent("empty-window/terminals/1.txt").path),
               "Cursor: a changed path was matched to the wrong file of a project folder")
+        // Composers no reader asked about for 10 minutes are forgotten with their data stamps (only the one asked now stays).
+        // The readers name the store by the path discovery listed (a temporary home lists as /private/var).
+        let store = [state.path, "/private" + state.path].map { CursorIDEStore.at(URL(fileURLWithPath: $0)) }
+            .max { $0.cachedComposers < $1.cachedComposers }
+        let cachedBefore = store?.cachedComposers ?? 0
+        _ = store?.composer("cur-unknown", now: now.addingTimeInterval(700))
+        check(cachedBefore > 2 && (store?.cachedComposers ?? 0) <= 1, "Cursor: composers no reader asked about for 10 minutes were kept")
 
         // Older IDE builds keep the headers as one JSON value in ItemTable.
         let oldHome = root.appendingPathComponent("old-home")

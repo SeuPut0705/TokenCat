@@ -77,8 +77,8 @@ public sealed class LogTurnState(IReadOnlySet<string>? inputTools = null)
     {
         if (tokens <= 0) return;
         Touch(date);
-        if (TurnOpen) output += tokens;
-        else if (closedTakesOutput && closed is { } last) closed = last with { Output = last.Output + tokens };
+        if (TurnOpen) output = LogFields.Add(output, tokens);
+        else if (closedTakesOutput && closed is { } last) closed = last with { Output = LogFields.Add(last.Output, tokens) };
         lastOutputAt = date;
         lastOutputDelta = tokens;
         if (date is not { } at) return;

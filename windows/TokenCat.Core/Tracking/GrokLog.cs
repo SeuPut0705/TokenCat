@@ -145,7 +145,7 @@ public sealed class GrokLogReader : ITokenLogReader
         });
         updates.Read(tailLimit, () => replaced = true, line =>
         {
-            if (line.AsSpan().IndexOf(TurnCompletedMarker) >= 0 && Completion(line) is { } step) steps.Add(step);
+            if (line.IndexOf(TurnCompletedMarker) >= 0 && Completion(line) is { } step) steps.Add(step);
         });
         if (replaced) return null;
         foreach (var call in unified.Calls(sessionID, unifiedCursor))
@@ -156,7 +156,7 @@ public sealed class GrokLogReader : ITokenLogReader
         return [.. steps.OrderBy(step => step.At)]; // stable, as the mac's offset tie-break
     }
 
-    static Step? Event(byte[] line)
+    static Step? Event(ReadOnlySpan<byte> line)
     {
         if (Json.Parse(line) is not { ValueKind: JsonValueKind.Object } record || record.Field("type")?.Text is not { } type
             || LogFields.Date(record.Field("ts")) is not { } at) return null;
@@ -175,7 +175,7 @@ public sealed class GrokLogReader : ITokenLogReader
     }
 
     /// A `turn_completed` update: its usage output, turn duration and whether it ended normally. Text fields are dropped.
-    static Step? Completion(byte[] line)
+    static Step? Completion(ReadOnlySpan<byte> line)
     {
         if (Json.Parse(line) is not { ValueKind: JsonValueKind.Object } record || record.Field("params") is not { } parameters
             || parameters.Field("update") is not { ValueKind: JsonValueKind.Object } update
@@ -471,9 +471,9 @@ public sealed class GrokUnifiedLog
         lock (gate) return calls.TryGetValue(session, out var list) ? [.. list.Where(call => call.Serial > after)] : [];
     }
 
-    void Consume(byte[] line)
+    void Consume(ReadOnlySpan<byte> line)
     {
-        if (line.AsSpan().IndexOf(Marker) < 0 || Json.Parse(line) is not { ValueKind: JsonValueKind.Object } record
+        if (line.IndexOf(Marker) < 0 || Json.Parse(line) is not { ValueKind: JsonValueKind.Object } record
             || record.Field("msg")?.Text != "shell.turn.inference_done" || TokenLogParser.Label(record.Field("sid")) is not { } session
             || LogFields.Date(record.Field("ts")) is not { } at || record.Field("ctx") is not { ValueKind: JsonValueKind.Object } context) return;
         if (!calls.TryGetValue(session, out var list)) calls[session] = list = [];

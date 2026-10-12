@@ -79,9 +79,9 @@ public static class KimiLog
 
     /// The string after `key` within the line's first `limit` bytes, so a line with long text is not parsed for one field.
     /// Null when absent or escaped (type names and ids hold neither quotes nor backslashes).
-    public static string? Sniff(byte[] data, byte[] key, int limit, bool leading = false)
+    public static string? Sniff(ReadOnlySpan<byte> data, byte[] key, int limit, bool leading = false)
     {
-        var window = data.AsSpan(0, Math.Min(limit, data.Length));
+        var window = data[..Math.Min(limit, data.Length)];
         var at = window.IndexOf(key);
         if (at < 0 || (leading && at != 0)) return null;
         var rest = window[(at + key.Length)..];
@@ -91,7 +91,7 @@ public static class KimiLog
     }
 
     /// The `"time":<ms>}` that ends every Kimi Code record (the serializer writes it last).
-    public static DateTimeOffset? TrailingTime(byte[] data)
+    public static DateTimeOffset? TrailingTime(ReadOnlySpan<byte> data)
     {
         var end = data.Length;
         while (end > 0 && data[end - 1] is 9 or 10 or 13 or 32) end--;
@@ -99,16 +99,16 @@ public static class KimiLog
         var digitsEnd = end - 1;
         var start = digitsEnd;
         while (start > 0 && data[start - 1] is >= 48 and <= 57) start--;
-        if (start == digitsEnd || start < TimeKey.Length || !data.AsSpan(start - TimeKey.Length, TimeKey.Length).SequenceEqual(TimeKey)
-            || !double.TryParse(data.AsSpan(start, digitsEnd - start), NumberStyles.None, CultureInfo.InvariantCulture, out var ms)) return null;
+        if (start == digitsEnd || start < TimeKey.Length || !data.Slice(start - TimeKey.Length, TimeKey.Length).SequenceEqual(TimeKey)
+            || !double.TryParse(data.Slice(start, digitsEnd - start), NumberStyles.None, CultureInfo.InvariantCulture, out var ms)) return null;
         return ms > 0 && ms < 253_370_764_800_000 ? DateTimeOffset.UnixEpoch.AddTicks((long)(ms * TimeSpan.TicksPerMillisecond)) : null;
     }
 
     /// The `{"timestamp":<seconds>` that opens every kimi-cli record.
-    public static DateTimeOffset? LeadingSeconds(byte[] data)
+    public static DateTimeOffset? LeadingSeconds(ReadOnlySpan<byte> data)
     {
-        if (!data.AsSpan().StartsWith(TimestampKey)) return null;
-        var rest = data.AsSpan(TimestampKey.Length, Math.Min(32, data.Length - TimestampKey.Length));
+        if (!data.StartsWith(TimestampKey)) return null;
+        var rest = data.Slice(TimestampKey.Length, Math.Min(32, data.Length - TimestampKey.Length));
         var length = 0;
         while (length < rest.Length && (rest[length] is >= 48 and <= 57 || rest[length] == (byte)'.')) length++;
         return double.TryParse(rest[..length], NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var seconds)
@@ -303,7 +303,7 @@ public sealed class KimiCodeLogReader : ITokenLogReader
         role = TokenLogParser.Label(state.Field("agents")?.Field(agentID)?.Field("labels")?.Field("profileName")) ?? role;
     }
 
-    void Consume(byte[] data)
+    void Consume(ReadOnlySpan<byte> data)
     {
         var type = KimiLog.Sniff(data, KimiLog.TypeKey, 64, leading: true);
         var @event = type == "context.append_loop_event" ? KimiLog.Sniff(data, KimiLog.EventKey, 256) : null;
@@ -511,7 +511,7 @@ public sealed class KimiCLILogReader : ITokenLogReader
         agentModel = KimiLog.ModelName(meta.Field("launch_spec")?.Field("effective_model")) ?? agentModel;
     }
 
-    void Consume(byte[] data)
+    void Consume(ReadOnlySpan<byte> data)
     {
         // Streamed content is the bulk of the journal; it only shows the turn is still writing.
         var sniffed = KimiLog.Sniff(data, KimiLog.MessageTypeKey, 96);

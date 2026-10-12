@@ -39,6 +39,14 @@ public static class ClaudeLimitsByAccount
         catch (JsonException) { return new Dictionary<string, ClaudeUsageLimits>(); }
     }
 
+    /// Drops account hashes that are not in `current` and whose limits are no longer shown: they would only keep the
+    /// account labels on and an old identity's windows in the settings file. The legacy value always stays.
+    public static IReadOnlyDictionary<string, ClaudeUsageLimits> Pruned(IReadOnlyDictionary<string, ClaudeUsageLimits> limits,
+        IReadOnlySet<string> current, DateTimeOffset now) =>
+        limits.Where(pair => pair.Key == LegacyKey || current.Contains(pair.Key)
+                             || SessionPresentation.ClaudeUsageLimit(pair.Value, now)?.IsShown(now) == true)
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+
     public static void Save(SettingsStore store, IReadOnlyDictionary<string, ClaudeUsageLimits> limits)
     {
         var safe = limits.Where(pair => PersistedKey(pair.Key) && pair.Value is { IsEmpty: false })

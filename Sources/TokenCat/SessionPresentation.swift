@@ -1058,8 +1058,8 @@ enum SessionPresentation {
         }
     }
 
-    /// The caption over the last-record value (F-2): why nothing new is recorded, after 30 s without a record. A session
-    /// waiting for the person keeps the base caption: the header and the row already say it.
+    /// Why nothing new is recorded after 30 s. Input and log waiting keep the base caption:
+    /// their state and wait age already live in the header and session rows.
     static func flowCaption(counts: SessionCounts, last: Date?, now: Date, spoken: Bool = false) -> FlowCaption {
         let base = FlowCaption(text: lastRecordCaption, help: loc("최근 5분 안에 로그에 기록된 마지막 출력입니다", "The latest output recorded in the logs within the last 5 min"))
         guard counts.liveGroups > 0 else { return base }
@@ -1077,8 +1077,7 @@ enum SessionPresentation {
             return FlowCaption(text: loc("\(tool) 중 · 응답 후 기록", "\(tool) · logged after reply"), help: help)
         }
         if counts.working > 0 { return FlowCaption(text: loc("진행 중 · 응답 후 기록", "Working · logged after reply"), help: help) }
-        let minutes = counts.waitingSince.map { max(1, Int(now.timeIntervalSince($0)) / 60) } ?? 1
-        return FlowCaption(text: loc("로그 대기 · \(minutes)분째 기록 없음", "Waiting for log · no record for \(Format.span(minutes, .minute, spoken: spoken))"), help: help)
+        return base
     }
 
     /// Cause-specific copy from the collector state, the setup note and pending or expired restarts.
@@ -1495,10 +1494,11 @@ struct SessionListModel {
     }
 
     /// `flow` is no longer read (row bars were removed, S-2); the shell still passes it. `restart`: clients waiting for a
-    /// relaunch, whose rows show no speed cell.
+    /// relaunch, whose rows show no speed cell. `groups`: `SessionPresentation.groups(tokens, now: now)` when the caller
+    /// already has it (the shell builds it for the menu bar on the same publish).
     static func make(tokens: [TokenReading], now: Date, expanded: Bool, flow: FlowSeries = .empty,
-                     restart: Set<TokenSource> = [], calendar: Calendar = .current) -> SessionListModel {
-        let groups = SessionPresentation.groups(tokens, now: now)
+                     restart: Set<TokenSource> = [], calendar: Calendar = .current, groups known: [SessionGroup]? = nil) -> SessionListModel {
+        let groups = known ?? SessionPresentation.groups(tokens, now: now)
         func stable(_ a: SessionGroup, _ b: SessionGroup) -> Bool {
             let order = (a.lead.reading.project ?? "").localizedStandardCompare(b.lead.reading.project ?? "")
             if order != .orderedSame { return order == .orderedAscending }
@@ -1533,11 +1533,14 @@ struct SessionListModel {
         for group in shown {
             let lead = group.lead
             let kind: SessionRowItem.Kind = lead.state == .measurement ? .measurement : (lead.state.isLive ? .live : .idle)
-            let live = group.children.filter { $0.state.isLive }.sorted {
-                if $0.state.isRunning != $1.state.isRunning { return $0.state.isRunning }
-                let a = SessionPresentation.agentLabel($0.reading), b = SessionPresentation.agentLabel($1.reading)
-                return a != b ? a.localizedStandardCompare(b) == .orderedAscending : $0.reading.id < $1.reading.id
-            }
+            // Labels first: each one builds a URL, too slow to recompute per comparison.
+            let liveChildren = group.children.filter { $0.state.isLive }
+            let keys = liveChildren.map { (running: $0.state.isRunning, label: SessionPresentation.agentLabel($0.reading), id: $0.reading.id) }
+            let live = keys.indices.sorted { i, j in
+                let a = keys[i], b = keys[j]
+                if a.running != b.running { return a.running }
+                return a.label != b.label ? a.label.localizedStandardCompare(b.label) == .orderedAscending : a.id < b.id
+            }.map { liveChildren[$0] }
             let running = live.filter { $0.state.isRunning }.count
             // Collapsed: every running child shows; children waiting for a log take slots only when none runs.
             let room = expanded ? live.count : (running > 0 ? running : min(live.count, collapsedChildren))
