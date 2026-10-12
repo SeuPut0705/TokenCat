@@ -886,8 +886,12 @@ public static class SessionPresentation
         static DateTimeOffset Reset((ClaudeLimitWindow Window, int Minutes) pair) => pair.Window.ResetsAt ?? pair.Window.ReceivedAt.AddMinutes(pair.Minutes);
         var live = windows.Where(pair => Reset(pair) > now).ToList();
         var top = live.Count > 0 ? live.MaxBy(pair => (pair.Window.UsedPercent, pair.Minutes)) : windows.MaxBy(Reset);
+        // The other window keeps its own receipt, live flag and recorder: Claude's two windows can come from different sources.
         var other = live.Where(pair => pair.Minutes != top.Minutes)
-            .Select(pair => pair.Window.ResetsAt is { } at ? new UsageLimitSummary.OtherWindow(pair.Window.UsedPercent, pair.Minutes, at) : null)
+            .Select(pair => pair.Window.ResetsAt is { } at
+                ? new UsageLimitSummary.OtherWindow(pair.Window.UsedPercent, pair.Minutes, at)
+                    { RecordedAt = pair.Window.ReceivedAt, Live = pair.Window.Live, RecordedBy = pair.Window.Live ? null : pair.Window.RecordedBy }
+                : null)
             .FirstOrDefault();
         return new UsageLimitSummary(top.Window.UsedPercent, top.Minutes, top.Window.ResetsAt, top.Window.ReceivedAt)
         { Source = TokenSource.Claude, Other = other, Live = top.Window.Live, RecordedBy = top.Window.Live ? null : top.Window.RecordedBy };

@@ -532,6 +532,13 @@ func runSessionPresentationChecks() -> [String] {
     check(!freshWeekly.allLive(now: now) && freshWeekly.provenance(now: now) == "omp · 30분 전"
           && bothFresh.allLive(now: now) && bothFresh.provenance(now: now) == "실시간",
           "limit card: a fresh live window labelled a stale other window of the same account as live")
+    // Through the real reducer: a live weekly read beside an older omp-recorded 5-hour window is not "live" as a whole.
+    let mixedClaude = SessionPresentation.claudeUsageLimit(ClaudeUsageLimits(
+        fiveHour: ClaudeLimitWindow(usedPercent: 9, resetsAt: at(3_600), receivedAt: at(-1_800), recordedBy: "omp"),
+        sevenDay: ClaudeLimitWindow(usedPercent: 27, resetsAt: at(2 * day), receivedAt: at(-10), live: true)), now: now)
+    check(mixedClaude?.windowMinutes == 10_080 && mixedClaude?.allLive(now: now) == false
+          && mixedClaude?.provenance(now: now) == "omp · 30분 전" && mixedClaude?.otherSummary(now: now)?.recordedBy == "omp",
+          "limit card: the Claude reducer gave the other window the shown window's record time, live flag or recorder")
     func labelled(_ label: String?) -> UsageLimitSummary {
         var limit = ompRecord
         limit.accountLabel = label

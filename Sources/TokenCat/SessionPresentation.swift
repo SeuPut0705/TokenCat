@@ -775,8 +775,13 @@ enum SessionPresentation {
         let live = windows.filter { reset($0) > now }
         let top = live.max { ($0.0.usedPercent, $0.1) < ($1.0.usedPercent, $1.1) } ?? windows.max { reset($0) < reset($1) }
         guard let top else { return nil }
+        // The other window keeps its own receipt, live flag and recorder: Claude's two windows can come from different sources.
         let other = live.first { $0.1 != top.1 }.flatMap { window in
-            window.0.resetsAt.map { UsageLimitSummary.OtherWindow(usedPercent: window.0.usedPercent, windowMinutes: window.1, resetsAt: $0) }
+            window.0.resetsAt.map {
+                UsageLimitSummary.OtherWindow(usedPercent: window.0.usedPercent, windowMinutes: window.1, resetsAt: $0,
+                                              recordedAt: window.0.receivedAt, live: window.0.live == true,
+                                              recordedBy: .some(window.0.live == true ? nil : window.0.recordedBy))
+            }
         }
         return UsageLimitSummary(usedPercent: top.0.usedPercent, windowMinutes: top.1, resetsAt: top.0.resetsAt,
                                  recordedAt: top.0.receivedAt, source: .claude, other: other, live: top.0.live == true,

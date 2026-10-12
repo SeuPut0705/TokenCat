@@ -466,6 +466,13 @@ public static class SessionPresentationChecks
         check(!freshWeekly.AllLive(now) && freshWeekly.Provenance(now) == "omp · 30분 전"
               && bothFresh.AllLive(now) && bothFresh.Provenance(now) == "실시간",
               "limit card: a fresh live window labelled a stale other window of the same account as live");
+        // Through the real reducer: a live weekly read beside an older omp-recorded 5-hour window is not "live" as a whole.
+        var mixedClaude = SessionPresentation.ClaudeUsageLimit(new ClaudeUsageLimits(
+            new ClaudeLimitWindow(9, now.AddSeconds(3_600), now.AddSeconds(-1_800)) { RecordedBy = "omp" },
+            new ClaudeLimitWindow(27, now.AddDays(2), now.AddSeconds(-10)) { Live = true }), now);
+        check(mixedClaude is { WindowMinutes: 10_080 } && !mixedClaude.AllLive(now) && mixedClaude.Provenance(now) == "omp · 30분 전"
+              && mixedClaude.OtherSummary(now)?.RecordedBy == "omp",
+              "limit card: the Claude reducer gave the other window the shown window's record time, live flag or recorder");
         UsageLimitSummary labelled(string? label) => ompRecord with { AccountLabel = label };
         check(UsageLimitSummary.CompactAccountLabels([labelled("seuput@naver.com · team"), labelled("aisa@example.com"), labelled(null)])
                   .SequenceEqual(["seuput · team", "aisa", null])
