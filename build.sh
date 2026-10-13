@@ -35,10 +35,34 @@ for name size in icon_32x32@2x 64 icon_128x128 128 icon_128x128@2x 256 icon_256x
     sips -z "$size" "$size" Assets/app-icon-v2-1024.png --out "work/TokenCat.iconset/$name.png" >/dev/null
 done
 iconutil -c icns work/TokenCat.iconset -o dist/TokenCat.app/Contents/Resources/TokenCat.icns
-# Universal binary (arm64 + x86_64). Multi-arch builds put the product elsewhere, so ask SwiftPM for the path.
-build=(swift build --configuration release --arch arm64 --arch x86_64 --scratch-path work/build)
-$build
-cp "$($build --show-bin-path)/TokenCat" dist/TokenCat.app/Contents/MacOS/TokenCat
+# Universal binary (arm64 + x86_64): each architecture is compiled by swiftc directly, both at once, and lipo joins them.
+# Per-file optimization (not whole-module) spreads one architecture over every core and recompiles only what changed;
+# measured on this tree: a one-file change 314 s → about 20 s, a clean build 314 s → about 30 s, with no slower samples
+# (`--bench-sample`). SwiftPM's universal build ran both architectures as two serial whole-module compiles.
+sources=(Sources/TokenCat/**/*.swift(N))
+jobs=$(sysctl -n hw.ncpu)
+build_arch() {
+    local arch=$1 out=work/build/$1
+    mkdir -p $out/obj
+    # Incremental state per source; the map changes (and the driver rebuilds) only when files are added or removed.
+    local map=$out/output-file-map.json entry
+    {
+        print -r -- "{\"\": {\"swift-dependencies\": \"$PWD/$out/module.swiftdeps\"}"
+        for source in $sources; do
+            entry=$PWD/$out/obj/${${source#Sources/TokenCat/}//\//_}
+            print -r -- ", \"$PWD/$source\": {\"object\": \"${entry%.swift}.o\", \"swift-dependencies\": \"${entry%.swift}.swiftdeps\"}"
+        done
+        print -r -- "}"
+    } > $map.new
+    cmp -s $map.new $map && rm $map.new || mv $map.new $map
+    swiftc -O -swift-version 5 -target $arch-apple-macos13.0 -module-name TokenCat -parse-as-library \
+        -incremental -output-file-map $map -j$jobs -emit-executable -o $out/TokenCat ${sources/#/$PWD/}
+}
+build_arch arm64 & arm=$!
+build_arch x86_64 & intel=$!
+wait $arm || { wait $intel; exit 1 }
+wait $intel || exit 1
+lipo -create work/build/arm64/TokenCat work/build/x86_64/TokenCat -output dist/TokenCat.app/Contents/MacOS/TokenCat
 cat > dist/TokenCat.app/Contents/Info.plist <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

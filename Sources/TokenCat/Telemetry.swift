@@ -498,8 +498,9 @@ final class LocalTelemetryCollector {
             }
             if stored.count > Self.maximumReadings {
                 // Drops the oldest (ties: the last key) in place instead of rebuilding the dictionary.
-                let drop = stored.map { (at: $0.value.reading.at, key: $0.key) }
-                    .sorted { $0.at != $1.at ? $0.at < $1.at : $0.key > $1.key }.prefix(stored.count - Self.maximumReadings)
+                let keyed: [(at: Date, key: String)] = stored.map { (at: $0.value.reading.at, key: $0.key) }
+                let drop = keyed.sorted { (a: (at: Date, key: String), b: (at: Date, key: String)) -> Bool in a.at != b.at ? a.at < b.at : a.key > b.key }
+                    .prefix(stored.count - Self.maximumReadings)
                 for entry in drop { stored.removeValue(forKey: entry.key) }
             }
             receivedAt = Date()
