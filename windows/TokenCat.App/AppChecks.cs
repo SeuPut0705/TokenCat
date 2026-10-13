@@ -221,11 +221,12 @@ static class AppChecks
         var modelMeta = Tree(longLive).OfType<TextBlock>().Single(text => text.Text.StartsWith(" · " + longReading.Model, StringComparison.Ordinal));
         var fullModel = Ui.Text(modelMeta.Text, Font.Meta, Theme.Secondary);
         fullModel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var titleLine = Tree(longLive).OfType<TextBlock>().Single(text => text.Text.EndsWith(longReading.Title!, StringComparison.Ordinal));
+        static string Drawn(TextBlock text) => text.Inlines.Count > 0 ? string.Concat(text.Inlines.OfType<System.Windows.Documents.Run>().Select(run => run.Text)) : text.Text;
+        var titleLine = Tree(longLive).OfType<TextBlock>().FirstOrDefault(text => Drawn(text).EndsWith(longReading.Title!, StringComparison.Ordinal));
         check(clientName.TextTrimming == TextTrimming.None && Math.Abs(clientName.DesiredSize.Width - fullClient.DesiredSize.Width) < 0.01
               && modelMeta.DesiredSize.Width < fullModel.DesiredSize.Width
-              && titleLine.Text == SessionPresentation.ProjectPrefix(longReading) + longReading.Title
-              && !Tree(longLive).OfType<TextBlock>().Any(text => text.Text.Contains(longReading.Project!, StringComparison.Ordinal)),
+              && titleLine is not null && Drawn(titleLine) == SessionPresentation.ProjectPrefix(longReading) + longReading.Title
+              && !Tree(longLive).OfType<TextBlock>().Any(text => Drawn(text).Contains(longReading.Project!, StringComparison.Ordinal)),
             "session metadata keeps the client name whole while long models truncate; the project leads the title, its long name shortened");
         var called = false;
         var disclosure = new DisclosureRow(() => called = true);
