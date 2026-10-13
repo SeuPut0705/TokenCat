@@ -261,7 +261,7 @@ dotnet run --project windows/TokenCat.Checks -c Release -- --live-limits
 dotnet run --project windows/TokenCat.Checks -c Release -- --bench-sample --synthetic --iterations 30
 ```
 
-`--diagnose`는 시스템 수치·토큰 및 실측 메타데이터를 프로젝트 전체 경로·세션 제목·세션 및 에이전트 식별자와 함께 로컬 확인용으로 출력합니다. 내용을 살피기 전에 이슈에 첨부하지 마세요. `--telemetry-readings`는 실행 중인 수집기의 메타데이터를 확인합니다. `--snapshot`은 실제 로컬 지표로 상세 이미지를 저장합니다. `--snapshot-fixtures`는 합성 상세 상태 25개(다중 계정·긴 글·두 높이의 분리 창 포함)와 시작 안내·사용 한도 부품 시트, 모두 27장의 다크·라이트 합성 이미지를 저장하며 로컬 로그·수집기·호스트 정보를 읽지 않습니다.
+`--diagnose`는 시스템 수치·토큰 및 실측 메타데이터를 프로젝트 전체 경로·세션 제목·세션 및 에이전트 식별자와 함께 로컬 확인용으로 출력합니다. 내용을 살피기 전에 이슈에 첨부하지 마세요. `--telemetry-readings`는 실행 중인 수집기의 메타데이터를 확인합니다. `--snapshot`은 실제 로컬 지표로 상세 이미지를 저장합니다. `--snapshot-fixtures`는 합성 상세 상태 26개(다중 계정·펼친 이전 기록·긴 글·두 높이의 분리 창 포함)와 시작 안내·사용 한도 부품 시트, 모두 28장의 다크·라이트 합성 이미지를 저장하며 로컬 로그·수집기·호스트 정보를 읽지 않습니다.
 
 `--snapshot-menubar <png> [--light] [--inline|--minimal] [--highlighted] [--fixtures] [--weekly-limit] [--no-runner] [--character cat|dog|hamster|penguin|robot]`는 기본 렌더러를 씁니다. 픽스처는 실행 중인 하위 에이전트·평균 속도·주간 한도를 포함한 라이트·다크·열림 상태를 그립니다. `--snapshot-settings <png> [--light] [--pane general|menubar|cat|telemetry|about|all] [--character cat|dog|hamster|penguin|robot] [--fixtures [--update-failure network|translocated|not-writable|no-digest|invalid-bundle] [--setup-note unknown|skipped|recreated] [--login requires-approval|enabled] [--notifications denied|authorized]]`는 탭을 화면 밖에서 렌더하고 높이를 보고하며 알림 거부에서는 모든 알림 선택을 켜 가장 긴 상태를 만듭니다.
 

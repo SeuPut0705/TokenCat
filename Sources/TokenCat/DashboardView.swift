@@ -228,6 +228,8 @@ struct DashboardView: View {
     /// Fixture snapshots only: a keyboard-selected row and an open detail, by row id.
     var selection: String? = nil
     var detail: String? = nil
+    /// Fixture snapshots only: the expanded list's folded "이전" part shown.
+    var showOlder = false
     @AppStorage("onboardingSeen") private var onboardingSeen = false
     @AppStorage(TelemetrySetup.optOutKey) private var telemetryOptedOut = false
     /// The flow card had records during this showing; it collapses again only at the next showing (F-5).
@@ -264,7 +266,8 @@ struct DashboardView: View {
                 .container()
                 .padding(.top, DashboardLayout.block)
             SessionsHeader(showsSpeedColumn: model.sessions.showsSpeedColumn).padding(.top, DashboardLayout.block)
-            SessionList(model: model, scrolls: scrollsSessions, presentation: presentation, selection: selection, detail: detail)
+            SessionList(model: model, scrolls: scrollsSessions, presentation: presentation, selection: selection, detail: detail,
+                        showOlder: showOlder)
                 .padding(.top, DashboardLayout.titleGap)
             SystemArea(system: model.system, cpuHistory: model.cpuHistory, hasSample: model.hasSample, open: actions.activityMonitor)
                 .padding(.top, DashboardLayout.block)
@@ -1046,12 +1049,14 @@ struct SessionList: View {
     @Environment(\.tokenCatHighContrast) private var high
     @Namespace private var rotor
 
-    init(model: DashboardModel, scrolls: Bool, presentation: DashboardPresentation = .popover, selection: String? = nil, detail: String? = nil) {
+    init(model: DashboardModel, scrolls: Bool, presentation: DashboardPresentation = .popover, selection: String? = nil, detail: String? = nil,
+         showOlder: Bool = false) {
         _model = ObservedObject(wrappedValue: model)
         self.scrolls = scrolls
         self.presentation = presentation
         _selectedID = State(initialValue: selection)
         _detailID = State(initialValue: detail)
+        _showOlder = State(initialValue: showOlder)
     }
 
     var body: some View {

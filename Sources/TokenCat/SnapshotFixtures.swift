@@ -24,6 +24,8 @@ enum SnapshotFixtures {
         /// A keyboard-selected row and an open inline detail, by reading id.
         var selection: String?
         var detail: String?
+        /// The expanded list's folded "이전" part opened.
+        var showOlder = false
         var update = UpdateState()
         /// Claude usage-limit windows as the status line bridge would have delivered them.
         var claudeLimits: ClaudeLimitsByAccount = [:]
@@ -162,7 +164,7 @@ enum SnapshotFixtures {
         model.sessionsExpanded = !fixture.expanded
         model.sessionsExpanded = fixture.expanded
         return DashboardView(model: model, presentation: fixture.presentation, actions: .none, scrollsSessions: false,
-                             selection: fixture.selection, detail: fixture.detail)
+                             selection: fixture.selection, detail: fixture.detail, showOlder: fixture.showOlder)
             .frame(height: fixture.panelHeight, alignment: .top)
     }
 
@@ -392,6 +394,12 @@ enum SnapshotFixtures {
                      idle("d6", project: "TokenCat", ago: -9 * day), idle("d7", project: "sandbox-app", ago: -20 * day),
                      idle("d8", project: "notes-app", ago: -47 * day)]
         let dates = Fixture(name: "expanded-dates", tokens: dated, expanded: true)
+        // 6b. The same list with "이전" opened: older sessions join their project's caption (TokenCat, notes-app) once.
+        var olderOpen = Fixture(name: "expanded-older", tokens: dated, expanded: true)
+        olderOpen.showOlder = true
+        // A panel tall enough for the whole list, so the older-only project (sandbox-app) shows after the recent ones.
+        olderOpen.presentation = .panel
+        olderOpen.panelHeight = 600
 
         // 7–11. Empty, loading and collector states.
         let empty = Fixture(name: "empty")
@@ -483,7 +491,7 @@ enum SnapshotFixtures {
         tallPanel.name = "panel-tree"
         tallPanel.presentation = .panel
         tallPanel.panelHeight = 740
-        return [input, retry, tools, context, grouped, dates, empty, noFolders, loading, restart, port, busy, contrast,
+        return [input, retry, tools, context, grouped, dates, olderOpen, empty, noFolders, loading, restart, port, busy, contrast,
                 logWait, rest, detail, selected, claudeOnly, available, downloading, failed, multipleAccounts, longText, shortPanel, tallPanel]
     }
 }
