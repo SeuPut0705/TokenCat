@@ -218,15 +218,15 @@ static class AppChecks
         var clientName = Tree(longLive).OfType<TextBlock>().Single(text => text.Text == " · " + longReading.ClientTitle);
         var fullClient = Ui.Text(clientName.Text, Font.Meta, Theme.Secondary);
         fullClient.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var projectMeta = Tree(longLive).OfType<TextBlock>().Single(text => text.Text == " · " + longReading.Project);
         var modelMeta = Tree(longLive).OfType<TextBlock>().Single(text => text.Text.StartsWith(" · " + longReading.Model, StringComparison.Ordinal));
-        var fullProject = Ui.Text(projectMeta.Text, Font.Meta, Theme.Secondary);
         var fullModel = Ui.Text(modelMeta.Text, Font.Meta, Theme.Secondary);
-        fullProject.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         fullModel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var titleLine = Tree(longLive).OfType<TextBlock>().Single(text => text.Text.EndsWith(longReading.Title!, StringComparison.Ordinal));
         check(clientName.TextTrimming == TextTrimming.None && Math.Abs(clientName.DesiredSize.Width - fullClient.DesiredSize.Width) < 0.01
-              && projectMeta.DesiredSize.Width < fullProject.DesiredSize.Width && modelMeta.DesiredSize.Width < fullModel.DesiredSize.Width,
-            "session metadata keeps the client name whole while long projects and models truncate");
+              && modelMeta.DesiredSize.Width < fullModel.DesiredSize.Width
+              && titleLine.Text == SessionPresentation.ProjectPrefix(longReading) + longReading.Title
+              && !Tree(longLive).OfType<TextBlock>().Any(text => text.Text.Contains(longReading.Project!, StringComparison.Ordinal)),
+            "session metadata keeps the client name whole while long models truncate; the project leads the title, its long name shortened");
         var called = false;
         var disclosure = new DisclosureRow(() => called = true);
         var disclosurePeer = UIElementAutomationPeer.CreatePeerForElement(disclosure);
