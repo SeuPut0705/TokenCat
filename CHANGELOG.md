@@ -2,6 +2,12 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.24.1
+
+**macOS**
+
+- Built per architecture in parallel with per-file optimization; the app behaves the same, and no slowdown appeared in paired benchmarks. Developer builds are much faster (a one-file change about 7–20 s instead of about 5 minutes). · 아키텍처별 병렬·파일 단위 최적화로 빌드합니다. 앱 동작은 같고 비교 측정에서 느려지지 않았습니다. 개발 빌드가 크게 빨라졌습니다(파일 하나 수정 시 약 5분 → 7~20초).
+
 ## 0.24.0
 
 **macOS and Windows**
