@@ -236,14 +236,15 @@ static class Fixtures
         var chat = Child(codexRoot, "sample_scout", "explorer", TokenActivityState.Working, last: -9, output: 88, project: "sample-chat");
         var grouped = new Fixture("grouped-children") { Tokens = [parent, explore, writer, waiter, .. stale, codexRoot, review, chat] };
 
-        // 6. Expanded list with date captions; older sessions fold behind one row.
+        // 6. Expanded list grouped by project; sessions older than this week fold behind one row.
         const double day = 86_400;
         var dates = new Fixture("expanded-dates")
         {
             Tokens =
             [
                 Idle("d1", "TokenCat", -600), Idle("d2", "notes-app", -3_600 * 3, TokenActivityState.Interrupted),
-                Idle("d3", "docs-site", -day - 3_600, source: TokenSource.Codex), Idle("d5", "sample-chat", -2 * day - 600, TokenActivityState.Unfinished),
+                Idle("d3", "docs-site", -day - 3_600, source: TokenSource.Codex), Idle("d4", "TokenCat", -day - 7_200, source: TokenSource.Codex),
+                Idle("d5", "sample-chat", -2 * day - 600, TokenActivityState.Unfinished),
                 Idle("d6", "TokenCat", -9 * day), Idle("d7", "sandbox-app", -20 * day), Idle("d8", "notes-app", -47 * day),
             ],
             Expanded = true,

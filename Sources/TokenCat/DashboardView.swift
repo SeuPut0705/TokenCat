@@ -1196,7 +1196,7 @@ struct SessionList: View {
                         .padding(.leading, DashboardLayout.textX).padding(.trailing, DashboardLayout.inset)
                         .frame(height: SessionListModel.dividerHeight)
                 case .caption(let title, let rule, _):
-                    DateCaption(title: title, rule: rule)
+                    SectionCaption(title: title, rule: rule)
                 case .older(let count):
                     DisclosureRow(title: loc("이전 기록 \(count)개 더 보기", "Show \(plural(count, "earlier record"))"),
                                   selected: selectedID == SessionListModel.olderID,
@@ -1343,13 +1343,14 @@ struct SessionList: View {
     }
 }
 
-private struct DateCaption: View {
+/// A project's caption above its sessions; a long folder name is cut at the end.
+private struct SectionCaption: View {
     var title: String
     var rule: Bool
     @Environment(\.tokenCatHighContrast) private var high
     var body: some View {
-        Text(title).font(TCFont.caption).toneSecondary()
-            .padding(.leading, DashboardLayout.glyphX).padding(.bottom, 4)
+        Text(title).font(TCFont.caption).toneSecondary().lineLimit(1).truncationMode(.tail)
+            .padding(.leading, DashboardLayout.glyphX).padding(.trailing, DashboardLayout.inset).padding(.bottom, 4)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
             .frame(height: SessionListModel.captionHeight)
             .overlay(alignment: .top) { if rule { Rectangle().fill(TCColor.hairline(contrast: high)).frame(height: 0.5) } }
@@ -1655,12 +1656,9 @@ struct LiveSessionRow: View {
                 StateGlyphView(kind: StateGlyph.Kind(item.state) ?? .working, side: 8, contrast: high).frame(width: 10)
                     .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
                     .padding(.leading, DashboardLayout.glyphX)
-                HStack(alignment: .firstTextBaseline, spacing: 0) {
-                    ProjectPrefix(reading: reading, font: TCFont.title)
-                    Text(SessionPresentation.rowTitle(reading)).font(TCFont.title).lineLimit(1).truncationMode(.tail)
-                }
-                .layoutPriority(2)
-                .padding(.leading, DashboardLayout.textX - DashboardLayout.glyphX - 10)
+                Text(SessionPresentation.rowTitle(reading)).font(TCFont.title).lineLimit(1).truncationMode(.tail)
+                    .padding(.leading, DashboardLayout.textX - DashboardLayout.glyphX - 10)
+                    .layoutPriority(2)
                 if context.showsID(reading) {
                     Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize().padding(.leading, 6)
                 }
@@ -1810,7 +1808,6 @@ struct IdleSessionRow: View {
                 names(client: true, id: context.showsID(reading), word: true)
                 names(client: true, id: context.showsID(reading), word: false)
                 names(client: true, id: false, word: false)
-                names(client: true, id: false, word: false, project: false)
             }
             .padding(.leading, 6)
             .layoutPriority(1)
@@ -1842,31 +1839,14 @@ struct IdleSessionRow: View {
         .rowActions(reading)
     }
 
-    /// Keep a titled row's project whole when it fits; long projects move to help before the client disappears.
-    private func names(client: Bool, id: Bool, word: Bool, project showsProject: Bool = true) -> some View {
+    /// The title truncates first; the client, the state word and the short ID stay whole while they fit.
+    private func names(client: Bool, id: Bool, word: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                if showsProject { ProjectPrefix(reading: reading, font: TCFont.body) }
-                Text(SessionPresentation.rowTitle(reading)).font(TCFont.body).lineLimit(1).truncationMode(.tail)
-            }
-            .layoutPriority(2)
+            Text(SessionPresentation.rowTitle(reading)).font(TCFont.body).lineLimit(1).truncationMode(.tail)
+                .layoutPriority(2)
             if client { Text(reading.clientTitle).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
             if word, let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).fixedSize() }
             if id { Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
-        }
-    }
-}
-
-/// A titled row's project folder before its title (`SessionPresentation.projectPrefix`) in the secondary tone, kept whole
-/// while the title truncates; absent when the project already is the row's name.
-struct ProjectPrefix: View {
-    var reading: TokenReading
-    var font: Font
-
-    var body: some View {
-        let prefix = SessionPresentation.projectPrefix(reading)
-        if !prefix.isEmpty {
-            Text(prefix).font(font).fontWeight(.regular).toneSecondary().lineLimit(1).fixedSize()
         }
     }
 }

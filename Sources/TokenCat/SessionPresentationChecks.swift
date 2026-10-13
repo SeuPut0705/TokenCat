@@ -153,11 +153,6 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.titleHelp(titled) == "Fix login redirect · TokenCat" && SessionPresentation.titleHelp(modelled) == nil
           && SessionPresentation.spokenLabel(titled, state: .input) == "입력 필요, Fix login redirect, TokenCat, Claude Code claude-opus-5-5",
           "a titled row leads with its title and keeps the project as meta, in help and in VoiceOver")
-    var longProject = titled
-    longProject.project = "an-extremely-long-project-folder-name"
-    check(SessionPresentation.projectPrefix(titled) == "TokenCat › " && SessionPresentation.projectPrefix(modelled) == ""
-          && SessionPresentation.projectPrefix(titledNoProject) == "" && SessionPresentation.projectPrefix(longProject) == "an-extrem…older-name › ",
-          "a titled row is led by its project folder, a long folder keeping both ends; an untitled row is not")
     var roleChild = claudeChild
     roleChild.agentRole = "Explore"
     var reviewChild = codexChild
@@ -295,8 +290,9 @@ func runSessionPresentationChecks() -> [String] {
           "running, waiting, measured, then recent idle; stable when activity changes")
     check(make(input + [question]).blocks.first?.id == "claude:q", "a turn waiting for input goes first")
     check(first.hiddenGroups == 6 && first.hiddenChildren == 0 && first.counts.groups == 12, "collapsed list fills to six rows")
-    // Three quiet live rows, three idle rows, five dividers, then the closing "모두 보기" row and its divider.
-    let quietHeight: CGFloat = 44 * 3 + 28 * 3 + 5 + 1 + 28
+    // Three quiet live rows and three idle rows under five project captions with one divider, then the closing "모두 보기" row
+    // and its divider.
+    let quietHeight: CGFloat = 44 * 3 + 28 * 3 + 24 * 5 + 1 + 1 + 28
     check(first.contentHeight == quietHeight && first.entries(showOlder: false).last?.id == SessionListModel.toggleID
           && first.toggleText == "세션 12개 모두 보기", "quiet live rows fold to 44pt; heights stay deterministic; the toggle closes the list")
     // Line 3 holds the current turn's last record, context or a measured speed; anything else stays at 44 pt.
@@ -369,7 +365,7 @@ func runSessionPresentationChecks() -> [String] {
           "waiting children take no slot while a child runs")
     check(floodBlock?.moreCount == 9 && floodBlock?.moreText == "+9 하위 로그 대기 · 마지막 1분 전"
           && floodCollapsed.hiddenGroups == 0 && floodCollapsed.hiddenChildren == 9
-          && floodCollapsed.contentHeight == 28 + 24 + 24 && floodCollapsed.entries(showOlder: false).last?.id != SessionListModel.toggleID
+          && floodCollapsed.contentHeight == 24 + 28 + 24 + 24 && floodCollapsed.entries(showOlder: false).last?.id != SessionListModel.toggleID
           && family.entries(showOlder: false).last?.id == SessionListModel.toggleID && family.toggleText == "하위 1개 더 보기",
           "cut children are summarised with their newest record and need no closing row; a hidden finished child does")
     let quietBlock = make([floodParent] + flood.dropLast()).blocks.first
@@ -384,7 +380,7 @@ func runSessionPresentationChecks() -> [String] {
     check(floodExpanded.blocks.first?.children.count == 10 && floodExpanded.blocks.first?.moreCount == 0
           && floodExpanded.blocks.first?.children.first?.id == "claude:S1/z", "expanded shows every child, running first")
 
-    // Expanded date captions come from the model clock; "이전" folds behind one row.
+    // "이전" comes from the model clock and folds behind one row; captions name projects.
     let day: TimeInterval = 86_400
     // 1_000_003 s is Monday 1970-01-12 13:46:43 UTC.
     check(SessionPresentation.daySection(at(-600), now: now, calendar: utc) == "오늘"
@@ -400,22 +396,43 @@ func runSessionPresentationChecks() -> [String] {
     let dated = [reading("claude:d0", session: "D0", state: .complete, last: -600), reading("claude:d1", session: "D1", state: .complete, last: -day),
                  reading("claude:d2", session: "D2", state: .complete, last: -5 * day), reading("claude:d3", session: "D3", state: .complete, last: -9 * day)]
     let datedList = make([beta] + dated, expanded: true)
-    let datedIDs = ["claude:beta", "caption:claude:d0", "claude:d0", "caption:claude:d1", "claude:d1", "divider:older", "older", "divider:toggle", "toggle"]
-    // beta 44 + (caption 24 + row 28) × 2 + divider 1 + older 28 + divider 1 + "접기" 28; open: + (caption 24 + row 28 +
-    // divider 1 + row 28) instead of the fold.
-    let foldedHeight: CGFloat = 44 + 52 + 52 + 1 + 28 + 29, openHeight: CGFloat = 44 + 52 + 52 + 24 + 28 + 1 + 28 + 29
+    let datedIDs = ["caption:claude:beta", "claude:beta", "caption:claude:d0", "claude:d0", "divider:claude:d1", "claude:d1", "divider:older", "older",
+                    "divider:toggle", "toggle"]
+    // (caption 24 + beta 44) + (caption 24 + row 28 + divider 1 + row 28) + divider 1 + older 28 + divider 1 + "접기" 28; open: the
+    // "이전" part's own caption 24 + row 28 + divider 1 + row 28 instead of the fold.
+    let foldedHeight: CGFloat = 68 + 81 + 29 + 29, openHeight: CGFloat = 68 + 81 + 81 + 29
     func rules(_ list: SessionListModel) -> [Bool] {
         list.entries(showOlder: true).compactMap { entry -> Bool? in if case .caption(_, let rule, _) = entry { return rule } else { return nil } }
     }
-    check(datedList.blocks.map(\.section) == [nil, "오늘", "어제", "이전", "이전"] && datedList.olderCount == 2
-          && datedList.entries(showOlder: false).map(\.id) == datedIDs && rules(datedList) == [true, true, true]
-          && rules(make(dated, expanded: true)) == [false, true, true]
+    func captions(_ list: SessionListModel, showOlder: Bool) -> [String] {
+        list.entries(showOlder: showOlder).compactMap { entry -> String? in if case .caption(let title, _, _) = entry { return title } else { return nil } }
+    }
+    check(datedList.blocks.map(\.section) == ["beta", "프로젝트 미확인", "프로젝트 미확인", "프로젝트 미확인", "프로젝트 미확인"]
+          && datedList.blocks.map(\.older) == [false, false, false, true, true] && datedList.olderCount == 2
+          && datedList.entries(showOlder: false).map(\.id) == datedIDs && rules(datedList) == [false, true, true]
+          && rules(make(dated, expanded: true)) == [false, true]
           && datedList.contentHeight == foldedHeight && datedList.olderContentHeight == openHeight && datedList.toggleText == "접기",
           "captions, a rule above all but a caption at the top, folded older section, the closing 접기 row and both heights")
-    // A frozen order can place two runs of the same section; each caption still has its own identity.
+    // A frozen order can split a project; it is regrouped, and each caption still has its own identity.
     let frozenDated = datedList.reordered(["claude:beta", "claude:d0", "claude:d1", "claude:d2"])
     let frozenIDs = frozenDated.entries(showOlder: true).map { $0.id }
     check(Set(frozenIDs).count == frozenIDs.count, "duplicate list entry IDs")
+    let zetaIdle = reading("claude:z1", session: "Z1", project: "zeta", state: .complete, last: -600)
+    let betaIdle = reading("claude:b1", session: "B1", project: "beta", state: .complete, last: -300)
+    let zetaOld = reading("claude:z0", session: "Z0", project: "zeta", state: .complete, last: -9 * day)
+    let unknownOld = reading("claude:u0", session: "U0", state: .complete, last: -10 * day)
+    let projects = make([beta, betaIdle, zetaIdle, zetaOld, unknownOld, question], expanded: true)
+    let collapsedProjects = make([beta, betaIdle, zetaIdle, zetaOld, unknownOld, question])
+    let hovered = projects.reordered(["claude:b1", "claude:q", "claude:beta", "claude:z1"])
+    check(projects.blocks.map(\.id) == ["claude:q", "claude:z1", "claude:beta", "claude:b1", "claude:z0", "claude:u0"]
+          && projects.olderCount == 2 && captions(projects, showOlder: false) == ["zeta", "beta"]
+          && projects.entries(showOlder: false).map(\.id).suffix(4) == ["divider:older", "older", "divider:toggle", "toggle"]
+          && captions(projects, showOlder: true) == ["zeta", "beta", "zeta", "프로젝트 미확인"]
+          && collapsedProjects.blocks.map(\.id) == ["claude:q", "claude:z1", "claude:z0", "claude:beta", "claude:b1", "claude:u0"]
+          && captions(collapsedProjects, showOlder: false) == ["zeta", "beta", "프로젝트 미확인"]
+          && hovered.blocks.map(\.id).prefix(4) == ["claude:b1", "claude:beta", "claude:q", "claude:z1"]
+          && captions(hovered, showOlder: false) == ["beta", "zeta"],
+          "sessions are grouped under project captions, the project with the most urgent session first, Earlier still folded")
     // Keyboard navigation skips captions and dividers; selection starts at input, then retry, then the first row.
     check(datedList.navigation(showOlder: false) == ["claude:beta", "claude:d0", "claude:d1", "older", "toggle"]
           && datedList.navigation(showOlder: true).count == 6
@@ -435,10 +452,10 @@ func runSessionPresentationChecks() -> [String] {
     // The viewport cut lands at least 12pt inside a row and hides at least 6pt of it.
     let long = make((0..<12).map { reading("claude:L\($0)", session: "L\($0)", active: true, state: .working, last: -1) })
     let cut = long.viewport(showOlder: false)
-    let tops = (0..<12).map { CGFloat($0) * 45 }  // 44 pt rows + 1 pt dividers
+    let tops = (0..<12).map { 24 + CGFloat($0) * 45 }  // one project caption, then 44 pt rows + 1 pt dividers
     check(long.contentHeight > SessionListModel.maxViewport && cut <= SessionListModel.maxViewport
           && tops.contains { cut - $0 >= 12 && $0 + 44 - cut >= 6 }, "viewport snaps inside a row")
-    check(make([beta]).viewport(showOlder: false) == 44, "short lists are not snapped")
+    check(make([beta]).viewport(showOlder: false) == 24 + 44, "short lists are not snapped")
 
     // Context: Codex percentage from the logged window, Claude absolute only.
     var codexContext = command
@@ -1090,7 +1107,8 @@ func runSessionPresentationChecks() -> [String] {
               && SessionPresentation.telemetryNotice(state: .busyOtherApp, note: nil, restart: [])?.text == "Telemetry off · port in use",
               "English context, speed, turn and footer copy")
         let englishDates = make([beta] + dated, expanded: true)
-        check(englishDates.blocks.map(\.section) == [nil, "Today", "Yesterday", "Earlier", "Earlier"] && englishDates.olderCount == 2
+        check(englishDates.blocks.map(\.section) == ["beta", "Unknown project", "Unknown project", "Unknown project", "Unknown project"]
+              && englishDates.olderCount == 2
               && SessionPresentation.rowActions(located, home: home).map(\.title)
                 == ["Copy Session ID", "Copy Resume Command", "Show Project Folder in Finder", "Show Log File in Finder"]
               && SessionPresentation.detailItems(detailed, state: .tool).last?.value == "When a Codex response ends"
@@ -1098,7 +1116,7 @@ func runSessionPresentationChecks() -> [String] {
               && SessionPresentation.childTitle(claudeChild) == ("Subagent", "b1234567")
               && family.toggleText == "Show 1 more subagent" && make(input).toggleText == "Show all 12 sessions"
               && make(input, expanded: true).toggleText == "Show less",
-              "English day sections fold the older part; row and detail actions use title case; the closing row's words")
+              "English captions name an unknown project and the older part folds; row and detail actions use title case; the closing row's words")
     }
 
     // Fixture PNGs carry only visibly fake identifiers.

@@ -118,9 +118,6 @@ public static class SessionPresentationChecks
               && TitleHelp(titled) == "Fix login redirect · TokenCat" && TitleHelp(modelled) == null
               && SpokenLabel(titled, S.Input) == "입력 필요, Fix login redirect, TokenCat, Claude Code claude-opus-5-5",
               "a titled row leads with its title and keeps the project as meta, in help and in VoiceOver");
-        check(ProjectPrefix(titled) == "TokenCat › " && ProjectPrefix(modelled) == "" && ProjectPrefix(titledNoProject) == ""
-              && ProjectPrefix(titled with { Project = "an-extremely-long-project-folder-name" }) == "an-extrem…older-name › ",
-              "a titled row is led by its project folder, a long folder keeping both ends; an untitled row is not");
         var roleChild = claudeChild with { AgentRole = "Explore" };
         var reviewChild = codexChild with { AgentRole = "guardian" };
         check(ChildTitle(roleChild) == ("Explore", "b1234567") && ChildTitle(claudeChild) == ("하위 에이전트", "b1234567")
@@ -242,7 +239,8 @@ public static class SessionPresentationChecks
               "running, waiting, measured, then recent idle; stable when activity changes");
         check(make([.. input, question]).Blocks.FirstOrDefault()?.Id == "claude:q", "a turn waiting for input goes first");
         check(first.HiddenGroups == 6 && first.HiddenChildren == 0 && first.Counts.Groups == 12, "collapsed list fills to six rows");
-        check(first.ContentHeight == 44 * 3 + 28 * 3 + 5 + 1 + SessionListModel.OlderHeight
+        // Three quiet live rows and three idle rows under five project captions with one divider, then the toggle and its divider.
+        check(first.ContentHeight == 44 * 3 + 28 * 3 + 24 * 5 + 1 + 1 + SessionListModel.OlderHeight
               && first.Entries(false)[^1].Id == SessionListModel.ToggleID && first.ToggleText == "세션 12개 모두 보기",
               "quiet live rows fold to 44pt; heights stay deterministic; the toggle closes the list");
         // One disclosure at the end of the list (#6): last entry, last navigation stop, 28 pt, named by what it does.
@@ -312,7 +310,7 @@ public static class SessionPresentationChecks
               && floodBlock?.RunningChildren == 1 && floodBlock?.WaitingChildren == 9, "waiting children take no slot while a child runs");
         check(floodBlock?.MoreCount == 9 && floodBlock?.MoreText == "+9 하위 로그 대기 · 마지막 1분 전"
               && floodCollapsed.HiddenGroups == 0 && floodCollapsed.HiddenChildren == 9
-              && floodCollapsed.ContentHeight == 28 + 24 + 24 && !floodCollapsed.ShowsToggle
+              && floodCollapsed.ContentHeight == 24 + 28 + 24 + 24 && !floodCollapsed.ShowsToggle
               && !floodCollapsed.Entries(false).OfType<SessionListEntry.Toggle>().Any()
               && family.Entries(false)[^1].Id == SessionListModel.ToggleID && family.ToggleText == "하위 1개 더 보기",
               "cut children are summarised with their newest record and need no closing row; a hidden finished child does");
@@ -328,7 +326,7 @@ public static class SessionPresentationChecks
         check(floodExpanded?.Children.Count == 10 && floodExpanded?.MoreCount == 0 && floodExpanded?.Children.FirstOrDefault()?.Id == "claude:S1/z",
               "expanded shows every child, running first");
 
-        // Expanded date captions come from the model clock; "이전" folds behind one row.
+        // "이전" comes from the model clock and folds behind one row; captions name projects.
         const double day = 86_400;
         // 1_000_003 s is Monday 1970-01-12 13:46:43 UTC.
         check(DaySection(at(-600), now, utc) == "오늘" && DaySection(at(-day), now, utc) == "어제"
@@ -340,19 +338,39 @@ public static class SessionPresentationChecks
         TokenReading[] dated = [reading("claude:d0", session: "D0", state: A.Complete, last: -600), reading("claude:d1", session: "D1", state: A.Complete, last: -day),
                                 reading("claude:d2", session: "D2", state: A.Complete, last: -5 * day), reading("claude:d3", session: "D3", state: A.Complete, last: -9 * day)];
         var datedList = make([beta, .. dated], expanded: true);
-        string[] datedIDs = ["claude:beta", "caption:claude:d0", "claude:d0", "caption:claude:d1", "claude:d1", "divider:older", "older", "divider:toggle", "toggle"];
-        // beta 44 + (caption 24 + row 28) × 2 + divider 1 + older 28 + divider 1 + toggle 28; open: + (caption 24 + row 28 + divider 1 + row 28)
-        // instead of the fold.
-        const double foldedHeight = 44 + 52 + 52 + 1 + 28 + 1 + 28, openHeight = 44 + 52 + 52 + 24 + 28 + 1 + 28 + 1 + 28;
+        string[] datedIDs = ["caption:claude:beta", "claude:beta", "caption:claude:d0", "claude:d0", "divider:claude:d1", "claude:d1", "divider:older", "older",
+                             "divider:toggle", "toggle"];
+        // (caption 24 + beta 44) + (caption 24 + row 28 + divider 1 + row 28) + divider 1 + older 28 + divider 1 + toggle 28; open: the
+        // "이전" part's own caption 24 + row 28 + divider 1 + row 28 instead of the fold.
+        const double foldedHeight = 68 + 81 + 29 + 29, openHeight = 68 + 81 + 81 + 29;
         IEnumerable<bool> rules(SessionListModel list) => list.Entries(true).OfType<SessionListEntry.Caption>().Select(entry => entry.Rule);
-        check(datedList.Blocks.Select(block => block.Section).SequenceEqual([null, "오늘", "어제", "이전", "이전"]) && datedList.OlderCount == 2
-              && datedList.Entries(false).Select(entry => entry.Id).SequenceEqual(datedIDs) && rules(datedList).SequenceEqual([true, true, true])
-              && rules(make(dated, expanded: true)).SequenceEqual([false, true, true])
+        IEnumerable<string> captions(SessionListModel list, bool showOlder) =>
+            list.Entries(showOlder).OfType<SessionListEntry.Caption>().Select(entry => entry.Text);
+        check(datedList.Blocks.Select(block => block.Section).SequenceEqual(["beta", "프로젝트 미확인", "프로젝트 미확인", "프로젝트 미확인", "프로젝트 미확인"])
+              && datedList.Blocks.Select(block => block.Older).SequenceEqual([false, false, false, true, true]) && datedList.OlderCount == 2
+              && datedList.Entries(false).Select(entry => entry.Id).SequenceEqual(datedIDs) && rules(datedList).SequenceEqual([false, true, true])
+              && rules(make(dated, expanded: true)).SequenceEqual([false, true])
               && datedList.ContentHeight == foldedHeight && datedList.OlderContentHeight == openHeight,
               "captions, a rule above all but a caption at the top, folded older section and both heights");
-        // A frozen order can place two runs of the same section; each caption still has its own identity.
+        // A frozen order can split a project; it is regrouped, and each caption still has its own identity.
         var frozenIDs = datedList.Reordered(["claude:beta", "claude:d0", "claude:d1", "claude:d2"]).Entries(true).Select(entry => entry.Id).ToList();
         check(frozenIDs.Distinct().Count() == frozenIDs.Count, "duplicate list entry IDs");
+        var zetaIdle = reading("claude:z1", session: "Z1", project: "zeta", state: A.Complete, last: -600);
+        var betaIdle = reading("claude:b1", session: "B1", project: "beta", state: A.Complete, last: -300);
+        var zetaOld = reading("claude:z0", session: "Z0", project: "zeta", state: A.Complete, last: -9 * day);
+        var unknownOld = reading("claude:u0", session: "U0", state: A.Complete, last: -10 * day);
+        var projects = make([beta, betaIdle, zetaIdle, zetaOld, unknownOld, question], expanded: true);
+        var collapsedProjects = make([beta, betaIdle, zetaIdle, zetaOld, unknownOld, question]);
+        var hovered = projects.Reordered(["claude:b1", "claude:q", "claude:beta", "claude:z1"]);
+        check(projects.Blocks.Select(block => block.Id).SequenceEqual(["claude:q", "claude:z1", "claude:beta", "claude:b1", "claude:z0", "claude:u0"])
+              && projects.OlderCount == 2 && captions(projects, false).SequenceEqual(["zeta", "beta"])
+              && projects.Entries(false).Select(entry => entry.Id).TakeLast(4).SequenceEqual(["divider:older", "older", "divider:toggle", "toggle"])
+              && captions(projects, true).SequenceEqual(["zeta", "beta", "zeta", "프로젝트 미확인"])
+              && collapsedProjects.Blocks.Select(block => block.Id).SequenceEqual(["claude:q", "claude:z1", "claude:z0", "claude:beta", "claude:b1", "claude:u0"])
+              && captions(collapsedProjects, false).SequenceEqual(["zeta", "beta", "프로젝트 미확인"])
+              && hovered.Blocks.Select(block => block.Id).Take(4).SequenceEqual(["claude:b1", "claude:beta", "claude:q", "claude:z1"])
+              && captions(hovered, false).SequenceEqual(["beta", "zeta"]),
+              "sessions are grouped under project captions, the project with the most urgent session first, Earlier still folded");
         // Keyboard navigation skips captions and dividers; selection starts at input, then retry, then the first row.
         check(datedList.Navigation(false).SequenceEqual(["claude:beta", "claude:d0", "claude:d1", "older", "toggle"])
               && datedList.Navigation(true).Count == 6 && datedList.Navigation(true)[^1] == "toggle"
@@ -374,8 +392,8 @@ public static class SessionPresentationChecks
         var longList = make(Enumerable.Range(0, 12).Select(i => reading($"claude:L{i}", session: $"L{i}", active: true, state: A.Working, last: -1)).ToList());
         var cut = longList.Viewport(false);
         check(SessionListModel.MaxViewport == 312 && longList.ContentHeight > SessionListModel.MaxViewport && cut <= SessionListModel.MaxViewport
-              && Enumerable.Range(0, 12).Select(i => i * 45.0).Any(top => cut - top >= 12 && top + 44 - cut >= 6), "viewport snaps inside a row");
-        check(make([beta]).Viewport(false) == 44, "short lists are not snapped");
+              && Enumerable.Range(0, 12).Select(i => 24 + i * 45.0).Any(top => cut - top >= 12 && top + 44 - cut >= 6), "viewport snaps inside a row");
+        check(make([beta]).Viewport(false) == 24 + 44, "short lists are not snapped");
 
         // Context: Codex percentage from the logged window, Claude absolute only.
         var codexContext = command with { Context = new TokenContextUsage(158_204, 258_400, at(-45), null) };
@@ -889,12 +907,12 @@ public static class SessionPresentationChecks
                   && Notice(TelemetryCollectorState.BusyOtherApp, null, none)?.Text == "Telemetry off · port in use",
                   "English context, speed, turn and footer copy");
             var englishDates = make([beta, .. dated], expanded: true);
-            check(englishDates.Blocks.Select(block => block.Section).SequenceEqual([null, "Today", "Yesterday", "Earlier", "Earlier"])
+            check(englishDates.Blocks.Select(block => block.Section).SequenceEqual(["beta", "Unknown project", "Unknown project", "Unknown project", "Unknown project"])
                   && englishDates.OlderCount == 2
                   && RowActions(located, home).Select(action => action.Title)
                      .SequenceEqual(["Copy Session ID", "Copy Resume Command", "Show Project Folder in File Explorer", "Show Log File in File Explorer"])
                   && DetailItems(detailed, S.Tool).Last().Value == "When a Codex response ends",
-                  "English day sections fold the older part; row actions use title case");
+                  "English captions name an unknown project and the older part folds; row actions use title case");
         });
 
         // LocalizationChecks.swift's SessionPresentation and OnboardingCard cases.

@@ -225,9 +225,9 @@ static class AppChecks
         var titleLine = Tree(longLive).OfType<TextBlock>().FirstOrDefault(text => Drawn(text).EndsWith(longReading.Title!, StringComparison.Ordinal));
         check(clientName.TextTrimming == TextTrimming.None && Math.Abs(clientName.DesiredSize.Width - fullClient.DesiredSize.Width) < 0.01
               && modelMeta.DesiredSize.Width < fullModel.DesiredSize.Width
-              && titleLine is not null && Drawn(titleLine) == SessionPresentation.ProjectPrefix(longReading) + longReading.Title
+              && titleLine is not null && Drawn(titleLine) == longReading.Title
               && !Tree(longLive).OfType<TextBlock>().Any(text => Drawn(text).Contains(longReading.Project!, StringComparison.Ordinal)),
-            "session metadata keeps the client name whole while long models truncate; the project leads the title, its long name shortened");
+            "session metadata keeps the client name whole while long models truncate; the title stands alone under its project caption");
         var called = false;
         var disclosure = new DisclosureRow(() => called = true);
         var disclosurePeer = UIElementAutomationPeer.CreatePeerForElement(disclosure);

@@ -29,7 +29,7 @@ enum TCFont {
     static let metaMonoSemibold = Font.system(size: 11, weight: .semibold).monospacedDigit()
     /// 10 medium: axes, units (tok · % · kB/s), system labels, ticks.
     static let micro = Font.system(size: 10, weight: .medium)
-    /// Spec-named weights inside the same sizes: 13 medium (empty-list title) and 11 semibold (expanded-list date captions).
+    /// Spec-named weights inside the same sizes: 13 medium (empty-list title) and 11 semibold (session-list project captions).
     static let bodyMedium = Font.system(size: 13, weight: .medium)
     static let caption = Font.system(size: 11, weight: .semibold)
 

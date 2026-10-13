@@ -384,10 +384,10 @@ enum SnapshotFixtures {
         titledRoot.title = "Review the release notes"
         let grouped = Fixture(name: "grouped-children", tokens: [titledParent, explore, writer, waiter] + stale + [titledRoot, review, chat])
 
-        // 6. Expanded list with date captions; older sessions fold behind one row.
+        // 6. Expanded list grouped by project; sessions older than this week fold behind one row.
         let day: TimeInterval = 86_400
         let dated = [idle("d1", project: "TokenCat", ago: -600), idle("d2", project: "notes-app", ago: -3_600 * 3, state: .interrupted),
-                     idle("d3", project: "docs-site", ago: -day - 3_600, source: .codex),
+                     idle("d3", project: "docs-site", ago: -day - 3_600, source: .codex), idle("d4", project: "TokenCat", ago: -day - 7_200, source: .codex),
                      idle("d5", project: "sample-chat", ago: -2 * day - 600, state: .unfinished),
                      idle("d6", project: "TokenCat", ago: -9 * day), idle("d7", project: "sandbox-app", ago: -20 * day),
                      idle("d8", project: "notes-app", ago: -47 * day)]

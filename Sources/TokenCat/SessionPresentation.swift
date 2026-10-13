@@ -553,12 +553,6 @@ enum SessionPresentation {
         return project
     }
 
-    /// "TokenCat › " before a titled row's name: a long folder keeps its ends; empty when the project already is the name.
-    static func projectPrefix(_ reading: TokenReading) -> String {
-        guard let project = rowProject(reading) else { return "" }
-        return (project.count > 20 ? project.prefix(9) + "…" + project.suffix(10) : project) + " › "
-    }
-
     /// A titled row's hover line: the whole title (the row cuts it) and the project.
     static func titleHelp(_ reading: TokenReading) -> String? {
         reading.title.map { title in [title, reading.project].compactMap { $0 }.joined(separator: " · ") }
@@ -1154,7 +1148,7 @@ enum SessionPresentation {
         }
     }
 
-    /// Expanded-list date captions from the model clock.
+    /// The expanded list's day of a group from the model clock; only `olderSection` is used, folding the "이전" part.
     static func daySection(_ date: Date, now: Date, calendar: Calendar) -> String {
         if calendar.isDate(date, inSameDayAs: now) || date > now { return loc("오늘", "Today") }
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: yesterday) { return loc("어제", "Yesterday") }
@@ -1300,9 +1294,10 @@ struct SessionBlock: Identifiable {
     /// Children waiting for a log left out of the collapsed list; running children are never cut.
     var moreCount = 0
     var moreText = "", moreSpoken = ""
-    /// Expanded list only: the date section of an unpinned block; captions are drawn where it changes.
-    var section: String?
-    var older: Bool { section == SessionPresentation.olderSection }
+    /// The block's project caption (`SessionListModel.projectSection`); captions are drawn where it changes.
+    var section = ""
+    /// Expanded list only: an unpinned block in the folded "이전" part (`SessionPresentation.daySection`).
+    var older = false
     var id: String { lead.id }
     /// The "+N 하위" row's navigation id.
     var moreID: String { "more:" + id }
@@ -1381,21 +1376,25 @@ struct SessionListModel {
 
     func entries(showOlder: Bool) -> [SessionListEntry] {
         var entries: [SessionListEntry] = []
-        var folded = false
+        var folded = false, inOlder = false
         var section: String?
         for block in blocks {
-            if block.older && !showOlder {
-                if !folded {
-                    if !entries.isEmpty { entries.append(.divider(Self.olderID)) }
-                    entries.append(.older(olderCount))
-                    folded = true
+            if block.older {
+                if !showOlder {
+                    if !folded {
+                        if !entries.isEmpty { entries.append(.divider(Self.olderID)) }
+                        entries.append(.older(olderCount))
+                        folded = true
+                    }
+                    continue
                 }
-                continue
+                // The open "이전" part is grouped on its own, so it starts with its own project caption.
+                if !inOlder { inOlder = true; section = nil }
             }
-            if let next = block.section, next != section {
-                // Only a caption at the very top goes without a rule; one under a pinned live row keeps it.
-                entries.append(.caption(next, rule: !entries.isEmpty, anchor: block.id))
-                section = next
+            if block.section != section {
+                // Only a caption at the very top goes without a rule.
+                entries.append(.caption(block.section, rule: !entries.isEmpty, anchor: block.id))
+                section = block.section
             } else if !entries.isEmpty {
                 entries.append(.divider(block.id))
             }
@@ -1462,16 +1461,38 @@ struct SessionListModel {
         return nil
     }
 
-    /// The same blocks in a frozen order (S-8): known blocks keep their place, new ones go to the end.
+    /// The same blocks in a frozen order (S-8): known blocks keep their place, new ones go to the end; projects are then
+    /// regrouped (`grouped`) so a project never gets two captions.
     func reordered(_ order: [String]) -> SessionListModel {
         let rank = Dictionary(order.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         var copy = self
-        copy.blocks = blocks.enumerated().sorted { a, b in
+        copy.blocks = Self.grouped(blocks.enumerated().sorted { a, b in
             let ra = rank[a.element.id] ?? Int.max, rb = rank[b.element.id] ?? Int.max
             return ra != rb ? ra < rb : a.offset < b.offset
-        }.map(\.element)
+        }.map(\.element))
         copy.measure()
         return copy
+    }
+
+    /// A block's caption: its lead's project folder.
+    static func projectSection(_ reading: TokenReading) -> String {
+        if let project = reading.project, !project.isEmpty { return project }
+        return loc("프로젝트 미확인", "Unknown project")
+    }
+
+    /// Blocks gathered under their project, stably: the part outside "이전" first, then the "이전" part; in each, projects
+    /// follow their first block (so the project holding the most urgent session leads) and blocks keep their order.
+    static func grouped(_ blocks: [SessionBlock]) -> [SessionBlock] {
+        func byProject(_ part: [SessionBlock]) -> [SessionBlock] {
+            var projects: [String] = []
+            var members: [String: [SessionBlock]] = [:]
+            for block in part {
+                if members[block.section] == nil { projects.append(block.section) }
+                members[block.section, default: []].append(block)
+            }
+            return projects.flatMap { members[$0] ?? [] }
+        }
+        return byProject(blocks.filter { !$0.older }) + byProject(blocks.filter(\.older))
     }
 
     private mutating func measure() {
@@ -1579,12 +1600,15 @@ struct SessionListModel {
                 block.moreText = more(false)
                 block.moreSpoken = more(true)
             }
-            if expanded && !pinned.contains(group.id) {
-                block.section = SessionPresentation.daySection(group.lastActivity, now: now, calendar: calendar)
-                if block.older { model.olderCount += 1 }
+            block.section = projectSection(lead.reading)
+            if expanded && !pinned.contains(group.id)
+                && SessionPresentation.daySection(group.lastActivity, now: now, calendar: calendar) == SessionPresentation.olderSection {
+                block.older = true
+                model.olderCount += 1
             }
             model.blocks.append(block)
         }
+        model.blocks = grouped(model.blocks)
         model.measure()
         return model
     }

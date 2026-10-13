@@ -162,7 +162,7 @@ sealed class SessionList : Border
                     }, (Border _) => { }));
                     break;
                 case SessionListEntry.Caption caption:
-                    items.Add(Reconcile.Item("caption:" + caption.Anchor + caption.Text, () => Caption(caption.Text, caption.Rule), (Border _) => { }));
+                    items.Add(Reconcile.Item("caption:" + caption.Anchor + caption.Text, () => SectionCaption(caption.Text, caption.Rule), (Border _) => { }));
                     break;
                 case SessionListEntry.Older older:
                     items.Add(Reconcile.Item(SessionListModel.OlderID, () => new DisclosureRow(() => { showOlder = true; Refresh(); }),
@@ -312,11 +312,13 @@ sealed class SessionList : Border
         selectedId = rows.Count == 0 ? null : rows[Math.Min(selectedIndex, rows.Count - 1)];
     }
 
-    static Border Caption(string title, bool rule)
+    /// A project's caption above its sessions; a long folder name is cut at the end.
+    static Border SectionCaption(string title, bool rule)
     {
         var text = Ui.Text(title, Font.Caption, Theme.Secondary);
         text.VerticalAlignment = VerticalAlignment.Bottom;
-        text.Margin = new Thickness(Dashboard.GlyphX, 0, 0, 4);
+        text.TextTrimming = TextTrimming.CharacterEllipsis;
+        text.Margin = new Thickness(Dashboard.GlyphX, 0, Dashboard.Inset, 4);
         var grid = new Grid();
         grid.Children.Add(text);
         if (rule) grid.Children.Add(new Border { Height = 1, VerticalAlignment = VerticalAlignment.Top, Background = Theme.Brush(Theme.Hairline) });
@@ -624,12 +626,11 @@ sealed class BlockView : Grid
 sealed class LiveRow : RowShell
 {
     readonly GlyphView glyph = new(StateGlyphKind.Working) { Margin = new Thickness(Dashboard.GlyphX + 1, 0, 1, 0) };
-    readonly TextBlock project = TrimLine.Shrink(Ui.Text("", Font.Title));
+    readonly TextBlock title = TrimLine.Shrink(Ui.Text("", Font.Title));
     readonly TextBlock shortId = Ui.Text("", Font.Meta, Theme.Secondary);
     readonly TextBlock number = Ui.Line();
     readonly Run outputAmount = Ui.Run("", Font.Metric), outputUnit = Ui.Run(" tok", Font.Micro, Theme.Secondary);
     readonly TextBlock chipWords = Ui.Text("", Font.MetaMedium);
-    readonly Run projectPrefix = Ui.Run("", Font.Title, Theme.Secondary), title = Ui.Run("", Font.Title);
     readonly TextBlock client = Ui.Text("", Font.Meta, Theme.Secondary);
     readonly TextBlock clientModel = TrimLine.Shrink(Ui.Text("", Font.Meta, Theme.Secondary));
     readonly TextBlock trailing = Ui.Text("", Font.MetaMono);
@@ -639,17 +640,14 @@ sealed class LiveRow : RowShell
 
     public LiveRow()
     {
-        project.Margin = new Thickness(6, 0, 0, 0);
-        projectPrefix.FontWeight = FontWeights.Normal;
-        project.Inlines.Add(projectPrefix);
-        project.Inlines.Add(title);
+        title.Margin = new Thickness(6, 0, 0, 0);
         shortId.Margin = new Thickness(6, 0, 0, 0);
         chipWords.TextTrimming = TextTrimming.None;
         number.Inlines.Add(outputAmount);
         number.Inlines.Add(outputUnit);
         number.MinWidth = 86;
         number.TextAlignment = TextAlignment.Right;
-        var first = Dashboard.Spread(new TrimLine(glyph, project, shortId), number);
+        var first = Dashboard.Spread(new TrimLine(glyph, title, shortId), number);
         first.Height = 18;
         // Keep the client name whole; the project and model divide the remaining metadata width.
         client.TextTrimming = TextTrimming.None;
@@ -671,7 +669,6 @@ sealed class LiveRow : RowShell
         Bind(item.Id, reading, context, item.Height, context.Help(reading), SessionPresentation.SpokenLabel(reading, item.State));
         glyph.Kind = GlyphView.For(item.State) ?? StateGlyphKind.Working;
         chipWords.Text = SessionPresentation.ChipText(item.State, reading);
-        projectPrefix.Text = SessionPresentation.ProjectPrefix(reading);
         title.Text = SessionPresentation.RowTitle(reading);
         shortId.Visibility = context.ShowsID(reading) ? Visibility.Visible : Visibility.Collapsed;
         shortId.Text = SessionPresentation.ShortID(reading);
@@ -828,21 +825,17 @@ sealed class IdleRow : RowShell
         trailing.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - Dashboard.GlyphX - 12 - 6 - 8 - Dashboard.Inset
             - (showsLast ? lastTurn.DesiredSize.Width + 10 : 0) - trailing.DesiredSize.Width;
-        // Keep the client name whole; a long titled row's project moves to the full row help first.
-        var rowProject = SessionPresentation.RowProject(reading);
-        FrameworkElement Names(bool withId, bool withWord, bool trim, bool withProject = true)
+        // Keep the client name whole; the title truncates last.
+        FrameworkElement Names(bool withId, bool withWord, bool trim)
         {
-            var title = Ui.Text("", Font.Body);
-            if (withProject && rowProject is not null)
-                title.Inlines.Add(new Run(SessionPresentation.ProjectPrefix(reading)) { Foreground = Theme.Brush(Theme.Secondary) });
-            title.Inlines.Add(new Run(SessionPresentation.RowTitle(reading)));
+            var title = Ui.Text(SessionPresentation.RowTitle(reading), Font.Body);
             return new TrimLine(trim ? TrimLine.Shrink(title) : title,
                 Spaced(Ui.Text(reading.ClientTitle, Font.Meta, Theme.Secondary)),
                 withWord && word is not null ? Spaced(Ui.Text(word, Font.Micro, Theme.Secondary)) : null,
                 withId ? Spaced(Ui.Text(SessionPresentation.ShortID(reading), Font.Meta, Theme.Secondary)) : null);
         }
         names.Child = Dashboard.Fit(room, () => Names(showsId, true, false), () => Names(showsId, false, false),
-            () => Names(false, false, false), () => Names(false, false, true, withProject: false));
+            () => Names(false, false, false), () => Names(false, false, true));
     }
 
     public static T Spaced<T>(T element, double gap = 6) where T : FrameworkElement

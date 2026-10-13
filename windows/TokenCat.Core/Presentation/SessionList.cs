@@ -30,9 +30,10 @@ public sealed record SessionBlock(SessionRowItem Lead, IReadOnlyList<SessionRowI
     public int MoreCount { get; init; }
     public string MoreText { get; init; } = "";
     public string MoreSpoken { get; init; } = "";
-    /// Expanded list only: the date section of an unpinned block; captions are drawn where it changes.
-    public string? Section { get; init; }
-    public bool Older => Section == SessionPresentation.OlderSection;
+    /// The block's project caption (`SessionListModel.ProjectSection`); captions are drawn where it changes.
+    public string Section { get; init; } = "";
+    /// Expanded list only: an unpinned block in the folded "이전" part (`SessionPresentation.DaySection`).
+    public bool Older { get; init; }
     public string Id => Lead.Id;
     /// The "+N 하위" row's navigation id.
     public string MoreID => "more:" + Id;
@@ -94,7 +95,7 @@ public sealed record SessionListModel
     public const double OlderHeight = 28;
     public const string OlderID = "older", ToggleID = "toggle";
 
-    /// The full list (every group, finished children, date captions) rather than the collapsed one.
+    /// The full list (every group, finished children, the folded "이전" part) rather than the collapsed one.
     public bool Expanded { get; init; }
 
     public IReadOnlyList<SessionBlock> Blocks { get; init; } = [];
@@ -129,25 +130,30 @@ public sealed record SessionListModel
     public List<SessionListEntry> Entries(bool showOlder)
     {
         var entries = new List<SessionListEntry>();
-        var folded = false;
+        bool folded = false, inOlder = false;
         string? section = null;
         foreach (var block in Blocks)
         {
-            if (block.Older && !showOlder)
+            if (block.Older)
             {
-                if (!folded)
+                if (!showOlder)
                 {
-                    if (entries.Count > 0) entries.Add(new SessionListEntry.Divider(OlderID));
-                    entries.Add(new SessionListEntry.Older(OlderCount));
-                    folded = true;
+                    if (!folded)
+                    {
+                        if (entries.Count > 0) entries.Add(new SessionListEntry.Divider(OlderID));
+                        entries.Add(new SessionListEntry.Older(OlderCount));
+                        folded = true;
+                    }
+                    continue;
                 }
-                continue;
+                // The open "이전" part is grouped on its own, so it starts with its own project caption.
+                if (!inOlder) (inOlder, section) = (true, null);
             }
-            if (block.Section is { } next && next != section)
+            if (block.Section != section)
             {
-                // Only a caption at the very top goes without a rule; one under a pinned live row keeps it.
-                entries.Add(new SessionListEntry.Caption(next, entries.Count > 0, block.Id));
-                section = next;
+                // Only a caption at the very top goes without a rule.
+                entries.Add(new SessionListEntry.Caption(block.Section, entries.Count > 0, block.Id));
+                section = block.Section;
             }
             else if (entries.Count > 0) entries.Add(new SessionListEntry.Divider(block.Id));
             entries.Add(new SessionListEntry.Block(block));
@@ -207,14 +213,28 @@ public sealed record SessionListModel
         return null;
     }
 
-    /// The same blocks in a frozen order (S-8): known blocks keep their place, new ones go to the end.
+    /// The same blocks in a frozen order (S-8): known blocks keep their place, new ones go to the end; projects are then
+    /// regrouped (`Grouped`) so a project never gets two captions.
     public SessionListModel Reordered(IReadOnlyList<string> order)
     {
         var rank = new Dictionary<string, int>();
         for (var i = 0; i < order.Count; i++) rank.TryAdd(order[i], i);
-        return (this with { Blocks = Blocks.Select((block, offset) => (block, offset))
+        return (this with { Blocks = Grouped(Blocks.Select((block, offset) => (block, offset))
             .OrderBy(item => rank.GetValueOrDefault(item.block.Id, int.MaxValue)).ThenBy(item => item.offset)
-            .Select(item => item.block).ToList() }).Measured();
+            .Select(item => item.block).ToList()) }).Measured();
+    }
+
+    /// A block's caption: its lead's project folder.
+    public static string ProjectSection(TokenReading reading) =>
+        reading.Project is { Length: > 0 } project ? project : Loc("프로젝트 미확인", "Unknown project");
+
+    /// Blocks gathered under their project, stably: the part outside "이전" first, then the "이전" part; in each, projects
+    /// follow their first block (so the project holding the most urgent session leads) and blocks keep their order.
+    public static List<SessionBlock> Grouped(IReadOnlyList<SessionBlock> blocks)
+    {
+        static IEnumerable<SessionBlock> ByProject(IEnumerable<SessionBlock> part) =>
+            part.GroupBy(block => block.Section, StringComparer.Ordinal).SelectMany(project => project);
+        return [.. ByProject(blocks.Where(block => !block.Older)), .. ByProject(blocks.Where(block => block.Older))];
     }
 
     SessionListModel Measured()
@@ -324,19 +344,19 @@ public sealed record SessionListModel
                     + (newest is { } at ? Loc(" · 마지막 ", " · last record ") + Format.Age(at, now, spoken) : "");
                 (moreText, moreSpoken) = (More(false), More(true));
             }
-            var section = expanded && !pinned.Contains(group.Id)
-                ? SessionPresentation.DaySection(group.LastActivity, now, calendar ?? DayCalendar.Current) : null;
-            if (section == SessionPresentation.OlderSection) olderCount++;
+            var older = expanded && !pinned.Contains(group.Id)
+                && SessionPresentation.DaySection(group.LastActivity, now, calendar ?? DayCalendar.Current) == SessionPresentation.OlderSection;
+            if (older) olderCount++;
             blocks.Add(new SessionBlock(leadItem, children.Select(child => new SessionRowItem(child.Reading, child.State, SessionRowKind.Child)).ToList(),
                                         group.Children.Count, group.State)
             {
                 RunningChildren = runningChildren, WaitingChildren = live.Count - runningChildren, MoreCount = cut.Count,
-                MoreText = moreText ?? "", MoreSpoken = moreSpoken ?? "", Section = section,
+                MoreText = moreText ?? "", MoreSpoken = moreSpoken ?? "", Section = ProjectSection(lead.Reading), Older = older,
             });
         }
         return new SessionListModel
         {
-            Blocks = blocks, Counts = new SessionCounts(groups), Expanded = expanded,
+            Blocks = Grouped(blocks), Counts = new SessionCounts(groups), Expanded = expanded,
             HiddenGroups = ordered.Count - shown.Count, HiddenChildren = hiddenChildren, OlderCount = olderCount,
             ShowsSpeedColumn = showsSpeedColumn,
         }.Measured();

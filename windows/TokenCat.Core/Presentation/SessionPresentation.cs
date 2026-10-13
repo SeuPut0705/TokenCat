@@ -473,7 +473,7 @@ public abstract record OnboardingOutcome
     }
 }
 
-/// The calendar for the expanded list's date captions (Swift passes a `Calendar`).
+/// The calendar that decides which groups the expanded list folds into "이전" (Swift passes a `Calendar`).
 public sealed record DayCalendar(TimeZoneInfo Zone, DayOfWeek FirstDay)
 {
     public static DayCalendar Current => new(TimeZoneInfo.Local, Lang.Culture.DateTimeFormat.FirstDayOfWeek);
@@ -655,11 +655,6 @@ public static class SessionPresentation
     /// The project beside a titled row's name, so the folder stays visible; null when the project is the name.
     public static string? RowProject(TokenReading reading) =>
         reading.Title is not null && reading.Project is { Length: > 0 } project ? project : null;
-
-    /// "TokenCat › " before a titled row's name (the mac's 120 pt prefix): a long folder keeps its ends; empty when the
-    /// project already is the name.
-    public static string ProjectPrefix(TokenReading reading) => RowProject(reading) is { } project
-        ? (project.Length > 20 ? project[..9] + "…" + project[^10..] : project) + " › " : "";
 
     /// A titled row's hover line: the whole title (the row cuts it) and the project.
     public static string? TitleHelp(TokenReading reading) =>
@@ -1250,7 +1245,7 @@ public static class SessionPresentation
         + string.Join(" · ", TokenSource.TelemetryClients.Where(source => TokenSource.DefaultClients.Contains(source) || lastReceived.ContainsKey(source))
             .Select(source => $"{source.Title} {HelpAge(lastReceived.TryGetValue(source, out var at) ? at : null, now)}"));
 
-    /// Expanded-list date captions from the model clock.
+    /// The expanded list's day of a group from the model clock; only `OlderSection` is used, folding the "이전" part.
     public static string DaySection(DateTimeOffset date, DateTimeOffset now, DayCalendar calendar)
     {
         var day = TimeZoneInfo.ConvertTime(date, calendar.Zone).Date;

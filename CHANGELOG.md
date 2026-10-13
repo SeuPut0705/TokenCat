@@ -2,6 +2,12 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.24.0
+
+**macOS and Windows**
+
+- The session list groups sessions under a small caption for each project, the project with the most urgent session first; rows no longer repeat the folder before their title, and the expanded list keeps folding older records behind one row instead of showing date captions. · 세션 목록이 프로젝트마다 작은 캡션 아래에 세션을 묶고 가장 급한 세션이 있는 프로젝트를 먼저 보입니다. 행 제목 앞의 폴더 이름은 더 이상 반복하지 않으며, 펼친 목록은 날짜 캡션 대신 오래된 기록을 한 줄 뒤로 접어 둡니다.
+
 ## 0.23.0
 
 **macOS and Windows**
