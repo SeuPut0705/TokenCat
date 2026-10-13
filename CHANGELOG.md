@@ -2,6 +2,13 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.24.2
+
+**macOS and Windows**
+
+- A session row without its own title no longer repeats its project caption: it is named by its client and short ID, such as `Claude Code · a1b2c3d4`, and doesn't name the client a second time. · 자체 제목이 없는 세션 행이 프로젝트 캡션을 다시 적지 않고 `Claude Code · a1b2c3d4`처럼 클라이언트와 짧은 ID로 이름을 보이며, 클라이언트 이름을 두 번 적지 않습니다.
+- Showing earlier records puts them under their project's caption after its recent sessions, so a project's caption appears only once. · 이전 기록을 펼치면 그 기록이 프로젝트 캡션 아래 최근 세션 뒤에 붙어, 프로젝트 캡션이 한 번만 보입니다.
+
 ## 0.24.1
 
 **macOS**

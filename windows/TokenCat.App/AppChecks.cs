@@ -228,6 +228,23 @@ static class AppChecks
               && titleLine is not null && Drawn(titleLine) == longReading.Title
               && !Tree(longLive).OfType<TextBlock>().Any(text => Drawn(text).Contains(longReading.Project!, StringComparison.Ordinal)),
             "session metadata keeps the client name whole while long models truncate; the title stands alone under its project caption");
+        // An untitled row sits under its project caption, so it is named by client and short ID: no project, no second
+        // client name and no short ID column, even when its project has other rows.
+        var untitled = fixture.State.Tokens.First(reading => !reading.IsSubagent && reading.Project is not null) with { Title = null };
+        var shared = new RowContext(fixture.State.Now, new HashSet<TokenSource>(), false, new HashSet<string> { untitled.Project! }, null, null, _ => { }, _ => { });
+        var untitledLive = new LiveRow();
+        untitledLive.Update(new SessionRowItem(untitled, SessionDisplayState.Working, SessionRowKind.Live), shared);
+        var untitledIdle = new IdleRow();
+        untitledIdle.Update(new SessionRowItem(untitled, SessionDisplayState.Complete, SessionRowKind.Idle), SessionDisplayState.Complete, 0, shared);
+        var name = SessionPresentation.ListTitle(untitled);
+        bool namedOnce(FrameworkElement root)
+        {
+            var texts = Tree(root).OfType<TextBlock>().Where(text => text.Visibility == Visibility.Visible).Select(Drawn).ToList();
+            return texts.Count(text => text == name) == 1 && !texts.Any(text => text.Contains(untitled.Project!, StringComparison.Ordinal))
+                   && !texts.Any(text => text.Trim(' ', '·') == untitled.ClientTitle || text == SessionPresentation.ShortID(untitled));
+        }
+        check(name == untitled.ClientTitle + " · " + SessionPresentation.ShortID(untitled) && namedOnce(untitledLive) && namedOnce(untitledIdle),
+            "untitled live and idle rows are named by client and short ID once, without their project or a second client name");
         var called = false;
         var disclosure = new DisclosureRow(() => called = true);
         var disclosurePeer = UIElementAutomationPeer.CreatePeerForElement(disclosure);

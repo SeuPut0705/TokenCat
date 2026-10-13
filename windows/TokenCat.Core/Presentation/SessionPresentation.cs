@@ -652,6 +652,16 @@ public static class SessionPresentation
     /// A lead or stand-alone row's name: the client's session title, else the project folder.
     public static string RowTitle(TokenReading reading) => reading.Title ?? reading.Project ?? Loc("프로젝트 미확인", "Unknown project");
 
+    /// A list row's name under its project caption: the client's session title, else the client and short ID
+    /// ("Claude Code · a1b2c3d4"), so an untitled row never repeats the caption above it. Help, VoiceOver, menus and
+    /// notifications keep `RowTitle`.
+    public static string ListTitle(TokenReading reading)
+    {
+        if (reading.Title is { } title) return title;
+        var id = ShortID(reading);
+        return id.Length == 0 ? reading.ClientTitle : reading.ClientTitle + " · " + id;
+    }
+
     /// The project beside a titled row's name, so the folder stays visible; null when the project is the name.
     public static string? RowProject(TokenReading reading) =>
         reading.Title is not null && reading.Project is { Length: > 0 } project ? project : null;

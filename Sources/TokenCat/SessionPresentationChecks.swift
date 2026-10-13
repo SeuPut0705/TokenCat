@@ -153,6 +153,12 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.titleHelp(titled) == "Fix login redirect · TokenCat" && SessionPresentation.titleHelp(modelled) == nil
           && SessionPresentation.spokenLabel(titled, state: .input) == "입력 필요, Fix login redirect, TokenCat, Claude Code claude-opus-5-5",
           "a titled row leads with its title and keeps the project as meta, in help and in VoiceOver")
+    // An untitled row sits under its project caption, so the list names it by client and short ID instead of the folder.
+    let untitledTelemetry = reading("telemetry:claude", state: .complete, last: -10)
+    check(SessionPresentation.listTitle(modelled) == "Claude Code · S1" && SessionPresentation.listTitle(codexParent) == "Codex · R1"
+          && SessionPresentation.listTitle(titled) == "Fix login redirect" && SessionPresentation.listTitle(untitledTelemetry) == "Claude Code"
+          && SessionPresentation.listTitle(modelled) != SessionListModel.projectSection(modelled) && SessionPresentation.rowTitle(modelled) == "TokenCat",
+          "a row without its own title is named by client and short ID, never repeating its project caption")
     var roleChild = claudeChild
     roleChild.agentRole = "Explore"
     var reviewChild = codexChild
@@ -399,8 +405,8 @@ func runSessionPresentationChecks() -> [String] {
     let datedIDs = ["caption:claude:beta", "claude:beta", "caption:claude:d0", "claude:d0", "divider:claude:d1", "claude:d1", "divider:older", "older",
                     "divider:toggle", "toggle"]
     // (caption 24 + beta 44) + (caption 24 + row 28 + divider 1 + row 28) + divider 1 + older 28 + divider 1 + "접기" 28; open: the
-    // "이전" part's own caption 24 + row 28 + divider 1 + row 28 instead of the fold.
-    let foldedHeight: CGFloat = 68 + 81 + 29 + 29, openHeight: CGFloat = 68 + 81 + 81 + 29
+    // "이전" rows join their project's caption, divider 1 + row 28 each, instead of the fold.
+    let foldedHeight: CGFloat = 68 + 81 + 29 + 29, openHeight: CGFloat = 68 + 81 + 29 + 29 + 29
     func rules(_ list: SessionListModel) -> [Bool] {
         list.entries(showOlder: true).compactMap { entry -> Bool? in if case .caption(_, let rule, _) = entry { return rule } else { return nil } }
     }
@@ -409,8 +415,8 @@ func runSessionPresentationChecks() -> [String] {
     }
     check(datedList.blocks.map(\.section) == ["beta", "프로젝트 미확인", "프로젝트 미확인", "프로젝트 미확인", "프로젝트 미확인"]
           && datedList.blocks.map(\.older) == [false, false, false, true, true] && datedList.olderCount == 2
-          && datedList.entries(showOlder: false).map(\.id) == datedIDs && rules(datedList) == [false, true, true]
-          && rules(make(dated, expanded: true)) == [false, true]
+          && datedList.entries(showOlder: false).map(\.id) == datedIDs && rules(datedList) == [false, true]
+          && rules(make(dated, expanded: true)) == [false]
           && datedList.contentHeight == foldedHeight && datedList.olderContentHeight == openHeight && datedList.toggleText == "접기",
           "captions, a rule above all but a caption at the top, folded older section, the closing 접기 row and both heights")
     // A frozen order can split a project; it is regrouped, and each caption still has its own identity.
@@ -427,12 +433,24 @@ func runSessionPresentationChecks() -> [String] {
     check(projects.blocks.map(\.id) == ["claude:q", "claude:z1", "claude:beta", "claude:b1", "claude:z0", "claude:u0"]
           && projects.olderCount == 2 && captions(projects, showOlder: false) == ["zeta", "beta"]
           && projects.entries(showOlder: false).map(\.id).suffix(4) == ["divider:older", "older", "divider:toggle", "toggle"]
-          && captions(projects, showOlder: true) == ["zeta", "beta", "zeta", "프로젝트 미확인"]
+          && captions(projects, showOlder: true) == ["zeta", "beta", "프로젝트 미확인"]
           && collapsedProjects.blocks.map(\.id) == ["claude:q", "claude:z1", "claude:z0", "claude:beta", "claude:b1", "claude:u0"]
           && captions(collapsedProjects, showOlder: false) == ["zeta", "beta", "프로젝트 미확인"]
           && hovered.blocks.map(\.id).prefix(4) == ["claude:b1", "claude:beta", "claude:q", "claude:z1"]
           && captions(hovered, showOlder: false) == ["beta", "zeta"],
           "sessions are grouped under project captions, the project with the most urgent session first, Earlier still folded")
+    // Open, "이전" joins each project's caption after its recent rows; projects with only older rows follow, and a frozen
+    // order keeps one caption per project too.
+    let openIDs = projects.entries(showOlder: true).map(\.id)
+    let hoveredCaptions = captions(hovered, showOlder: true)
+    check(openIDs == ["caption:claude:q", "claude:q", "divider:claude:z1", "claude:z1", "divider:claude:z0", "claude:z0",
+                      "caption:claude:beta", "claude:beta", "divider:claude:b1", "claude:b1", "caption:claude:u0", "claude:u0",
+                      "divider:toggle", "toggle"]
+          && projects.navigation(showOlder: true) == ["claude:q", "claude:z1", "claude:z0", "claude:beta", "claude:b1", "claude:u0", "toggle"]
+          && projects.height(showOlder: true) == projects.entries(showOlder: true).reduce(0) { $0 + $1.height }
+          && hoveredCaptions == ["beta", "zeta", "프로젝트 미확인"] && Set(hoveredCaptions).count == hoveredCaptions.count
+          && Set(captions(frozenDated, showOlder: true)).count == captions(frozenDated, showOlder: true).count,
+          "expanding Earlier merges older sessions into their project caption, never repeating it")
     // Keyboard navigation skips captions and dividers; selection starts at input, then retry, then the first row.
     check(datedList.navigation(showOlder: false) == ["claude:beta", "claude:d0", "claude:d1", "older", "toggle"]
           && datedList.navigation(showOlder: true).count == 6

@@ -1018,7 +1018,9 @@ struct RowContext {
     func speed(_ item: SessionRowItem) -> SpeedSlot? {
         SessionPresentation.speedCell(item.reading, state: item.state, now: now, showsColumn: showsSpeed, restart: restart)
     }
-    func showsID(_ reading: TokenReading) -> Bool { reading.project.map(sharedProjects.contains) ?? false }
+    /// A short ID column for a titled row whose project has another row; an untitled row has it in its name already
+    /// (`SessionPresentation.listTitle`).
+    func showsID(_ reading: TokenReading) -> Bool { reading.title != nil && (reading.project.map(sharedProjects.contains) ?? false) }
 }
 
 struct SessionList: View {
@@ -1656,7 +1658,7 @@ struct LiveSessionRow: View {
                 StateGlyphView(kind: StateGlyph.Kind(item.state) ?? .working, side: 8, contrast: high).frame(width: 10)
                     .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
                     .padding(.leading, DashboardLayout.glyphX)
-                Text(SessionPresentation.rowTitle(reading)).font(TCFont.title).lineLimit(1).truncationMode(.tail)
+                Text(SessionPresentation.listTitle(reading)).font(TCFont.title).lineLimit(1).truncationMode(.tail)
                     .padding(.leading, DashboardLayout.textX - DashboardLayout.glyphX - 10)
                     .layoutPriority(2)
                 if context.showsID(reading) {
@@ -1714,10 +1716,11 @@ struct LiveSessionRow: View {
                 speed.known || item.state.expectsSpeed ? speed.spoken : nil].compactMap { $0 }.joined(separator: ", ")
     }
 
-    /// Keep the client identifiable; only the model may truncate in a dense state line (the project leads line 1).
+    /// Keep the client identifiable; only the model may truncate in a dense state line (the name leads line 1). An
+    /// untitled row's name already says the client (`SessionPresentation.listTitle`).
     private var clientMetadata: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
-            Text(" · " + reading.clientTitle).fixedSize().layoutPriority(1)
+            if reading.title != nil { Text(" · " + reading.clientTitle).fixedSize().layoutPriority(1) }
             Text(" · " + [reading.model ?? loc("모델 기록 대기", "waiting for model"), SessionPresentation.effortLabel(reading)]
                 .compactMap { $0 }.joined(separator: " · "))
                 .lineLimit(1).truncationMode(.middle)
@@ -1839,12 +1842,13 @@ struct IdleSessionRow: View {
         .rowActions(reading)
     }
 
-    /// The title truncates first; the client, the state word and the short ID stay whole while they fit.
+    /// The title truncates first; the client, the state word and the short ID stay whole while they fit. An untitled
+    /// row's name already says the client and short ID (`SessionPresentation.listTitle`).
     private func names(client: Bool, id: Bool, word: Bool) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(SessionPresentation.rowTitle(reading)).font(TCFont.body).lineLimit(1).truncationMode(.tail)
+            Text(SessionPresentation.listTitle(reading)).font(TCFont.body).lineLimit(1).truncationMode(.tail)
                 .layoutPriority(2)
-            if client { Text(reading.clientTitle).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
+            if client && reading.title != nil { Text(reading.clientTitle).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
             if word, let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).fixedSize() }
             if id { Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
         }

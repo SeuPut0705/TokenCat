@@ -127,27 +127,24 @@ public sealed record SessionListModel
 
     public static SessionListModel Empty { get; } = new();
 
+    /// Folded, the "이전" blocks give way to one `Older` row at the end. Open, they join their project's caption after its
+    /// recent blocks (`Merged`), so a project is never captioned twice.
     public List<SessionListEntry> Entries(bool showOlder)
     {
         var entries = new List<SessionListEntry>();
-        bool folded = false, inOlder = false;
+        var folded = false;
         string? section = null;
-        foreach (var block in Blocks)
+        foreach (var block in showOlder ? Merged(Blocks) : Blocks)
         {
-            if (block.Older)
+            if (block.Older && !showOlder)
             {
-                if (!showOlder)
+                if (!folded)
                 {
-                    if (!folded)
-                    {
-                        if (entries.Count > 0) entries.Add(new SessionListEntry.Divider(OlderID));
-                        entries.Add(new SessionListEntry.Older(OlderCount));
-                        folded = true;
-                    }
-                    continue;
+                    if (entries.Count > 0) entries.Add(new SessionListEntry.Divider(OlderID));
+                    entries.Add(new SessionListEntry.Older(OlderCount));
+                    folded = true;
                 }
-                // The open "이전" part is grouped on its own, so it starts with its own project caption.
-                if (!inOlder) (inOlder, section) = (true, null);
+                continue;
             }
             if (block.Section != section)
             {
@@ -230,12 +227,16 @@ public sealed record SessionListModel
 
     /// Blocks gathered under their project, stably: the part outside "이전" first, then the "이전" part; in each, projects
     /// follow their first block (so the project holding the most urgent session leads) and blocks keep their order.
-    public static List<SessionBlock> Grouped(IReadOnlyList<SessionBlock> blocks)
-    {
-        static IEnumerable<SessionBlock> ByProject(IEnumerable<SessionBlock> part) =>
-            part.GroupBy(block => block.Section, StringComparer.Ordinal).SelectMany(project => project);
-        return [.. ByProject(blocks.Where(block => !block.Older)), .. ByProject(blocks.Where(block => block.Older))];
-    }
+    public static List<SessionBlock> Grouped(IReadOnlyList<SessionBlock> blocks) =>
+        [.. ByProject(blocks.Where(block => !block.Older)), .. ByProject(blocks.Where(block => block.Older))];
+
+    /// The open "이전" part folded into the list: a project's older blocks follow its recent ones under its one caption,
+    /// and projects with only older blocks come after every recent project.
+    public static List<SessionBlock> Merged(IReadOnlyList<SessionBlock> blocks) =>
+        [.. ByProject(blocks.Where(block => !block.Older).Concat(blocks.Where(block => block.Older)))];
+
+    static IEnumerable<SessionBlock> ByProject(IEnumerable<SessionBlock> part) =>
+        part.GroupBy(block => block.Section, StringComparer.Ordinal).SelectMany(project => project);
 
     SessionListModel Measured()
     {

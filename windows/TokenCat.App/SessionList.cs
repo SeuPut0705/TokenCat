@@ -17,7 +17,9 @@ sealed record RowContext(DateTimeOffset Now, IReadOnlySet<TokenSource> Restart, 
 {
     public double DetailHeight(SessionRowItem item) => DetailId == item.Id ? SessionPresentation.DetailHeight(item.Reading, item.State) : 0;
     public SpeedSlot? Speed(SessionRowItem item) => SessionPresentation.SpeedCell(item.Reading, item.State, Now, ShowsSpeed, Restart);
-    public bool ShowsID(TokenReading reading) => reading.Project is { } project && SharedProjects.Contains(project);
+    /// A short ID column for a titled row whose project has another row; an untitled row has it in its name already
+    /// (`SessionPresentation.ListTitle`).
+    public bool ShowsID(TokenReading reading) => reading.Title is not null && reading.Project is { } project && SharedProjects.Contains(project);
 
     /// A titled row's whole title and project, then one line of help; a client waiting for a restart adds why its speed is
     /// missing.
@@ -669,7 +671,7 @@ sealed class LiveRow : RowShell
         Bind(item.Id, reading, context, item.Height, context.Help(reading), SessionPresentation.SpokenLabel(reading, item.State));
         glyph.Kind = GlyphView.For(item.State) ?? StateGlyphKind.Working;
         chipWords.Text = SessionPresentation.ChipText(item.State, reading);
-        title.Text = SessionPresentation.RowTitle(reading);
+        title.Text = SessionPresentation.ListTitle(reading);
         shortId.Visibility = context.ShowsID(reading) ? Visibility.Visible : Visibility.Collapsed;
         shortId.Text = SessionPresentation.ShortID(reading);
 
@@ -690,7 +692,9 @@ sealed class LiveRow : RowShell
             Ui.Help(number, Loc("현재 턴 시작 부분을 읽지 못해 이번 턴 누적량을 알 수 없습니다", "Couldn't read the start of this turn, so its total is unknown"));
         }
 
+        // An untitled row's name already says the client (`SessionPresentation.ListTitle`).
         client.Text = " · " + reading.ClientTitle;
+        client.Visibility = reading.Title is null ? Visibility.Collapsed : Visibility.Visible;
         var effort = SessionPresentation.EffortLabel(reading);
         clientModel.Text = " · " + (reading.Model ?? Loc("모델 기록 대기", "waiting for model")) + (effort is null ? "" : " · " + effort);
         trailing.Text = item.State switch
@@ -818,19 +822,20 @@ sealed class IdleRow : RowShell
         Ui.Help(trailing, state.Title + Loc(" · 마지막 활동 ", " · last activity ") + SessionPresentation.HelpAge(reading.LastActivity, now, false));
 
         var showsId = context.ShowsID(reading);
-        var key = (reading.Title, reading.Project, reading.ClientTitle, word, showsId, showsLast, trailing.Text);
+        var key = (SessionPresentation.ListTitle(reading), reading.Title is null, reading.ClientTitle, word, showsId, showsLast, trailing.Text);
         if (Equals(key, namesKey)) return;
         namesKey = key;
         lastTurn.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         trailing.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         var room = Dashboard.PanelWidth - 2 * Dashboard.Gutter - Dashboard.GlyphX - 12 - 6 - 8 - Dashboard.Inset
             - (showsLast ? lastTurn.DesiredSize.Width + 10 : 0) - trailing.DesiredSize.Width;
-        // Keep the client name whole; the title truncates last.
+        // Keep the client name whole; the title truncates last. An untitled row's name already says the client and short ID
+        // (`SessionPresentation.ListTitle`).
         FrameworkElement Names(bool withId, bool withWord, bool trim)
         {
-            var title = Ui.Text(SessionPresentation.RowTitle(reading), Font.Body);
+            var title = Ui.Text(SessionPresentation.ListTitle(reading), Font.Body);
             return new TrimLine(trim ? TrimLine.Shrink(title) : title,
-                Spaced(Ui.Text(reading.ClientTitle, Font.Meta, Theme.Secondary)),
+                reading.Title is null ? null : Spaced(Ui.Text(reading.ClientTitle, Font.Meta, Theme.Secondary)),
                 withWord && word is not null ? Spaced(Ui.Text(word, Font.Micro, Theme.Secondary)) : null,
                 withId ? Spaced(Ui.Text(SessionPresentation.ShortID(reading), Font.Meta, Theme.Secondary)) : null);
         }

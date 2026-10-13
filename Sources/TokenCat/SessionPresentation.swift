@@ -547,6 +547,15 @@ enum SessionPresentation {
         reading.title ?? reading.project ?? loc("프로젝트 미확인", "Unknown project")
     }
 
+    /// A list row's name under its project caption: the client's session title, else the client and short ID
+    /// ("Claude Code · a1b2c3d4"), so an untitled row never repeats the caption above it. Help, VoiceOver, menus and
+    /// notifications keep `rowTitle`.
+    static func listTitle(_ reading: TokenReading) -> String {
+        if let title = reading.title { return title }
+        let id = shortID(reading)
+        return id.isEmpty ? reading.clientTitle : reading.clientTitle + " · " + id
+    }
+
     /// The project beside a titled row's name, so the folder stays visible; nil when the project is the name.
     static func rowProject(_ reading: TokenReading) -> String? {
         guard reading.title != nil, let project = reading.project, !project.isEmpty else { return nil }
@@ -1374,22 +1383,20 @@ struct SessionListModel {
 
     static let empty = SessionListModel()
 
+    /// Folded, the "이전" blocks give way to one `.older` row at the end. Open, they join their project's caption after its
+    /// recent blocks (`merged`), so a project is never captioned twice.
     func entries(showOlder: Bool) -> [SessionListEntry] {
         var entries: [SessionListEntry] = []
-        var folded = false, inOlder = false
+        var folded = false
         var section: String?
-        for block in blocks {
-            if block.older {
-                if !showOlder {
-                    if !folded {
-                        if !entries.isEmpty { entries.append(.divider(Self.olderID)) }
-                        entries.append(.older(olderCount))
-                        folded = true
-                    }
-                    continue
+        for block in showOlder ? Self.merged(blocks) : blocks {
+            if block.older && !showOlder {
+                if !folded {
+                    if !entries.isEmpty { entries.append(.divider(Self.olderID)) }
+                    entries.append(.older(olderCount))
+                    folded = true
                 }
-                // The open "이전" part is grouped on its own, so it starts with its own project caption.
-                if !inOlder { inOlder = true; section = nil }
+                continue
             }
             if block.section != section {
                 // Only a caption at the very top goes without a rule.
@@ -1483,16 +1490,23 @@ struct SessionListModel {
     /// Blocks gathered under their project, stably: the part outside "이전" first, then the "이전" part; in each, projects
     /// follow their first block (so the project holding the most urgent session leads) and blocks keep their order.
     static func grouped(_ blocks: [SessionBlock]) -> [SessionBlock] {
-        func byProject(_ part: [SessionBlock]) -> [SessionBlock] {
-            var projects: [String] = []
-            var members: [String: [SessionBlock]] = [:]
-            for block in part {
-                if members[block.section] == nil { projects.append(block.section) }
-                members[block.section, default: []].append(block)
-            }
-            return projects.flatMap { members[$0] ?? [] }
+        byProject(blocks.filter { !$0.older }) + byProject(blocks.filter(\.older))
+    }
+
+    /// The open "이전" part folded into the list: a project's older blocks follow its recent ones under its one caption,
+    /// and projects with only older blocks come after every recent project.
+    static func merged(_ blocks: [SessionBlock]) -> [SessionBlock] {
+        byProject(blocks.filter { !$0.older } + blocks.filter(\.older))
+    }
+
+    private static func byProject(_ part: [SessionBlock]) -> [SessionBlock] {
+        var projects: [String] = []
+        var members: [String: [SessionBlock]] = [:]
+        for block in part {
+            if members[block.section] == nil { projects.append(block.section) }
+            members[block.section, default: []].append(block)
         }
-        return byProject(blocks.filter { !$0.older }) + byProject(blocks.filter(\.older))
+        return projects.flatMap { members[$0] ?? [] }
     }
 
     private mutating func measure() {

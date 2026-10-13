@@ -118,6 +118,12 @@ public static class SessionPresentationChecks
               && TitleHelp(titled) == "Fix login redirect · TokenCat" && TitleHelp(modelled) == null
               && SpokenLabel(titled, S.Input) == "입력 필요, Fix login redirect, TokenCat, Claude Code claude-opus-5-5",
               "a titled row leads with its title and keeps the project as meta, in help and in VoiceOver");
+        // An untitled row sits under its project caption, so the list names it by client and short ID instead of the folder.
+        var untitledTelemetry = reading("telemetry:claude", state: A.Complete, last: -10);
+        check(ListTitle(modelled) == "Claude Code · S1" && ListTitle(codexParent) == "Codex · R1"
+              && ListTitle(titled) == "Fix login redirect" && ListTitle(untitledTelemetry) == "Claude Code"
+              && ListTitle(modelled) != SessionListModel.ProjectSection(modelled) && RowTitle(modelled) == "TokenCat",
+              "a row without its own title is named by client and short ID, never repeating its project caption");
         var roleChild = claudeChild with { AgentRole = "Explore" };
         var reviewChild = codexChild with { AgentRole = "guardian" };
         check(ChildTitle(roleChild) == ("Explore", "b1234567") && ChildTitle(claudeChild) == ("하위 에이전트", "b1234567")
@@ -341,19 +347,20 @@ public static class SessionPresentationChecks
         string[] datedIDs = ["caption:claude:beta", "claude:beta", "caption:claude:d0", "claude:d0", "divider:claude:d1", "claude:d1", "divider:older", "older",
                              "divider:toggle", "toggle"];
         // (caption 24 + beta 44) + (caption 24 + row 28 + divider 1 + row 28) + divider 1 + older 28 + divider 1 + toggle 28; open: the
-        // "이전" part's own caption 24 + row 28 + divider 1 + row 28 instead of the fold.
-        const double foldedHeight = 68 + 81 + 29 + 29, openHeight = 68 + 81 + 81 + 29;
+        // "이전" rows join their project's caption, divider 1 + row 28 each, instead of the fold.
+        const double foldedHeight = 68 + 81 + 29 + 29, openHeight = 68 + 81 + 29 + 29 + 29;
         IEnumerable<bool> rules(SessionListModel list) => list.Entries(true).OfType<SessionListEntry.Caption>().Select(entry => entry.Rule);
         IEnumerable<string> captions(SessionListModel list, bool showOlder) =>
             list.Entries(showOlder).OfType<SessionListEntry.Caption>().Select(entry => entry.Text);
         check(datedList.Blocks.Select(block => block.Section).SequenceEqual(["beta", "프로젝트 미확인", "프로젝트 미확인", "프로젝트 미확인", "프로젝트 미확인"])
               && datedList.Blocks.Select(block => block.Older).SequenceEqual([false, false, false, true, true]) && datedList.OlderCount == 2
-              && datedList.Entries(false).Select(entry => entry.Id).SequenceEqual(datedIDs) && rules(datedList).SequenceEqual([false, true, true])
-              && rules(make(dated, expanded: true)).SequenceEqual([false, true])
+              && datedList.Entries(false).Select(entry => entry.Id).SequenceEqual(datedIDs) && rules(datedList).SequenceEqual([false, true])
+              && rules(make(dated, expanded: true)).SequenceEqual([false])
               && datedList.ContentHeight == foldedHeight && datedList.OlderContentHeight == openHeight,
               "captions, a rule above all but a caption at the top, folded older section and both heights");
         // A frozen order can split a project; it is regrouped, and each caption still has its own identity.
-        var frozenIDs = datedList.Reordered(["claude:beta", "claude:d0", "claude:d1", "claude:d2"]).Entries(true).Select(entry => entry.Id).ToList();
+        var frozenDated = datedList.Reordered(["claude:beta", "claude:d0", "claude:d1", "claude:d2"]);
+        var frozenIDs = frozenDated.Entries(true).Select(entry => entry.Id).ToList();
         check(frozenIDs.Distinct().Count() == frozenIDs.Count, "duplicate list entry IDs");
         var zetaIdle = reading("claude:z1", session: "Z1", project: "zeta", state: A.Complete, last: -600);
         var betaIdle = reading("claude:b1", session: "B1", project: "beta", state: A.Complete, last: -300);
@@ -365,12 +372,25 @@ public static class SessionPresentationChecks
         check(projects.Blocks.Select(block => block.Id).SequenceEqual(["claude:q", "claude:z1", "claude:beta", "claude:b1", "claude:z0", "claude:u0"])
               && projects.OlderCount == 2 && captions(projects, false).SequenceEqual(["zeta", "beta"])
               && projects.Entries(false).Select(entry => entry.Id).TakeLast(4).SequenceEqual(["divider:older", "older", "divider:toggle", "toggle"])
-              && captions(projects, true).SequenceEqual(["zeta", "beta", "zeta", "프로젝트 미확인"])
+              && captions(projects, true).SequenceEqual(["zeta", "beta", "프로젝트 미확인"])
               && collapsedProjects.Blocks.Select(block => block.Id).SequenceEqual(["claude:q", "claude:z1", "claude:z0", "claude:beta", "claude:b1", "claude:u0"])
               && captions(collapsedProjects, false).SequenceEqual(["zeta", "beta", "프로젝트 미확인"])
               && hovered.Blocks.Select(block => block.Id).Take(4).SequenceEqual(["claude:b1", "claude:beta", "claude:q", "claude:z1"])
               && captions(hovered, false).SequenceEqual(["beta", "zeta"]),
               "sessions are grouped under project captions, the project with the most urgent session first, Earlier still folded");
+        // Open, "이전" joins each project's caption after its recent rows; projects with only older rows follow, and a frozen
+        // order keeps one caption per project too.
+        var openIDs = projects.Entries(true).Select(entry => entry.Id);
+        var hoveredCaptions = captions(hovered, true).ToList();
+        var frozenCaptions = captions(frozenDated, true).ToList();
+        check(openIDs.SequenceEqual(["caption:claude:q", "claude:q", "divider:claude:z1", "claude:z1", "divider:claude:z0", "claude:z0",
+                                     "caption:claude:beta", "claude:beta", "divider:claude:b1", "claude:b1", "caption:claude:u0", "claude:u0",
+                                     "divider:toggle", "toggle"])
+              && projects.Navigation(true).SequenceEqual(["claude:q", "claude:z1", "claude:z0", "claude:beta", "claude:b1", "claude:u0", "toggle"])
+              && projects.Height(true) == projects.Entries(true).Sum(entry => entry.Height)
+              && hoveredCaptions.SequenceEqual(["beta", "zeta", "프로젝트 미확인"]) && hoveredCaptions.Distinct().Count() == hoveredCaptions.Count
+              && frozenCaptions.Distinct().Count() == frozenCaptions.Count,
+              "expanding Earlier merges older sessions into their project caption, never repeating it");
         // Keyboard navigation skips captions and dividers; selection starts at input, then retry, then the first row.
         check(datedList.Navigation(false).SequenceEqual(["claude:beta", "claude:d0", "claude:d1", "older", "toggle"])
               && datedList.Navigation(true).Count == 6 && datedList.Navigation(true)[^1] == "toggle"
