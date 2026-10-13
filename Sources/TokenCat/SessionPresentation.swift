@@ -553,6 +553,12 @@ enum SessionPresentation {
         return project
     }
 
+    /// "TokenCat › " before a titled row's name: a long folder keeps its ends; empty when the project already is the name.
+    static func projectPrefix(_ reading: TokenReading) -> String {
+        guard let project = rowProject(reading) else { return "" }
+        return (project.count > 20 ? project.prefix(9) + "…" + project.suffix(10) : project) + " › "
+    }
+
     /// A titled row's hover line: the whole title (the row cuts it) and the project.
     static func titleHelp(_ reading: TokenReading) -> String? {
         reading.title.map { title in [title, reading.project].compactMap { $0 }.joined(separator: " · ") }

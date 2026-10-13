@@ -118,6 +118,9 @@ public static class SessionPresentationChecks
               && TitleHelp(titled) == "Fix login redirect · TokenCat" && TitleHelp(modelled) == null
               && SpokenLabel(titled, S.Input) == "입력 필요, Fix login redirect, TokenCat, Claude Code claude-opus-5-5",
               "a titled row leads with its title and keeps the project as meta, in help and in VoiceOver");
+        check(ProjectPrefix(titled) == "TokenCat › " && ProjectPrefix(modelled) == "" && ProjectPrefix(titledNoProject) == ""
+              && ProjectPrefix(titled with { Project = "an-extremely-long-project-folder-name" }) == "an-extrem…older-name › ",
+              "a titled row is led by its project folder, a long folder keeping both ends; an untitled row is not");
         var roleChild = claudeChild with { AgentRole = "Explore" };
         var reviewChild = codexChild with { AgentRole = "guardian" };
         check(ChildTitle(roleChild) == ("Explore", "b1234567") && ChildTitle(claudeChild) == ("하위 에이전트", "b1234567")

@@ -2,6 +2,13 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.23.0
+
+**macOS and Windows**
+
+- A session titled by its client now shows its project folder first, in gray, as in `TokenCat › Settings cleanup`; a long folder keeps both ends. The folder no longer repeats on the second line. · 클라이언트가 붙인 제목이 있는 세션은 `TokenCat › Settings cleanup`처럼 프로젝트 폴더를 제목 앞에 회색으로 보여 주며, 긴 폴더 이름은 앞뒤를 남기고 줄입니다. 둘째 줄에서는 폴더를 다시 적지 않습니다.
+- Windows: Narrator reads the widget's running subagent count. · Windows: 내레이터가 위젯의 실행 중인 하위 에이전트 수를 읽습니다.
+
 ## 0.22.0
 
 **macOS and Windows**

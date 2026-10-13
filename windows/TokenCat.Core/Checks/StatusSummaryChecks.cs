@@ -88,6 +88,8 @@ public static class StatusSummaryChecks
               && aiItem([lead, helper(0, A.Complete)]).Subagents == 0 && aiItem([stale]).Subagents == 0
               && aiItem([lead, .. Enumerable.Range(0, 120).Select(index => helper(index))]).Subagents == 99
               && aiItem([lead, helper(0)], hasTokenSample: false).Subagents == 0);
+        check("Narrator hears the running subagent count, not only the session count",
+              aiItem([lead, helper(0), helper(1), helper(2)]).Spoken == "AI 1, 하위 에이전트 3개 실행 중" && aiItem([lead]).Spoken == "AI 1");
         var badgeWidths = new List<string>();
         foreach (var layout in Enum.GetValues<StatusBarLayout>())
             foreach (var runner in new[] { true, false })

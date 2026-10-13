@@ -656,6 +656,11 @@ public static class SessionPresentation
     public static string? RowProject(TokenReading reading) =>
         reading.Title is not null && reading.Project is { Length: > 0 } project ? project : null;
 
+    /// "TokenCat › " before a titled row's name (the mac's 120 pt prefix): a long folder keeps its ends; empty when the
+    /// project already is the name.
+    public static string ProjectPrefix(TokenReading reading) => RowProject(reading) is { } project
+        ? (project.Length > 20 ? project[..9] + "…" + project[^10..] : project) + " › " : "";
+
     /// A titled row's hover line: the whole title (the row cuts it) and the project.
     public static string? TitleHelp(TokenReading reading) =>
         reading.Title is { } title ? string.Join(" · ", new[] { title, reading.Project }.OfType<string>()) : null;

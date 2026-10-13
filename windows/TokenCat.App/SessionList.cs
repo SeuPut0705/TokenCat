@@ -629,7 +629,7 @@ sealed class LiveRow : RowShell
     readonly TextBlock number = Ui.Line();
     readonly Run outputAmount = Ui.Run("", Font.Metric), outputUnit = Ui.Run(" tok", Font.Micro, Theme.Secondary);
     readonly TextBlock chipWords = Ui.Text("", Font.MetaMedium);
-    readonly TextBlock clientProject = TrimLine.Shrink(Ui.Text("", Font.Meta, Theme.Secondary));
+    readonly Run projectPrefix = Ui.Run("", Font.Title, Theme.Secondary), title = Ui.Run("", Font.Title);
     readonly TextBlock client = Ui.Text("", Font.Meta, Theme.Secondary);
     readonly TextBlock clientModel = TrimLine.Shrink(Ui.Text("", Font.Meta, Theme.Secondary));
     readonly TextBlock trailing = Ui.Text("", Font.MetaMono);
@@ -640,6 +640,9 @@ sealed class LiveRow : RowShell
     public LiveRow()
     {
         project.Margin = new Thickness(6, 0, 0, 0);
+        projectPrefix.FontWeight = FontWeights.Normal;
+        project.Inlines.Add(projectPrefix);
+        project.Inlines.Add(title);
         shortId.Margin = new Thickness(6, 0, 0, 0);
         chipWords.TextTrimming = TextTrimming.None;
         number.Inlines.Add(outputAmount);
@@ -650,7 +653,7 @@ sealed class LiveRow : RowShell
         first.Height = 18;
         // Keep the client name whole; the project and model divide the remaining metadata width.
         client.TextTrimming = TextTrimming.None;
-        var metadata = TrimLine.Shrink(new TrimLine(clientProject, client, clientModel));
+        var metadata = TrimLine.Shrink(new TrimLine(client, clientModel));
         var second = Dashboard.Spread(new TrimLine(chipWords, metadata), trailing);
         second.Height = 14;
         second.Margin = new Thickness(Dashboard.TextX, 2, 0, 0);
@@ -668,7 +671,8 @@ sealed class LiveRow : RowShell
         Bind(item.Id, reading, context, item.Height, context.Help(reading), SessionPresentation.SpokenLabel(reading, item.State));
         glyph.Kind = GlyphView.For(item.State) ?? StateGlyphKind.Working;
         chipWords.Text = SessionPresentation.ChipText(item.State, reading);
-        project.Text = SessionPresentation.RowTitle(reading);
+        projectPrefix.Text = SessionPresentation.ProjectPrefix(reading);
+        title.Text = SessionPresentation.RowTitle(reading);
         shortId.Visibility = context.ShowsID(reading) ? Visibility.Visible : Visibility.Collapsed;
         shortId.Text = SessionPresentation.ShortID(reading);
 
@@ -689,9 +693,6 @@ sealed class LiveRow : RowShell
             Ui.Help(number, Loc("현재 턴 시작 부분을 읽지 못해 이번 턴 누적량을 알 수 없습니다", "Couldn't read the start of this turn, so its total is unknown"));
         }
 
-        var rowProject = SessionPresentation.RowProject(reading);
-        clientProject.Text = rowProject is null ? "" : " · " + rowProject;
-        clientProject.Visibility = rowProject is null ? Visibility.Collapsed : Visibility.Visible;
         client.Text = " · " + reading.ClientTitle;
         var effort = SessionPresentation.EffortLabel(reading);
         clientModel.Text = " · " + (reading.Model ?? Loc("모델 기록 대기", "waiting for model")) + (effort is null ? "" : " · " + effort);
@@ -831,9 +832,11 @@ sealed class IdleRow : RowShell
         var rowProject = SessionPresentation.RowProject(reading);
         FrameworkElement Names(bool withId, bool withWord, bool trim, bool withProject = true)
         {
-            var title = Ui.Text(SessionPresentation.RowTitle(reading), Font.Body);
+            var title = Ui.Text("", Font.Body);
+            if (withProject && rowProject is not null)
+                title.Inlines.Add(new Run(SessionPresentation.ProjectPrefix(reading)) { Foreground = Theme.Brush(Theme.Secondary) });
+            title.Inlines.Add(new Run(SessionPresentation.RowTitle(reading)));
             return new TrimLine(trim ? TrimLine.Shrink(title) : title,
-                withProject && rowProject is not null ? Spaced(Ui.Text(rowProject, Font.Meta, Theme.Secondary)) : null,
                 Spaced(Ui.Text(reading.ClientTitle, Font.Meta, Theme.Secondary)),
                 withWord && word is not null ? Spaced(Ui.Text(word, Font.Micro, Theme.Secondary)) : null,
                 withId ? Spaced(Ui.Text(SessionPresentation.ShortID(reading), Font.Meta, Theme.Secondary)) : null);

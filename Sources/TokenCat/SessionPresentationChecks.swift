@@ -153,6 +153,11 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.titleHelp(titled) == "Fix login redirect · TokenCat" && SessionPresentation.titleHelp(modelled) == nil
           && SessionPresentation.spokenLabel(titled, state: .input) == "입력 필요, Fix login redirect, TokenCat, Claude Code claude-opus-5-5",
           "a titled row leads with its title and keeps the project as meta, in help and in VoiceOver")
+    var longProject = titled
+    longProject.project = "an-extremely-long-project-folder-name"
+    check(SessionPresentation.projectPrefix(titled) == "TokenCat › " && SessionPresentation.projectPrefix(modelled) == ""
+          && SessionPresentation.projectPrefix(titledNoProject) == "" && SessionPresentation.projectPrefix(longProject) == "an-extrem…older-name › ",
+          "a titled row is led by its project folder, a long folder keeping both ends; an untitled row is not")
     var roleChild = claudeChild
     roleChild.agentRole = "Explore"
     var reviewChild = codexChild

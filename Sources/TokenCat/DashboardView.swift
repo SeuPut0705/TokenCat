@@ -1655,8 +1655,12 @@ struct LiveSessionRow: View {
                 StateGlyphView(kind: StateGlyph.Kind(item.state) ?? .working, side: 8, contrast: high).frame(width: 10)
                     .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
                     .padding(.leading, DashboardLayout.glyphX)
-                Text(SessionPresentation.rowTitle(reading)).font(TCFont.title).lineLimit(1).truncationMode(.tail).layoutPriority(2)
-                    .padding(.leading, DashboardLayout.textX - DashboardLayout.glyphX - 10)
+                HStack(alignment: .firstTextBaseline, spacing: 0) {
+                    ProjectPrefix(reading: reading, font: TCFont.title)
+                    Text(SessionPresentation.rowTitle(reading)).font(TCFont.title).lineLimit(1).truncationMode(.tail)
+                }
+                .layoutPriority(2)
+                .padding(.leading, DashboardLayout.textX - DashboardLayout.glyphX - 10)
                 if context.showsID(reading) {
                     Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize().padding(.leading, 6)
                 }
@@ -1712,12 +1716,9 @@ struct LiveSessionRow: View {
                 speed.known || item.state.expectsSpeed ? speed.spoken : nil].compactMap { $0 }.joined(separator: ", ")
     }
 
-    /// Keep the client identifiable; only the project and model may truncate in a dense state line.
+    /// Keep the client identifiable; only the model may truncate in a dense state line (the project leads line 1).
     private var clientMetadata: some View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
-            if let project = SessionPresentation.rowProject(reading) {
-                Text(" · " + project).lineLimit(1).truncationMode(.tail)
-            }
             Text(" · " + reading.clientTitle).fixedSize().layoutPriority(1)
             Text(" · " + [reading.model ?? loc("모델 기록 대기", "waiting for model"), SessionPresentation.effortLabel(reading)]
                 .compactMap { $0 }.joined(separator: " · "))
@@ -1844,13 +1845,28 @@ struct IdleSessionRow: View {
     /// Keep a titled row's project whole when it fits; long projects move to help before the client disappears.
     private func names(client: Bool, id: Bool, word: Bool, project showsProject: Bool = true) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Text(SessionPresentation.rowTitle(reading)).font(TCFont.body).lineLimit(1).truncationMode(.tail).layoutPriority(2)
-            if showsProject, let project = SessionPresentation.rowProject(reading) {
-                Text(project).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize()
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                if showsProject { ProjectPrefix(reading: reading, font: TCFont.body) }
+                Text(SessionPresentation.rowTitle(reading)).font(TCFont.body).lineLimit(1).truncationMode(.tail)
             }
+            .layoutPriority(2)
             if client { Text(reading.clientTitle).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
             if word, let stateWord { Text(stateWord).font(TCFont.micro).toneSecondary().lineLimit(1).fixedSize() }
             if id { Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize() }
+        }
+    }
+}
+
+/// A titled row's project folder before its title (`SessionPresentation.projectPrefix`) in the secondary tone, kept whole
+/// while the title truncates; absent when the project already is the row's name.
+struct ProjectPrefix: View {
+    var reading: TokenReading
+    var font: Font
+
+    var body: some View {
+        let prefix = SessionPresentation.projectPrefix(reading)
+        if !prefix.isEmpty {
+            Text(prefix).font(font).fontWeight(.regular).toneSecondary().lineLimit(1).fixedSize()
         }
     }
 }

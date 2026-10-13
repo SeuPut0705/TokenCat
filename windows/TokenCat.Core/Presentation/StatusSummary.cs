@@ -289,8 +289,11 @@ public static class StatusBarContent
                     var shown = waitingOnly ? ai.Waiting : ai.Running > 0 && ai.Phase == TokenActivityState.Input ? ai.Input : ai.Running;
                     var value = hasTokenSample ? shown.ToString(CultureInfo.InvariantCulture) : "—";
                     var state = !hasTokenSample ? TokenActivityState.Idle : ai.Running > 0 ? ai.Phase : waitingOnly ? TokenActivityState.Stale : TokenActivityState.Idle;
+                    var subagents = hasTokenSample && ai.Running > 0 ? Math.Min(ai.Subagents, 99) : 0;
+                    // Narrator reads the drawn "↳N" as words, so the badge is never visual-only.
                     metrics.Add(new(id, "AI", value, hasTokenSample && ai.Running > 0, state,
-                        Subagents: hasTokenSample && ai.Running > 0 ? Math.Min(ai.Subagents, 99) : 0));
+                        Detail: subagents > 0 ? $"AI {value}, " + Loc($"하위 에이전트 {subagents}개 실행 중", $"{subagents} subagents running") : null,
+                        Subagents: subagents));
                     break;
                 case MetricID.AverageSpeed:
                     // The contributing clients' glyphs, or "AVG" without a measurement, label the item; the unit is split off and
