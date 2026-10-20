@@ -72,6 +72,7 @@ private final class OmpLogReader: TokenLogReader {
         reading.projectPath = state.cwd
         reading.model = state.model
         reading.credentialPins = credentialPins
+        reading.credentialIDs = state.credentialIDs
         reading.effort = state.effort
         reading.context = state.context
         reading.lastActivity = lastActivity
@@ -114,6 +115,8 @@ private struct OmpLogState {
     /// `title_change` (a rename or a regenerated title, appended). Pi: the newest `session_info` `name`, empty clears it.
     private(set) var title: String?
     private(set) var model: String?
+    /// The newest assistant reply's `credentialId` per provider; the credential that actually answered.
+    private(set) var credentialIDs: [TokenSource: Int] = [:]
     private(set) var effort: String?
     private(set) var context: TokenContextUsage?
     private(set) var lastActivity: Date?
@@ -234,6 +237,13 @@ private struct OmpLogState {
             lastActivity = max(lastActivity ?? finished, finished)
             if !open { openTurn(unseenStart ? nil : LogFields.milliseconds(message["timestamp"]) ?? at) }
             if let name = LogFields.text(message["model"]), name.count <= 128 { model = name }
+            if let id = LogFields.count(message["credentialId"]) {
+                switch message["provider"] as? String {
+                case "anthropic": credentialIDs[.claude] = id
+                case "openai-codex": credentialIDs[.codex] = id
+                default: break
+                }
+            }
             let usage = message["usage"] as? [String: Any]
             let output = LogFields.count(usage?["output"]) ?? 0
             if output > 0 {

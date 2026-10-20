@@ -134,8 +134,10 @@ final class TokenTracker {
                     reading.clientName = reading.clientName ?? client
                     if reading.source != .omp { reading.rateLimit = nil }
                 }
-                if reading.source == .omp, let provider = reading.limitProvider, let hash = reading.credentialPins[provider] {
-                    reading.limitAccount = accountReader.pinnedAccount(provider: provider, hash: hash, path: path)
+                if reading.source == .omp, let provider = reading.limitProvider,
+                   reading.credentialIDs[provider] != nil || reading.credentialPins[provider] != nil {
+                    reading.limitAccount = reading.credentialIDs[provider].flatMap { accountReader.credentialAccount(provider: provider, id: $0, path: path) }
+                        ?? reading.credentialPins[provider].flatMap { accountReader.pinnedAccount(provider: provider, hash: $0, path: path) }
                     reading.rateLimit?.account = reading.limitAccount
                 } else if reading.source == .claude || reading.source == .codex {
                     let key = LogAccountKey(id: reading.id, sessionID: reading.sessionID)

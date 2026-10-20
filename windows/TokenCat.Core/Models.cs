@@ -222,6 +222,8 @@ public sealed record TokenReading
     /// Subscription identity and credential routing never survive JSON encoding.
     [JsonIgnore] public LimitAccount? LimitAccount { get; init; }
     [JsonIgnore] public IReadOnlyDictionary<TokenSource, string> CredentialPins { get; init; } = ImmutableDictionary<TokenSource, string>.Empty;
+    /// The newest `auth_credentials.id` an omp or Pi reply named per provider; memory only, like the pins.
+    [JsonIgnore] public IReadOnlyDictionary<TokenSource, int> CredentialIDs { get; init; } = ImmutableDictionary<TokenSource, int>.Empty;
     [JsonIgnore] public TokenSource? LimitProvider => TokenSource.LimitProvider(Model) ?? (Source is TokenSource.Claude or TokenSource.Codex ? Source : null);
     [JsonIgnore] public string ClientTitle => ClientName ?? Source.Title;
     public TokenSpeedMeasurement? SpeedMeasurement { get; init; }

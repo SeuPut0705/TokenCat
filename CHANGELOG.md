@@ -2,6 +2,12 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.24.3
+
+**macOS and Windows**
+
+- An omp or Pi session whose log has no credential pin, such as a subagent running Codex, is attributed to the account that actually answered: each reply's credential id is matched with the account in omp's credential store, so the usage-limit card shows that account instead of the Codex CLI's stale login. · 자격 증명 핀이 없는 omp·Pi 세션(예: Codex를 쓰는 하위 에이전트)을 실제로 응답한 계정에 귀속합니다. 각 응답의 자격 증명 ID를 omp 자격 증명 저장소의 계정과 맞춰, 사용량 한도 카드가 Codex CLI의 오래된 로그인 대신 그 계정을 보여 줍니다.
+
 ## 0.24.2
 
 **macOS and Windows**

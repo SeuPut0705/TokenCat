@@ -42,7 +42,7 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
     public const int MaximumConfigBytes = 16 << 20;
     public const string CredentialQuery = """
         SELECT provider, json_extract(data, '$.accountId'), json_extract(data, '$.email'),
-               json_extract(data, '$.orgId'), json_extract(data, '$.projectId'), json_extract(data, '$.orgName')
+               json_extract(data, '$.orgId'), json_extract(data, '$.projectId'), json_extract(data, '$.orgName'), id
         FROM auth_credentials WHERE provider IN ('anthropic', 'openai-codex') AND credential_type = 'oauth'
         """;
     sealed record ClaudeMetadata
@@ -65,7 +65,7 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
         public Metadata? Tokens { get; init; }
     }
     sealed record Config(long[] Stamp, LimitAccount? Account, string? OrganizationID);
-    sealed record Credential(TokenSource Provider, string Hash, LimitAccount Account);
+    sealed record Credential(TokenSource Provider, string Hash, int? Id, LimitAccount Account);
     sealed record Root(string[] Prefixes, TokenSource Source, string Metadata);
     public sealed record RootAccount(LimitAccount? Account, DateTimeOffset? SwitchedAt);
     readonly string home = Path.TrimEndingDirectorySeparator(Path.GetFullPath(home));
@@ -171,7 +171,7 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
                 var source = provider == "anthropic" ? TokenSource.Claude : TokenSource.Codex;
                 var email = row.Text(2);
                 values.Add(new Credential(source, LimitAccount.CredentialPinHash(provider, id, email, row.Text(3), row.Text(4)),
-                    new LimitAccount(id, email, row.Text(5))));
+                    row.Int64(6) is { } credentialId and >= 0 and <= int.MaxValue ? (int)credentialId : null, new LimitAccount(id, email, row.Text(5))));
             })) continue;
             credentials[database] = (stamp, values);
         }
@@ -284,10 +284,15 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
         if (clones.Any(clone => clone.Source == source && Matches(clone.Prefixes))) return null;
         return roots.Where(root => root.Source == source && Matches(root.Prefixes)).MaxBy(root => root.Prefixes.Max(prefix => prefix.Length));
     }
-    public LimitAccount? Account(string path, TokenSource source, string? model = null, IReadOnlyDictionary<TokenSource, string>? pins = null)
+    public LimitAccount? Account(string path, TokenSource source, string? model = null, IReadOnlyDictionary<TokenSource, string>? pins = null,
+        IReadOnlyDictionary<TokenSource, int>? credentialIDs = null)
     {
         if (source == TokenSource.Omp)
-            return TokenSource.LimitProvider(model) is { } provider && pins is not null && pins.TryGetValue(provider, out var hash) ? PinnedAccount(provider, hash, path) : null;
+        {
+            if (TokenSource.LimitProvider(model) is not { } provider) return null;
+            return credentialIDs is not null && credentialIDs.TryGetValue(provider, out var id) && CredentialAccount(provider, id, path) is { } replied ? replied
+                : pins is not null && pins.TryGetValue(provider, out var hash) ? PinnedAccount(provider, hash, path) : null;
+        }
         if (source is not (TokenSource.Claude or TokenSource.Codex) || FindRoot(source, path) is not { } root
             || ConfigMetadata(root.Metadata, source)?.Account is not { } account) return null;
         return Resolve(source, account.Id, account.Email, account.OrganizationName);
@@ -308,4 +313,8 @@ public sealed class LimitAccountReader(string home, Func<string, string?> enviro
         var matches = values.Values.Where(value => value.Provider == provider && value.Hash == hash).Select(value => value.Account).Distinct().ToList();
         return matches.Count == 1 ? matches[0] : null;
     }
+    /// The account behind an omp reply's credential id, found by the same metadata a pin is matched against.
+    public LimitAccount? CredentialAccount(TokenSource provider, int id, string path) =>
+        FindRoot(TokenSource.Omp, path) is { } root && credentials.TryGetValue(root.Metadata, out var values)
+            ? values.Values.FirstOrDefault(value => value.Provider == provider && value.Id == id)?.Account : null;
 }

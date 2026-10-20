@@ -149,7 +149,7 @@ public sealed class TokenTracker
                 LimitAccount? account = null, limitAccount = null;
                 if (row.Source == TokenSource.Omp)
                 {
-                    account = AccountReader.Account(path, row.Source, row.Model, row.CredentialPins);
+                    account = AccountReader.Account(path, row.Source, row.Model, row.CredentialPins, row.CredentialIDs);
                     limitAccount = account;
                 }
                 else if (row.Source is TokenSource.Claude or TokenSource.Codex)

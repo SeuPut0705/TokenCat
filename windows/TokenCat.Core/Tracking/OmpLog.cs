@@ -90,6 +90,7 @@ sealed class OmpLogReader(string path) : ITokenLogReader
             ProjectPath = s.Cwd,
             Model = s.Model,
             CredentialPins = credentialPins,
+            CredentialIDs = new Dictionary<TokenSource, int>(s.CredentialIDs),
             Effort = s.Effort,
             Context = s.Context,
             LastActivity = lastActivity,
@@ -131,6 +132,8 @@ sealed class OmpLogState
     /// `title_change` (a rename or a regenerated title, appended). Pi: the newest `session_info` `name`, empty clears it.
     public string? Title { get; private set; }
     public string? Model { get; private set; }
+    /// The newest assistant reply's `credentialId` per provider; the credential that actually answered.
+    public Dictionary<TokenSource, int> CredentialIDs { get; } = [];
     public string? Effort { get; private set; }
     public TokenContextUsage? Context { get; private set; }
     public DateTimeOffset? LastActivity { get; private set; }
@@ -282,6 +285,12 @@ sealed class OmpLogState
                 LastActivity = Later(LastActivity, finished);
                 if (!Open) OpenTurn(unseenStart ? null : LogFields.Milliseconds(message.Field("timestamp")) ?? at);
                 if (LogFields.Text(message.Field("model")) is { Length: <= 128 } name) Model = name;
+                if (LogFields.Count(message.Field("credentialId")) is { } credentialId)
+                    switch (message.Field("provider")?.Text)
+                    {
+                        case "anthropic": CredentialIDs[TokenSource.Claude] = credentialId; break;
+                        case "openai-codex": CredentialIDs[TokenSource.Codex] = credentialId; break;
+                    }
                 var usage = message.Field("usage");
                 var output = LogFields.Count(usage?.Field("output")) ?? 0;
                 if (output > 0)

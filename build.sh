@@ -74,8 +74,8 @@ cat > dist/TokenCat.app/Contents/Info.plist <<'PLIST'
 <key>CFBundleDevelopmentRegion</key><string>en</string>
 <key>CFBundleLocalizations</key><array><string>en</string><string>ko</string></array>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.24.2</string>
-<key>CFBundleVersion</key><string>37</string>
+<key>CFBundleShortVersionString</key><string>0.24.3</string>
+<key>CFBundleVersion</key><string>38</string>
 <key>CFBundleIconFile</key><string>TokenCat</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>

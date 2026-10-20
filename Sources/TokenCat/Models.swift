@@ -161,6 +161,8 @@ struct TokenReading: Codable, Identifiable {
     /// Account and credential selection metadata never enters persisted readings or diagnostics.
     var limitAccount: LimitAccount? = nil
     var credentialPins: [TokenSource: String] = [:]
+    /// The newest `auth_credentials.id` an omp or Pi reply named per provider; memory only, like the pins.
+    var credentialIDs: [TokenSource: Int] = [:]
     var limitProvider: TokenSource? {
         TokenSource.limitProvider(model: model) ?? ((source == .claude || source == .codex) ? source : nil)
     }

@@ -46,7 +46,7 @@ final class LimitAccountReader {
     static let maximumConfigBytes = 16 << 20
     static let credentialQuery = """
         SELECT provider, json_extract(data, '$.accountId'), json_extract(data, '$.email'),
-               json_extract(data, '$.orgId'), json_extract(data, '$.projectId'), json_extract(data, '$.orgName')
+               json_extract(data, '$.orgId'), json_extract(data, '$.projectId'), json_extract(data, '$.orgName'), id
         FROM auth_credentials WHERE provider IN ('anthropic', 'openai-codex') AND credential_type = 'oauth'
         """
 
@@ -70,6 +70,7 @@ final class LimitAccountReader {
     }
     private struct Credential {
         var provider: TokenSource
+        var id: Int?
         var hash: String
         var account: LimitAccount
     }
@@ -159,7 +160,8 @@ final class LimitAccountReader {
                 let email = row.text(2)
                 let hash = LimitAccount.credentialPinHash(provider: rawProvider, accountID: id, email: email,
                                                          organizationID: row.text(3), projectID: row.text(4))
-                values.append(Credential(provider: provider, hash: hash, account: LimitAccount(id: id, email: email, organizationName: row.text(5))))
+                values.append(Credential(provider: provider, id: row.text(6).flatMap { Int($0) }, hash: hash,
+                                         account: LimitAccount(id: id, email: email, organizationName: row.text(5))))
             }) else { continue }
             credentials[database] = (stamp, values)
             changed = true
@@ -327,5 +329,10 @@ final class LimitAccountReader {
         let matches = credentials[root.metadata]?.values.filter { $0.provider == provider && $0.hash == hash } ?? []
         let distinct = Set(matches.map(\.account))
         return distinct.count == 1 ? matches.first?.account : nil
+    }
+    /// The account behind an omp reply's credential id, found by the same metadata a pin is matched against.
+    func credentialAccount(provider: TokenSource, id: Int, path: String) -> LimitAccount? {
+        guard let root = root(source: .omp, path: path) else { return nil }
+        return credentials[root.metadata]?.values.first { $0.provider == provider && $0.id == id }?.account
     }
 }
