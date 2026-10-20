@@ -1359,9 +1359,9 @@ func writeLimitCredentialFixture(_ url: URL, rows: [(String, [String: Any], Bool
     var database: OpaquePointer?
     guard sqlite3_open(url.path, &database) == SQLITE_OK else { sqlite3_close(database); return false }
     defer { sqlite3_close(database) }
-    guard sqlite3_exec(database, "CREATE TABLE auth_credentials(provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT)", nil, nil, nil) == SQLITE_OK else { return false }
+    guard sqlite3_exec(database, "CREATE TABLE auth_credentials(id INTEGER PRIMARY KEY, provider TEXT, credential_type TEXT, data TEXT, disabled_cause TEXT)", nil, nil, nil) == SQLITE_OK else { return false }
     var statement: OpaquePointer?
-    guard sqlite3_prepare_v2(database, "INSERT INTO auth_credentials VALUES (?, 'oauth', ?, ?)", -1, &statement, nil) == SQLITE_OK else { return false }
+    guard sqlite3_prepare_v2(database, "INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause) VALUES (?, 'oauth', ?, ?)", -1, &statement, nil) == SQLITE_OK else { return false }
     defer { sqlite3_finalize(statement) }
     let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     for (provider, metadata, disabled) in rows {

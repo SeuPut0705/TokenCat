@@ -210,6 +210,40 @@ func runClineOmpChecks(root: URL, check: (Bool, String) -> Void) {
     }
 
     do {
+        let home = root.appendingPathComponent("omp-credential-ids")
+        let project = home.appendingPathComponent(".omp/agent/sessions/project")
+        let stem = "2026-10-04T06-00-00-000Z_id-parent"
+        let parent = project.appendingPathComponent(stem + ".jsonl")
+        let advisor = project.appendingPathComponent(stem + "/__advisor.jsonl")
+        try FileManager.default.createDirectory(at: advisor.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let login = LimitAccount(id: "cli-login", email: "login@example.com")
+        let used = LimitAccount(id: "used-account", email: "used@example.com")
+        check(try writeLimitCredentialFixture(home.appendingPathComponent(".omp/agent/agent.db"), rows: [
+            ("openai-codex", ["accountId": login.id, "email": login.email!], true),
+            ("openai-codex", ["accountId": used.id, "email": used.email!], false)]),
+            "omp credential ids fixture: metadata credentials database could not be created")
+        try append(parent, [["type": "session", "id": "id-parent", "timestamp": iso(0)],
+                            ["type": "message", "timestamp": iso(1), "message": ["role": "user", "content": "hi"]]])
+        try FileManager.default.setAttributes([.modificationDate: start], ofItemAtPath: parent.path)
+        try append(advisor, [["type": "session", "id": "id-advisor", "parentSession": parent.path, "timestamp": iso(1)],
+                             ["type": "message", "timestamp": iso(2), "message": ["role": "assistant", "model": "gpt-fixture", "provider": "openai-codex",
+                                "credentialId": 2, "timestamp": ms(2), "usage": ["output": 4], "stopReason": "stop"]]])
+        now = start.addingTimeInterval(4)
+        let tracker = TokenTracker(homeDirectory: home, environment: [:], now: { now }, initialTailBytes: 4_096, discoveryInterval: 0)
+        let row = tracker.sample().first { $0.sessionID == "id-advisor" }
+        let read = TokenRateLimit(usedPercent: 40, windowMinutes: 300, resetsAt: now.addingTimeInterval(3_600), recordedAt: now, account: used)
+        let shown = row.map { SessionPresentation.usageLimits(tokens: [$0], codexReads: [read], claudeLimits: [:], defaults: [.codex: login],
+                                                                known: [:], now: now) } ?? []
+        check(row?.limitAccount == used && shown.first?.account == used,
+              "an omp reply's credential id attributes its session to that account, even without a credential pin")
+        let encoded = String(decoding: try JSONEncoder().encode(row), as: UTF8.self)
+        check(!encoded.contains("credentialId") && !encoded.contains("used@example.com"),
+              "omp credential ids privacy: a credential id or identity leaked into an encoded reading")
+    } catch {
+        check(false, "omp credential ids fixture error: \(error.localizedDescription)")
+    }
+
+    do {
         // Cline in VS Code, Roo Code in Cursor, and the Cline CLI.
         let home = root.appendingPathComponent("cline-home")
         let storage = home.appendingPathComponent("Library/Application Support")

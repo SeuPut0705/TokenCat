@@ -203,6 +203,45 @@ public static class ClineOmpChecks
         }
         catch (Exception error) { check(false, $"omp account pins fixture error: {error.Message}"); }
 
+        try
+        {
+            var home = Path.Combine(root, "omp-credential-ids");
+            var project = Path.Combine(home, ".omp", "agent", "sessions", "project");
+            const string stem = "2026-10-04T06-00-00-000Z_id-parent";
+            var parent = Path.Combine(project, stem + ".jsonl");
+            var advisor = Path.Combine(project, stem, "__advisor.jsonl");
+            Directory.CreateDirectory(Path.GetDirectoryName(advisor)!);
+            var login = new LimitAccount("cli-login", "login@example.com");
+            var used = new LimitAccount("used-account", "used@example.com");
+            check(TrackerChecks.WriteLimitCredentialFixture(Path.Combine(home, ".omp", "agent", "agent.db"),
+                ("openai-codex", new JsonObject { ["accountId"] = login.Id, ["email"] = login.Email }, true),
+                ("openai-codex", new JsonObject { ["accountId"] = used.Id, ["email"] = used.Email }, false)),
+                "omp credential ids fixture: metadata credentials database could not be created");
+            Append(parent, new JsonObject { ["type"] = "session", ["id"] = "id-parent", ["timestamp"] = Iso(0) },
+                new JsonObject { ["type"] = "message", ["timestamp"] = Iso(1), ["message"] = new JsonObject { ["role"] = "user", ["content"] = "hi" } });
+            File.SetLastWriteTimeUtc(parent, Start.UtcDateTime);
+            Append(advisor, new JsonObject { ["type"] = "session", ["id"] = "id-advisor", ["parentSession"] = parent, ["timestamp"] = Iso(1) },
+                new JsonObject
+                {
+                    ["type"] = "message", ["timestamp"] = Iso(2),
+                    ["message"] = new JsonObject { ["role"] = "assistant", ["model"] = "gpt-fixture", ["provider"] = "openai-codex", ["credentialId"] = 2,
+                        ["timestamp"] = Ms(2), ["usage"] = new JsonObject { ["output"] = 4 }, ["stopReason"] = "stop" },
+                });
+            now = Start.AddSeconds(4);
+            var tracker = new TokenTracker(home, () => now, initialTailBytes: 4_096, discoveryIntervalSeconds: 0, environment: _ => null);
+            var row = tracker.Sample().FirstOrDefault(reading => reading.SessionID == "id-advisor");
+            var read = new TokenRateLimit(40, 300, now.AddSeconds(3_600), now) { Account = used };
+            var shown = row is null ? [] : SessionPresentation.UsageLimits([row], [read], new Dictionary<string, ClaudeUsageLimits>(),
+                new Dictionary<TokenSource, LimitAccount> { [TokenSource.Codex] = login },
+                new Dictionary<TokenSource, IReadOnlyList<LimitAccount>>(), now);
+            check(row?.LimitAccount == used && shown.FirstOrDefault()?.Account == used,
+                "an omp reply's credential id attributes its session to that account, even without a credential pin");
+            var encoded = Encoding.UTF8.GetString(Json.Serialize(new[] { row }));
+            check(!encoded.Contains("credentialId", StringComparison.OrdinalIgnoreCase) && !encoded.Contains("used@example.com", StringComparison.Ordinal),
+                "omp credential ids privacy: a credential id or identity leaked into an encoded reading");
+        }
+        catch (Exception error) { check(false, $"omp credential ids fixture error: {error.Message}"); }
+
         // Use a private store so the check never sweeps another tracker's process-wide cache.
         var pinStore = new OmpPinStore();
         var racedPin = Path.Combine(root, "raced-pins.jsonl");
