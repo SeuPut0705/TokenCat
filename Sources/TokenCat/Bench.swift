@@ -63,6 +63,7 @@ enum SampleBench {
         let sampler = SystemSampler()
         let stages = ["tracker", "accounts", "speed", "agentUsage", "presentation", "system"]
         var wall: [String: [Double]] = [:]
+        var cold: [String: Double] = [:]
         var totals: [(wall: Double, cpu: Double, counters: Counters)] = []
         var last: (tokens: [TokenReading], sessions: SessionListModel, limits: [UsageLimitSummary])?
         print("bench: home \(home.path), \(samples) samples every \(interval) s, counters \(Counters.read == nil ? "off" : "on")")
@@ -74,6 +75,7 @@ enum SampleBench {
             func lap(_ name: String) {
                 let now = DispatchTime.now().uptimeNanoseconds
                 if index > 0 { wall[name, default: []].append(Double(now - stageStart) / 1e6) }
+                else { cold[name] = Double(now - stageStart) / 1e6 }
                 stageStart = now
             }
             let result: (tokens: [TokenReading], sessions: SessionListModel, limits: [UsageLimitSummary]) = autoreleasepool {
@@ -113,6 +115,7 @@ enum SampleBench {
             if index == 0 {
                 print(String(format: "cold: %.1f ms wall, %.1f ms cpu, %d readings, %.1f MB footprint", elapsed, cpu, result.tokens.count, footprintMB())
                       + (Counters.read == nil ? "" : ", \(describe(counters))"))
+                print("cold stages (ms): " + stages.map { String(format: "%@ %.1f", $0, cold[$0] ?? 0) }.joined(separator: ", "))
             } else {
                 totals.append((elapsed, cpu, counters))
                 if index % 60 == 0 { print(String(format: "sample %d: %.1f MB footprint, %.1f MB peak", index, footprintMB(), peakRSSMB())) }
