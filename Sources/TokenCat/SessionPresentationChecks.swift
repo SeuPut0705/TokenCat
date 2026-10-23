@@ -175,6 +175,10 @@ func runSessionPresentationChecks() -> [String] {
           && SessionPresentation.roleLabel(workflowChild.agentRole) == "workflow-subagent"
           && SessionPresentation.roleLabel(reviewChild.agentRole) == "자동 검토" && SessionPresentation.roleLabel("  ") == nil,
           "shared roles name the row 하위 에이전트 with the ID beside it; help keeps the role")
+    // omp names its own internal agents with a leading "__" (`__advisor.jsonl`); the row shows the name without it.
+    let advisor = reading("omp:R1/__advisor", .omp, session: "R1", agent: "R1/__advisor", subagent: true, state: .working, last: -1)
+    check(SessionPresentation.childTitle(advisor) == ("advisor", nil) && SessionPresentation.childName(advisor) == "advisor"
+          && SessionPresentation.agentLabel(advisor) == "advisor", "an internal agent's leading underscores are not part of its shown name")
     let counts = SessionCounts(groups)
     check(counts.runningGroups == 2 && counts.tool == 1 && counts.working == 1 && counts.runningSubagents == 2
           && counts.phase == .tool && counts.readings == 7 && counts.toolMembers == 1 && counts.toolCategories[.other] == 1,

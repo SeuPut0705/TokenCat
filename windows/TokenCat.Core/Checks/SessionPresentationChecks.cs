@@ -136,6 +136,10 @@ public static class SessionPresentationChecks
               && SpokenLabel(workflowChild, S.Working) == "하위 에이전트 a1111111, 진행"
               && RoleLabel(workflowChild.AgentRole) == "workflow-subagent" && RoleLabel(reviewChild.AgentRole) == "자동 검토" && RoleLabel("  ") == null,
               "shared roles read as 하위 에이전트 with the ID (never \"하위 에이전트 하위 에이전트\" when spoken); help keeps the role");
+        // omp names its own internal agents with a leading "__" (`__advisor.jsonl`); the row shows the name without it.
+        var advisor = reading("omp:R1/__advisor", TokenSource.Omp, session: "R1", agent: "R1/__advisor", subagent: true, state: A.Working, last: -1);
+        check(ChildTitle(advisor) == ("advisor", null) && ChildName(advisor) == "advisor" && AgentLabel(advisor) == "advisor",
+              "an internal agent's leading underscores are not part of its shown name");
         var counts = new SessionCounts(groups);
         check(counts.RunningGroups == 2 && counts.Tool == 1 && counts.Working == 1 && counts.RunningSubagents == 2 && counts.Phase == A.Tool
               && counts.Readings == 7 && counts.ToolMembers == 1 && counts.ToolCategories.GetValueOrDefault(ToolCategory.Other) == 1,
