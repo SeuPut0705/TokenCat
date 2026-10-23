@@ -601,8 +601,16 @@ public static class SessionPresentation
 
     public static string AgentLabel(TokenReading reading)
     {
-        if (reading.AgentID is { Length: > 0 } agent) return agent.Contains('/') ? LastComponent(agent) : Prefix(agent, 8);
+        if (reading.AgentID is { Length: > 0 } agent) return agent.Contains('/') ? AgentPathName(agent) : Prefix(agent, 8);
         return Suffix(reading.SessionID ?? DeletingExtension(LastComponent(reading.Id)), 8);
+    }
+
+    /// A path-like agent ID's own name. omp prefixes its internal agents with "__" (`__advisor`); that is not their name.
+    public static string AgentPathName(string agent)
+    {
+        var name = LastComponent(agent);
+        var trimmed = name.TrimStart('_');
+        return trimmed.Length == 0 ? name : trimmed;
     }
 
     /// The client's role name for help and VoiceOver; only known internal names are translated.
@@ -622,7 +630,7 @@ public static class SessionPresentation
         var role = DistinguishingRole(reading);
         if (reading.AgentID is { } agent && agent.Contains('/'))
         {
-            var name = LastComponent(agent);
+            var name = AgentPathName(agent);
             return (name, role == name ? null : role);
         }
         return (role ?? Loc("하위 에이전트", "Subagent"), AgentLabel(reading));
@@ -631,7 +639,7 @@ public static class SessionPresentation
     /// The subagent's own name inside another sentence ("subagent Explore", "subagent a2222222"): its path name, role or
     /// ID, never the generic "Subagent" title.
     public static string ChildName(TokenReading reading) =>
-        reading.AgentID is { } agent && agent.Contains('/') ? LastComponent(agent) : DistinguishingRole(reading) ?? AgentLabel(reading);
+        reading.AgentID is { } agent && agent.Contains('/') ? AgentPathName(agent) : DistinguishingRole(reading) ?? AgentLabel(reading);
 
     static string? DistinguishingRole(TokenReading reading) =>
         RoleLabel(reading.AgentRole) is { } label && !OpaqueRoles.Contains(label) ? label : null;

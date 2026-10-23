@@ -496,9 +496,16 @@ enum SessionPresentation {
 
     static func agentLabel(_ reading: TokenReading) -> String {
         if let agent = reading.agentID, !agent.isEmpty {
-            return agent.contains("/") ? URL(fileURLWithPath: agent).lastPathComponent : String(agent.prefix(8))
+            return agent.contains("/") ? agentPathName(agent) : String(agent.prefix(8))
         }
         return String((reading.sessionID ?? URL(fileURLWithPath: reading.id).deletingPathExtension().lastPathComponent).suffix(8))
+    }
+
+    /// A path-like agent ID's own name. omp prefixes its internal agents with "__" (`__advisor`); that is not their name.
+    static func agentPathName(_ agent: String) -> String {
+        let name = URL(fileURLWithPath: agent).lastPathComponent
+        let trimmed = name.drop { $0 == "_" }
+        return trimmed.isEmpty ? name : String(trimmed)
     }
 
     /// The client's role name for help and VoiceOver; only known internal names are translated.
@@ -515,7 +522,7 @@ enum SessionPresentation {
     static func childTitle(_ reading: TokenReading) -> (title: String, detail: String?) {
         let role = roleLabel(reading.agentRole).flatMap { opaqueRoles.contains($0) ? nil : $0 }
         if let agent = reading.agentID, agent.contains("/") {
-            let name = URL(fileURLWithPath: agent).lastPathComponent
+            let name = agentPathName(agent)
             return (name, role == name ? nil : role)
         }
         if let role { return (role, agentLabel(reading)) }
