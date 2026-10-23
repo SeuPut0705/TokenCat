@@ -961,8 +961,8 @@ sealed class SettingsView : Grid
         }
         var preferences = actions.Preferences;
         var live = Toggle(Loc("실시간 한도 확인", "Live usage limits"),
-            Loc("Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic 사용량을 사용 중에는 1분, 평소에는 10분마다 확인합니다. 토큰은 저장하지 않습니다.",
-                "Checks usage with OpenAI and Anthropic using Codex and Claude Code's saved sign-in, every minute while in use and every 10 minutes otherwise. Tokens are never stored."),
+            Loc("OpenAI는 Codex CLI, Anthropic은 Claude Code·omp·Pi에 저장된 로그인으로 사용 중에는 1분, 평소에는 10분마다 사용량을 확인합니다. 토큰은 저장하지 않습니다.",
+                "Checks usage with OpenAI through the Codex CLI's sign-in and with Anthropic through sign-ins saved by Claude Code, omp or Pi, every minute while in use and every 10 minutes otherwise. Tokens are never stored."),
             preferences.LiveUsageLimits, on => preferences.LiveUsageLimits = on);
         return Page(Section(null, rows, footer), Section(null, [Connection(presented.OptedOut), live]));
     }

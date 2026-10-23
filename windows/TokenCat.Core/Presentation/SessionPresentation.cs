@@ -344,7 +344,8 @@ public sealed record UsageLimitSummary(double UsedPercent, int? WindowMinutes, D
         var basis = (Live, Source) switch
         {
             (true, TokenSource.Codex) => Loc("Codex에 저장된 로그인으로 OpenAI에서 확인한 계정 사용량입니다.", "Account usage checked with OpenAI using Codex's saved sign-in."),
-            (true, TokenSource.Claude) => Loc("Claude Code에 저장된 로그인으로 Anthropic에서 확인한 계정 사용량입니다.", "Account usage checked with Anthropic using Claude Code's saved sign-in."),
+            (true, TokenSource.Claude) => Loc("이 계정에 해당하는 Claude Code, omp 또는 Pi의 로그인으로 Anthropic에서 확인한 계정 사용량입니다.",
+                "Account usage checked with Anthropic using this account's Claude Code, omp or Pi sign-in."),
             (false, _) when RecordedBy is { } by => Loc($"{by}가 자체 사용량 확인으로 기록한 마지막 {Name} 계정 사용량입니다. 실시간 잔여량이 아니며 {by}를 사용할 때만 갱신됩니다.",
                 $"The last {Name} account usage {by} recorded from its own usage check. It isn't a live balance and updates only while you use {by}."),
             (false, TokenSource.Codex) => Loc("Codex 로그에 마지막으로 기록된 계정 사용량입니다. 실시간 잔여량이 아니며 Codex를 사용할 때만 갱신됩니다.",

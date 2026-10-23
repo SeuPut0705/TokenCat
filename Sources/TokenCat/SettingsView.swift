@@ -817,8 +817,8 @@ private struct TelemetryPane: View {
                 connection
                 Toggle(isOn: $preferences.liveUsageLimits) {
                     SettingsLabel(title: loc("실시간 한도 확인", "Live usage limits"),
-                                  subtitle: loc("Codex·Claude Code에 저장된 로그인으로 OpenAI·Anthropic 사용량을 사용 중에는 1분, 평소에는 10분마다 확인합니다. 토큰은 저장하지 않습니다.",
-                                                "Checks usage with OpenAI and Anthropic using Codex and Claude Code's saved sign-in, every minute while in use and every 10 minutes otherwise. Tokens are never stored."))
+                                  subtitle: loc("OpenAI는 Codex CLI, Anthropic은 Claude Code·omp·Pi에 저장된 로그인으로 사용 중에는 1분, 평소에는 10분마다 사용량을 확인합니다. 토큰은 저장하지 않습니다.",
+                                                "Checks usage with OpenAI through the Codex CLI's sign-in and with Anthropic through sign-ins saved by Claude Code, omp or Pi, every minute while in use and every 10 minutes otherwise. Tokens are never stored."))
                 }
                 .help(loc("세션이 실행 중이거나 TokenCat 창이 열려 있으면 1분마다, 그 밖에는 10분마다 확인하고, 화면이나 Mac이 잠자는 동안은 멈춥니다. 만료된 Claude 토큰은 보내지 않고 갱신하지도 않습니다.",
                           "Checks every minute while a session runs or a TokenCat window is open, otherwise every 10 minutes, and pauses while the screens or the Mac sleep. An expired Claude token is never sent or refreshed."))
