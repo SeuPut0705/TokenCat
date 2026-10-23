@@ -1653,34 +1653,42 @@ struct LiveSessionRow: View {
         }
     }
 
+    /// Input and retry times are the row's news; other trailing times stay secondary.
+    private var trailingStyle: AnyShapeStyle {
+        item.state == .input || item.state == .retrying ? AnyShapeStyle(HierarchicalShapeStyle.primary) : AnyShapeStyle(TCColor.textSecondary(contrast: high))
+    }
+
+    /// Glyph on the glyph column and the title on the text column, as on every other row, so titles line up.
+    private var titleLine: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 0) {
+            StateGlyphView(kind: StateGlyph.Kind(item.state) ?? .working, side: 8, contrast: high).frame(width: 10)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
+                .padding(.leading, DashboardLayout.glyphX)
+            Text(SessionPresentation.listTitle(reading)).font(TCFont.title).lineLimit(1).truncationMode(.tail)
+                .padding(.leading, DashboardLayout.textX - DashboardLayout.glyphX - 10)
+                .layoutPriority(2)
+            if context.showsID(reading) {
+                Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize().padding(.leading, 6)
+            }
+            Spacer(minLength: 8)
+            primaryNumber.frame(minWidth: 86, alignment: .trailing)
+        }
+        .frame(height: 18)
+    }
+
     var body: some View {
         let speed = context.speed(item)
         let contextSlot = SessionPresentation.context(reading, now: now)
         let record = SessionPresentation.lastRecord(reading)
         VStack(alignment: .leading, spacing: 2) {
-            // Glyph on the glyph column and the title on the text column, as on every other row, so titles line up.
-            HStack(alignment: .firstTextBaseline, spacing: 0) {
-                StateGlyphView(kind: StateGlyph.Kind(item.state) ?? .working, side: 8, contrast: high).frame(width: 10)
-                    .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
-                    .padding(.leading, DashboardLayout.glyphX)
-                Text(SessionPresentation.listTitle(reading)).font(TCFont.title).lineLimit(1).truncationMode(.tail)
-                    .padding(.leading, DashboardLayout.textX - DashboardLayout.glyphX - 10)
-                    .layoutPriority(2)
-                if context.showsID(reading) {
-                    Text(SessionPresentation.shortID(reading)).font(TCFont.meta).toneSecondary().lineLimit(1).fixedSize().padding(.leading, 6)
-                }
-                Spacer(minLength: 8)
-                primaryNumber.frame(minWidth: 86, alignment: .trailing)
-            }
-            .frame(height: 18)
+            titleLine
             // The state's words lead line 2 in primary (the glyph carries the colour), then client and model.
             HStack(alignment: .firstTextBaseline, spacing: 0) {
                 Text(SessionPresentation.chipText(item.state, reading)).font(TCFont.metaMedium).lineLimit(1).fixedSize()
                 clientMetadata
                 Spacer(minLength: 8)
                 Text(trailing).font(TCFont.metaMono).lineLimit(1).fixedSize()
-                    .foregroundStyle(item.state == .input || item.state == .retrying ? AnyShapeStyle(HierarchicalShapeStyle.primary)
-                                     : AnyShapeStyle(TCColor.textSecondary(contrast: high)))
+                    .foregroundStyle(trailingStyle)
             }
             .frame(height: 14)
             .padding(.leading, DashboardLayout.textX)
@@ -1807,6 +1815,13 @@ struct IdleSessionRow: View {
         }
     }
 
+    /// Typed apart from `body`: inline, this optional array made the body slow to type-check.
+    private var spokenValue: String {
+        let parts: [String?] = [loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now, spoken: true), followsGroup ? trailing : nil,
+                                RowText.children(childCount), SessionPresentation.lastTurnSummary(reading), SessionPresentation.speed(reading, now: now).spoken]
+        return parts.compactMap { $0 }.joined(separator: ", ")
+    }
+
     var body: some View {
         let state = followsGroup ? groupState : item.state
         HStack(alignment: .center, spacing: 0) {
@@ -1841,8 +1856,7 @@ struct IdleSessionRow: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityHint(context.detailID == item.id ? loc("상세를 닫습니다", "Closes details") : loc("상세를 엽니다", "Opens details"))
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: state))
-        .accessibilityValue([loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now, spoken: true), followsGroup ? trailing : nil, RowText.children(childCount), SessionPresentation.lastTurnSummary(reading),
-                             SessionPresentation.speed(reading, now: now).spoken].compactMap { $0 }.joined(separator: ", "))
+        .accessibilityValue(spokenValue)
         .accessibilityAction { context.tap(item.id) }
         .rowActions(reading)
     }
@@ -1877,6 +1891,16 @@ struct ChildSessionRow: View {
         case .waiting: return item.state.title
         default: return nil
         }
+    }
+
+    /// Typed apart from `body`: inline, this optional array made the body slow to type-check.
+    private var spokenValue: String {
+        let live = item.state.isLive
+        let parts: [String?] = [SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { loc("턴 경과 \($0)", "Turn elapsed \($0)") },
+                                live ? RowText.output(reading) : loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now, spoken: true),
+                                SessionPresentation.context(reading, now: now)?.spoken, SessionPresentation.speed(reading, now: now).spoken,
+                                SessionPresentation.roleLabel(reading.agentRole).map { loc("역할 \($0)", "Role \($0)") }, "ID \(SessionPresentation.agentLabel(reading))"]
+        return parts.compactMap { $0 }.joined(separator: ", ")
     }
 
     var body: some View {
@@ -1915,11 +1939,7 @@ struct ChildSessionRow: View {
         .accessibilityAddTraits(.isButton)
         .accessibilityHint(context.detailID == item.id ? loc("상세를 닫습니다", "Closes details") : loc("상세를 엽니다", "Opens details"))
         .accessibilityLabel(SessionPresentation.spokenLabel(reading, state: item.state))
-        .accessibilityValue([SessionPresentation.spokenDuration(reading.currentTurnStartedAt, now: now).map { loc("턴 경과 \($0)", "Turn elapsed \($0)") },
-                             live ? RowText.output(reading) : loc("마지막 활동 ", "Last activity ") + Format.age(reading.lastActivity, now: now, spoken: true),
-                             SessionPresentation.context(reading, now: now)?.spoken, SessionPresentation.speed(reading, now: now).spoken,
-                             SessionPresentation.roleLabel(reading.agentRole).map { loc("역할 \($0)", "Role \($0)") }, "ID \(SessionPresentation.agentLabel(reading))"]
-                                .compactMap { $0 }.joined(separator: ", "))
+        .accessibilityValue(spokenValue)
         .accessibilityAction { context.tap(item.id) }
         .rowActions(reading)
     }
