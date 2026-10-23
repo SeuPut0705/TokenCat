@@ -966,9 +966,11 @@ sealed class MeasurementRow : RowShell
     {
         var reading = item.Reading;
         var now = context.Now;
-        var name = reading.Project ?? Loc("모델 실측", "Model measurement");
+        // The block's caption already says "Request measurement" or "Model measurement"; the row names client and short ID.
+        var name = SessionPresentation.ListTitle(reading);
         var modelName = reading.Model ?? Loc("모델 미확인", "Unknown model");
-        Bind(item.Id, reading, context, 28, Loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu"), $"{name}, {reading.ClientTitle} {modelName}");
+        Bind(item.Id, reading, context, 28, Loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu"),
+            $"{reading.Project ?? Loc("모델 실측", "Model measurement")}, {name} {modelName}");
         project.Text = name;
         model.Text = modelName;
         var speed = SessionPresentation.Speed(reading, now, false);

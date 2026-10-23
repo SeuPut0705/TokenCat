@@ -1965,7 +1965,8 @@ struct MeasurementRow: View {
         HStack(alignment: .firstTextBaseline, spacing: 0) {
             Image(systemName: "speedometer").font(TCFont.meta).toneSecondary().frame(width: 10)
                 .padding(.leading, DashboardLayout.glyphX)
-            Text(reading.project ?? loc("모델 실측", "Model measurement")).font(TCFont.body).lineLimit(1).fixedSize().padding(.leading, 6)
+            // The block's caption already says 요청 실측 or 모델 실측; the row names client and short ID.
+            Text(SessionPresentation.listTitle(reading)).font(TCFont.body).lineLimit(1).fixedSize().padding(.leading, 6)
             Text(reading.model ?? loc("모델 미확인", "Unknown model")).font(TCFont.meta).toneSecondary().lineLimit(1).truncationMode(.middle).padding(.leading, 6)
             Spacer(minLength: 8)
             SpeedLabel(slot: speed)
@@ -1978,7 +1979,7 @@ struct MeasurementRow: View {
         .help(loc("클릭: 상세 · 우클릭: 메뉴", "Click: details · Right-click: menu"))
         .accessibilityElement(children: .ignore)
         .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityLabel("\(reading.project ?? loc("모델 실측", "Model measurement")), \(reading.clientTitle) \(reading.model ?? loc("모델 미확인", "Unknown model"))")
+        .accessibilityLabel("\(reading.project ?? loc("모델 실측", "Model measurement")), \(SessionPresentation.listTitle(reading)) \(reading.model ?? loc("모델 미확인", "Unknown model"))")
         .accessibilityValue(speed.spoken + loc(", 측정 ", ", measured ") + Format.age(measuredAt, now: now, spoken: true))
         .rowActions(reading)
     }
