@@ -124,11 +124,13 @@ final class OpenCodeLog: TokenLogReader {
                 else { return }
             }
         }
-        let ordered = listed.values.map { row -> Listed in
+        // Typed and split from the sort: as one chain this took about 200 ms to type-check.
+        var ordered: [Listed] = listed.values.map { (row: Listed) -> Listed in
             var row = row
             if let changed = moved[row.id], changed > row.updated { row.updated = changed }
             return row
-        }.sorted { $0.updated != $1.updated ? $0.updated > $1.updated : $0.id < $1.id }
+        }
+        ordered.sort { (a: Listed, b: Listed) -> Bool in a.updated != b.updated ? a.updated > b.updated : a.id < b.id }
         var kept: [String: Session] = [:]
         var complete = true
         for (offset, row) in ordered.enumerated() {
