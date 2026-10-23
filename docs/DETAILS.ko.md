@@ -269,7 +269,7 @@ dotnet run --project windows/TokenCat.Checks -c Release -- --bench-sample --synt
 
 `--status-readback <path>`는 macOS 앱을 정상 실행하고 5초 뒤 실제 메뉴 막대 항목의 표시 여부·창 위치·버튼 및 내용 크기·준비 상태·캐릭터·지표를 JSON으로 저장합니다. 기본 버튼 캡처가 성공하면 JSON 옆에 PNG도 저장합니다. 정상 설정·시작 동작을 사용하므로 실측 설정 연결과 켜진 실시간 한도 확인도 적용되며 앱은 계속 실행됩니다.
 
-`--bench-sample [N] [--home DIR] [--interval s] [--clock unix] [--dump file]`는 macOS 토큰 수집·표시 작업을 읽기 전용으로 실행합니다(기본: 예열 후 30회, 실제 홈, 1초 간격). 첫 수집·예열 후 시간과 CPU·메모리를 보고합니다. `--clock`은 Unix 초를 고정하고 `--dump`는 비교용 최종 기록·표시·한도를 저장하므로 비공개 세션 메타데이터가 들어갈 수 있습니다. 할당·파일시스템 카운터는 주입한 계측 라이브러리가 있어야 하며 없으면 꺼집니다. Windows 콘솔 명령은 `dotnet run --project windows/TokenCat.Checks -c Release -- --bench-sample [home] [--synthetic] [--iterations N]`이며 `--synthetic`은 임시 작업 데이터를 만듭니다. 두 벤치마크 모두 실시간 한도 요청은 하지 않습니다.
+`--bench-sample [N] [--home DIR] [--interval s] [--clock unix] [--dump file]`는 macOS 토큰 수집·표시 작업을 읽기 전용으로 실행합니다(기본: 예열 후 30회, 실제 홈, 1초 간격). 첫 수집·예열 후 시간을 단계별로 나눠 CPU·메모리와 함께 보고합니다. `--clock`은 Unix 초를 고정하고 `--dump`는 비교용 최종 기록·표시·한도를 저장하므로 비공개 세션 메타데이터가 들어갈 수 있습니다. 할당·파일시스템 카운터는 주입한 계측 라이브러리가 있어야 하며 없으면 꺼집니다. Windows 콘솔 명령은 `dotnet run --project windows/TokenCat.Checks -c Release -- --bench-sample [home] [--synthetic] [--iterations N]`이며 `--synthetic`은 임시 작업 데이터를 만듭니다. 두 벤치마크 모두 실시간 한도 요청은 하지 않습니다.
 
 실제 `--snapshot-menubar` 렌더에 `--weekly-limit`을 붙이면 저장된 설정을 바꾸지 않고 주간 한도를 포함합니다. `--fixtures` 메뉴 막대 표에는 주간 잔여율 100%·22%·15%·5%와 기록 없음 행이 항상 들어갑니다.
 
