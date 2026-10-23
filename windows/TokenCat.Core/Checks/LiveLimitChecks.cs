@@ -161,9 +161,12 @@ public static class LiveLimitChecks
         var started = Stopwatch.StartNew();
         var answered = Run(ordered, timeout: windows ? 7 : 5);
         var elapsed = started.Elapsed;
+        var ended = Ended(ordered);
+        // Each condition is in the message: a decoded window alone can't tell a slow read from a server left running.
         check(!answered.Failed && answered.Codex is [{ UsedPercent: 31, WindowMinutes: 10_080, Live: true } window]
-              && window.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_791_580_427) && elapsed < TimeSpan.FromSeconds(windows ? 6 : 4) && Ended(ordered),
-              $"the Codex app-server read skips notifications, joins split lines and ends the server ({(answered.Codex is { } got ? string.Join(", ", got) : "nil")})");
+              && window.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_791_580_427) && elapsed < TimeSpan.FromSeconds(windows ? 6 : 4) && ended,
+              $"the Codex app-server read skips notifications, joins split lines and ends the server ({(answered.Codex is { } got ? string.Join(", ", got) : "nil")}; "
+              + $"failed {answered.Failed}, elapsed {elapsed.TotalMilliseconds:0} ms, ended {ended})");
         var now = DateTimeOffset.FromUnixTimeSeconds(1_790_000_000);
         check(LiveLimits.DecodeCodex(Json.Parse("""{"limitId":"other","primary":{"usedPercent":10}}"""u8), now) is null
               && LiveLimits.DecodeCodex(Json.Parse("""{"primary":null,"secondary":{"usedPercent":12,"windowDurationMins":300}}"""u8), now)

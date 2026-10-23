@@ -46,10 +46,14 @@ func runLiveLimitChecks() -> [String] {
         """#)
     var started = Date()
     let read = LiveLimits.readCodex(executable: answering, timeout: 5)
+    let elapsed = Date().timeIntervalSince(started)
+    let serverEnded = ended(answering)
+    // Each condition is in the message: a decoded window alone can't tell a slow read from a server left running.
     check(read == [TokenRateLimit(usedPercent: 31, windowMinutes: 10_080, resetsAt: Date(timeIntervalSince1970: 1_791_580_427),
                                   recordedAt: read?.first?.recordedAt ?? .distantPast, live: true)]
-          && Date().timeIntervalSince(started) < 4 && ended(answering),
-          "the Codex app-server read skips notifications, joins split lines and ends the server (\(String(describing: read)))")
+          && elapsed < 4 && serverEnded,
+          "the Codex app-server read skips notifications, joins split lines and ends the server (\(String(describing: read)); "
+              + "elapsed \(Int(elapsed * 1_000)) ms, ended \(serverEnded))")
     let silent = server("silent-server", "exec sleep 30\n")
     started = Date()
     check(LiveLimits.readCodex(executable: silent, timeout: 0.5) == nil && Date().timeIntervalSince(started) < 3 && ended(silent),
