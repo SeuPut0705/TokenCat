@@ -2,6 +2,18 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.25.0
+
+**macOS and Windows**
+
+- A session's inline details name the account its usage limits count against (`Account  dev@example.com · Team`), as the limits card names it. · 세션 인라인 상세에 그 세션의 사용 한도가 집계되는 계정을 사용 한도 카드와 같은 이름으로 보입니다(`계정  dev@example.com · Team`).
+- Measurement rows under the `Request measurement` caption are named by client and short ID, such as `Claude Code · 4d044f6d`, instead of repeating the caption on every row. · `요청 실측` 캡션 아래의 실측 행이 캡션을 행마다 되풀이하지 않고 `Claude Code · 4d044f6d`처럼 클라이언트와 짧은 ID로 이름을 보입니다.
+- omp's internal agents are shown without their leading underscores (`advisor`, not `__advisor`). · omp 내부 에이전트를 앞 밑줄 없이 보입니다(`__advisor` 대신 `advisor`).
+
+**macOS**
+
+- The first read of the logs after launch takes about a third less CPU (1.35 s → 0.91 s on a home with 134 sessions). · 실행 직후 첫 기록 읽기의 CPU 시간이 약 3분의 1 줄었습니다(세션 134개 기준 1.35초 → 0.91초).
+
 ## 0.24.3
 
 **macOS and Windows**
