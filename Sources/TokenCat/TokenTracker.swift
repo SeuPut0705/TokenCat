@@ -458,7 +458,8 @@ private final class TokenFileCursor: TokenLogReader {
     /// A raw byte loop: `Data.lastIndex(of:)` takes the generic collection path per byte, which was over a third of the
     /// first sample's CPU on a home with many Codex logs (`--bench-sample`).
     private static func lastNewline(in chunk: Data, before end: Data.Index) -> Data.Index? {
-        chunk.withUnsafeBytes { bytes -> Data.Index? in
+        // The parameter type picks the raw-buffer overload; inferred, the CI compiler finds the subscript ambiguous.
+        chunk.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) -> Data.Index? in
             var index = end - chunk.startIndex
             while index > 0 {
                 index -= 1
