@@ -2,6 +2,16 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
+## 0.25.2
+
+**macOS and Windows**
+
+- The `Live usage limits` setting now says what it does: OpenAI is asked through the Codex CLI's sign-in, and Anthropic through sign-ins saved by Claude Code, omp or Pi. On Windows, a live Claude limit's help names those sign-ins too. · `실시간 한도 확인` 설명이 실제 동작대로 OpenAI는 Codex CLI, Anthropic은 Claude Code·omp·Pi에 저장된 로그인으로 묻는다고 알립니다. Windows에서는 실시간 Claude 한도의 도움말도 그 로그인들을 말합니다.
+
+**macOS**
+
+- After a relaunch, a saved Claude limit from an earlier live check is shown as a record with its age, not as `Live` with live-check help. · 재시작 뒤 이전 실시간 확인으로 저장된 Claude 한도를 `실시간`과 실시간 확인 도움말 대신, 기록 시점이 붙은 기록으로 보입니다.
+
 ## 0.25.1
 
 **macOS and Windows**
