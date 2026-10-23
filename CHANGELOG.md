@@ -2,7 +2,7 @@
 
 The release workflow puts the `## <version>` entry into that version's release notes. · 릴리스 워크플로가 `## <버전>` 항목을 그 버전의 릴리스 노트에 넣습니다.
 
-## 0.25.0
+## 0.25.1
 
 **macOS and Windows**
 
