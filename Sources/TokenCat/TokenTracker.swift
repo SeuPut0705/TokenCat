@@ -431,7 +431,7 @@ private final class TokenFileCursor: TokenLogReader {
             guard !chunk.isEmpty else { return }
             var cursor = chunk.endIndex
             while cursor > chunk.startIndex {
-                let newline = chunk[..<cursor].lastIndex(of: 10)
+                let newline = Self.lastNewline(in: chunk, before: cursor)
                 let lineStart = newline.map { chunk.index(after: $0) } ?? chunk.startIndex
                 if !dropping {
                     if partial.count + chunk.distance(from: lineStart, to: cursor) <= maximumLineBytes {
@@ -453,6 +453,19 @@ private final class TokenFileCursor: TokenLogReader {
             end = start
         }
         if end == 0, !dropping, !partial.isEmpty { _ = visit(partial, 0) }
+    }
+
+    /// A raw byte loop: `Data.lastIndex(of:)` takes the generic collection path per byte, which was over a third of the
+    /// first sample's CPU on a home with many Codex logs (`--bench-sample`).
+    private static func lastNewline(in chunk: Data, before end: Data.Index) -> Data.Index? {
+        chunk.withUnsafeBytes { bytes -> Data.Index? in
+            var index = end - chunk.startIndex
+            while index > 0 {
+                index -= 1
+                if bytes[index] == 10 { return chunk.startIndex + index }
+            }
+            return nil
+        }
     }
 
     private func restoreCodexMetadata(handle: FileHandle, size: UInt64) {
