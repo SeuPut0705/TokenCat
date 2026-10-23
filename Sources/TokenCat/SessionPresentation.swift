@@ -1189,6 +1189,10 @@ enum SessionPresentation {
         var items = [DetailItem(label: loc("세션 ID", "Session ID"), value: reading.sessionID ?? unknown, copy: reading.sessionID)]
         if reading.isSubagent { items.append(DetailItem(label: loc("에이전트", "Agent"), value: reading.agentID ?? unknown, copy: reading.agentID)) }
         if let model = reading.model { items.append(DetailItem(label: loc("모델", "Model"), value: model + (effortLabel(reading).map { " · \($0)" } ?? ""))) }
+        // The account the limits card counts this session against, named as there (the weekly item's fallback).
+        if let account = reading.limitAccount {
+            items.append(DetailItem(label: loc("계정", "Account"), value: account.label + (account.organizationName.map { " · " + $0 } ?? "")))
+        }
         if state == .tool {
             items.append(DetailItem(label: loc("도구", "Tool"), value: toolTitle(reading.toolCategory) + (reading.toolName.map { " · \($0)" } ?? "")))
         }

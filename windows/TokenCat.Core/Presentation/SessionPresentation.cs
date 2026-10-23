@@ -1286,6 +1286,9 @@ public static class SessionPresentation
         List<DetailItem> items = [new(Loc("세션 ID", "Session ID"), reading.SessionID ?? unknown, reading.SessionID)];
         if (reading.IsSubagent) items.Add(new(Loc("에이전트", "Agent"), reading.AgentID ?? unknown, reading.AgentID));
         if (reading.Model is { } model) items.Add(new(Loc("모델", "Model"), model + (EffortLabel(reading) is { } effort ? $" · {effort}" : "")));
+        // The account the limits card counts this session against, named as there (`StatusSummary`'s weekly fallback).
+        if (reading.LimitAccount is { } account)
+            items.Add(new(Loc("계정", "Account"), account.Label + (account.OrganizationName is { } organization ? " · " + organization : "")));
         if (state == SessionDisplayState.Tool)
             items.Add(new(Loc("도구", "Tool"), ToolTitle(reading.ToolCategory) + (reading.ToolName is { } name ? $" · {name}" : "")));
         if (reading.LastOutputTokens is { } output)

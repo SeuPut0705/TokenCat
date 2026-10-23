@@ -103,7 +103,7 @@ Codex and Claude Code subagents are grouped under their parent by its exact sess
   </picture>
 </p>
 
-Click a row or press Return to expand its session ID, model, running tool and record times, with buttons to copy the resume command (`claude --resume …`, `codex resume …`) and show the project folder in Finder. The right-click menu also copies the session or agent ID and shows the log file in Finder. File contents are never opened. ↑↓ · Return · ⌘C (copy the ID) · ⌘⇧C (copy the resume command) let you do all of this from the keyboard.
+Click a row or press Return to expand its session ID, model, the account its usage limits count against, running tool and record times, with buttons to copy the resume command (`claude --resume …`, `codex resume …`) and show the project folder in Finder. The right-click menu also copies the session or agent ID and shows the log file in Finder. File contents are never opened. ↑↓ · Return · ⌘C (copy the ID) · ⌘⇧C (copy the resume command) let you do all of this from the keyboard.
 
 Session rows expose their detail actions to VoiceOver, and truncated detail values keep their full text in help. Client names stay intact when project and model names need shortening. The System area is also a keyboard-accessible button.
 
