@@ -359,7 +359,7 @@ Windows 10·11(x64)에서 실행됩니다. 설치 프로그램은 없습니다.
 - **알림 영역 아이콘**: 캐릭터와 상태를 보여 줍니다. 모서리의 노란 점은 입력 필요, 주황 점은 API 재시도입니다. 마우스를 올리면 짧은 요약이, 클릭하면 모든 숫자가 있는 상세 화면이, 우클릭하면 빠른 메뉴가 열립니다.
 - **크기는 디스플레이 배율을 따릅니다**: 100–175 %에서는 작업 중에 까딱이는 고양이 머리이고, 200 % 이상에서는 고른 캐릭터의 전신입니다.
 - **WSL은 추적하지 않습니다**: Windows에서 직접 실행한 클라이언트만 수집합니다(`%USERPROFILE%\.codex\sessions`, `%USERPROFILE%\.claude\projects`처럼 `%USERPROFILE%` 아래 폴더).
-- **Claude 한도**: 이미 있는 Claude Code `statusLine`은 감싸지 않으므로, 이때 Claude 한도는 실시간 확인(Claude Code 토큰을 `%USERPROFILE%\.claude\.credentials.json`에서 읽음) 말고는 Claude 데스크톱 앱을 쓰는 경우 그 사용량 기록과 omp·Pi의 사용량 기록(`%USERPROFILE%\.omp\agent\agent.db`, `%USERPROFILE%\.pi\agent\agent.db`)에서만 읽습니다.
+- **Claude 한도**: 이미 있는 Claude Code `statusLine`은 감싸지 않으므로, 이때 Claude 한도는 실시간 확인(계정마다 그 설정 디렉터리의 `.credentials.json`, 예컨대 `%USERPROFILE%\.claude\.credentials.json`의 Claude Code 토큰이나 일치하는 omp·Pi `agent.db` 토큰을 읽음) 말고는 Claude 데스크톱 앱을 쓰는 경우 그 사용량 기록과 omp·Pi의 사용량 기록(`%USERPROFILE%\.omp\agent\agent.db`, `%USERPROFILE%\.pi\agent\agent.db`)에서만 읽습니다.
 - **언어**: Windows 표시 언어를 따릅니다(한국어면 한국어, 그 밖에는 영어).
 - **기본 화면과 접근성**: 지원되는 Windows 11에서는 플라이아웃에 acrylic, 설정·분리한 상세 창에 Mica를 쓰며, 지원하지 않으면 단색으로 돌아가고 고대비에서는 시스템 색을 씁니다. 세션 상세·시스템 지표를 키보드와 UI Automation으로 다룰 수 있습니다. 위젯은 밝고 어두운 배경화면에서 또렷한 가장자리를 보입니다.
 - **조용한 첫 실행**: 시작 안내 카드에서 트레이 아이콘 찾는 방법을 설명하며 첫 실행 알림은 보내지 않습니다.
