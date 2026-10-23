@@ -245,6 +245,16 @@ static class AppChecks
         }
         check(name == untitled.ClientTitle + " · " + SessionPresentation.ShortID(untitled) && namedOnce(untitledLive) && namedOnce(untitledIdle),
             "untitled live and idle rows are named by client and short ID once, without their project or a second client name");
+        // A measurement whose session log is not tracked sits under its "Request measurement" caption, so it is named the
+        // same way: by client and short ID, never repeating the caption, so several of them stay told apart.
+        var measured = TokenSpeed.Apply([], [new TelemetryReading { Provider = TokenSource.Claude, At = fixture.State.Now, Model = "claude-fixture",
+            SessionID = "5ac22d56-2739-4183-821e-3ab74d044f6d", OutputTokens = 120, RequestDurationMs = 2_400 }]).Single();
+        var measurementRow = new MeasurementRow();
+        measurementRow.Update(new SessionRowItem(measured, SessionDisplayState.Measurement, SessionRowKind.Measurement), shared);
+        var measurementTexts = Tree(measurementRow).OfType<TextBlock>().Where(text => text.Visibility == Visibility.Visible).Select(Drawn).ToList();
+        check(measurementTexts.Contains(measured.ClientTitle + " · 4d044f6d") && measurementTexts.Contains(measured.Model!)
+              && !measurementTexts.Any(text => text.Contains(measured.Project!, StringComparison.Ordinal)),
+            "a measurement row is named by client and short ID under its caption, without repeating the caption");
         var called = false;
         var disclosure = new DisclosureRow(() => called = true);
         var disclosurePeer = UIElementAutomationPeer.CreatePeerForElement(disclosure);
