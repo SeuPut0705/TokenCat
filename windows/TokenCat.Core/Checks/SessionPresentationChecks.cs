@@ -774,6 +774,13 @@ public static class SessionPresentationChecks
               && DetailItems(claudeChild, S.Working).Select(item => item.Label).SequenceEqual(["세션 ID", "에이전트", "기록 시점"])
               && DetailItems(claudeChild, S.Working).Last().Value == "Claude Code는 메시지 완료 시 기록",
               "inline detail lines and height");
+        // The account a session's usage limits count against, as the limits card names it (label, then organization).
+        var attributed = detailed with { LimitAccount = new LimitAccount("acct-1234", "dev@example.com", "Team") };
+        var attributedDetails = DetailItems(attributed, S.Tool);
+        check(attributedDetails.Select(item => item.Label).SequenceEqual(["세션 ID", "모델", "계정", "도구", "마지막 완료 턴", "기록 시점"])
+              && attributedDetails[2].Value == "dev@example.com · Team" && attributedDetails[2].Copy == null
+              && DetailHeight(attributed, S.Tool) == 16 + 15 * 6 + 0.5,
+              "inline detail names the account the session's limits belong to, and grows by its line");
         // The detail's action line (#7): resume command, then File Explorer on the project folder, else the log file; 6 + 20 more.
         var detailActions = DetailActions(located, home);
         var logOnly = DetailActions(located with { ProjectPath = null }, home);

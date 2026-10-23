@@ -946,6 +946,14 @@ func runSessionPresentationChecks() -> [String] {
     let childDetails = SessionPresentation.detailItems(claudeChild, state: .working)
     check(childDetails.map(\.label) == ["세션 ID", "에이전트", "기록 시점"] && childDetails.last?.value == "Claude Code는 메시지 완료 시 기록",
           "inline detail lines for a subagent")
+    // The account a session's usage limits count against, as the limits card names it (label, then organization).
+    var attributed = detailed
+    attributed.limitAccount = LimitAccount(id: "acct-1234", email: "dev@example.com", organizationName: "Team")
+    let attributedDetails = SessionPresentation.detailItems(attributed, state: .tool)
+    check(attributedDetails.map(\.label) == ["세션 ID", "모델", "계정", "도구", "마지막 완료 턴", "기록 시점"]
+          && attributedDetails[2].value == "dev@example.com · Team" && attributedDetails[2].copy == nil
+          && SessionPresentation.detailHeight(attributed, state: .tool) == detailHeight + 15,
+          "inline detail names the account the session's limits belong to, and grows by its line")
 
     // System and header mappings.
     check(MemoryPressure(1) == .normal && MemoryPressure(2) == .warning && MemoryPressure(4) == .critical && MemoryPressure(nil) == .unknown
