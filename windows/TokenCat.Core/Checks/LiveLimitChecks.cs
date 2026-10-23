@@ -91,9 +91,12 @@ public static class LiveLimitChecks
             """{"jsonrpc":"2.0","id":2,"result":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":31,"windowDurationMins":10080,"resetsAt":1791580427},"secondary":{"usedPercent":12.5,"windowDurationMins":300,"resetsAt":1791500000},"credits":{"hasCredits":false},"planType":"pro","rateLimitReachedType":null}}}""");
         var before = DateTimeOffset.UtcNow;
         var read = Run(talkative);
+        var readTime = DateTimeOffset.UtcNow - before;
+        // Failed, the windows and the time are in the message: Windows CI fails this rarely and a bare FAIL can't say why.
         check(!read.Failed && read.Codex is [{ UsedPercent: 31, WindowMinutes: 10_080 } weekly, { UsedPercent: 12.5, WindowMinutes: 300 }]
               && weekly.ResetsAt == DateTimeOffset.FromUnixTimeSeconds(1_791_580_427) && weekly.RecordedAt >= before,
-              "codex app-server windows are not read past interleaved notifications and a server request with the same id");
+              "codex app-server windows are not read past interleaved notifications and a server request with the same id"
+              + $" (failed {read.Failed}, {(read.Codex is { } windowsRead ? string.Join(", ", windowsRead) : "nil")}, elapsed {readTime.TotalMilliseconds:0} ms)");
         var refused = FakeAppServer(folder, "refused", Read, """{"jsonrpc":"2.0","id":1,"result":{}}""", Read,
             """{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"not signed in"}}""");
         var other = FakeAppServer(folder, "other", Read, """{"jsonrpc":"2.0","id":1,"result":{}}""", Read,
@@ -111,9 +114,12 @@ public static class LiveLimitChecks
             File.SetUnixFileMode(silent, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
         var watch = Stopwatch.StartNew();
+        var silentRead = Run(silent, timeout: windows ? 3 : 1);
+        var silentTime = watch.Elapsed;
+        var silentEnded = Ended(silent);
         // Include PowerShell startup in the Windows deadline; the PID still proves the actual server was ended.
-        check(Run(silent, timeout: windows ? 3 : 1) is { Failed: true } && watch.Elapsed < TimeSpan.FromSeconds(windows ? 8 : 6) && Ended(silent),
-              "a silent Codex app-server is not ended at the timeout");
+        check(silentRead is { Failed: true } && silentTime < TimeSpan.FromSeconds(windows ? 8 : 6) && silentEnded,
+              $"a silent Codex app-server is not ended at the timeout (failed {silentRead.Failed}, elapsed {silentTime.TotalMilliseconds:0} ms, ended {silentEnded})");
         // LiveLimitsChecks.swift's ordered server: the order of requests is enforced (a wrong line exits with an error code),
         // notifications come before each response, and the initialize response arrives in two writes 0.1 s apart. The server
         // then idles; the reader must end it. Both platforms validate all three ordered stdin lines and split the answer.
