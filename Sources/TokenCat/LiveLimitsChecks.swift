@@ -322,6 +322,12 @@ func runLiveLimitChecks() -> [String] {
           && liveRead.merged(ClaudeUsageLimits(fiveHour: window(45, -5))).fiveHour == window(45, -5)
           && liveRead.merged(ClaudeUsageLimits(fiveHour: window(44, 70))).fiveHour == window(44, 70),
           "Claude: an equal record within 2 minutes keeps the live read; a different or later one replaces it")
+    // Saved windows come back after a relaunch: a live read must come back as a record, as on Windows.
+    let storedLive = (try? JSONEncoder().encode(liveRead)).map { String(decoding: $0, as: UTF8.self) } ?? ""
+    let reloaded = try? JSONDecoder().decode(ClaudeUsageLimits.self, from: Data(storedLive.utf8))
+    check(!storedLive.isEmpty && !storedLive.contains("live") && reloaded?.fiveHour?.live == nil
+          && reloaded?.fiveHour?.usedPercent == 44 && reloaded?.fiveHour?.receivedAt == at(-60),
+          "the live mark of a Claude window is saved, so a relaunch presents an old read as live")
     check(TelemetryStatusRow.claudeLimits(notes: [], bridged: true, received: at(-20), live: true, now: now) == (.received, "실시간 확인 1분 이내", nil)
           && TelemetryStatusRow.claudeLimits(notes: [], bridged: false, received: at(-720), desktop: true, now: now).text == "Claude 데스크톱 앱 기록 · 12분 전",
           "the Telemetry row does not tell a live read from the desktop record")

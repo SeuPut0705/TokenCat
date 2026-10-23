@@ -34,6 +34,8 @@ struct ClaudeLimitWindow: Codable, Equatable {
     var live: Bool? = nil
     /// "omp" or "Pi": that client's own usage check (`AgentUsageHistory`), never live.
     var recordedBy: String? = nil
+    /// `live` is left out: a relaunch shows a saved live read as a record (Windows `[JsonIgnore]`).
+    private enum CodingKeys: String, CodingKey { case usedPercent, resetsAt, receivedAt, recordedBy }
 }
 
 /// `rate_limits.five_hour` and `.seven_day` from the status line JSON (Claude.ai subscribers, after the first response).
